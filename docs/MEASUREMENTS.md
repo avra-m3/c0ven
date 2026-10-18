@@ -2,9 +2,7 @@
 
 The engine's measured numbers: what operations cost on an Intel Arc Pro B60 through Level Zero, what the engine's
 kernels reach, and how fast the engine runs. Each row gives a value and the date it was measured. The date links
-the row, and code and other pages link these rows for their numbers. The full records, with the method, the
-software versions and the state of the machine for each run, are kept privately, because together they identify the
-machine.
+the row, and code and other pages link these rows for their numbers.
 
 ## The test machine
 

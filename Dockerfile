@@ -24,8 +24,7 @@ RUN apt-get update \
  && update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-15 100 \
  && update-alternatives --install /usr/bin/c++ c++ /usr/bin/g++-15 100
 
-# The GPU stack and uv, from their release pages, checked against ADR-0002's checksums (in full: MEASUREMENTS.md#the-test-machine,
-# "The measurement container").
+# The GPU stack and uv, from their release pages, checked against ADR-0002's checksums.
 WORKDIR /tmp/debs
 RUN set -e; \
     cr=https://github.com/intel/compute-runtime/releases/download/26.35.39758.10; \
