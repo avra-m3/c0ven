@@ -1,7 +1,8 @@
 # ADR-0036: a private repository and its public copy
 
-**Status:** accepted, 2026-10-17, by the owner, with the pull request that adds it. Supersedes item 1 of
-[ADR-0024](0024-repository-layout.md) in part: the layout gains `private/` at the root.
+**Status:** superseded 2026-10-18: this repository holds the code, and the measurement records are kept privately.
+Accepted 2026-10-17, by the owner. Supersedes item 1 of [ADR-0024](0024-repository-layout.md) in part: the layout
+gains `private/` at the root.
 **Revisit when:** people outside the project send changes to the public copy, or keeping the copy clean costs more
 than a few lines a week.
 

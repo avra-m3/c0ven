@@ -12,12 +12,12 @@ exchanges, costing more than streaming or a layer split would.
 
 - **ADR-0009's revisit condition is met.** A card-to-card exchange through host memory, with a kernel on each card
   waiting on the other's flag, takes 10.0-10.5 µs at 1-4 tokens, far under its 0.1 ms
-  ([P32](../RESULTS.md#2026-10-12-card-to-card)).
+  ([P32](../MEASUREMENTS.md#2026-10-12-card-to-card)).
 - **Weights are most of a token's work:** about 5.1 GB read per token
   (PLAN.md). Split across both cards, each reads half.
 - **A decode step shaped as a tensor split** was measured with stand-in kernels timed to
-  [P48](../RESULTS.md#2026-10-11-kernel-spike)'s rates, P32's exchanges, and the CPU computing the misses
-  with ggml ([P50 inputs](../RESULTS.md#2026-10-13-design-inputs)). One sequence:
+  [P48](../MEASUREMENTS.md#2026-10-11-kernel-spike)'s rates, P32's exchanges, and the CPU computing the misses
+  with ggml ([P50 inputs](../MEASUREMENTS.md#2026-10-13-design-inputs)). One sequence:
 
   | ms per token | Hit rate 0.931 | 0.973 |
   | --- | ---: | ---: |
@@ -37,7 +37,7 @@ exchanges, costing more than streaming or a layer split would.
    attention layer (decided 2026-10-13; [DESIGN.md, section 4](../DESIGN.md#the-indexer-on-two-cards-split-by-position)).
 2. **The halves are combined by exchanges through host memory,** twice per layer, in P32's form. No peer-to-peer.
 3. **The CPU computes the expert misses** in place in the host arena, with ggml's kernels
-   ([P36](../RESULTS.md#2026-10-11-cpu-bar)). The cards do not stream misses. Measured again once the engine
+   ([P36](../MEASUREMENTS.md#2026-10-11-cpu-bar)). The cards do not stream misses. Measured again once the engine
    runs end to end.
 4. **No card is kept busy to hold its clock up.**
 5. **The host arena holds only the experts the cards do not cache** (decided 2026-10-13). Every expert is in exactly

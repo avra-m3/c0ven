@@ -10,13 +10,13 @@ measure too small on the deployed settings, or pinning the encoder's 0.90 GB fai
 
 - **The model sees images.** Qwen3.8-Flash-Next's checkpoint is `Qwen4ExpForConditionalGeneration`, with a 27-layer
   image encoder. ISTA ships it as `mmproj-Qwen3.8-Flash-Next-BF16.gguf`, 907,543,008 B, beside the text files
-  ([the reference record](../RESULTS.md#2026-10-17-encoder-reference)). Its maths is
+  ([the reference record](../MEASUREMENTS.md#2026-10-17-encoder-reference)). Its maths is
   [MODEL_VISION.md](../spec/MODEL_VISION.md).
 - **llama.cpp runs it.** The pinned commit's `tools/mtmd` loads the file as `qwen3vl_merger` and has a CPU graph for
   it (`tools/mtmd/models/qwen3vl.cpp`).
 - **Decode is bound by the experts on the cards.** An encoder resident in VRAM, split as the text model is, would take
   449 MB per card, 439 experts at the mean size, and cost about 0.3-0.6 ms on a 17.3 ms token (*estimate*, the
-  design's section 3, from [the hit-rate record](../RESULTS.md#2026-10-12-expert-hit-rates)).
+  design's section 3, from [the hit-rate record](../MEASUREMENTS.md#2026-10-12-expert-hit-rates)).
 - **The prompt path's buffers sit idle between chunks.** Each card has two staging slots for the uncached experts and
   activation regions sized for a chunk of 4,352 rows; none is in use between one chunk's lists and the next's
   ([DEVELOPING.md](../DEVELOPING.md#how-a-prompt-chunk-runs)).
@@ -33,7 +33,7 @@ measure too small on the deployed settings, or pinning the encoder's 0.90 GB fai
    flash attention sums in F16 and moves some rows far from an exact computation. An image too large for the
    attention's scores in host memory takes an F32 computation of [MODEL_VISION.md](../spec/MODEL_VISION.md) instead,
    once that computation has matched llama.cpp on the smaller images
-   ([the reference record](../RESULTS.md#2026-10-17-encoder-reference)).
+   ([the reference record](../MEASUREMENTS.md#2026-10-17-encoder-reference)).
 3. **The image processing is the model's own** (`Qwen2VLImageProcessorFast` with the model's
    `preprocessor_config.json`, by Pillow), capped at the engine's largest image. The reference images are sized to a
    multiple of 32 pixels and inside both programs' limits, so neither resizes them.

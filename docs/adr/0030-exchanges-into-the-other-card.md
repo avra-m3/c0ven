@@ -1,7 +1,7 @@
 # ADR-0030: the cards' exchanges may write into the other card's memory
 
 **Status:** accepted, 2026-10-16, by the owner
-([the peer exchange record](../RESULTS.md#2026-10-16-peer-exchange)). Supersedes item 2 of
+([the peer exchange record](../MEASUREMENTS.md#2026-10-16-peer-exchange)). Supersedes item 2 of
 [ADR-0023](0023-two-cards-tensor-split.md) in part ("No peer-to-peer").
 **Revisit when:** a driver or kernel update changes peer access (`zeDeviceGetP2PProperties`), or the exchanges move to
 flags spun on by the cards.
@@ -12,13 +12,13 @@ flags spun on by the cards.
   peer-to-peer. At the time no peer write had been measured on this machine.
 - **Peer access works.** `zeDeviceCanAccessPeer` is true both ways, `zeDeviceGetP2PProperties` reports access without
   atomics, and a kernel's writes into the other card read back exact
-  ([the peer exchange record](../RESULTS.md#2026-10-16-peer-exchange)).
+  ([the peer exchange record](../MEASUREMENTS.md#2026-10-16-peer-exchange)).
 - **Decode's exchange is cheaper through the other card at two rows and more.** In the engine's form (an event per
   exchange), 2,560 floats a row both ways cost 10.2-10.3 µs through host memory at four rows and 5.1-5.2 µs written
   by the kernel into the other card: 0.48 ms saved a step of 96. At one row 3.9-5.0 against 2.3-3.4 µs, 0.15 ms a step
-  ([the same record](../RESULTS.md#2026-10-16-peer-exchange)).
+  ([the same record](../MEASUREMENTS.md#2026-10-16-peer-exchange)).
 - **The prompt path already does it.** Its kernels write their partial sums into the other card, which took its
-  prompt from 2,353.5 to 2,427 tokens/s ([record](../RESULTS.md#2026-10-15-prompt-exchange-stores), commit
+  prompt from 2,353.5 to 2,427 tokens/s ([record](../MEASUREMENTS.md#2026-10-15-prompt-exchange-stores), commit
   c54851f). That departs from item 2 as written.
 - **The host memory link is shared.** The exchanges through host memory compete with the CPU workers' reads of the
   arena and the far KV ([ADR-0023](0023-two-cards-tensor-split.md), consequences). Writes into the other card do not

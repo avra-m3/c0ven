@@ -54,7 +54,7 @@ docker exec engine-dev bash -c 'cd /src/build && ENGINE_EXPECT_GPUS=2 ctest -L g
 | `greedy_test` | 5 | greedy agreement with llama.cpp's tokens, teacher-forced, on the prompts of up to 512 tokens: 95% or more |
 | `attn_test` | 3 | the prompt path's two attention kernels against double precision, dense and sparse rows, 2e-3 |
 | `vision_test` | 3 | the image encoder's kernels against double precision: 1e-5 for f32 outputs, 2e-3 for fp16, 1e-2 for bf16 |
-| `encoder_test` | 4 | the image encoder against llama.cpp's rows for the same images and video frame pairs ([images](RESULTS.md#2026-10-17-encoder-reference), [pairs](RESULTS.md#2026-10-17-video-pair-reference)): mean cosine at least 0.999, least at least 0.95. Needs `$FLASH_REF_DIR/vision` and the `mmproj` file |
+| `encoder_test` | 4 | the image encoder against llama.cpp's rows for the same images and video frame pairs ([images](MEASUREMENTS.md#2026-10-17-encoder-reference), [pairs](MEASUREMENTS.md#2026-10-17-video-pair-reference)): mean cosine at least 0.999, least at least 0.95. Needs `$FLASH_REF_DIR/vision` and the `mmproj` file |
 | `batch_test` | 6 | a decode step of several rows (several sequences, or a window of one) gives each row exactly its single-row result |
 | `api_test` | 5 | the C ABI from C: 32 greedy tokens, the first 19 equal to llama.cpp's (token 19 is a near tie), release and admit again, a stop token, short prompt pieces read as decode windows, a 108-token prompt by the prompt path, two requests in one step, a checkpoint restored into another slot that shares the first slot's pages and copies the page the checkpoint ends inside, one token read after a restore, the timing records; with the draft layer's tensors (`FLASH_MTP_DIR`, by default `/models/mtp`), drafting gives the tokens of plain decoding; with adaptive swaps, three requests keep their first 16 tokens |
 
@@ -70,7 +70,7 @@ every 16 steps and one after each prompt, and reports how many experts came onto
 
 `ENGINE_MTP_CACHE_DIR` keeps the draft layer's quantised experts between loads. When it is set, a load reads them
 from that directory instead of quantising the BF16 tensors again (about 43 s for both cards,
-[record](RESULTS.md#2026-10-16-load-phases)). If the file is missing or does not match, the load quantises and
+[record](MEASUREMENTS.md#2026-10-16-load-phases)). If the file is missing or does not match, the load quantises and
 writes it there. There is one file per card, named by a key built from the MTP directory's manifest, the expert type
 and the card split. Point the variable at a volume, such as the dev container's cache volume
 (`/home/ubuntu/.cache/c0ven/mtp`), since the models are mounted read-only. When it is unset, every load
@@ -112,13 +112,13 @@ quantises.
   two layers ahead, from the arena in pinned host memory. So the CPU computes nothing for a prompt.
 - The cards exchange fp16 partial sums. The kernel that makes a card's partial sum also writes it into the other
   card's memory while it computes, 64 bytes per store. Stores of 32 bytes or less cross at a tenth of the rate
-  ([the record](RESULTS.md#2026-10-15-prompt-exchange-stores)).
+  ([the record](MEASUREMENTS.md#2026-10-15-prompt-exchange-stores)).
 - `Options::trace` times every kernel of the chunk's lists; `Model::prompt_trace` sums them per kernel.
 
 The C ABI reads a prompt piece of up to 64 tokens with no image in it as decode windows instead: up to 8 forced
 rows a window, each committed whole, with the draft layer reading every row (`prompt_windows` in
 [`core/api/engine_api.cpp`](../core/api/engine_api.cpp)). A chunk stages every uncached expert whatever its size, so
-a short piece is faster as windows ([the record](RESULTS.md#2026-10-17-prompt-windows)).
+a short piece is faster as windows ([the record](MEASUREMENTS.md#2026-10-17-prompt-windows)).
 
 ## The Python half
 

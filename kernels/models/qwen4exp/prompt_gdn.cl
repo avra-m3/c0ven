@@ -2,7 +2,7 @@
 // head's 128 x 128 state S (S[i][c]: column c, row i) is split four ways by row: sub-group r holds rows 32 r .. 32 r
 // + 31 of 16 columns, a column a lane, in registers; the four add their partial dot products in local memory. Four
 // times the sub-groups give each EU several chains to overlap. The loop that updates S and takes S q also takes the
-// next token's S k: one barrier a token, each sum in order (docs/RESULTS.md#2026-10-15-prompt-gdn-fused-loop).
+// next token's S k: one barrier a token, each sum in order (docs/MEASUREMENTS.md#2026-10-15-prompt-gdn-fused-loop).
 #include "builtins.h"
 #include "layout.h"
 #include "step.h"

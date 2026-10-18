@@ -124,7 +124,7 @@ __kernel void p_hc_lr(__global const float *lri, uint lri_w, __global const Prom
 // value-major (the core reorders the up projection's rows so); written as fp16 (for the quantised products) and bf16
 // (for the BF16 ones), and into the other card's x16p and xbp when set. A sub-group takes 64 consecutive values, lane l
 // values 16 k + l, so a row goes out in 128-byte block stores, which cross to the other card far faster than 2-byte
-// ones (docs/RESULTS.md#2026-10-17-hc-split). Groups (Q_EMBD / 256, r1 - r0), 64.
+// ones (docs/MEASUREMENTS.md#2026-10-17-hc-split). Groups (Q_EMBD / 256, r1 - r0), 64.
 REQD_SG __kernel void p_hc_mix(__global const float *R, __global const float *rr, __global const float *gamma,
                                __global const half *a, __global const PromptPlan *pp, __global half *x16,
                                __global ushort *xb, uint r0, uint r1, __global half *x16p, __global ushort *xbp) {
@@ -641,8 +641,8 @@ __kernel void p_moe_fill(__global const int *ids, __global const PromptPlan *pp,
 
 // xg[inv[t * Q_USED + k]] = x16[t]: the activations in expert order; with sigma, each 4 values permuted as the expert
 // kernels' weight pairs are (shared/quant.h, quant_pairs_sigma). Scattering a token's row beats gathering rows of xg
-// (docs/RESULTS.md#2026-10-15-prompt-moe-scatter), and 256-byte block moves beat 16 bytes a work-item
-// (docs/RESULTS.md#2026-10-15-prompt-moe-scatter-blocks). Groups (1, T), Q_EMBD / 8: 128 values a sub-group.
+// (docs/MEASUREMENTS.md#2026-10-15-prompt-moe-scatter), and 256-byte block moves beat 16 bytes a work-item
+// (docs/MEASUREMENTS.md#2026-10-15-prompt-moe-scatter-blocks). Groups (1, T), Q_EMBD / 8: 128 values a sub-group.
 REQD_SG __kernel void p_moe_scatter(__global const half *x16, __global const uint *inv, __global const PromptPlan *pp,
                                     uint sigma, __global half *xg) {
   uint t = get_group_id(1), lane = sg_lane(), at = 128 * sg_id();
@@ -667,7 +667,7 @@ __kernel void p_swiglu(__global const float *g, __global const float *u, uint ff
 // This card's partial sum of the block for row t: the routed experts' outputs y (fp16, in expert order, found through
 // inv) weighted in rank order, then the shared expert's s gated by sigma(rl[t][512]); as fp16 into out, and into out2
 // when set (the other card's buffer). Two values a work-item, so that a sub-group's store is 64 bytes, which the other
-// card takes at full rate (docs/RESULTS.md#2026-10-15-prompt-exchange-stores). Groups (Q_EMBD / 128, T), 64.
+// card takes at full rate (docs/MEASUREMENTS.md#2026-10-15-prompt-exchange-stores). Groups (Q_EMBD / 128, T), 64.
 __kernel void p_moe_combine(__global const half *y, __global const uint *inv, __global const float *w,
                             __global const float *s, __global const float *rl, __global const PromptPlan *pp,
                             __global half *out, __global half *out2) {

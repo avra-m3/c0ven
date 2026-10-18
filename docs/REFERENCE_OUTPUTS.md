@@ -24,7 +24,7 @@ Everything in `reference/` is text and holds no logits.
 | --- | --- |
 | Program | llama.cpp `3cf03257f219afbe7334045ff7c6a06ac68c627d` (`3cf0325`, "CUDA: enable sparse fa for qwen4"), the commit Strata's `setup.py` pins ([ADR-0012](adr/0012-correctness-reference.md)). Source: `/scratch/llama.cpp` in the sandbox, clean tree |
 | Backend | CPU only. `GGML_SYCL`, `GGML_VULKAN`, `GGML_CUDA` off |
-| Machine | the test machine ([RESULTS.md#the-test-machine](RESULTS.md#the-test-machine)), governor `powersave` on all 32 CPUs, host kernel 6.17.0-1033-oem |
+| Machine | the test machine ([MEASUREMENTS.md#the-test-machine](MEASUREMENTS.md#the-test-machine)), governor `powersave` on all 32 CPUs, host kernel 6.17.0-1033-oem |
 | Build environment | Ubuntu 26.04.1, g++ 15.2.0, cmake 4.2.3, Ninja 1.13.2 |
 | Model | the IQ3_S file, both shards ([MODEL_FILES.md](MODEL_FILES.md)) |
 | Prompt chunking | `n_batch` 2048, `n_ubatch` 512: a 512-token physical batch |
@@ -48,7 +48,7 @@ cmake -S /scratch/llama.cpp -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
 taskset -c 8-15,24-31 cmake --build build -j 8 --target llama-completion llama-tokenize llama-perplexity
 ```
 
-These are the same CPU flags as the build in the [CPU-bar record](RESULTS.md#2026-10-11-cpu-bar). `ggml` is
+These are the same CPU flags as the build in the [CPU-bar record](MEASUREMENTS.md#2026-10-11-cpu-bar). `ggml` is
 built as shared libraries, and `libllama` is linked by the small program in [The greedy outputs](#the-greedy-outputs).
 
 ## The prompt set

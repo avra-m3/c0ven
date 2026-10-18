@@ -280,7 +280,7 @@ DMA) and what it was measured to be worth are in
   the value. The plan copy is skipped, and the CPU rows become zeros. The host still runs its loop for the layer,
   off the GPU's critical path.
 - **Why it is off.** It needs all of a window's ~25 distinct experts in the layer to be resident, which is true for a
-  minority of layers ([expert hit-rate record](../RESULTS.md#2026-10-12-expert-hit-rates)).
+  minority of layers ([expert hit-rate record](../MEASUREMENTS.md#2026-10-12-expert-hit-rates)).
 - **Measured.** Exact (device plan off/on 10 of 10 identical), and neutral for speed (commit `0abcd5b`). On an
   RTX 5080 alone: story 86.7 -> 84.5, code 103.3 -> 102.0 tokens/s. On 5080 + 3090: 81.5 -> 82.4 and
   113.9 -> 109.9.

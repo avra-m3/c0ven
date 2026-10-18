@@ -4,8 +4,8 @@ How the engine is built, as the code runs it now: its parts, what each part owns
 through them, and the rules each part keeps. Why each choice was made is in the [ADRs](adr/README.md).
 [DEVELOPING.md](DEVELOPING.md) walks through the code, [MEMORY_BUDGET.md](MEMORY_BUDGET.md) gives the sizes, and
 [docs/spec/](spec/) says what the model computes. [ADR-0024](adr/0024-repository-layout.md) says where code goes.
-Measured numbers link their entry in [RESULTS.md](RESULTS.md), which also describes
-[the test machine](RESULTS.md#the-test-machine). Words used throughout are in [Terms](#10-terms).
+Measured numbers link their row in [MEASUREMENTS.md](MEASUREMENTS.md), which also describes
+[the test machine](MEASUREMENTS.md#the-test-machine). Words used throughout are in [Terms](#10-terms).
 
 ## Contents
 
@@ -93,7 +93,7 @@ flight gets an error and the next request starts it again. A fault on the cards 
 
 One engine process drives both cards. Host memory that both cards read must come from one Level Zero context that
 holds both cards: memory imported into a second context serves only one card
-([the host memory record](RESULTS.md#2026-10-12-host-memory)).
+([the host memory record](MEASUREMENTS.md#2026-10-12-host-memory)).
 
 Inside the engine process, Python decides what runs and the C++ core runs it. They meet only at the C ABI
 (section 3).
@@ -147,7 +147,7 @@ sequenceDiagram
    pairs go before its `GEN`, one `IMG` line each, with the patches in a memfd that the engine reads.
 2. The engine process reads lines on a thread of its own. After a `GEN` reaches an idle engine, it waits 2 ms for more
    lines before it plans, so requests sent together read their prompts in one plan
-   ([the record](RESULTS.md#2026-10-17-requests-sent-together)).
+   ([the record](MEASUREMENTS.md#2026-10-17-requests-sent-together)).
 3. The scheduler admits the request into a free slot, or queues it. When a checkpoint holds the start of the prompt,
    the slot restores it and reads only the rest (section 4). `engine_admit` copies the settings and the prompt ids
    into the core once. From then on the request is a slot number.
@@ -194,7 +194,7 @@ The rules, from the header:
 - The core owns all memory and threads. Python owns every decision. It holds no device pointer, Level Zero handle or
   flag, only slot, page and checkpoint numbers.
 - Calls are coarse: a few per step. A call through `ctypes` costs 0.3-2.3 µs
-  ([the design-inputs record](RESULTS.md#2026-10-13-design-inputs)).
+  ([the design-inputs record](MEASUREMENTS.md#2026-10-13-design-inputs)).
 
 The scheduler is written against `engine/api/interface.py`, which differs from the header in several places.
 `NativeEngine` in `engine/api/native.py` bridges the two, and
@@ -316,7 +316,7 @@ byte is read where it lives. Everything else that moves per row is kilobytes: th
 answer, the step plan, the token ids. What those cost is time spent waiting for each other.
 
 No card is kept busy to hold its clock up. In decode both cards stay at 2,400 MHz in 99.74-100% of samples
-([the record](RESULTS.md#2026-10-16-gpu-clock-in-decode)).
+([the record](MEASUREMENTS.md#2026-10-16-gpu-clock-in-decode)).
 
 ## 6. Memory
 
@@ -339,7 +339,7 @@ layer on each card as its memory allows, after leaving `reserve_bytes` (512 MiB)
 
 A swap copies the expert leaving the cards into the arena place of the one coming in. Every staging slot of the
 prompt path keeps its arena piece, so its copy list, recorded once at load, stays valid
-([the record](RESULTS.md#2026-10-17-swaps-keep-the-copies)).
+([the record](MEASUREMENTS.md#2026-10-17-swaps-keep-the-copies)).
 
 Asleep, the engine frees everything on the cards and the checkpoints, and keeps the arena and the image encoder's
 weights in RAM, so a wake reads only the cards' part of the model again
@@ -401,7 +401,7 @@ Read at vLLM [`656d0d4`][v], SGLang [`e0c957e`][sg] and llama.cpp [`9d7d504`][l]
 A decode step runs one row for each writing slot, or a window of one slot's rows. Each card runs a command list
 recorded at load for the step's width: 1, 2, 4 or 8 rows. The list's first command copies the step plan from host
 memory to the card, and the kernels read that copy: a word read from host memory at each launch's start makes every
-launch slower ([the record](RESULTS.md#2026-10-16-bf16-products-occupancy)).
+launch slower ([the record](MEASUREMENTS.md#2026-10-16-bf16-products-occupancy)).
 
 ```mermaid
 %%{init: {"theme": "base", "themeVariables": {"fontSize": "14px", "textColor": "#8b5cf6", "actorBkg": "#2e1065", "actorBorder": "#8b5cf6", "actorTextColor": "#ede9fe", "actorLineColor": "#8b5cf6", "signalColor": "#8b5cf6", "signalTextColor": "#8b5cf6", "labelBoxBkgColor": "#6d28d9", "labelBoxBorderColor": "#8b5cf6", "labelTextColor": "#ffffff", "loopTextColor": "#8b5cf6", "noteBkgColor": "#1f2433", "noteBorderColor": "#64748b", "noteTextColor": "#e2e8f0"}, "sequence": {"mirrorActors": false}}}%%
@@ -445,13 +445,13 @@ Per layer, each card:
 3. Exchange 1: the mixer output's partial sums. Both cards now hold the same residual.
 4. Routes the token in full. Both cards pick the same 10 experts, with no exchange for it. Reading the whole router
    costs each card about 0.3 ms a token (0.13 GB at 455 GB/s, *estimate*). Splitting it would need a third exchange
-   per layer, about 0.5 ms (48 x 10.0-10.5 µs, [the card-to-card record](RESULTS.md#2026-10-12-card-to-card)).
+   per layer, about 0.5 ms (48 x 10.0-10.5 µs, [the card-to-card record](MEASUREMENTS.md#2026-10-12-card-to-card)).
 5. Computes its half of every cached expert the token uses, and of the shared expert. Card 0 writes the layer's
    record into host memory and raises its flag: the routed experts, the missed ones, and the activation the CPU
    needs.
 6. If an expert missed, card 0 waits for the CPU's answer and adds it to its partial sum. Card 1 never waits. In a
    layer with no miss the CPU computes nothing and card 0 goes straight on
-   ([the expert hit rates record](RESULTS.md#2026-10-12-expert-hit-rates)).
+   ([the expert hit rates record](MEASUREMENTS.md#2026-10-12-expert-hit-rates)).
 7. Exchange 2: the experts' partial sums, then the hyper-connection combine.
 
 Layer 1 waits for the n-gram rows, which the host reads while the cards run layer 0
@@ -501,13 +501,13 @@ The workers compute each missed expert whole, from its place in the arena, with 
 dot-product type ([MODEL_LAYER.md, section 6](spec/MODEL_LAYER.md#6-numerics-on-llamacpps-cpu-backend)).
 
 The workers sleep between jobs. Workers that kept polling made decode slower on the shared host
-([the CPU miss path's record](RESULTS.md#2026-10-15-cpu-miss-path)).
+([the CPU miss path's record](MEASUREMENTS.md#2026-10-15-cpu-miss-path)).
 
 ggml has no SIMD path for Q2_0, so the 9 down tensors of that type are the slowest misses
-([the CPU bar record](RESULTS.md#2026-10-11-cpu-bar)).
+([the CPU bar record](MEASUREMENTS.md#2026-10-11-cpu-bar)).
 
 The workers share RAM bandwidth with both cards' reads of host memory and everything else on the host. Under a
-competing RAM load they are 1.6-2.2 times slower ([the design-inputs record](RESULTS.md#2026-10-13-design-inputs)).
+competing RAM load they are 1.6-2.2 times slower ([the design-inputs record](MEASUREMENTS.md#2026-10-13-design-inputs)).
 So the front end and the Python side stay light on RAM during decode, and the n-gram table bypasses the page cache.
 
 ## 10. Terms

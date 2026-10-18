@@ -54,7 +54,7 @@ uint32_t Model::swap_round(uint32_t max_swaps) {
     }
     // Each outgoing expert into the piece its incoming one leaves, so every staging slot keeps its arena address
     // and the prompt path's copy lists stay as recorded: from the anonymous arena a list costs a bind per copy to
-    // record and an unbind to drop (docs/RESULTS.md#2026-10-17-swaps-keep-the-copies).
+    // record and an unbind to drop (docs/MEASUREMENTS.md#2026-10-17-swaps-keep-the-copies).
     pool_->run(applied, [&](uint64_t i) {
       const SwapPlan &w = swap_next_[i];
       const HostLayer &hl = *host_layers_[w.l];
@@ -133,7 +133,7 @@ uint32_t Model::swap_round(uint32_t max_swaps) {
       });
       // The file's pages the round read, back to the host: a long session's swaps would otherwise refill the page
       // cache that load gave back, and a host that reclaims it moves the engine's buffers
-      // (docs/RESULTS.md#2026-10-17-decode-stalls-eviction).
+      // (docs/MEASUREMENTS.md#2026-10-17-decode-stalls-eviction).
       for (const SwapPlan &w : swap_next_) {
         const GgufTensor &g = gguf_.tensor(blk(w.l, "ffn_gate_exps.weight")),
                          &u = gguf_.tensor(blk(w.l, "ffn_up_exps.weight")), &d = gguf_.tensor(blk(w.l, "ffn_down_exps.weight"));

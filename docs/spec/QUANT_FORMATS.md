@@ -411,7 +411,7 @@ to types the file does not hold.
 [ADR-0018](../adr/0018-one-file-iq3s.md) (decision 3) says each expert is stored for wide, contiguous loads, whatever
 the file's layout. This section says what that means per type and what it costs. On the B60 the runs layout is
 3.2-8.8 times faster than the file's layout for every type tried: IQ2_S 3.6x, IQ3_S 4.8x, IQ4_NL 3.2x, Q6_K 8.8x
-(measured with prototype kernels; machine, versions and method in the [kernel record](../RESULTS.md#2026-10-11-kernel-spike)).
+(measured with prototype kernels; machine, versions and method in the [kernel record](../MEASUREMENTS.md#2026-10-11-kernel-spike)).
 
 **The problem in the file's layout.** A block's fields are interleaved (array of structures), and six of the types
 have a block size that is 2 mod 4. Their blocks, and the quants inside them, start only on 2-byte boundaries. For this
