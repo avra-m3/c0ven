@@ -1,7 +1,7 @@
 # ADR-0002: pin the toolchain, without oneAPI
 
-**Status:** accepted, 2026-10-09; item 3 superseded by [ADR-0020](0020-the-sandbox.md) on 2026-10-10 (the set
-goes into the existing sandbox, not a new image). The principle is from INTEL_SYCL_PLAN.md "Stages" (merged in PR #1), and the
+**Status:** accepted, 2026-10-09; item 3's image is the engine image of [ADR-0025](0025-the-engine-image.md). The
+principle is from INTEL_SYCL_PLAN.md "Stages", and the
 oneAPI exclusion from [ADR-0001](0001-level-zero-from-scratch.md). P23 chooses the
 exact versions and fills in the table below. The Python, Python-package and debugging rows were added by
 [ADR-0022](0022-two-processes-python-and-cpp.md) in P50 (2026-10-13).
@@ -49,7 +49,7 @@ Zero loader saw both B60s through it.
 | AOT target string | **`-device bmg-g21`** (IP 20.1.0) | [MEASUREMENTS.md#the-test-machine](../MEASUREMENTS.md#the-test-machine), item 3 | the IP version Level Zero reports for both cards, 0x05004000 = 20.1.0. `-device 20.1.0` builds the same binary |
 | environment the engine sets | `ZE_ENABLE_PCI_ID_DEVICE_ORDER=1`; `ZES_ENABLE_SYSMAN=1`; `NEOReadDebugKeys=1` with `EnableDeferBacking=0` | Level Zero spec; compute-runtime debug keys | device 0 is always the card with the lower PCI address; Sysman reads free memory per card ([LEVEL_ZERO.md](../LEVEL_ZERO.md), row 9); deferred backing off, so one context for both cards does not take host pages on kernels 6.18+ (compute-runtime #1019) |
 | Python | **Python 3.14.4** (`python3.14` 3.14.4-1ubuntu0.2) | Ubuntu 26.04 archive, read in the container on 2026-10-13 | the front end and the engine's control plane ([ADR-0022](0022-two-processes-python-and-cpp.md)); the version the container already has |
-| Python packages | **uv 0.12.22** manages them; numpy and py-spy are pinned in the project's `uv.lock` when it is created | `/usr/local/bin/uv` in the container | decision 4 of [ADR-0021](0021-the-measurement-container.md): Python packages are pinned in the project that uses them |
+| Python packages | **uv 0.12.22** manages them; numpy and py-spy are pinned in the project's `uv.lock` when it is created | `/usr/local/bin/uv` in the container | [ADR-0026](0026-python-tooling.md): `uv.lock` pins every package |
 | debugging tools | **gdb 17.1** (`gdb` 17.1-2ubuntu1), **strace 6.19** (`strace` 6.19+ds-0ubuntu5) | Ubuntu 26.04 archive, read in the container on 2026-10-13 | the development and debugger modes of [DESIGN.md, section 7](../DESIGN.md#7-observability-a-little-always-on-the-rest-on-demand). Not part of the engine |
 
 No oneAPI component is in the set.

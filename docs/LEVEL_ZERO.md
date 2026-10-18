@@ -2,7 +2,7 @@
 
 Each mechanism the design considered, mapped to the Level Zero call or extension that provides it, with the spec
 version that introduced it. Two columns give what the machine's driver reports
-([record](MEASUREMENTS.md#2026-10-11-level-zero-report)) and the measurement record that tested the mechanism on the
+([record](MEASUREMENTS.md#2026-10-11-level-zero-report)) and the measurement that tested the mechanism on the
 B60s. Not every row is used: the calls the engine makes are in `core/ze/ze.cpp`.
 
 ## Sources and how to read the table
@@ -53,10 +53,10 @@ B60s. Not every row is used: the calls the engine makes are in `core/ze/ze.cpp`.
   append, record-and-replay graphs, the standard relaxed-allocation-limits extension) are not, and are named only
   where they would replace a row.
 - **Reported by the machine's driver.** Read on 2026-10-11 ([record](MEASUREMENTS.md#2026-10-11-level-zero-report))
-  from the measurement container's stack (compute-runtime 26.35.39758.10, loader 1.32.0, API 1.17;
+  from the engine image's stack (compute-runtime 26.35.39758.10, loader 1.32.0, API 1.17;
   [ADR-0002](adr/0002-pin-the-toolchain.md)), not the llama.cpp image's 26.18. Each cell is yes, no, or "not
   reportable" where no driver query gives the answer.
-- **Measured in.** The measurement record that tested the row on the B60s, with its question numbers (Q1, Q2 ...)
+- **Measured in.** The measurement that tested the row on the B60s, with its question numbers (Q1, Q2 ...)
   where the record numbers them. "-" means the driver report is the only record.
 
 ## The map

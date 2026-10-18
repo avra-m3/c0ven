@@ -70,6 +70,5 @@ to need per-token work.
 - The scaffold (P49), redone after the design review (its first version, `ddc07bc`, was C++
   only and was removed), builds the C++ core; Python packaging, a pinned Python and the
   ctypes binding are added, and the toolchain pin ([ADR-0002](0002-pin-the-toolchain.md)) gains Python 3.14.4.
-- The measurement container needs numpy ([ADR-0021](0021-the-measurement-container.md)).
 - The engine's protocol from PLAN.md, the server is the front end's to implement; ADR-0004
   still decides the tokenizer and the HTTP library.

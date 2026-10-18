@@ -3,8 +3,6 @@
 For people and agents alike.
 
 - **Changes:** as pull requests, one small, coherent change each, titled by what it does. The owner reviews them.
-- **Measurements:** the records are kept privately; [MEASUREMENTS.md](docs/MEASUREMENTS.md) gives their
-  numbers. Nothing committed here, commit messages included, names the test machine or the setup around it.
 - **Decisions:** [ADRs](docs/adr/README.md) bind and are immutable. [ADR-0014](docs/adr/0014-how-work-is-done.md)
   says how work is done.
 - **Layout:** [ADR-0024](docs/adr/0024-repository-layout.md) says where code goes. A change that departs from it

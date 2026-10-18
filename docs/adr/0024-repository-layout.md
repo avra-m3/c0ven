@@ -2,8 +2,7 @@
 
 **Status:** accepted, 2026-10-14, by the owner. Item 1 superseded in part by
 [ADR-0025](0025-the-engine-image.md): the layout gains a `Dockerfile` at the root; and by
-[ADR-0028](0028-ci-without-a-card.md): it gains `.github/workflows/`; and by
-[ADR-0036](0036-a-private-repository-and-its-public-copy.md): it gains `private/`.
+[ADR-0028](0028-ci-without-a-card.md): it gains `.github/workflows/`.
 **Revisit when:** a second model architecture is added ([ADR-0006](0006-scope.md)), or the scaffold
 (P49) finds the layout does not build.
 

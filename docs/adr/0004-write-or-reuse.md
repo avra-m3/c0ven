@@ -19,7 +19,7 @@ P30 finds the SSD reads need io_uring.
 - **The n-gram reads:** P30, which would say whether io_uring works in the container
   and what the SSD gives, was moved to stage 1 ("measured where it bites"); there is no result yet.
 - The toolchain is pinned by [ADR-0002](0002-pin-the-toolchain.md); Python packages are pinned in the project's
-  `uv.lock` ([ADR-0021](0021-the-measurement-container.md), decision 4).
+  `uv.lock` ([ADR-0026](0026-python-tooling.md)).
 
 ## Decision
 

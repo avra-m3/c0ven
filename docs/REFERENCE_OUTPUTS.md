@@ -22,7 +22,7 @@ Everything in `reference/` is text and holds no logits.
 
 | Item | Value |
 | --- | --- |
-| Program | llama.cpp `3cf03257f219afbe7334045ff7c6a06ac68c627d` (`3cf0325`, "CUDA: enable sparse fa for qwen4"), the commit Strata's `setup.py` pins ([ADR-0012](adr/0012-correctness-reference.md)). Source: `/scratch/llama.cpp` in the sandbox, clean tree |
+| Program | llama.cpp `3cf03257f219afbe7334045ff7c6a06ac68c627d` (`3cf0325`, "CUDA: enable sparse fa for qwen4"), the commit Strata's `setup.py` pins ([ADR-0012](adr/0012-correctness-reference.md)). Source: a clean tree at `/scratch/llama.cpp` |
 | Backend | CPU only. `GGML_SYCL`, `GGML_VULKAN`, `GGML_CUDA` off |
 | Machine | the test machine ([MEASUREMENTS.md#the-test-machine](MEASUREMENTS.md#the-test-machine)), governor `powersave` on all 32 CPUs, host kernel 6.17.0-1033-oem |
 | Build environment | Ubuntu 26.04.1, g++ 15.2.0, cmake 4.2.3, Ninja 1.13.2 |

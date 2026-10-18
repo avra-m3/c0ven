@@ -19,7 +19,7 @@ Level Zero has no CPU device, so every test of a kernel runs on a B60 ([ADR-0001
 | 4. Layer | a whole block of the model fed fixed inputs; the image encoder is the only one checked | llama.cpp's rows for the same images ([record](MEASUREMENTS.md#2026-10-17-encoder-reference)) | the machine | 10 min |
 | 5. End to end | the tokenizer; greedy agreement, teacher-forced and free-running; mean KL and top-1 agreement on the KL text | the reference prompts, greedy tokens and KL base ([REFERENCE_OUTPUTS.md](REFERENCE_OUTPUTS.md)) | the machine | 30 min |
 | 6. Determinism | a request's tokens are identical alone, in a window, batched, and packed with other prompts, with [ADR-0016](adr/0016-how-a-change-is-judged.md)'s switches set: no PCIe share of the misses, no adaptive swaps, no prefetching, no prompt cache. Also two runs of the same request, and runs with the CPU's misses on 8 and 16 workers | the engine's own run alone | the machine | 30 min |
-| 7. Performance | accepted tokens per window and wall time per window ([ADR-0016](adr/0016-how-a-change-is-judged.md)); decode tokens/s and prompt tokens/s at 4K against [ADR-0019](adr/0019-performance-target.md)'s target and the latest records | the measurement records; before and after alternate (ABBA) on fresh processes, 3 rounds, medians and ranges ([MEASUREMENTS.md#how-the-numbers-were-taken](MEASUREMENTS.md#how-the-numbers-were-taken)) | the machine, in the measurement state of MEASUREMENTS.md#how-the-numbers-were-taken step 1 | ~30 min |
+| 7. Performance | accepted tokens per window and wall time per window ([ADR-0016](adr/0016-how-a-change-is-judged.md)); decode tokens/s and prompt tokens/s at 4K against [ADR-0019](adr/0019-performance-target.md)'s target and the latest measurements | [MEASUREMENTS.md](MEASUREMENTS.md); before and after alternate (ABBA) on fresh processes, 3 rounds, medians and ranges ([MEASUREMENTS.md#how-the-numbers-were-taken](MEASUREMENTS.md#how-the-numbers-were-taken)) | the machine, in the measurement state of MEASUREMENTS.md#how-the-numbers-were-taken step 1 | ~30 min |
 
 The tests that exist, by level (each is described in [DEVELOPING.md](DEVELOPING.md#tests)):
 
@@ -72,7 +72,7 @@ passes** ([ADR-0012](adr/0012-correctness-reference.md), decision 5). A run that
 
 - Anywhere, without a card: level 1, and compiling every kernel with `ocloc` when the
   container is at hand.
-- On the machine, in the measurement container ([ADR-0021](adr/0021-the-measurement-container.md)): levels 2-7.
+- On a machine with two B60s, in the engine image ([ADR-0025](adr/0025-the-engine-image.md)): levels 2-7.
   GPU tests carry the ctest label `gpu`. A GPU test skips when Level Zero lists no GPU, and fails instead when
   `ENGINE_EXPECT_GPUS` is set, so a run on the cards sets it.
 - CI, on GitHub's hosted runners ([ADR-0028](adr/0028-ci-without-a-card.md)), on every push: it builds the image,
@@ -87,5 +87,5 @@ A change that adds or changes a kernel:
 1. adds its level-3 test, against ggml or a scalar reference, at the shapes the model uses, and with the tolerance of
    its type above;
 2. runs the level 4-6 tests that exist and says they passed;
-3. if it claims speed, runs level 7 and links the measurement record;
+3. if it claims speed, runs level 7 and links its row in [MEASUREMENTS.md](MEASUREMENTS.md);
 4. shows in its commit message the commands run, the counts passed and skipped, and the largest error per test.
