@@ -5,8 +5,8 @@ chose the best quality, IQ3_S. Was accepted, from INTEL_SYCL_PLAN.md "Which quan
 merged in PR #1 (2026-10-09).
 **Revisit when:**
 
-- [P13](../precursor/P13-memory-budget.md) shows that far less of Q2_0's experts fit on the cards than the ~85% estimated;
-- [P34](../precursor/P34-probe-xe2-primitives.md) and [P35](../precursor/P35-gpu-bar-llamacpp.md) show the i-quants reaching
+- P13 shows that far less of Q2_0's experts fit on the cards than the ~85% estimated;
+- P34 and P35 show the i-quants reaching
   Q2_0's share of bandwidth, so the order matters less;
 - Q2_0's quality turns out unacceptable in use.
 
@@ -37,5 +37,5 @@ a kernel gap, not a hardware limit.
 
 ## Consequences
 
-- The quant format spec ([P06](../precursor/P06-spec-quant-formats.md)) covers Q2_0 and IQ3_XXS first.
+- The quant format spec (P06) covers Q2_0 and IQ3_XXS first.
 - The arena is repacked from the GGUF at load time, or once ahead of time. The design (P45) chooses.

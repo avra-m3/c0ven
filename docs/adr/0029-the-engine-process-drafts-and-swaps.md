@@ -16,7 +16,7 @@ measure slower on a workload the engine serves.
 - At a 262,144-token context the cards cache 267-288 of each layer's 512 experts, and the CPU computes the rest:
   68 experts per token with the cached set fixed by the routing profile. Each row of a verify window adds about 70
   more, and a row costs about 5 ms against a plain step's 19
-  ([the draft rounds' record](../measurements/2026-10-16-draft-rounds.md)). With swaps the CPU computed 10-16 experts
+  ([the draft rounds' record](../RESULTS.md#2026-10-16-draft-rounds)). With swaps the CPU computed 10-16 experts
   per token after the first few hundred tokens, and a row cost about 4 ms.
 - A draft never changes the tokens: the main model verifies every one, and the engine samples from the main model's
   candidates only. Swaps change which experts the CPU computes, so their rounding, not the arithmetic.
@@ -35,7 +35,7 @@ measure slower on a workload the engine serves.
 ## Why
 
 Through the C ABI at the model's own sampling, decode went from 54.76 to 65.31 tokens/s on long-4k and from about
-54.7 to 66.99 on long-32k, the prompt losing 2.1% and 1.6% ([the record](../measurements/2026-10-16-drafting-and-swaps.md)).
+54.7 to 66.99 on long-32k, the prompt losing 2.1% and 1.6% ([the record](../RESULTS.md#2026-10-16-drafting-and-swaps)).
 Without swaps, drafting gave 5-13%; swaps alone help every step, and drafting gives the rest.
 
 ## Options not chosen

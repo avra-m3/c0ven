@@ -14,11 +14,11 @@ half of each sequence's state, and half of every cached expert. That leaves 19.9
 per-sequence reserve. It caches 18,968 experts (77.2%) for one sequence at 262K, and 17,489 (71.2%) for four
 ([tables](#per-card-for-the-tensor-split)).
 
-An arena of every expert does not fit in RAM on this host as it runs. Level Zero host memory comes from large
+An arena of every expert does not fit in RAM on the test host as it runs. Level Zero host memory comes from large
 contiguous pages, and free memory alone does not decide how much the host gives. Measured on 2026-10-13 with
-llama-swap down ([the design-inputs record](measurements/2026-10-13-design-inputs.md)): `MemAvailable` was
+the cards' other models stopped ([the design-inputs record](RESULTS.md#2026-10-13-design-inputs)): `MemAvailable` was
 51.5-55.2 GiB, but the host's free 2 MiB blocks ran out after ~12 GiB. After that every GiB made the kernel compact
-memory and reclaim the page cache, and past ~25 GiB the other services began to swap. On 2026-10-12 the same probe
+memory and reclaim the page cache, and past ~25 GiB the host began to swap. On 2026-10-12 the same probe
 reached 45 GiB before swapping. So the limit depends more on how fragmented the host's memory is than on how much is
 free. The arena of every expert is 46.84 GiB, and 50.06 GiB with one 262K sequence's streamed KV.
 
@@ -29,17 +29,17 @@ arena ([ADR-0023](adr/0023-two-cards-tensor-split.md) item 5).
 
 The core does not take this plan yet. It fits its own expert count, keeps every slot's whole-context KV in VRAM, and
 its checkpoints hold that KV too ([ADR-0027](adr/0027-the-c-abi-as-the-core-was-optimised.md) items 2, 3 and 6). Its
-arena measures 20.49 GiB at 288 experts a layer ([record](measurements/2026-10-16-load-phases.md)) and 17.20 GiB at
-324 ([record](measurements/2026-10-16-more-experts-cached.md)).
+arena measures 20.49 GiB at 288 experts a layer ([record](RESULTS.md#2026-10-16-load-phases)) and 17.20 GiB at
+324 ([record](RESULTS.md#2026-10-16-more-experts-cached)).
 At one 262,144-token slot with the draft layer it caches 307 experts a layer; with a pool of 32,768 cells and
 every indexer key in VRAM it would cache 339, which makes decode 1.5-3.9% faster without drafting
-([record](measurements/2026-10-17-kv-streaming.md)).
+([record](RESULTS.md#2026-10-17-kv-streaming)).
 
 The n-gram table stays on the SSD ([ADR-0015](adr/0015-ngram-table-on-the-ssd.md)).
 
 ## How the numbers are computed
 
-A script kept outside the repository ([AGENTS.md](../AGENTS.md)) does all the sums. It:
+A script, not in the repository, does all the sums. It:
 
 1. Reads [model/tensors-IQ3_S.tsv](model/tensors-IQ3_S.tsv) (1,224 rows) and groups each `blk.N.*` row by layer `N`
    and by its `category` column (`experts`, `ple`, otherwise dense). It checks that the experts sum to
@@ -214,7 +214,7 @@ rows above unless labelled; the two cards are the same.
 
 | Row | Bytes | Label |
 | --- | ---: | --- |
-| Usable VRAM | 24,385,683,456 | measured ([the device memory record](measurements/2026-10-11-device-memory.md)) |
+| Usable VRAM | 24,385,683,456 | measured ([the device memory record](RESULTS.md#2026-10-11-device-memory)) |
 | Dense weights, half of 3,576,097,280 | 1,788,048,640 | computed |
 | PLE (layer 1), half | 32,870,400 | computed |
 | Token embedding, half its columns | 168,857,600 | computed. It could live in host memory instead: one row per token |
@@ -263,20 +263,19 @@ is K and V for the whole context plus the draft window: 13,056 x context + 35,65
 
 The arena of experts not cached is (24,576 - cached) x 2,046,400 B, from the table above. Beside the pinned memory:
 the n-gram row cache (0.09-1.41 GiB for 1M-16M rows of 90 B), checkpoints (118,038,528 B each in this plan; about
-4.25 GiB each in the core at 262K, [record](measurements/2026-10-16-engine-start-and-quit.md)) and the two Python
+4.25 GiB each in the core at 262K, [record](RESULTS.md#2026-10-16-engine-start-and-quit)) and the two Python
 processes (the engine's measured 0.40-0.42 GiB RSS at `READY`, same record; the front end's not measured). These are
 ordinary memory, not large contiguous pages. Level Zero's host allocations do not count against the user's lock limit
-([the host memory record](measurements/2026-10-12-host-memory.md)).
+([the host memory record](RESULTS.md#2026-10-12-host-memory)).
 
-Measured on the host on 2026-10-13, with llama-swap down ([the design-inputs record](measurements/2026-10-13-design-inputs.md)):
+Measured on the host on 2026-10-13, with the cards' other models stopped ([the design-inputs record](RESULTS.md#2026-10-13-design-inputs)):
 
 | Measure | Value |
 | --- | --- |
 | `MemAvailable` | 51.5-55.2 GiB |
 | Host memory allocated in 256 KiB pieces before the free 2 MiB blocks ran out | ~12 GiB |
-| Allocated before the other services began to swap (compaction and page-cache reclaim from ~12 GiB on) | ~25 GiB |
+| Allocated before the host began to swap (compaction and page-cache reclaim from ~12 GiB on) | ~25 GiB |
 | The same probe on 2026-10-12, before swapping | 45 GiB |
-| Background swap-out from other containers' own memory limits, nothing allocated | ~1,080 pages a minute |
 
 One or two sequences with the not-cached arena (10.8-18.1 GiB) fit inside the range where the host only compacts
 and reclaims page cache. Four at 262K (26.4 GiB) reach the edge. An arena of every expert does not fit.

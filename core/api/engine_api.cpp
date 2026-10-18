@@ -65,7 +65,7 @@ struct Slot {
 
 // A prompt piece of at most this many tokens is read as decode windows of forced rows: a prompt chunk stages every
 // uncached expert whatever its size, so a short piece is faster as windows
-// (docs/measurements/2026-10-17-prompt-windows.md).
+// (docs/RESULTS.md#2026-10-17-prompt-windows).
 constexpr uint32_t kWindowPrompt = 64;
 
 struct Checkpoint {
@@ -526,7 +526,7 @@ struct engine_ctx {
         }
         decode(seq, plan);
         // A swap round after a plan that ended a prompt, and after every 16th plan. Never while a slot reads its
-        // prompt (docs/measurements/2026-10-16-drafting-and-swaps.md).
+        // prompt (docs/RESULTS.md#2026-10-16-drafting-and-swaps).
         if (swaps && (prompt_ended || seq % 16 == 0) && !prompt_reading()) model->swap_round();
         std::lock_guard<std::mutex> lk(mu);
         emit({ENGINE_EVENT_STEP, 0, kNoToken, ++plans_done});

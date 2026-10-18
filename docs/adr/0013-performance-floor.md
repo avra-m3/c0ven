@@ -15,14 +15,14 @@ on the same work.
 1. **The floor is llama.cpp on this machine with the engine's files and settings:**
    - both B60s, a layer split, 8-bit KV;
    - the experts that do not fit on the cards, on the CPU;
-   - decode and prompt speed at 4K and 128K ([P21](../precursor/P21-baseline-floor.md));
-   - with several requests at once ([P22](../precursor/P22-baseline-concurrency.md)).
+   - decode and prompt speed at 4K and 128K (P21);
+   - with several requests at once (P22).
 2. **The stop rule:** the engine must beat the single-request floor clearly at its first fast stage. If it does not,
    work stops and the plan is reconsidered before going further. That stage is stage 5, the fast decode loop
-   ([PLAN.md](../PLAN.md#the-engines-stages)). [P46](../precursor/P46-stages-and-readiness.md) says what "clearly"
+   (PLAN.md). P46 says what "clearly"
    means in numbers.
 3. **The concurrency stages must beat P22's numbers.**
-4. **Today's deployed setup** (Unsloth's file, f16 KV; [P20](../precursor/P20-baseline-as-deployed.md)) is recorded for
+4. **Today's deployed setup** (Unsloth's file, f16 KV; P20) is recorded for
    comparison, but is not the floor.
 
 ## Consequences

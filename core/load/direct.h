@@ -1,6 +1,6 @@
 // Reads of the model's files past the page cache (ADR-0032): O_DIRECT, so a load never
 // fills the host's RAM with the file's pages. A range is read whole into an aligned buffer, in pieces of 1 MiB by
-// 8 threads, which read the T500 fastest (docs/measurements/2026-10-16-load-read-rates.md); the caller gets a pointer
+// 8 threads, which read the T500 fastest (docs/RESULTS.md#2026-10-16-load-read-rates); the caller gets a pointer
 // to its first byte inside the buffer. A filesystem that refuses O_DIRECT stops the engine, as for the n-gram table
 // (ADR-0015).
 #pragma once

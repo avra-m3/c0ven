@@ -18,7 +18,7 @@ builds in step, and has setup logic for each case. This engine is for one machin
    - OS and driver: Linux, with the `xe` kernel driver.
    - No portability work for other GPUs, operating systems or CPUs.
 2. **One model family:** Qwen3.8-Flash-Next, from ISTA-DASLab's GSQ-RCO GGUFs (pinned revision in
-   [P12](../precursor/P12-model-files.md)). Vision, Swift 1.5, the Coder and Unsloth's files are out of scope for now.
+   P12). Vision, Swift 1.5, the Coder and Unsloth's files are out of scope for now.
 3. **The full context for every request:** 262,144 tokens.
 4. **Several requests at once:** the target is 4 at full context, more at shorter ones.
 5. **How it runs:** in Docker, as one model behind a model-swapping proxy such as llama-swap, with the two cards
@@ -27,6 +27,6 @@ builds in step, and has setup logic for each case. This engine is for one machin
 ## Consequences
 
 - Kernels are compiled for one device (ADR-0003). The specs cover one architecture (`qwen4exp`).
-- Memory is budgeted for exactly two cards and this RAM ([P13](../precursor/P13-memory-budget.md)).
+- Memory is budgeted for exactly two cards and this RAM (P13).
 - The engine must coexist with the other models the proxy runs on the same cards. It loads and unloads like them,
   and its measurements are taken with them unloaded ([ADR-0014](0014-how-work-is-done.md)).

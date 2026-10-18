@@ -831,7 +831,7 @@ REQD_SG __kernel void router(__global const float *rl, __global const int *slot_
 
 // Waits for the CPU's answer to a layer's MissJobs (card 0): returns at once when no row had a miss (the skip); else
 // spins on the answer's flag with a system-scope acquire fence before each volatile load, the only form that always
-// sees the CPU's store (docs/measurements/2026-10-11-doorbell.md). Bounded: gives up after 2^30 polls and sets *stuck.
+// sees the CPU's store (docs/RESULTS.md#2026-10-11-doorbell). Bounded: gives up after 2^30 polls and sets *stuck.
 // One work-item.
 __kernel void cpu_wait(__global const uint *nmiss, __global const uint *ans_seq, __global const StepPlan *plan,
                        __global uint *stuck) {

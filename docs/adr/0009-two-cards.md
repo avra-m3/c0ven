@@ -1,11 +1,11 @@
 # ADR-0009: two cards - each owns a range of layers, and only the hand-off crosses, through host memory
 
-**Status:** superseded by [ADR-0023](0023-two-cards-tensor-split.md) (2026-10-12). Was accepted. From [DUAL_B60_DATAFLOW.md](../DUAL_B60_DATAFLOW.md), merged in PR #1 (2026-10-09).
+**Status:** superseded by [ADR-0023](0023-two-cards-tensor-split.md) (2026-10-12). Was accepted. From DUAL_B60_DATAFLOW.md, merged in PR #1 (2026-10-09).
 **Revisit when:**
 
-- [P32](../precursor/P32-probe-card-to-card.md) measures a card-to-card exchange well under 0.1 ms. Splitting layers
+- P32 measures a card-to-card exchange well under 0.1 ms. Splitting layers
   across the cards would then be worth a try.
-- [P27](../precursor/P27-probe-host-memory.md) shows that one context cannot serve both cards.
+- P27 shows that one context cannot serve both cards.
 
 ## Context
 
@@ -38,5 +38,5 @@
 ## Consequences
 
 - **RAM bandwidth is the shared limit,** not PCIe: the CPU, both cards' streamed misses and the far KV all read the
-  same DDR5 ([P29](../precursor/P29-probe-ram-contention.md)).
+  same DDR5 (P29).
 - **One request uses one card at a time.** ADR-0010 recovers the idle half.

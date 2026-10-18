@@ -7,9 +7,9 @@ file stays.
 **Revisit when:**
 
 - the machine's disk gains room for a second file;
-- [P13](../precursor/P13-memory-budget.md) or [P27](../precursor/P27-probe-host-memory.md) shows that IQ3_S's arena and the
-  streamed KV do not fit in the free RAM [P10](../precursor/P10-machine-cpu-ram.md) measures;
-- [P35](../precursor/P35-gpu-bar-llamacpp.md) and stage 2 show the i-quant kernels far below the bandwidth the dense
+- P13 or P27 shows that IQ3_S's arena and the
+  streamed KV do not fit in the free RAM P10 measures;
+- P35 and stage 2 show the i-quant kernels far below the bandwidth the dense
   formats reach, so that a faster file is worth its quality.
 
 ## Context
@@ -37,7 +37,7 @@ file stays.
   | down | IQ4_NL (39), Q2_0 (9: layers 1, 8, 10, 12, 13, 20, 21, 30, 36) |
 
   The dense tensors are Q4_K, Q5_K, Q6_K, IQ4_XS, IQ4_NL and Q8_0, with BF16, F16 and F32 for the small ones.
-  [P12](../precursor/P12-model-files.md)'s census checks this against the file at the pinned revision.
+  P12's census checks this against the file at the pinned revision.
 
 ## Decision
 
@@ -78,8 +78,8 @@ file stays.
 - **The llama.cpp floor needs all of the file's types on SYCL,** Q2_0 (type 42) included. If the machine's llama.cpp
   lacks one, P21 says so, and the floor needs another llama.cpp build (P46 decides).
 - **Strata's speed figures were on other files.** PLAN.md's speed estimates, written for Q2_0 and IQ3_XXS, are redone
-  for IQ3_S by [P45](../precursor/P45-design.md) and [P46](../precursor/P46-stages-and-readiness.md).
+  for IQ3_S by P45 and P46.
 - **The plans measure one file.** The comparisons between files (P16's Q2_0 against IQ3_XXS agreement, P21's second
   floor) are dropped.
-- **The quant format spec** ([P06](../precursor/P06-spec-quant-formats.md)) covers the types in P12's census of this
+- **The quant format spec** (P06) covers the types in P12's census of this
   file, not a list chosen in advance.

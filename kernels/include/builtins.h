@@ -1,5 +1,5 @@
 // The one header that names Intel's OpenCL builtins (ADR-0003). Each was checked on the B60
-// (docs/measurements/2026-10-11-kernel-spike.md, "Builtins that compiled and gave correct results").
+// (docs/RESULTS.md#2026-10-11-kernel-spike, "Builtins that compiled and gave correct results").
 #ifndef KERNELS_BUILTINS_H
 #define KERNELS_BUILTINS_H
 
@@ -25,7 +25,7 @@ static inline ushort ld_u16(__global const uchar *p) { return *(__global const u
 
 // Bytewise a - b on packed int8 (no borrow between bytes), in whole words: bits 0-6 of each byte from one subtraction
 // that sets bit 7 of a and clears it in b, so no borrow leaves a byte, then bit 7 as a7 ^ b7 ^ the borrow into it.
-// IGC compiles the char4 form to many more instructions (docs/measurements/2026-10-15-sub-bytes-words.md).
+// IGC compiles the char4 form to many more instructions (docs/RESULTS.md#2026-10-15-sub-bytes-words).
 static inline uint sub_bytes(uint a, uint b) {
   return ((a | 0x80808080u) - (b & 0x7f7f7f7fu)) ^ ((a ^ ~b) & 0x80808080u);
 }

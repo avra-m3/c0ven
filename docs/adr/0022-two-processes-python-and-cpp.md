@@ -1,8 +1,8 @@
 # ADR-0022: two processes; Python for the front end and the control plane, C++ for the core, a C ABI between
 
-**Status:** accepted, 2026-10-13, by the owner, in [P50](../precursor/P50-design-and-gate.md)'s walkthrough. Narrows
+**Status:** accepted, 2026-10-13, by the owner, in P50's walkthrough. Narrows
 [ADR-0005](0005-host-language-cpp20.md) to the engine core. Takes from ADR-0004 the question of where the HTTP API
-runs ([PLAN.md, the server](../PLAN.md#the-server)).
+runs (PLAN.md, the server).
 **Revisit when:** crossing the boundary costs a measurable share of a step, or a piece of the control plane turns out
 to need per-token work.
 
@@ -16,11 +16,11 @@ to need per-token work.
 - **Other engines split here.** vLLM runs its API server and its engine core in separate processes; SGLang runs its
   HTTP server and tokenizer apart from its scheduler ([DESIGN.md, section 8](../DESIGN.md#8-what-was-taken-from-other-engines-and-what-was-left)).
 - **Both cards must be in one process:** host memory both cards read needs one Level Zero context holding both
-  ([P27](../measurements/2026-10-12-host-memory.md)).
+  ([P27](../RESULTS.md#2026-10-12-host-memory)).
 - **The owner prefers Python** for code that LLMs write.
 - **Python can reach Level Zero cheaply.** There is no maintained binding, but `ctypes` calls `libze_loader.so`
   directly. On card 0, Python 3.14.4 added 0.3-0.5 µs per call, and a recorded list's submit took 1.73-2.30 µs
-  against 1.15-1.55 µs from C++ ([P50 inputs](../measurements/2026-10-13-design-inputs.md)).
+  against 1.15-1.55 µs from C++ ([P50 inputs](../RESULTS.md#2026-10-13-design-inputs)).
 - **What must not be Python:** threads that spin on flags and compute, such as the CPU expert workers (one per
   core, a budget of about 90 µs per layer). Python's GIL lets one thread run Python at a time.
 
@@ -67,9 +67,9 @@ to need per-token work.
 ## Consequences
 
 - [ADR-0005](0005-host-language-cpp20.md) covers the engine core only.
-- The scaffold ([P49](../precursor/P49-scaffold.md)), redone after the design review (its first version, [`ddc07bc`](https://github.com/avra-m3/c0ven/commit/ddc07bce82d938bbe739933662511a7422400366), was C++
+- The scaffold (P49), redone after the design review (its first version, `ddc07bc`, was C++
   only and was removed), builds the C++ core; Python packaging, a pinned Python and the
   ctypes binding are added, and the toolchain pin ([ADR-0002](0002-pin-the-toolchain.md)) gains Python 3.14.4.
 - The measurement container needs numpy ([ADR-0021](0021-the-measurement-container.md)).
-- The engine's protocol from [PLAN.md, the server](../PLAN.md#the-server) is the front end's to implement; ADR-0004
+- The engine's protocol from PLAN.md, the server is the front end's to implement; ADR-0004
   still decides the tokenizer and the HTTP library.

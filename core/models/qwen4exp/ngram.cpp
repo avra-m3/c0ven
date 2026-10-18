@@ -116,7 +116,7 @@ void Ngram::fill(const std::vector<uint64_t> &ids, uint32_t n, float *u) {
   for (size_t k = 0; k < ids.size(); k++)
     if (miss_of[k] != UINT32_MAX) where[k] = &got[(size_t)miss_of[k] * row_bytes_];
   // Dequantise, then keep the new rows (a later row in the same slot replaces an earlier one). A decode step's few
-  // rows are dequantised here: waking the readers would take longer (docs/measurements/2026-10-16-host-glue.md).
+  // rows are dequantised here: waking the readers would take longer (docs/RESULTS.md#2026-10-16-host-glue).
   auto to_float = ggml_get_type_traits((ggml_type)type_)->to_float;
   auto dequantise = [&](uint64_t i) {
     for (int h = 0; h < 16; h++) to_float(where[i * 16 + h], u + i * 2560 + 160 * h, 160);

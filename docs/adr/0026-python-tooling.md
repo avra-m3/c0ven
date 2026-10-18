@@ -1,6 +1,6 @@
 # ADR-0026: the Python code is formatted and linted by ruff and type-checked by basedpyright in strict mode
 
-**Status:** accepted, 2026-10-14, by the owner in the session that wrote the Python half. Supersedes the `gguf` row
+**Status:** accepted, 2026-10-14, by the owner. Supersedes the `gguf` row
 of [ADR-0004](0004-write-or-reuse.md)'s table in part: the same version, fetched from llama.cpp's repository.
 **Revisit when:** a checker's false positives cost more time than its findings save, or Python's own typing tools
 change what is usual.

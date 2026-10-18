@@ -10,11 +10,7 @@ code in and builds it.
 ## Context
 
 - [ADR-0002](0002-pin-the-toolchain.md) pins one set of versions for building, probing and running the engine.
-- The measurement container's image was built from a Dockerfile kept outside the repository
-  ([P51](../precursor/P51-measurement-container.md)), under a precursor rule that no longer binds. Its `RUN` lines
-  are in [MACHINE.md](../MACHINE.md#the-measurement-container), but not the file. It runs as root and has no gdb or
-  strace.
-- Agents build and test in sandboxes that are given the cards. Each needs the same image, rebuilt the same way.
+- Builds and tests on the cards need the same image, rebuilt the same way, wherever they run.
 - The engine will run in the same image.
 - [ADR-0024](0024-repository-layout.md)'s layout has no place for a container definition.
 - The core finds its kernels and its routing profile by absolute paths compiled in at build time: `ENGINE_KERNEL_DIR`
@@ -60,7 +56,6 @@ code in and builds it.
 ## Consequences
 
 - ADR-0024's layout gains `Dockerfile` at the root.
-- The measurement container can be rebuilt from this file; until then it keeps its 2026-10-11 image.
 - When the engine has code, the `Dockerfile` copies it in and builds it: the `serve` target (decision 6).
 - `docker build` of the whole file builds `serve`, which needs the repository as its context. The toolchain alone is
   `--target engine` ([README.md](../../README.md#the-image)).

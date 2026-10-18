@@ -18,7 +18,7 @@ trained with turns out to differ from transformers v4.57.0's, or llama.cpp's vid
 - **The reference agrees with the spec.** llama.cpp's CPU encoder on two frame pairs of its own `test-3.mp4`, with
   flash attention off, matches an F64 computation of the spec to a least cosine of 0.9966 at 252 tokens; with the two
   frames swapped the least cosine falls to 0.34
-  ([the video reference record](../measurements/2026-10-17-video-pair-reference.md)).
+  ([the video reference record](../RESULTS.md#2026-10-17-video-pair-reference)).
 - **The sources differ on the prompt.** transformers at the pinned `main` doubles the vision marks around a video;
   v4.57.0's processor does not. llama.cpp's video helper uses its own frame rate and time format. The n-gram token at
   a video's positions is 248,056 in llama.cpp and the prompt's 248,057 in transformers

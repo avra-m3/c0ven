@@ -140,8 +140,8 @@ def plan(m: ModelMemory, o: PlanOptions) -> MemoryPlan:
     # for the tensor split"). `open` is the test that counts.
     if pinned > o.pinned_limit:
         warnings.append(
-            f"pinned host memory {pinned / GIB:.1f} GiB is over {o.pinned_limit / GIB:.1f} GiB, where other services "
-            "began to swap on 2026-10-13"
+            f"pinned host memory {pinned / GIB:.1f} GiB is over {o.pinned_limit / GIB:.1f} GiB, where the test host "
+            "began to swap"
         )
     elif pinned > o.pinned_clean:
         warnings.append(

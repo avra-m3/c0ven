@@ -8,7 +8,7 @@ changes 4-6, merged in PR #1 (2026-10-09). Items 5 and 6 are made precise by
 
 - the pipelined cards balance badly (risk 5);
 - batching gains little because the union of experts grows almost linearly with the batch (risk 6;
-  [P19](../precursor/P19-batch-expert-union.md) forecasts it from routing traces).
+  P19 forecasts it from routing traces).
 
 ## Context
 
@@ -49,4 +49,4 @@ With a layer split, one request uses one card at a time, and each card idles abo
 ## Consequences
 
 - **The concurrency floor** is llama.cpp with several requests ([ADR-0013](0013-performance-floor.md),
-  [P22](../precursor/P22-baseline-concurrency.md)).
+  P22).

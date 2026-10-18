@@ -104,7 +104,7 @@ class EventPool {
 // A command list on one card, either immediate (runs as appended) or regular (recorded, then executed as many times
 // as wanted on the card's queue). Each command waits for the ones before it, but in a list made with in_order false
 // the launches recorded between together(true) and together(false) may run at the same time, and the next command
-// waits for all of them (docs/measurements/2026-10-16-decode-launches-together.md).
+// waits for all of them (docs/RESULTS.md#2026-10-16-decode-launches-together).
 class List {
  public:
   enum Kind { immediate, regular };

@@ -6,11 +6,11 @@ how a step runs now. Decisions live in the [ADRs](adr/README.md); this page says
 links the record it comes from, or is labelled *estimate*. Where the code lives is
 [ADR-0024](adr/0024-repository-layout.md).
 
-Records cited often: [the design-inputs record](measurements/2026-10-13-design-inputs.md) (stand-in kernels on the
+Records cited often: [the design-inputs record](RESULTS.md#2026-10-13-design-inputs) (stand-in kernels on the
 machine, for the decode step, step lists, the boundary, observability and the prompt path), [the card-to-card
-record](measurements/2026-10-12-card-to-card.md), [the host memory record](measurements/2026-10-12-host-memory.md)
-and [the CPU bar record](measurements/2026-10-11-cpu-bar.md) (ggml's CPU backend on this model's experts). The
-machine is in [MACHINE.md](MACHINE.md).
+record](RESULTS.md#2026-10-12-card-to-card), [the host memory record](RESULTS.md#2026-10-12-host-memory)
+and [the CPU bar record](RESULTS.md#2026-10-11-cpu-bar) (ggml's CPU backend on this model's experts). The
+machine is in [RESULTS.md#the-test-machine](RESULTS.md#the-test-machine).
 
 ## Contents
 
@@ -62,7 +62,7 @@ Decided in [ADR-0022](adr/0022-two-processes-python-and-cpp.md).
   token ids. If the engine dies, the front end reports the error and starts it again.
 - The engine process holds both cards. It must be one process: host memory that both cards read needs one Level
   Zero context holding both cards, and memory imported into a second context serves only one card
-  ([the host memory record](measurements/2026-10-12-host-memory.md)). So there is no process per card, unlike vLLM.
+  ([the host memory record](RESULTS.md#2026-10-12-host-memory)). So there is no process per card, unlike vLLM.
 - The control plane decides what to do. It is ordinary Python: it may allocate, take locks and log.
 - The data plane does it, under strict rules:
   - everything it uses is allocated before the engine reports ready;
@@ -84,19 +84,19 @@ Decided in [ADR-0022](adr/0022-two-processes-python-and-cpp.md).
    checkpoint (section 4). Then it calls `admit`, which copies the request's settings and prompt ids once into the
    slot's row in host memory that the cards read. From then on, the request is a slot index. After a `GEN` reaches an
    idle engine, the engine process waits up to 2 ms for the next line before it plans, so requests sent together read
-   their prompts in one plan ([the record](measurements/2026-10-17-requests-sent-together.md)).
+   their prompts in one plan ([the record](RESULTS.md#2026-10-17-requests-sent-together)).
 3. Each step, the scheduler builds a step plan: which slots decode, which prompt rows go in, and what changed
    since the last step (slots joined or left, pages added). `submit` writes it into one of two plan buffers in host
    memory, and the card threads submit the recorded list for that batch width. The list's first command copies the
    plan to the card, and the kernels read that copy. A word read from host memory at a launch's start makes the
    launch about 0.8 µs slower
-   ([the BF16 products' record](measurements/2026-10-16-bf16-products-occupancy.md#4-one-word-at-a-launchs-start)).
+   ([the BF16 products' record](RESULTS.md#2026-10-16-bf16-products-occupancy)).
 4. The cards run the layers. They exchange partial results twice per layer and post expert misses as jobs for the
    CPU workers (section 5). At one row the partial sums go through host memory
-   ([the card-to-card record](measurements/2026-10-12-card-to-card.md)). In a window of two rows or more, the
+   ([the card-to-card record](RESULTS.md#2026-10-12-card-to-card)). In a window of two rows or more, the
    mixer's out product and the MoE block's combine write them into the card's own memory, and one copy places them
    in the other card's ([ADR-0030](adr/0030-exchanges-into-the-other-card.md)). Measured: 96 exchanges of four rows
-   take 0.48 ms less a step than through host memory ([the peer exchange record](measurements/2026-10-16-peer-exchange.md)).
+   take 0.48 ms less a step than through host memory ([the peer exchange record](RESULTS.md#2026-10-16-peer-exchange)).
 5. Logits (248,320 x 4 B, about 1 MB per token) never leave the cards. The vocabulary is split, so each card sends
    only its top-k candidates. The host merges both cards' candidates and samples (`Model::step`, `engine_api.cpp`).
 6. Output. Sampled ids go into an output ring. `poll` hands them to the scheduler, which updates the slot and
@@ -106,11 +106,11 @@ The design keeps the host out from between steps, with two recorded step lists i
 not do this yet: it runs one list per card per step, and the host joins every step to compute the embedding, gather
 the n-gram rows, compute the misses, merge the candidates and sample
 ([ADR-0027](adr/0027-the-c-abi-as-the-core-was-optimised.md) item 1). Card 0 waits for the host 0.73 ms a plan at
-`long-4k` ([the host glue record](measurements/2026-10-16-host-glue.md)).
+`long-4k` ([the host glue record](RESULTS.md#2026-10-16-host-glue)).
 
 The table gives the gap between one step's end and the next one's start, for each way of submitting steps. It is
 measured on card 0 with a stand-in step of 194 kernels (48 layers of 4 kernels reading 2.5 MB each, about 1.54 ms),
-from device timestamps, two runs each ([the design-inputs record](measurements/2026-10-13-design-inputs.md)). The
+from device timestamps, two runs each ([the design-inputs record](RESULTS.md#2026-10-13-design-inputs)). The
 design uses two lists in flight.
 
 | How steps are submitted | Gap, median | p99 | Host thread CPU per step |
@@ -130,7 +130,7 @@ design uses two lists in flight.
   reads them with `O_DIRECT`, writes them into host memory and signals an event; the cards wait on that event just
   before layer 1. A window's rows are read together: the misses of all its rows go to the SSD in one round, and up
   to 8 rows are dequantised on the host thread. Reading them together takes layer 0's excess wait from 0.91 to
-  0.19 ms a plan at `long-4k`, and to 0.25 at `long-256k` ([the host glue record](measurements/2026-10-16-host-glue.md)).
+  0.19 ms a plan at `long-4k`, and to 0.25 at `long-256k` ([the host glue record](RESULTS.md#2026-10-16-host-glue)).
 - A list already queued when a request stops still costs time. Its kernels check a stop word and return at once,
   but each still dispatches. The stand-in step takes 0.74-0.75 ms skipped against 1.54 ms run (194 kernels of
   1,280 work-groups each). With two lists in flight, at most one such step follows a stop.
@@ -142,7 +142,7 @@ design uses two lists in flight.
 | Weights read from VRAM | about 5.1 GB per token, half on each card | every token | [MEMORY_BUDGET.md](MEMORY_BUDGET.md#what-one-decode-token-reads-computed), computed |
 | A 128K-token prompt as token ids | 512 KB | once per request | 4 B per id |
 | One step's inputs (tokens, positions, slots) | a few KB | every step | [`shared/step.h`](../shared/step.h) |
-| Exchange between the cards | 5 KB each way (2,560 fp16 values) | twice per layer | [the card-to-card record](measurements/2026-10-12-card-to-card.md) |
+| Exchange between the cards | 5 KB each way (2,560 fp16 values) | twice per layer | [the card-to-card record](RESULTS.md#2026-10-12-card-to-card) |
 | Activations to the CPU for a miss, and the result back | about 5-10 KB each way | each layer with a miss | *estimate*: 2,560 values each way |
 | Sampled token ids | bytes | every step | |
 
@@ -151,7 +151,7 @@ nearest the work. Everything else is small, so its cost is waiting and synchroni
 
 RAM bandwidth is shared by the CPU workers, both cards reading host memory, and everything else on the host. Under
 a competing RAM load the CPU's miss work is 1.6-2.2 times slower
-([the design-inputs record](measurements/2026-10-13-design-inputs.md)). So the front end and the control plane stay
+([the design-inputs record](RESULTS.md#2026-10-13-design-inputs)). So the front end and the control plane stay
 light in RAM during decode: no large buffers per token, and no page cache for the n-gram table
 ([ADR-0015](adr/0015-ngram-table-on-the-ssd.md)).
 
@@ -163,7 +163,7 @@ Decided in [ADR-0022](adr/0022-two-processes-python-and-cpp.md). Python decides 
 | --- | --- |
 | The front-end process, all of it | Level Zero: the context, queues, recorded command lists |
 | The scheduler, admission, prefix sharing, the draft policy | Every allocation; loading the weights; the memory plan applied |
-| Sequence-state bookkeeping: page ids, slots, checkpoints (section 4) | The card threads, the CPU miss workers (ggml, [the CPU bar record](measurements/2026-10-11-cpu-bar.md)) |
+| Sequence-state bookkeeping: page ids, slots, checkpoints (section 4) | The card threads, the CPU miss workers (ggml, [the CPU bar record](RESULTS.md#2026-10-11-cpu-bar)) |
 | Start-up options; computing the memory plan | The n-gram reader, swaps on the copy engines |
 | Reading the timing records; the scheduler's cost model | The timing ring |
 | Tests, tools and analysis (numpy) | Kernels are OpenCL C ([ADR-0003](adr/0003-kernel-language.md)) |
@@ -203,7 +203,7 @@ The rules:
 ### What crossing costs
 
 Measured on card 0 of the machine, Python 3.14.4 and `ctypes` against the same calls in C++, one thread pinned
-to CPU 2, two runs each ([the design-inputs record](measurements/2026-10-13-design-inputs.md)):
+to CPU 2, two runs each ([the design-inputs record](RESULTS.md#2026-10-13-design-inputs)):
 
 | Call | C++ | Python |
 | --- | ---: | ---: |
@@ -264,15 +264,15 @@ replacement state.
 
 Each card keeps the indexer keys of half the blocks and scores its half. The two cards exchange their best 512
 candidates, and both merge them to the same selection. The keys are never copied to both cards. This adds one
-exchange per attention layer. The split is the owner's decision.
+exchange per attention layer.
 
 The indexer has one key head that all 4 query heads score against, and it reads every cached key each token:
 1,632 B per token of context, 427,819,008 B at 262K ([MEMORY_BUDGET.md](MEMORY_BUDGET.md#per-sequence)). The table
 compares three ways to place the keys, for one sequence. All its numbers are *estimates*. Experts lost are counted
 with each expert split by rows (about 1.02 MB per card of a 2.05 MB expert, [MEMORY_BUDGET.md](MEMORY_BUDGET.md)).
 Time assumes the indexer reads at ~400 GB/s, near the dense kernels' rates in
-[the kernel spike record](measurements/2026-10-11-kernel-spike.md), and ~10 µs per extra exchange
-([the card-to-card record](measurements/2026-10-12-card-to-card.md)).
+[the kernel spike record](RESULTS.md#2026-10-11-kernel-spike), and ~10 µs per extra exchange
+([the card-to-card record](RESULTS.md#2026-10-12-card-to-card)).
 
 | Way | Experts lost at 262K | Indexer time per token at 4K / 128K / 262K |
 | --- | ---: | --- |
@@ -292,22 +292,22 @@ Decided in [ADR-0023](adr/0023-two-cards-tensor-split.md), which replaces [ADR-0
 
 - Each card holds half of every layer and computes half of it. An exchange combines the two halves twice
   per layer, signalled by events. At one row it goes through host memory, 10.0-10.5 µs per exchange at 1-4 tokens
-  ([the card-to-card record](measurements/2026-10-12-card-to-card.md)); in a window it goes through the other card's
+  ([the card-to-card record](RESULTS.md#2026-10-12-card-to-card)); in a window it goes through the other card's
   memory ([ADR-0030](adr/0030-exchanges-into-the-other-card.md)).
 - Each card holds half of every expert it caches (half its rows), so both cards work on every expert of a
   token at once and their expert caches hold the same experts.
 - The CPU computes the experts that are not on the cards (the misses), each one whole, with ggml's kernels
-  ([the CPU bar record](measurements/2026-10-11-cpu-bar.md)), in place in the host arena. The cards do not stream
+  ([the CPU bar record](RESULTS.md#2026-10-11-cpu-bar)), in place in the host arena. The cards do not stream
   misses.
 - No card is kept busy to hold its clock up. In decode both cards stay at 2,400 MHz in 99.74-100% of samples
-  ([record](measurements/2026-10-16-gpu-clock-in-decode.md)).
+  ([record](RESULTS.md#2026-10-16-gpu-clock-in-decode)).
 - Each card owns half of everything every layer touches (weights, expert cache, KV and state heads, buffers).
   Nothing a card owns is copied to the other card. Only the exchange, twice per layer, and the expert misses'
   results cross.
 
 The table gives a decode step of this shape, built from stand-in kernels timed to the rates in
-[the kernel spike record](measurements/2026-10-11-kernel-spike.md), exchanges as in the card-to-card record, and the
-CPU computing the misses with ggml ([the design-inputs record](measurements/2026-10-13-design-inputs.md)):
+[the kernel spike record](RESULTS.md#2026-10-11-kernel-spike), exchanges as in the card-to-card record, and the
+CPU computing the misses with ggml ([the design-inputs record](RESULTS.md#2026-10-13-design-inputs)):
 
 | One sequence, ms per token | Experts fixed (hit rate 0.931) | With swaps (0.973) |
 | --- | ---: | ---: |
@@ -321,9 +321,9 @@ first choice because it is simpler. Splitting misses between the two is a later 
 
 ## 6. Memory
 
-- One Level Zero context holds both cards ([the host memory record](measurements/2026-10-12-host-memory.md)).
+- One Level Zero context holds both cards ([the host memory record](RESULTS.md#2026-10-12-host-memory)).
 - Device memory (`zeMemAllocDevice`) holds what a card owns, allocated per layer
-  ([the device memory record](measurements/2026-10-11-device-memory.md)).
+  ([the device memory record](RESULTS.md#2026-10-11-device-memory)).
 - Host memory (`zeMemAllocHost`) holds the rest of what both cards or the CPU read: flags, step plans, the one-row
   exchanges. The core has no far KV. How much the host gives depends on how fragmented its memory is, not on how
   much is free ([MEMORY_BUDGET.md](MEMORY_BUDGET.md#ram-for-the-tensor-split)).
@@ -332,15 +332,15 @@ first choice because it is simpler. Splitting misses between the two is a later 
   copy's source range to the card when a copy list is recorded and unbinds it when the list is freed
   ([LEVEL_ZERO.md](LEVEL_ZERO.md) row 31), so the prompt path records its copy list once. xe
   moves its own host buffers under the host's reclaim, and the CPU's reads of them stall for seconds; it cannot move
-  this memory ([record](measurements/2026-10-17-anon-arena-under-reclaim.md)). The arena counts against the engine's
+  this memory ([record](RESULTS.md#2026-10-17-anon-arena-under-reclaim)). The arena counts against the engine's
   cgroup. `Options::anon_arena` false puts it in driver buffers instead, and so does a card whose
   `sharedSystemAllocCapabilities` lack concurrent read and write, with a line on stderr. The prompt path stages each
   run of adjacent experts with one region copy a matrix. The arena holds only the experts the cards do not cache. Each
   expert is in one place ([ADR-0023](adr/0023-two-cards-tensor-split.md) item 5). A swap copies the expert leaving the
   cards into the arena piece of the one entering, so every staging slot keeps its piece and the copy list stays valid
-  ([record](measurements/2026-10-17-swaps-keep-the-copies.md)). The arena measures 20.49 GiB at 288 experts a layer
-  ([record](measurements/2026-10-16-load-phases.md)) and 17.20 GiB at 324
-  ([record](measurements/2026-10-16-more-experts-cached.md)).
+  ([record](RESULTS.md#2026-10-17-swaps-keep-the-copies)). The arena measures 20.49 GiB at 288 experts a layer
+  ([record](RESULTS.md#2026-10-16-load-phases)) and 17.20 GiB at 324
+  ([record](RESULTS.md#2026-10-16-more-experts-cached)).
 - Shared memory (`zeMemAllocShared`) is never used: it moves pages behind the engine's back.
 - Everything is allocated at load. Python computes a memory plan from the model file and the options, but the core
   does not take it yet: it fits its own expert count from `experts_per_layer` and `reserve_bytes`
@@ -381,12 +381,11 @@ the token path.
   intervals.
 - The development build compiles in trace points everywhere, assertions, and ASan, UBSan and TSan on the C++
   core; kernels may write to a debug buffer or use `printf`. The deployed build compiles all of it out.
-- Debuggers. In the measurement container `gdb` can debug the engine only when it starts it: `ptrace_scope` is
-  1 and the container has no `CAP_SYS_PTRACE`, so attaching to a running engine needs the container changed.
-  Debugging kernels on the card (Intel's GDB through Level Zero's debug API) needs the driver's debug switch on the
-  host, which the host rule ([AGENTS.md](../AGENTS.md)) forbids without the owner's say-so.
+- Debuggers. In a container `gdb` can debug the engine only when it starts it, unless the container has
+  `CAP_SYS_PTRACE` or `ptrace_scope` is 0. Debugging kernels on the card (Intel's GDB through Level Zero's debug
+  API) needs the driver's debug switch on the host.
 - What the parts cost, measured on card 0 and CPU 2, two runs each
-  ([the design-inputs record](measurements/2026-10-13-design-inputs.md)):
+  ([the design-inputs record](RESULTS.md#2026-10-13-design-inputs)):
 
   | Part | Cost |
   | --- | ---: |
@@ -415,7 +414,7 @@ llama.cpp is newer than the `3cf0325` the specs pin for the model's maths, becau
 | The API server in its own process, talking to the engine in token ids | vLLM ([`arch_overview.md`][v-arch]); SGLang ([`engine.py:242`][sg-engine]) | Yes (section 1) |
 | Detokenizing in the API process | vLLM ([`output_processor.py`][v-outproc]) | Yes |
 | A separate detokenizer process | SGLang ([`engine.py:242`][sg-engine]) | No: not needed at tens of tokens per second |
-| One worker process per GPU | vLLM ([`arch_overview.md`][v-arch]) | No: one context must hold both cards ([the host memory record](measurements/2026-10-12-host-memory.md)) |
+| One worker process per GPU | vLLM ([`arch_overview.md`][v-arch]) | No: one context must hold both cards ([the host memory record](RESULTS.md#2026-10-12-host-memory)) |
 | I/O on its own threads, so the engine loop never blocks on it | vLLM ([`core.py:1212`][v-core]) | Yes: the engine's protocol reader and writer |
 | A request's data sent once, then only changes each step | vLLM ([`sched/output.py:232`][v-schedout]) | Yes: `admit`, then step plans of changes |
 | A fixed table of request rows; each request keeps one row for its life | vLLM's model runner v2 ([`model_runner_v2.md`][v-mrv2], section 1) | Yes: slots |
@@ -448,12 +447,12 @@ Per layer, each card:
    now hold the same residual.
 4. Routes the token in full, on both cards. Both pick the same 10 experts without a third exchange. Reading the
    whole router costs ~0.3 ms per token per card (0.13 GB at 455 GB/s, *estimate*); splitting it would cost a third
-   exchange per layer, ~0.5 ms (48 x 10.0-10.5 µs, [the card-to-card record](measurements/2026-10-12-card-to-card.md)).
+   exchange per layer, ~0.5 ms (48 x 10.0-10.5 µs, [the card-to-card record](RESULTS.md#2026-10-12-card-to-card)).
 5. Computes its half of every cached expert and the shared expert: half the gate and up rows, and down over the
    matching half of its inputs, giving partial sums. If any expert is a miss, card 0 alone posts the job: it
    writes the activation and the missed ids into host memory and raises the job flag. Both cards know the misses
    (step 4), so card 1 posts nothing. A layer with no miss posts no job and waits for nothing; this is the skip
-   ([the expert hit rates record](measurements/2026-10-12-expert-hit-rates.md)).
+   ([the expert hit rates record](RESULTS.md#2026-10-12-expert-hit-rates)).
 6. Card 0 waits for the CPU's answer and adds it to its partial sum; card 1 does not wait.
 7. Exchange 2: the experts' partial sums, then the hyper-connection combine.
 
@@ -464,7 +463,7 @@ at hit rate 0.931 (section 5).
 ### The CPU side
 
 - 16 threads compute the misses: the host thread and 15 pool workers. 16 workers beat 8: 10.99-11.28 ms per
-  token against 11.56-11.62 ([the design-inputs record, part 1](measurements/2026-10-13-design-inputs.md#1-the-decode-step-2026-10-12-three-rounds-of-each-arm-200-tokens-each-after-10-of-warm-up)).
+  token against 11.56-11.62 ([the design-inputs record, part 1](RESULTS.md#2026-10-13-design-inputs)).
 - The design pins one worker per core of the 7945HX and puts every other thread on the second hardware threads
   (section 11). The core does not pin its threads yet.
 - A job is one layer's misses. The workers compute each missed expert whole, from its place in the host arena,
@@ -472,10 +471,10 @@ at hit rate 0.931 (section 5).
   the type's dot-product type, as the reference does
   ([MODEL_LAYER.md, section 6](spec/MODEL_LAYER.md#6-numerics-on-llamacpps-cpu-backend)). The workers write the
   weighted sum into host memory and raise the answer flag. One miss takes 88-95 µs median, two or more 172-212 µs
-  ([the design-inputs record, part 1](measurements/2026-10-13-design-inputs.md#1-the-decode-step-2026-10-12-three-rounds-of-each-arm-200-tokens-each-after-10-of-warm-up)).
+  ([the design-inputs record, part 1](RESULTS.md#2026-10-13-design-inputs)).
 - The workers sleep between jobs. Workers that keep polling for 5 ms after each job make decode's steps slower on
-  the shared host: p90 20.45 ms against 19.30 ([the CPU miss path's record](measurements/2026-10-15-cpu-miss-path.md)).
-- Q2_0 has no SIMD path in ggml ([the CPU bar record](measurements/2026-10-11-cpu-bar.md)), so its 9 down tensors
+  the shared host: p90 20.45 ms against 19.30 ([the CPU miss path's record](RESULTS.md#2026-10-15-cpu-miss-path)).
+- Q2_0 has no SIMD path in ggml ([the CPU bar record](RESULTS.md#2026-10-11-cpu-bar)), so its 9 down tensors
   are the slowest misses. AVX-512 kernels written here come with batching (ADR-0004).
 - RAM is shared with both cards; under a competing load the workers are 1.6-2.2 times slower (section 2).
 
@@ -486,13 +485,13 @@ None of these is built. Each is judged by measuring it in the running engine.
 - A plain-memory arena imported into the context.
 - Splitting misses between the CPU and the cards. Streaming holds up better under RAM load (section 5).
 - Lowering the CPU's cost per layer with misses: about 90 µs for one miss, 180-210 µs for two or more, in the
-  stand-in decode step ([the design-inputs record](measurements/2026-10-13-design-inputs.md)).
+  stand-in decode step ([the design-inputs record](RESULTS.md#2026-10-13-design-inputs)).
 - Finer bindings (cffi, nanobind) if the boundary ever becomes busier than a few calls per step.
 
 ## 11. Open questions
 
-- The exchange soak test. Two early card-to-card runs gave bad checksums, cause unknown. Whether to run a long soak of
-  the exchange is [#93](https://github.com/avra-m3/c0ven/issues/93).
+- The exchange soak test. Two early card-to-card runs gave bad checksums, cause unknown. A long soak of the exchange
+  has not been run.
 
 ### Settled questions
 
@@ -501,7 +500,7 @@ None of these is built. Each is judged by measuring it in the running engine.
   run that way.
 - Where the host threads run. The table gives the stand-in decode step of section 5, one sequence at hit rate
   0.931, three rounds, with three stand-in host threads (the two card threads and the Python control loop)
-  ([the design-inputs record](measurements/2026-10-13-design-inputs.md)):
+  ([the design-inputs record](RESULTS.md#2026-10-13-design-inputs)):
 
   | Placement | Token time, median, three rounds |
   | --- | --- |
@@ -517,13 +516,13 @@ None of these is built. Each is judged by measuring it in the running engine.
   the design-inputs record's runs show the worker count mattering (8 workers against 16). It is to be measured with
   batching.
 - Can the prompt reach 2,000 tokens/s at 4K? Yes. The engine's prompt path reads a 4,352-token chunk at
-  2,590-2,646 tokens/s at position 0 ([the prefill timings record](measurements/2026-10-17-prefill-timings.md)).
+  2,590-2,646 tokens/s at position 0 ([the prefill timings record](RESULTS.md#2026-10-17-prefill-timings)).
   Stand-in kernels give the same answer with about 7% to spare. In that probe a 2,048-token chunk runs on both cards
   at once, each card doing its half of all 48 layers in the file's order, with the file's own expert weights in
   their own types: 512 experts x 40 tokens per layer, the experts the cards do not hold (5,550 MiB per card)
   streaming in on the copy engine, and the two exchanges per layer (10.5 MB each way, fp16) on the critical path.
   Three repetitions after a warm-up, both cards at 2,400 MHz
-  ([the design-inputs record](measurements/2026-10-13-design-inputs.md)):
+  ([the design-inputs record](RESULTS.md#2026-10-13-design-inputs)):
 
   | Per 2,048-token chunk, per card | ms |
   | --- | ---: |

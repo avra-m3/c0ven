@@ -1,9 +1,9 @@
 # ADR-0012: correctness - llama.cpp's CPU backend is the reference
 
 **Status:** accepted. The gate is from INTEL_SYCL_PLAN.md's stages (merged in PR #1, 2026-10-09). The method is per
-[P14](../precursor/P14-reference-outputs.md) and [P15](../precursor/P15-golden-activations.md).
+P14 and P15.
 **Revisit when:** llama.cpp's implementation of this architecture is found to be wrong. The model's paper and the
-specs then decide ([P04](../precursor/P04-spec-decoder-layer.md), [P05](../precursor/P05-spec-around-the-layers.md)).
+specs then decide (P04, P05).
 
 ## Context
 
@@ -21,7 +21,7 @@ path gave wrong output on a B70 ([llama.cpp #21893](https://github.com/ggml-org/
    prompt) was measured on Unsloth's UD-Q4_K_XL file, not on these files.
 3. **Per layer:** the reference's intermediate tensors for fixed inputs (P15).
 4. **Per kernel:** reference values from ggml's CPU implementation, or a scalar reference inside the test
-   ([P39](../precursor/P39-testing-strategy.md)).
+   (P39).
 5. **A test whose reference data is missing skips with a message. It never passes.**
 
 ## Consequences

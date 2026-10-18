@@ -348,7 +348,7 @@ static inline uint8 unit_raw(__global const uchar *W, ulong n, ulong k, uint s) 
 // The fields every unit of a block shares (qh, scales and d), loaded once a block by block_raw; unit_raw_in loads only
 // the unit's own fields and takes the rest from them. In the runs layout each field is a run of its own, so unit_raw
 // keeps five lines of each row in use for both matrices of 16 rows, more than L1 holds for the sub-groups an Xe core
-// runs (docs/measurements/2026-10-15-prompt-expert-block-fields.md). IQ3_XXS shares only d and gains nothing from it.
+// runs (docs/RESULTS.md#2026-10-15-prompt-expert-block-fields). IQ3_XXS shares only d and gains nothing from it.
 #define HAS_BLOCK_RAW 1
 
 static inline uint8 block_raw(__global const uchar *W, ulong n, ulong k) {

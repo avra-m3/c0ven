@@ -12,6 +12,6 @@ The project is in active development: PRs are not required for now.
    earlier ADR it conflicts with is marked *superseded by* the new one, with a link.
 3. The README is for people running the engine: readable, with charts, holding what they are likely to need.
 4. A comment never holds what belongs in `docs/`.
-5. Measurements on the machine follow [MEASURING.md](../MEASURING.md) and are committed as records in
-   [`docs/measurements/`](../measurements/TEMPLATE.md). A measurement replaces its estimate in the same commit.
+5. Measurements on the machine follow [RESULTS.md#how-the-numbers-were-taken](../RESULTS.md#how-the-numbers-were-taken) and are committed as records in
+   `docs/measurements/`. A measurement replaces its estimate in the same commit.
 6. Code used only to measure is not committed. Its record describes it well enough to rewrite it.

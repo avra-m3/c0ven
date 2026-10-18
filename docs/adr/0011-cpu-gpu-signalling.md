@@ -1,11 +1,11 @@
 # ADR-0011: the CPU and GPU signal through flags in host memory; spinning waits first
 
 **Status:** accepted. From DUAL_B60_DATAFLOW.md change 3 and INTEL_SYCL_PLAN.md "The doorbell" (commit `55ca984`),
-merged in PR #1 (2026-10-09). To be confirmed by [P31](../precursor/P31-probe-doorbell.md). Context corrected on
+merged in PR #1 (2026-10-09). To be confirmed by P31. Context corrected on
 2026-10-09: the skip is taken by a minority of layers unless experts are prefetched
-([EXPERT_PREFETCH.md](../EXPERT_PREFETCH.md#what-a-miss-costs-today)). The decision is unchanged.
+(EXPERT_PREFETCH.md). The decision is unchanged.
 **Revisit when:** P31 shows that spinning on host memory is unreliable on Xe2 (stale values, hangs, job timeouts),
-or slower than events. Or when [P17](../precursor/P17-expert-hit-rates.md) and [P18](../precursor/P18-prefetch-signals.md)
+or slower than events. Or when P17 and P18
 show that the skip stays rare even with prefetching, and P31 shows that an event wait costs no more than a spin.
 
 ## Context
@@ -24,7 +24,7 @@ The skip needs every one of a window's ~25 distinct experts in the layer to be r
 minority of layers (an estimate: 0.85^25 ≈ 2% if experts were independent, a few times that with correlated routing).
 An earlier version of this ADR said most layers take it; that was wrong. Prefetching a layer's few misses is what can
 make the skip common: once all of a layer's misses have landed in the prefetch ring, the device can plan the layer
-itself ([EXPERT_PREFETCH.md](../EXPERT_PREFETCH.md#where-a-prefetched-expert-goes)). So flags matter now for having
+itself (EXPERT_PREFETCH.md). So flags matter now for having
 no driver calls on the token path, and later for the skip.
 
 ## Decision

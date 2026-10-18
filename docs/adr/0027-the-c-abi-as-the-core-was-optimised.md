@@ -39,7 +39,7 @@ None yet. Each item needs one.
    model's path and reads the GGUF itself; it decides what fits from `experts_per_layer` and `reserve_bytes`. The
    adapter passes the path, slots, context, checkpoints and CPU workers, and nothing of the memory plan. So the
    pinned host memory the core takes is not bounded by Python's plan, which matters on a host already short of
-   memory ([MACHINE.md](../MACHINE.md), "Free RAM"). Open: which side plans memory, and which numbers cross.
+   memory. Open: which side plans memory, and which numbers cross.
 4. **Sampling settings.** The protocol and `SlotSettings` carry min-p, the repeat, frequency and presence
    penalties, and their window. Version 2 samples with temperature, top-k, top-p and a seed only. The adapter drops
    the rest without a word, so a request that asks for them gets output without them. Open: add them to the core,

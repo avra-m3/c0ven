@@ -24,8 +24,8 @@ Everything in `reference/` is text and holds no logits.
 | --- | --- |
 | Program | llama.cpp `3cf03257f219afbe7334045ff7c6a06ac68c627d` (`3cf0325`, "CUDA: enable sparse fa for qwen4"), the commit Strata's `setup.py` pins ([ADR-0012](adr/0012-correctness-reference.md)). Source: `/scratch/llama.cpp` in the sandbox, clean tree |
 | Backend | CPU only. `GGML_SYCL`, `GGML_VULKAN`, `GGML_CUDA` off |
-| Machine | the test machine ([MACHINE.md](MACHINE.md)), governor `powersave` on all 32 CPUs, host kernel 6.17.0-1033-oem |
-| Sandbox | `flash-next-b60-sandbox`, image `sha256:1d4a4bce027602093869bf10f553fdc9d8a78cddde42a713eb5edba7a0e653c0`, Ubuntu 26.04.1, g++ 15.2.0, cmake 4.2.3, Ninja 1.13.2 |
+| Machine | the test machine ([RESULTS.md#the-test-machine](RESULTS.md#the-test-machine)), governor `powersave` on all 32 CPUs, host kernel 6.17.0-1033-oem |
+| Build environment | Ubuntu 26.04.1, g++ 15.2.0, cmake 4.2.3, Ninja 1.13.2 |
 | Model | the IQ3_S file, both shards ([MODEL_FILES.md](MODEL_FILES.md)) |
 | Prompt chunking | `n_batch` 2048, `n_ubatch` 512: a 512-token physical batch |
 | Threads | 16, pinned with `taskset -c 0-15`. The thread count does not change the result: 8 and 16 gave mean KL 0.000000 ([below](#how-stable-the-reference-is)) |
@@ -37,7 +37,7 @@ machine's model directory. They were not hashed again for the reference. They ar
 
 ### The build line
 
-In the sandbox, in `/scratch/probes/p14`, with the compiler and tools above:
+With the compiler and tools above:
 
 ```
 cmake -S /scratch/llama.cpp -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
@@ -48,7 +48,7 @@ cmake -S /scratch/llama.cpp -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
 taskset -c 8-15,24-31 cmake --build build -j 8 --target llama-completion llama-tokenize llama-perplexity
 ```
 
-These are the same CPU flags as the build in the [CPU-bar record](measurements/2026-10-11-cpu-bar.md). `ggml` is
+These are the same CPU flags as the build in the [CPU-bar record](RESULTS.md#2026-10-11-cpu-bar). `ggml` is
 built as shared libraries, and `libllama` is linked by the small program in [The greedy outputs](#the-greedy-outputs).
 
 ## The prompt set
@@ -75,7 +75,7 @@ built as shared libraries, and `libllama` is linked by the small program in [The
 | `doc-32k` | long | off | 32,056 | 128 | length | 920.6 | 30.2 |
 
 - "Stop" is `length` (128 new tokens) or `eog` (an end-of-generation token; it is kept as the last token).
-- Times are from one run, in the state given in [Machine state](#machine-state). They are not a performance
+- Times are from one run, on the test machine. They are not a performance
   measurement. They include a cold start: the first prompts read the model file from disk, so the first decode rates
   (1.2-1.5 tokens/s, new tokens over decode time) are not the steady rate. The others decode at 2.1-5.8 tokens/s.
 - Thinking "on" is the template's default: the prompt ends with `<think>\n`, so the first 128 tokens are the model's
@@ -100,7 +100,7 @@ the token prefix does not share them. `medium` adds no sentence, so a `medium` r
 ### How the prompts were rendered
 
 The container has no Jinja, so the prompts are rendered by a script that follows the template line by line:
-`build_prompts.py`, in `/scratch/probes/p14` and not committed. It covers the message shapes used: system, user,
+`build_prompts.py`, which is not in the repository. It covers the message shapes used: system, user,
 assistant (with and without tool calls), tool responses, a tool list, `enable_thinking` and `reasoning_effort`.
 
 **The rendering is not checked against llama.cpp's template engine.** The one place the output can differ is
@@ -119,7 +119,7 @@ The two 4K prompts and the 32K prompt are cut by trial to 4,150, 4,159 and 32,05
 For each prompt, the largest-logit token is taken at every step, with no penalties, for up to 128 new tokens.
 
 llama.cpp's `llama-completion` prints text, not token ids. So the outputs come from `refgen`, a 90-line C++ program
-in `/scratch/probes/p14` (not committed: [AGENTS.md](../AGENTS.md)). It links `libllama` and, for each prompt:
+that is not in the repository. It links `libllama` and, for each prompt:
 
 1. load the model once for all prompts (`llama_model_load_from_file`, default `use_mmap`), and create one context with
    `n_ctx` 33,024, `n_batch` 2048, `n_ubatch` 512 and 16 threads;
@@ -158,7 +158,7 @@ The long prompts ran as separate invocations under `timeout 1800` (the two 4K pr
 | Text | the first 110,000 bytes of `docs/DUAL_B60_DATAFLOW.md`, `docs/EXPERT_PREFETCH.md`, `docs/spec/MODEL_LAYER.md` and `docs/spec/QUANT_FORMATS.md` at commit `ddc07bc`, concatenated in that order (`cat ... \| head -c 110000`). The file is `kl-text.txt` |
 | Text sha256 | `eaeb8584f9a9da28eb4cfd36b4fc18c108812a5e555b0ff092cf35e86a219598` |
 | Chunks | 64 chunks of 512 tokens (`-c 512 --chunks 64`); probabilities are kept for the second half of each chunk, 255 positions: 16,320 scored positions |
-| Path on the machine | `/scratch/probes/p14/kl-base-IQ3_S.bin`, in the `flash-next-b60-scratch` volume |
+| File | `kl-base-IQ3_S.bin`, not distributed |
 | Size | 8,105,426,452 bytes (8.1 GB) |
 | sha256 | `844b50e3a6c121df713f6d6cf51f4141159affabfa180bbe1244232ee18af77e` |
 | Perplexity of the base run | 7.2183 ± 0.15843 over the 64 chunks (`Final estimate`) |
@@ -168,7 +168,7 @@ The command, verbatim (run on 2026-10-12, 00:02 to 00:15 UTC):
 ```
 LD_LIBRARY_PATH=build/bin timeout 5400 taskset -c 0-15 build/bin/llama-perplexity \
   -m /models/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf -f kl-text.txt -c 512 --chunks 64 -t 16 \
-  --kl-divergence-base /scratch/probes/p14/kl-base-IQ3_S.bin
+  --kl-divergence-base kl-base-IQ3_S.bin
 ```
 
 `-b` and `-ub` are at their defaults, 2048 and 512. With `-c 512` that makes 4 sequences per batch.
@@ -256,13 +256,13 @@ gate, and `core/tests/api_test.c` checks the first 32 tokens of `chat-hashmap` e
   accurate of the two kernels. It is not checked against an F32 attention.
 - The reference on other model files. Only the IQ3_S file is run ([ADR-0018](adr/0018-one-file-iq3s.md)).
 
-## Choices made without the owner
+## Choices made
 
 | Choice | What was done | Why | To revisit |
 | --- | --- | --- | --- |
-| Prompt text | written for this reference, plus this repository's docs for the long prompts; Strata's prompts are not on the machine | no `tools/` or `bench/results/` of Strata is local | swap in Strata's prompts if wanted |
-| KL text | repository docs, 110,000 bytes, not a standard corpus | a standard text (wikitext-2) needs a download, which was not authorised | prose is easier to compare with other work; markdown tables are unusual text for a language model |
-| KL size | 64 chunks, 8.1 GB | under the 20 GB limit; about 16K scored positions gives a standard error of 0.0006 on the mean KL | more chunks if the gate needs a tighter error |
+| Prompt text | written for this reference, plus this repository's docs for the long prompts; Strata's prompts were not at hand | no `tools/` or `bench/results/` of Strata was | swap in Strata's prompts if wanted |
+| KL text | repository docs, 110,000 bytes, not a standard corpus | a standard text (wikitext-2) needs a download, which was not made | prose is easier to compare with other work; markdown tables are unusual text for a language model |
+| KL size | 64 chunks, 8.1 GB | about 16K scored positions gives a standard error of 0.0006 on the mean KL | more chunks if the gate needs a tighter error |
 | Thinking | on for 6 prompts, off for 10 | thinking-on outputs are all reasoning for 128 tokens; the tool and answer-format prompts need it off | |
 | Reference `-ub` | 512 | the llama.cpp default | see [What is not known](#what-is-not-known) |
 | Threads | 16, CPUs 0-15 | the thread count does not matter ([How stable the reference is](#how-stable-the-reference-is)) | |

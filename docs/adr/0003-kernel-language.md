@@ -1,9 +1,9 @@
 # ADR-0003: kernels in OpenCL C, compiled ahead of time by ocloc
 
-**Status:** accepted, 2026-10-09, by the owner. Confirmed by the kernel spike, [P48](../precursor/P48-kernel-spike.md),
-on 2026-10-11 ([record](../measurements/2026-10-11-kernel-spike.md)), which replaced P34 and P37 on 2026-10-10.
+**Status:** accepted, 2026-10-09, by the owner. Confirmed by the kernel spike, P48,
+on 2026-10-11 ([record](../RESULTS.md#2026-10-11-kernel-spike)), which replaced P34 and P37 on 2026-10-10.
 **Revisit when:** a feature the engine needs turns out unreachable from OpenCL C with the pinned stack. P48 reached
-DPAS, 2D block loads, sub-group 16 and the 256-register mode ([record](../measurements/2026-10-11-kernel-spike.md)). Or when a kernel keeps missing its
+DPAS, 2D block loads, sub-group 16 and the 256-register mode ([record](../RESULTS.md#2026-10-11-kernel-spike)). Or when a kernel keeps missing its
 target under the escalation rule below.
 
 ## Context
@@ -23,16 +23,16 @@ LLMs, so the choice weighs speed against how likely an LLM-written kernel is to 
 3. **One header of wrappers** for every Intel builtin used (block loads, 2D block IO, DPAS, shuffles, integer dot).
    - Kernels call only the wrappers.
    - The list starts from the builtins P48 confirmed
-     ([record](../measurements/2026-10-11-kernel-spike.md#builtins-that-compiled-and-gave-correct-results)).
-   - Each wrapper is tested once ([P39](../precursor/P39-testing-strategy.md)).
+     ([record](../RESULTS.md#2026-10-11-kernel-spike)).
+   - Each wrapper is tested once (P39).
 4. **Variants are `-D` build options per compiled module:** quant type, sub-group size, tile sizes. `ocloc` 26.35
    refuses C++ for OpenCL under every `-cl-std` name (P48), so variants stay `-D` options.
 5. **The escalation rule:** a kernel moves to inline assembly (vISA) or Intel's CM only when a measurement shows
    OpenCL C cannot reach its target. That happens one kernel at a time, with the record linked from the kernel.
 6. **Every kernel**:
-   - compiles offline in CI ([P43](../precursor/P43-scaffold-ci.md));
+   - compiles offline in CI (P43);
    - is tested against reference values ([ADR-0012](0012-correctness-reference.md));
-   - has assembly and register spills that can be read ([P44](../precursor/P44-developing-doc.md)).
+   - has assembly and register spills that can be read (P44).
 
 ## Why
 

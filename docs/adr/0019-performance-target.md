@@ -1,7 +1,7 @@
 # ADR-0019: performance - a target set by the owner
 
 **Status:** accepted, 2026-10-10, by the owner. Supersedes [ADR-0013](0013-performance-floor.md).
-**Revisit when:** the owner changes the target, or [P50](../precursor/P50-design-and-gate.md)'s forecast shows it out of
+**Revisit when:** the owner changes the target, or P50's forecast shows it out of
 reach.
 
 ## Context
@@ -20,9 +20,9 @@ ADR-0013 defined success as beating llama.cpp on this machine "clearly". That ne
 
    The owner did not name a context length. Both are measured at 4K and at 128K; the target applies at 4K until the
    owner says otherwise.
-2. **The go/no-go** ([P50](../precursor/P50-design-and-gate.md)) forecasts both numbers from the plans' measurements. If
+2. **The go/no-go** (P50) forecasts both numbers from the plans' measurements. If
    the forecast is well short, work stops and the owner decides before any engine code.
-3. **The stop rule:** at stage 5, the fast decode loop ([PLAN.md](../PLAN.md#the-engines-stages)), decode with
+3. **The stop rule:** at stage 5, the fast decode loop (PLAN.md), decode with
    drafting off is measured against 30 tokens/s. If it is well short, work stops and the plan is reconsidered.
    Prompt speed is checked at stage 6.
 4. **No llama.cpp baseline is a gate.** A `llama bench` run on the IQ3_S file may be recorded once for comparison; it

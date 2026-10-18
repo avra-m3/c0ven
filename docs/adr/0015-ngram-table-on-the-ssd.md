@@ -2,10 +2,10 @@
 
 **Status:** accepted; item 6 superseded by [ADR-0018](0018-one-file-iq3s.md) on 2026-10-10 (the engine runs IQ3_S
 only, so the table in RAM is no longer a standing A/B arm). From INTEL_SYCL_PLAN.md "The n-gram table stays on the
-SSD" (now in [PLAN.md](../PLAN.md#the-n-gram-table-stays-on-the-ssd)), merged into `main` on 2026-10-09. Recorded as an ADR on 2026-10-09.
+SSD" (now in PLAN.md), merged into `main` on 2026-10-09. Recorded as an ADR on 2026-10-09.
 **Revisit when:**
 
-- [P30](../precursor/P30-probe-ssd.md) shows that the T500's 4 KiB random reads are too slow, or too uneven, to hide
+- P30 shows that the T500's 4 KiB random reads are too slow, or too uneven, to hide
   behind layer 0;
 - or the RAM grows enough to hold the 28.8 GB table beside the largest format the engine runs.
 
@@ -14,7 +14,7 @@ SSD" (now in [PLAN.md](../PLAN.md#the-n-gram-table-stays-on-the-ssd)), merged in
 - **The table is large.** It holds 320M rows of 90 bytes (IQ4_NL), 28.8 GB, and each token reads 16 rows on 16
   random pages.
 - **RAM is short.** The table fits in RAM only beside Q2_0 (~84 of 92 GB), not beside IQ3_XXS or IQ3_S
-  ([PLAN.md](../PLAN.md#ram-estimate)).
+  (PLAN.md).
 - **The page cache would hide the cost and the memory.** Reads through it would fill RAM with pages the engine does
   not count, and evict what it does.
 - **Strata reads the table this way already.** It uses unbuffered 4 KiB reads (`O_DIRECT`) from a pool of 16
@@ -47,9 +47,9 @@ SSD" (now in [PLAN.md](../PLAN.md#the-n-gram-table-stays-on-the-ssd)), merged in
 ## Consequences
 
 - A slow read lands on the token path until the device waits in the window (risk 11, stage 5). Swap on the same SSD,
-  its garbage collection and its power states all show up as slow reads ([P30](../precursor/P30-probe-ssd.md)).
+  its garbage collection and its power states all show up as slow reads (P30).
 - With batched windows (stage 7), a window needs up to 512 rows. That needs more reads in flight: more threads, or
   io_uring if the engine's container allows it (P30).
 - The engine keeps the SSD out of deep power states during a run, as Strata does with a keep-alive read.
 - The model files live on a bind mount of an ext4 or xfs disk, not inside the container's filesystem
-  ([PLAN.md](../PLAN.md#before-the-first-run)).
+  (PLAN.md).

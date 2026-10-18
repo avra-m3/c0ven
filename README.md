@@ -45,7 +45,7 @@ vLLM for those.
   ([Sharing the cards](#sharing-the-cards-with-other-models)).
 - OpenAI and Anthropic APIs, with streaming.
 - Output checked against llama.cpp's CPU backend: teacher-forced greedy tokens agree on 98% of positions
-  (1,044 of 1,063) for the reference prompts of up to 512 tokens ([record](docs/measurements/2026-10-14-decode-expert-kernels.md)).
+  (1,044 of 1,063) for the reference prompts of up to 512 tokens ([record](docs/RESULTS.md#2026-10-14-decode-expert-kernels)).
 
 ## Quick start
 
@@ -64,7 +64,7 @@ docker run --rm --device /dev/dri --group-add 993 --ulimit memlock=-1:-1 --read-
 ```
 
 The `c0ven-mtp` volume keeps the quantised draft layer between runs. Without it, each start spends about 43 s
-quantising it again ([record](docs/measurements/2026-10-16-load-phases.md); [DEVELOPING.md](docs/DEVELOPING.md)).
+quantising it again ([record](docs/RESULTS.md#2026-10-16-load-phases); [DEVELOPING.md](docs/DEVELOPING.md)).
 
 Send a request:
 
@@ -128,7 +128,7 @@ The server's flags:
 C0ven can run as a service of its own that [llama-swap](https://github.com/mostlygeek/llama-swap) wakes and puts to
 sleep, so that other models can have the cards in between ([ADR-0032](docs/adr/0032-sleep-the-front-end-stays-the-engine-keeps-the-arena.md)).
 Asleep, the engine gives back the cards' memory and keeps its RAM, so a wake loads only the cards. A sleep took
-0.38-0.72 s and a wake 14.2-20.7 s ([the record](docs/measurements/2026-10-17-sleep-and-wake.md)).
+0.38-0.72 s and a wake 14.2-20.7 s ([the record](docs/RESULTS.md#2026-10-17-sleep-and-wake)).
 
 Start it asleep, with the admin routes on a second port:
 

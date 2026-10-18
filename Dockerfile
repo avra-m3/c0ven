@@ -24,7 +24,7 @@ RUN apt-get update \
  && update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-15 100 \
  && update-alternatives --install /usr/bin/c++ c++ /usr/bin/g++-15 100
 
-# The GPU stack and uv, from their release pages, checked against ADR-0002's checksums (in full: MACHINE.md,
+# The GPU stack and uv, from their release pages, checked against ADR-0002's checksums (in full: RESULTS.md#the-test-machine,
 # "The measurement container").
 WORKDIR /tmp/debs
 RUN set -e; \

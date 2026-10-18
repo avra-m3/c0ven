@@ -16,8 +16,8 @@ source cited.
 | llama.cpp | `3cf03257f219afbe7334045ff7c6a06ac68c627d` | the reference: the encoder's graph (`tools/mtmd/models/qwen3vl.cpp`), the loader (`tools/mtmd/clip.cpp`), the image processing (`tools/mtmd/mtmd-image.cpp`), the positions (`tools/mtmd/mtmd.cpp`, `src/llama-memory-hybrid-idx.cpp`) |
 | Hugging Face transformers | [`8498ed4`](https://github.com/huggingface/transformers/tree/8498ed425fa01bbee7d086efdf1a6634c2962aed) (`main` on 2026-10-17) | a cross-check: `models/qwen4_exp/modeling_qwen4_exp.py` (cited `modeling:N`), `models/qwen2_vl/image_processing_qwen2_vl.py` (cited `imgproc:N`); for video, `models/qwen3_vl/video_processing_qwen3_vl.py` (`vidproc:N`), `models/qwen3_vl/processing_qwen3_vl.py` (`proc:N`), `vision_utils.py` (`vutils:N`), `video_utils.py` (`vidutils:N`) |
 | Hugging Face transformers | [`v4.57.0`](https://github.com/huggingface/transformers/tree/v4.57.0) | the video prompt's text: `models/qwen3_vl/processing_qwen3_vl.py` (cited `proc457:N`) |
-| The model's repository | [`Qwen/Qwen3.8-Flash-Next`](https://huggingface.co/Qwen/Qwen3.8-Flash-Next), `main`, read on 2026-10-17 through the Hub connector | `preprocessor_config.json`, `video_preprocessor_config.json`, `chat_template.jinja` |
-| The mmproj file | `mmproj-Qwen3.8-Flash-Next-BF16.gguf`, ISTA commit `1c04b81` | the header, tensor names and types ([the reference record](../measurements/2026-10-17-encoder-reference.md)) |
+| The model's repository | [`Qwen/Qwen3.8-Flash-Next`](https://huggingface.co/Qwen/Qwen3.8-Flash-Next), `main`, read on 2026-10-17 | `preprocessor_config.json`, `video_preprocessor_config.json`, `chat_template.jinja` |
+| The mmproj file | `mmproj-Qwen3.8-Flash-Next-BF16.gguf`, ISTA commit `1c04b81` | the header, tensor names and types ([the reference record](../RESULTS.md#2026-10-17-encoder-reference)) |
 
 ## Conventions
 
@@ -44,7 +44,7 @@ Source: `tools/mtmd/models/qwen3vl.cpp:3-185`; the same order in `modeling:1921-
 
 `mmproj-Qwen3.8-Flash-Next-BF16.gguf`, 907,543,008 B, sha256 `b1a82259702816a5330d7bd7607cd9676b11780e79ff7348c21103ff3ce49bd0`,
 architecture `clip`, `clip.projector_type` `qwen3vl_merger`. 334 tensors, 448,931,056 parameters
-([the reference record](../measurements/2026-10-17-encoder-reference.md)).
+([the reference record](../RESULTS.md#2026-10-17-encoder-reference)).
 
 | Key | Value |
 | --- | --- |
@@ -338,7 +338,7 @@ Flash attention changes the output more than any other step. The one-row path is
 not a multiple of AVX-512's 16 floats, and its F16 sum moves rows of an image away from an exact computation: a least
 cosine of 0.84 on a 252-token image against 0.990 without it, and half the rows of a 4,096-token image under 0.99.
 The engine's reference is therefore llama.cpp with flash attention off
-([the reference record](../measurements/2026-10-17-encoder-reference.md)).
+([the reference record](../RESULTS.md#2026-10-17-encoder-reference)).
 
 ## 8. What it costs
 
@@ -390,11 +390,11 @@ engine's largest image (`N` = 16,384, 4,096 tokens): 13.8 and 33.4, 47 TFLOP.
 - **transformers' indexer with images.** Section 5 is llama.cpp's behaviour only.
 - **`llama-mtmd-cli`'s greedy tokens with an image.** The reference covers the encoder alone: the text model on
   llama.cpp's CPU maps the 83.6 GB file, more than the host's free memory
-  ([the reference record](../measurements/2026-10-17-encoder-reference.md)). Whether it decodes an image's tokens in
+  ([the reference record](../RESULTS.md#2026-10-17-encoder-reference)). Whether it decodes an image's tokens in
   one batch per image is not checked either.
 - **transformers v4.57.0's prompt text, run.** Section 6.5 is read from its source. The video processor at `8498ed4`
   was run on one file and agrees with the front end on the frames, the grid, the times and the pixels
-  ([the video reference record](../measurements/2026-10-17-video-pair-reference.md)); the prompt it builds was not
+  ([the video reference record](../RESULTS.md#2026-10-17-video-pair-reference)); the prompt it builds was not
   compared.
 - **A video's tokens through the text model.** The reference for video covers a pair's rows from the encoder
-  ([the video reference record](../measurements/2026-10-17-video-pair-reference.md)), as for images.
+  ([the video reference record](../RESULTS.md#2026-10-17-video-pair-reference)), as for images.

@@ -18,7 +18,7 @@ decides the tokens.
 | llama.cpp | `3cf03257f219afbe7334045ff7c6a06ac68c627d` | the reference: the graph (`src/models/qwen4exp.cpp`), the loader (`src/llama-model-loader.cpp`, `src/llama-model.cpp`), the converter (`conversion/qwen4exp.py`) |
 | Strata | [`1678de3`](https://github.com/avra-m3/strata-intel/tree/1678de333d0e0711bc414ad992b640e1a37dd814) | the MTP layer (`include/strata/core/mtp.hpp`, `src/core/mtp.cpp`, `tools/mtp_fetch.py`, `tools/mtp_rt.py`), the hash constants (`src/kernels/ngram.cpp`), the rope-scaling rule (`setup.py`) |
 | Hugging Face transformers | [`536ecc0`](https://github.com/huggingface/transformers/tree/536ecc007387a50e77603bb5d92100e9b07514cc), as in part 1 | a cross-check: `modeling_qwen4_exp.py` (cited `modeling:N`) and `configuration_qwen4_exp.py` (cited `configuration:N`) |
-| The model's repository | [`Qwen/Qwen3.8-Flash-Next`](https://huggingface.co/Qwen/Qwen3.8-Flash-Next), `main`, read on 2026-10-11 through the Hub connector | `config.json`, `generation_config.json`, `tokenizer_config.json`, `chat_template.jinja`, `README.md` (the licence). The revision Strata's MTP fetcher pins (`de4b8e4`, section 3) could not be read: the cloud session's proxy refuses `huggingface.co` |
+| The model's repository | [`Qwen/Qwen3.8-Flash-Next`](https://huggingface.co/Qwen/Qwen3.8-Flash-Next), `main`, read on 2026-10-11 | `config.json`, `generation_config.json`, `tokenizer_config.json`, `chat_template.jinja`, `README.md` (the licence). The revision Strata's MTP fetcher pins (`de4b8e4`, section 3) was not checked |
 | The tensor census ("census" below) | [tensors-IQ3_S.tsv](../model/tensors-IQ3_S.tsv), [MODEL_FILES.md](../MODEL_FILES.md) | shapes, types, byte offsets, GGUF metadata |
 
 ## Conventions

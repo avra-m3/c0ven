@@ -19,9 +19,8 @@ llama.cpp, Strata or transformers is copied: the maths is in formulas and tables
 | Strata | [`1678de3`](https://github.com/avra-m3/strata-intel/tree/1678de333d0e0711bc414ad992b640e1a37dd814) | the geometry (`include/strata/core/layout.hpp`), the rope-scaling rule (`setup.py`), the paper (`docs/paper/Strata-Paper.pdf`) |
 | The tensor census | [tensors-IQ3_S.tsv](../model/tensors-IQ3_S.tsv), [MODEL_FILES.md](../MODEL_FILES.md) | shapes and types per tensor, GGUF metadata |
 | Hugging Face transformers | [`536ecc007387a50e77603bb5d92100e9b07514cc`](https://github.com/huggingface/transformers/tree/536ecc007387a50e77603bb5d92100e9b07514cc) (`main` on 2026-10-11) | a cross-check only: `src/transformers/models/qwen4_exp/modeling_qwen4_exp.py` (cited as `modeling:N`) and `configuration_qwen4_exp.py` |
-| The model's `config.json` | [`Qwen/Qwen3.8-Flash-Next`](https://huggingface.co/Qwen/Qwen3.8-Flash-Next), read on 2026-10-11 through the Hub connector, which reads `main` | the hyper-parameters. The values this page uses equal the GGUF metadata in [MODEL_FILES.md](../MODEL_FILES.md#metadata-keys). The revision Strata's MTP fetcher pins (`de4b8e4`, [MODEL_FILES.md](../MODEL_FILES.md#the-mtp-layer)) could not be read: the cloud session's proxy refuses `huggingface.co` |
+| The model's `config.json` | [`Qwen/Qwen3.8-Flash-Next`](https://huggingface.co/Qwen/Qwen3.8-Flash-Next), read on 2026-10-11 (`main`) | the hyper-parameters. The values this page uses equal the GGUF metadata in [MODEL_FILES.md](../MODEL_FILES.md#metadata-keys). The revision Strata's MTP fetcher pins (`de4b8e4`, [MODEL_FILES.md](../MODEL_FILES.md#the-mtp-layer)) was not checked |
 
-The machine's own llama.cpp build is a different commit (`1d8de7c1b`, [MACHINE.md](../MACHINE.md#software-in-the-llamacpp-image)).
 This page and the [reference outputs](../REFERENCE_OUTPUTS.md) follow the pinned commit.
 
 ## Conventions

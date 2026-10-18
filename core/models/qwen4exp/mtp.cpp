@@ -2,7 +2,7 @@
 // docs/MODEL_FILES.md, "The MTP layer"). Cell i pairs the main model's final residual at i with the token at i + 1
 // and predicts the token at i + 2. Split as a main attention layer is (docs/DESIGN.md, section 5); all 512 experts
 // sit on the cards in IQ4_NL, so a draft never waits for the CPU. It attends to its last 2,051 cells (Strata: 32,768),
-// which changes only drafts. No reference runs it: acceptance checks it (docs/measurements/2026-10-16-draft-rounds.md).
+// which changes only drafts. No reference runs it: acceptance checks it (docs/RESULTS.md#2026-10-16-draft-rounds).
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -207,7 +207,7 @@ void Model::load_mtp(Card &card) {
     const uint64_t payload = (uint64_t)Q_EXPERTS * M.slot_bytes;
     std::vector<uint8_t> buf((size_t)batch * M.slot_bytes);
 
-    // Quantising is slow (docs/measurements/2026-10-16-load-phases.md), so the result can be kept in
+    // Quantising is slow (docs/RESULTS.md#2026-10-16-load-phases), so the result can be kept in
     // ENGINE_MTP_CACHE_DIR, one file per card. A file that does not match is ignored and written again.
     const char *cache_env = std::getenv("ENGINE_MTP_CACHE_DIR");
     std::string cache_path;
@@ -335,7 +335,7 @@ void Model::record_mtp(Card &card, uint32_t W, bool chain) {
   const uint32_t zero = 0, mode_silu = 1, ch = chain ? 1 : 0;
   L.copy(M.plan, mplan_, sizeof(StepPlan));
   // The BF16 products on the XMX units with bf16 activations (xb: 8 rows of K), as the decode step's
-  // (docs/measurements/2026-10-16-draft-layer-xmx.md). Every product here has 128 rows or more: K split in 4.
+  // (docs/RESULTS.md#2026-10-16-draft-layer-xmx). Every product here has 128 rows or more: K split in 4.
   uint16_t *no_yb = nullptr;
   auto bf16mv = [&](const uint16_t *Wt, uint32_t rows, uint32_t K, const uint16_t *xb, const uint32_t *ntok, float *y,
                     ze_event_handle_t signal = nullptr) {

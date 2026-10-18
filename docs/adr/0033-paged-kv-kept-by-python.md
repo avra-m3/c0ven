@@ -1,9 +1,8 @@
 # ADR-0033: the KV cache in pages, the page table kept by Python, checkpoints of the fixed state only
 
-**Status:** draft for the owner, 2026-10-17; not accepted. From issues
-[#63](https://github.com/avra-m3/c0ven/issues/63) and [#88](https://github.com/avra-m3/c0ven/issues/88).
+**Status:** draft, 2026-10-17; not accepted.
 Would settle items 2 and 6 of [ADR-0027](0027-the-c-abi-as-the-core-was-optimised.md), item 6 in part.
-**Revisit when:** a measurement shows the page table costing decode or prompt time, or KV streaming (#88) needs pages
+**Revisit when:** a measurement shows the page table costing decode or prompt time, or KV streaming needs pages
 in host memory that this table cannot name.
 
 ## Context
@@ -15,7 +14,7 @@ in host memory that this table cannot name.
 - **Versions 3 and 4 of the ABI did not.** Each slot kept its whole context's KV, and a checkpoint copied the KV up
   to its position, so `engine_open` pinned every checkpoint at the whole context's size. At 262,144 tokens that is
   about 4 GiB each; the engine's default of 8 took the host from 70.3 GiB of `MemAvailable` to under 20 GiB and was
-  killed ([record](../measurements/2026-10-16-engine-start-and-quit.md)). The default became 2 until now.
+  killed ([record](../RESULTS.md#2026-10-16-engine-start-and-quit)). The default became 2 until now.
 - **Python's half was already there.** `engine/seqstate/` keeps pages, reference counts, reservations and
   checkpoints, and the scheduler admits by page count; the native adapter dropped the page changes
   (ADR-0027, item 2).
@@ -49,13 +48,13 @@ in host memory that this table cannot name.
 ## Why
 
 The table costs no time that a decode or a prompt shows
-([record](../measurements/2026-10-17-paged-kv.md)). On doc-32k at 64K, one sequence, ABBA with 6 runs an arm: decode
+([record](../RESULTS.md#2026-10-17-paged-kv)). On doc-32k at 64K, one sequence, ABBA with 6 runs an arm: decode
 18.62 ms per step against 18.48 ms before, the ranges overlapping; with drafting 76.10 against 75.24 tokens/s; the
 prompt 2,243.5 tokens/s in both. Every run gave the same tokens. Traced, the five kernels that read the table add
 11-14 µs to an 18.3 ms step: one read of the table per cell or block they touch, from a few kilobytes per slot.
 
 Checkpoints of the fixed state only take 118,038,528 B each at any context, against about 4 GiB at 262,144 tokens
-before; that is what lets the engine's default count of checkpoints fit beside the arena (#63).
+before; that is what lets the engine's default count of checkpoints fit beside the arena.
 
 ## Options not chosen
 
@@ -81,4 +80,4 @@ before; that is what lets the engine's default count of checkpoints fit beside t
   ([ADR-0032](0032-sleep-the-front-end-stays-the-engine-keeps-the-arena.md), item 9).
 - `Model` keeps its own default table (each slot its own run of pages), so the core's tests that drive the model
   directly run as before.
-- KV streaming (#88) can mark pages as host-resident in the same table.
+- KV streaming can mark pages as host-resident in the same table.

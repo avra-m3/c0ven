@@ -5,7 +5,7 @@
 [ADR-0028](0028-ci-without-a-card.md): it gains `.github/workflows/`; and by
 [ADR-0036](0036-a-private-repository-and-its-public-copy.md): it gains `private/`.
 **Revisit when:** a second model architecture is added ([ADR-0006](0006-scope.md)), or the scaffold
-([P49](../precursor/P49-scaffold.md)) finds the layout does not build.
+(P49) finds the layout does not build.
 
 ## Context
 

@@ -23,7 +23,7 @@ inline constexpr uint32_t kSgSize = 16;  // the kernels' SG_SIZE
 inline constexpr uint32_t kAttXmxRows = 4;  // prompt_attn.cl's ATT_XMX_ROWS
 inline constexpr uint32_t kIdxScoreRows = 8;  // prompt.cl's IDX_SCORE_ROWS
 // The fewest rows of a prompt chunk at which the two cards split the hyper-connections
-// (docs/measurements/2026-10-17-hc-split.md).
+// (docs/RESULTS.md#2026-10-17-hc-split).
 inline constexpr uint32_t kHcSplitRows = 2048;
 inline constexpr uint32_t kAttSplits = (Q_IDX_CELLS + 63) / 64;  // attn_split's ATT_SPLITS
 inline constexpr uint32_t kIdxCand = 2 * (Q_IDX_BLOCKS + 1) + 2;  // words per row of the indexer's candidates
@@ -38,7 +38,7 @@ inline uint64_t align256(uint64_t x) { return (x + 255) & ~255ull; }
 inline bool is_raw(uint32_t type) { return type == QT_F32 || type == QT_F16 || type == QT_BF16; }
 
 // Lanes per row for a dense product: 16 for long rows of the i-quants, 8 for the K-quants and IQ4_XS, 4 for short
-// rows, the fastest of each (docs/measurements/2026-10-11-kernel-spike.md).
+// rows, the fastest of each (docs/RESULTS.md#2026-10-11-kernel-spike).
 inline uint32_t lanes_for(uint32_t type, uint32_t K) {
   if (K / 32 < 40) return 4;
   if (type == QT_Q4_K || type == QT_Q5_K || type == QT_Q6_K || type == QT_IQ4_XS) return 8;

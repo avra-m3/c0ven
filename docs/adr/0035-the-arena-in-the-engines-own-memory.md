@@ -1,9 +1,9 @@
 # ADR-0035: the arena in the engine's own memory, read in place by the copy engines
 
 **Status:** accepted, 2026-10-17, by the owner: make the anonymous arena the default "if it's better and comes at no
-cost", which [the A/B record](../measurements/2026-10-17-anon-arena-default.md) found. Supersedes item 6 of
+cost", which [the A/B record](../RESULTS.md#2026-10-17-anon-arena-default) found. Supersedes item 6 of
 [ADR-0023](0023-two-cards-tensor-split.md) in part: the arena is no longer `zeMemAllocHost` memory. Item 2 and the
-context name the mechanism [the swaps record](../measurements/2026-10-17-swaps-keep-the-copies.md) measured, by the
+context name the mechanism [the swaps record](../RESULTS.md#2026-10-17-swaps-keep-the-copies) measured, by the
 owner's leave on 2026-10-18.
 **Revisit when:** a driver or kernel update changes how the runtime copies from host memory it did not allocate
 ([LEVEL_ZERO.md](../LEVEL_ZERO.md) row 31); xe fails in its userptr path; or a host whose cgroup has swap swaps the
@@ -14,18 +14,18 @@ arena out.
 - **The driver's arena stalls decode.** When the host reclaims, xe moves its host buffers out of GTT and drops the
   CPU's mappings of them, and the arena is most of those buffers. One page-cache read of the model file stalled
   decode for 5.75 s, 1.30 s and 0.75 s, with more than 33 GB free
-  ([eviction record](../measurements/2026-10-17-decode-stalls-eviction.md),
-  [under-reclaim record](../measurements/2026-10-17-anon-arena-under-reclaim.md)).
+  ([eviction record](../RESULTS.md#2026-10-17-decode-stalls-eviction),
+  [under-reclaim record](../RESULTS.md#2026-10-17-anon-arena-under-reclaim)).
 - **xe cannot move anonymous memory.** With the arena in anonymous `mmap` pieces, the same read left the arena's
   11.61 GB in place, and no decode step took over 48.1 ms (under-reclaim record).
 - **Both cards read it in place.** Their copy engines read anonymous memory correctly at 28.4 GB/s, the rate from
   `zeMemAllocHost`, and no page moved (the same record). compute-runtime binds each copy's source range to the card
   as a userptr when a copy list is recorded, 21-46 µs a copy, and unbinds it when the list is freed, 50-89 µs. It
   does not use shared system USM for these copies, though each card reports it (`sharedSystemAllocCapabilities`
-  `0xf`) ([the swaps record](../measurements/2026-10-17-swaps-keep-the-copies.md)).
+  `0xf`) ([the swaps record](../RESULTS.md#2026-10-17-swaps-keep-the-copies)).
 - **Each copy from it costs more.** A copy of 330 KB took about 1.3 µs longer from anonymous memory, with huge pages
   or without. Over the prompt path's 17,712 copies a card a chunk, 64-token prompts took 17-21 ms longer. Region
-  copies, about 150 a card, remove the difference ([the A/B record](../measurements/2026-10-17-anon-arena-default.md)).
+  copies, about 150 a card, remove the difference ([the A/B record](../RESULTS.md#2026-10-17-anon-arena-default)).
 
 ## Decision
 
@@ -48,7 +48,7 @@ record).
 ## Options not chosen
 
 - **Importing the arena with the memmap extension.** One context's import read correctly on card 0 and reset card
-  1's engine ([host-memory record](../measurements/2026-10-12-host-memory.md), Q6). Reading in place needs no
+  1's engine ([host-memory record](../RESULTS.md#2026-10-12-host-memory), Q6). Reading in place needs no
   import.
 - **Two copies, one for the CPU and one for the copy engines.** It doubles the arena, and the driver can still move
   the second copy.
@@ -57,13 +57,12 @@ record).
 ## Consequences
 
 - The arena, 10.85-20.5 GiB, counts against the engine's cgroup. A serving container's memory limit must allow it.
-  In the test machine's development sandbox it shares the 60 GiB limit, with no swap, with every session.
 - Where the cgroup has swap, the host may swap out experts left unread for minutes. Reading one back costs
   milliseconds, not seconds (*estimate*: the SSD's time for 2 MB). Not measured.
 - The copy engines read through userptr bindings, which the kernel invalidates when it moves or reclaims the
   arena's pages. Prompts under the host's reclaim with this arena are not measured. xe failed on 2026-10-14 under
   deliberate host memory pressure
-  ([stalls record](../measurements/2026-10-14-decode-stalls.md#the-crash-of-2026-10-14)), and has not failed in the
+  ([stalls record](../RESULTS.md#2026-10-14-decode-stalls)), and has not failed in the
   runs above, one of them under the host's reclaim.
 - Asleep, the engine keeps the arena as [ADR-0032](0032-sleep-the-front-end-stays-the-engine-keeps-the-arena.md)
   item 2 says; it is now the child's own memory.

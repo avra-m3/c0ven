@@ -7,13 +7,13 @@ engine core by [ADR-0022](0022-two-processes-python-and-cpp.md) (2026-10-13): th
 ## Context
 
 The host side is most of the engine: the Level Zero runtime layer, the memory system, scheduling, the CPU's share of
-the experts, and whatever ADR-0004 ([P38](../precursor/P38-adr-write-or-reuse.md)) leaves to be written here.
+the experts, and whatever ADR-0004 (P38) leaves to be written here.
 
 ## Decision
 
 1. **The engine's host code is C++20,** built with CMake.
 2. **The compiler is pinned** in [ADR-0002](0002-pin-the-toolchain.md). Warnings are on, and are treated as errors
-   in CI ([P40](../precursor/P40-scaffold-cmake.md)).
+   in CI (P40).
 3. **Level Zero is called directly** through its C headers (`ze_api.h`, `zes_api.h`).
 
 ## Why

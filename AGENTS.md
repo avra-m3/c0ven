@@ -2,8 +2,9 @@
 
 For people and agents alike.
 
-- **Commits:** straight to `main`; no branches or PRs (for now). One small, coherent change per commit, titled by
-  what it does.
+- **Changes:** as pull requests, one small, coherent change each, titled by what it does. This repository is a copy
+  of the project's private one ([ADR-0036](docs/adr/0036-a-private-repository-and-its-public-copy.md)): a change
+  accepted here is applied there and comes back with the next copy.
 - **Decisions:** [ADRs](docs/adr/README.md) bind and are immutable. [ADR-0014](docs/adr/0014-how-work-is-done.md)
   says how work is done.
 - **Layout:** [ADR-0024](docs/adr/0024-repository-layout.md) says where code goes. A change that departs from it
@@ -27,7 +28,7 @@ For people and agents alike.
 - No codenames. Name the thing, or link the record, ADR or issue that holds it: not "P27 measured", "H9" or
   "stage 5". Names a reader types or searches for stay: files, functions, kernels, tests, flags, prompts, ADR
   numbers, commits.
-- Each measured number names its machine, software versions and method.
+- Each measured number links the entry of [docs/RESULTS.md](docs/RESULTS.md) it comes from.
 - An unmeasured number is labelled *estimate*, with its method.
 - One home per fact; elsewhere, link to it: Level Zero calls in [LEVEL_ZERO.md](docs/LEVEL_ZERO.md), the model's and
   Strata's behaviour in [docs/spec/](docs/spec/).

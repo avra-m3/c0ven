@@ -1,9 +1,9 @@
 # ADR-0004: what the engine writes, and what it takes from libraries
 
-**Status:** accepted, 2026-10-13, written by [P50](../precursor/P50-design-and-gate.md) from
-[P38](../precursor/P38-adr-write-or-reuse.md)'s list, for the owner's design review.
+**Status:** accepted, 2026-10-13, written by P50 from
+P38's list, for the owner's design review.
 **Revisit when:** a library chosen here blocks a measured need (speed, a missing model feature, a licence change), or
-[P30](../precursor/P30-probe-ssd.md) finds the SSD reads need io_uring.
+P30 finds the SSD reads need io_uring.
 
 ## Context
 
@@ -14,9 +14,9 @@
   good libraries exist.
 - **The CPU's expert products:** ggml's CPU backend runs IQ2_S, IQ3_XXS and IQ3_S at 5.0-5.7 GB/s per core and
   40-44 GB/s on 16 cores; IQ4_XS and IQ4_NL hit a ~50 GB/s memory ceiling on 8 cores; Q2_0 has no x86 SIMD path and
-  runs 2.3 GB/s per core ([P36](../measurements/2026-10-11-cpu-bar.md)). In the decode step it answered a layer's one
-  miss in 88-95 µs, median ([P50 inputs](../measurements/2026-10-13-design-inputs.md)).
-- **The n-gram reads:** [P30](../precursor/P30-probe-ssd.md), which would say whether io_uring works in the container
+  runs 2.3 GB/s per core ([P36](../RESULTS.md#2026-10-11-cpu-bar)). In the decode step it answered a layer's one
+  miss in 88-95 µs, median ([P50 inputs](../RESULTS.md#2026-10-13-design-inputs)).
+- **The n-gram reads:** P30, which would say whether io_uring works in the container
   and what the SSD gives, was moved to stage 1 ("measured where it bites"); there is no result yet.
 - The toolchain is pinned by [ADR-0002](0002-pin-the-toolchain.md); Python packages are pinned in the project's
   `uv.lock` ([ADR-0021](0021-the-measurement-container.md), decision 4).
@@ -60,7 +60,7 @@
 ## Consequences
 
 - The core links `libze_loader` and ggml's CPU libraries, and nothing else.
-- The scaffold ([P49](../precursor/P49-scaffold.md)) creates the Python project with these pins, and builds ggml from the
+- The scaffold (P49) creates the Python project with these pins, and builds ggml from the
   pinned commit.
 - [TESTING.md](../TESTING.md) uses pytest throughout.
 - ggml's speed limits the CPU path for Q2_0 (no SIMD path, 2.3 GB/s per core): 9 of the 48 down tensors are Q2_0.

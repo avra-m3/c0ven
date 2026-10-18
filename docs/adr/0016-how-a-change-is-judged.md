@@ -1,7 +1,7 @@
 # ADR-0016: a change is judged by the whole window; a token's arithmetic does not depend on the batch
 
 **Status:** accepted, 2026-10-09. From the review of Splash
-([PLAN.md](../PLAN.md#how-a-change-is-judged)) and Strata's own rule in `include/strata/core/verify.hpp`.
+(PLAN.md) and Strata's own rule in `include/strata/core/verify.hpp`.
 **Revisit when:** no trigger is expected. A measurement could make one switch below unnecessary, but not the rule.
 
 ## Context
@@ -38,7 +38,7 @@
 ## Consequences
 
 - Kernel designs that split sums by the number of tokens (split-K chosen per batch width, for one) are ruled out.
-- [P39](../precursor/P39-testing-strategy.md) adds a determinism level to the tests: alone against batched, with the
+- P39 adds a determinism level to the tests: alone against batched, with the
   switches set.
 - The engine reports accepted tokens per window and wall time per window from its first end-to-end stage.
-- `docs/MEASURING.md` ([P11](../precursor/P11-measurement-runbook.md)) describes an ABBA run.
+- `docs/RESULTS.md#how-the-numbers-were-taken` (P11) describes an ABBA run.

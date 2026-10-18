@@ -128,7 +128,7 @@ static inline float8 sel8(float8 v, float8 w, uint m) {  // v with component m o
 // The positions key0 .. key0 + 15 a row takes, as 16 bits (bit j: key0 + j); 0 when the row is not live. pm, dense,
 // nbm and xm are the row's position, density, whole blocks and wbx; selrow its sel words. The tile's 4 blocks lie in
 // one word, as key0 is a multiple of 16. Each lane computes its own row's bits and the sub-group shares them by
-// broadcasts (docs/measurements/2026-10-15-prompt-attention-mask.md).
+// broadcasts (docs/RESULTS.md#2026-10-15-prompt-attention-mask).
 static inline uint tile_keys(uint key0, uint pm, bool dense, uint nbm, uint xm, __global const uint *selrow,
                              bool live) {
   if (!live || pm < key0) return 0;

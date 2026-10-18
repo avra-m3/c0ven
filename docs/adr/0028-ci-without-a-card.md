@@ -41,7 +41,7 @@
    and `sha-<short commit>`. An image that cannot build the engine is never pushed.
 7. Actions are pinned by commit, with their release tag in a comment.
 8. Levels 2-7 stay on the machine, run by hand as [DEVELOPING.md](../DEVELOPING.md#tests) says. A self-hosted
-   runner there changes the host, which only the owner decides ([AGENTS.md](../../AGENTS.md)); it is not set up.
+   runner there changes the host; it is not set up.
 
 ## Options not chosen
 
@@ -58,7 +58,5 @@
 
 - ADR-0024's layout gains `.github/workflows/`. ADR-0025 stands: CI builds and publishes the image its `Dockerfile`
   defines.
-- A sandbox can pull the image instead of building it ([README.md](../../README.md#the-image)). On a private
-  repository, GHCR keeps the package private: pulling needs a token with `read:packages`.
 - A level-1 test added without the `gpu` label, or a pytest test without the `gpu` and `model` markers that needs
   neither, runs in CI with no change to the workflow.

@@ -1,7 +1,7 @@
 # ADR-0017: scheduling several requests - time slices, packed prompts, one producer per shared prefix
 
 **Status:** accepted, 2026-10-09. From the review of Splash, merged into
-[PLAN.md](../PLAN.md#3-prompts-without-stalling-everyone-else). It makes items 5 and 6 of
+PLAN.md. It makes items 5 and 6 of
 [ADR-0010](0010-several-requests.md) precise.
 **Revisit when:** stage 7 measures that a count of chunks serves decode as well as a time slice, or that packing
 does not save the expert streaming it should.
@@ -65,7 +65,7 @@ does not save the expert streaming it should.
 - The server reports the prompt's and decode's share of time per slot.
 - On a layer split, prompt and decode work can overlap on different cards, so the time slice is a limit per card.
   Stage 7 designs and measures that.
-- Recording a set of command lists per batch width has a cost in time and memory. [P33](../precursor/P33-probe-launch-cost.md)
+- Recording a set of command lists per batch width has a cost in time and memory. P33
   measures it.
 - Stage 7's checks include N agents with the same 30K system prompt arriving together, and a short request's
-  first token during a 128K prompt. [P22](../precursor/P22-baseline-concurrency.md) measures llama.cpp on both.
+  first token during a 128K prompt. P22 measures llama.cpp on both.

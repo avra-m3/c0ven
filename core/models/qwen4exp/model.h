@@ -45,7 +45,7 @@ struct Options {
   bool adapt_swaps = false;                 // count the routing, for swap_round (swap.cpp)
   // The arena in the process's own memory, which the copy engines read in place (ADR-0035). false, or a card without
   // shared system USM: the driver's buffers, which xe moves out of GTT under reclaim and so stalls the CPU's experts
-  // (docs/measurements/2026-10-17-decode-stalls-eviction.md). options() gives the value the engine took.
+  // (docs/RESULTS.md#2026-10-17-decode-stalls-eviction). options() gives the value the engine took.
   bool anon_arena = true;
   // A profile to choose the cached experts by (tools/route_profile.cpp); empty: the first experts of each layer.
   std::string routing_profile = ENGINE_ROUTING_PROFILE;
