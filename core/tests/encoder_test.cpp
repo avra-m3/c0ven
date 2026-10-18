@@ -1,6 +1,6 @@
 // Level 4 (docs/TESTING.md): the image encoder (core/models/qwen4exp/vision.cpp) against reference rows for the same
 // images and video frame pairs. Gate, per image: the rows' mean cosine similarity at least 0.999 and the least at
-// least 0.95; no largest-error gate (docs/RESULTS.md#2026-10-17-encoder-reference says why).
+// least 0.95; no largest-error gate (docs/MEASUREMENTS.md#2026-10-17-encoder-reference says why).
 // encoder_test [reference dir, default $FLASH_REF_DIR/vision] [cards, default 2]; the encoder's file is
 // FLASH_MODEL_DIR's mmproj-Qwen3.8-Flash-Next-BF16.gguf. FLASH_ENCODER_OUT=<dir> writes the engine's rows there.
 #include <algorithm>

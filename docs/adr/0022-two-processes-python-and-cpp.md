@@ -16,11 +16,11 @@ to need per-token work.
 - **Other engines split here.** vLLM runs its API server and its engine core in separate processes; SGLang runs its
   HTTP server and tokenizer apart from its scheduler ([DESIGN.md, section 8](../DESIGN.md#8-what-was-taken-from-other-engines-and-what-was-left)).
 - **Both cards must be in one process:** host memory both cards read needs one Level Zero context holding both
-  ([P27](../RESULTS.md#2026-10-12-host-memory)).
+  ([P27](../MEASUREMENTS.md#2026-10-12-host-memory)).
 - **The owner prefers Python** for code that LLMs write.
 - **Python can reach Level Zero cheaply.** There is no maintained binding, but `ctypes` calls `libze_loader.so`
   directly. On card 0, Python 3.14.4 added 0.3-0.5 µs per call, and a recorded list's submit took 1.73-2.30 µs
-  against 1.15-1.55 µs from C++ ([P50 inputs](../RESULTS.md#2026-10-13-design-inputs)).
+  against 1.15-1.55 µs from C++ ([P50 inputs](../MEASUREMENTS.md#2026-10-13-design-inputs)).
 - **What must not be Python:** threads that spin on flags and compute, such as the CPU expert workers (one per
   core, a budget of about 90 µs per layer). Python's GIL lets one thread run Python at a time.
 

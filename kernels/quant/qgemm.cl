@@ -42,7 +42,7 @@ static inline void decode_pairs_own(__global const uchar *W, ulong n, ulong k, u
 // out[r * ldo + i] = value i of row r, fp16. One work-item per unit: groups ceil(rows * units / 64), 64. When a
 // sub-group's 16 units lie one after another in out (units a multiple of 16, rows ldo = 32 units apart), its 1 KB goes
 // through local memory so that each of four stores writes 256 consecutive bytes, which is much faster than 64-byte
-// stores (docs/RESULTS.md#2026-10-15-prompt-dequant-stores). Otherwise each work-item stores its unit.
+// stores (docs/MEASUREMENTS.md#2026-10-15-prompt-dequant-stores). Otherwise each work-item stores its unit.
 REQD_SG __kernel void dequant_f16(__global const uchar *W, uint rows, uint bpr, uint b0, uint units,
                                   __global half *out, uint ldo, __global const uchar *grids) {
   __local uint buf[64 / SG_SIZE][16 * SG_SIZE];
@@ -222,7 +222,7 @@ static inline void down_tile(MoeTile t, __global const uchar *D, uint rows, uint
 // Work-groups (rows / 64, max tiles), 64 work-items. y = down h: down is rows x K (K = units x 32 of this card's
 // inputs, from block b0 of rows of bpr blocks); h rows are K wide; y goes to the tile's rows of Y (fp16, rows wide). A
 // tile of up to MOE_TILE / 2 assignments takes half the dpas calls and loads of h
-// (docs/RESULTS.md#2026-10-15-prompt-expert-down).
+// (docs/MEASUREMENTS.md#2026-10-15-prompt-expert-down).
 REQD_SG __kernel void moe_down_t(__global const uchar *base, ulong slot_bytes, ulong down_off,
                                  __global const MoeTile *tiles, __global const uint *ntiles, uint rows, uint bpr,
                                  uint b0, __global const ushort *Hin, uint K, __global half *Y,

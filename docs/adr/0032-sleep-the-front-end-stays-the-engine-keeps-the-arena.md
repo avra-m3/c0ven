@@ -4,7 +4,7 @@
 cause, confirm or revise it. Written 2026-10-17 from
 SLEEP.md, after the owner chose its option 2 and kept the arena in RAM while asleep (2026-10-16). Its numbers were
 updated in place on 2026-10-17, by the owner's leave, from the
-[sleep and wake record](../RESULTS.md#2026-10-17-sleep-and-wake); the decision is unchanged.
+[sleep and wake record](../MEASUREMENTS.md#2026-10-17-sleep-and-wake); the decision is unchanged.
 **Revisit when:** a wake measured end to end swaps the host's services out or takes far longer than SLEEP.md's
 estimate; Level Zero can import host memory that both cards read; or the owner wants the arena's RAM back while the
 engine sleeps.
@@ -21,19 +21,19 @@ Option 2 as SLEEP.md first wrote it has the engine child exit on sleep, so somet
 SLEEP.md names two ways: the child stays and gives back only the cards, or the front end holds the arena as shared
 memory and each child imports it. The import does not work on this machine. Anonymous memory imported into Level
 Zero served only the context's first card, and a card that read imported memory it could not see reset with a lost
-device ([host memory record](../RESULTS.md#2026-10-12-host-memory), Q6). The arena has to stay the memory of
+device ([host memory record](../MEASUREMENTS.md#2026-10-12-host-memory), Q6). The arena has to stay the memory of
 the process that loaded it: a `zeMemAllocHost` allocation of its context or, with `Options::anon_arena`, its own
 anonymous memory.
 
 An idle process that holds the runtime and every kernel keeps 200 MiB of VRAM a card and 127-129 MiB of RSS, and two
-processes shared the cards ([VRAM record](../RESULTS.md#2026-10-16-vram-give-back)). Recording every command list
-again takes 0.18-0.20 s ([load record](../RESULTS.md#2026-10-16-load-phases)).
+processes shared the cards ([VRAM record](../MEASUREMENTS.md#2026-10-16-vram-give-back)). Recording every command list
+again takes 0.18-0.20 s ([load record](../MEASUREMENTS.md#2026-10-16-load-phases)).
 
 Today's load reads the GGUF through its mapping. The page cache grew to 72 GB and pushed 2.4 GiB of the host's other memory
 into swap, and 39.4-46.2 s of a 63.2-71.5 s load was one thread copying the arena out of the mapped file (load
 record). `O_DIRECT` reads the first shard at 6.49-6.64 GB/s from 8 threads of 1 MiB, and `to_runs` rearranges the
 experts at 12.26-13.04 GB/s on 16 threads, so the CPU does not limit a load that rearranges what it reads
-([load rates record](../RESULTS.md#2026-10-16-load-read-rates)).
+([load rates record](../MEASUREMENTS.md#2026-10-16-load-read-rates)).
 
 ## Decision
 
@@ -70,7 +70,7 @@ experts at 12.26-13.04 GB/s on 16 threads, so the CPU does not limit a load that
 ## Why
 
 Keeping the child is the only way found to keep an arena both cards can read, and it costs 0.31-0.32 GiB of VRAM a
-card beside the image model ([sleep and wake record](../RESULTS.md#2026-10-17-sleep-and-wake)). It also keeps the
+card beside the image model ([sleep and wake record](../MEASUREMENTS.md#2026-10-17-sleep-and-wake)). It also keeps the
 kernels loaded and the runtime set up, though those cost only about 0.1 s (VRAM record). Recording the lists again
 is cheap, so the virtual memory calls of option 3, which crashed the driver with recorded lists above 16 GiB a card,
 are not needed.
@@ -89,7 +89,7 @@ path's 63.2-71.5 s. It still reads at only 1.3-3.5 GB/s, short of the SSD's 6.5:
 ## Options not chosen
 
 - Option 1, llama-swap stopping the front end as well: each wake pays the front end's 5.3-5.6 s start
-  ([start and quit record](../RESULTS.md#2026-10-16-engine-start-and-quit)), and the port goes away.
+  ([start and quit record](../MEASUREMENTS.md#2026-10-16-engine-start-and-quit)), and the port goes away.
 - The front end holding the arena as a `memfd` that each child imports: Level Zero's import serves one card (Q6).
 - The child exiting on every sleep: each wake pins the arena again after the image model, which may stall in
   compaction or push the host's other memory into swap. It stays available as `--sleep-mode exit`.

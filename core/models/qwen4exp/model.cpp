@@ -257,12 +257,12 @@ void Model::load_cards(bool first) {
   for (uint32_t c = 0; c < ncards_; c++) info_.device_bytes[c] = rt_->device_bytes(c);
   // The file's pages back to the host, but the token embedding's, which each step reads: everything else is on the
   // cards or in the arena now, and a swap reads its experts again. Otherwise the mapping holds most of the file in
-  // the page cache (docs/RESULTS.md#2026-10-14-decode-stalls) on a host short of memory (RESULTS.md#the-test-machine).
+  // the page cache (docs/MEASUREMENTS.md#2026-10-14-decode-stalls) on a host short of memory (MEASUREMENTS.md#the-test-machine).
   for (const auto &[name, t] : gguf_.tensors())
     if (name != "token_embd.weight") gguf_.release(t);
   // Every page of the arena mapped for the CPU before the first step, after a sleep too. The load wrote them all,
   // but the CPU's mappings may be gone, and an expert's first miss would fault
-  // (docs/RESULTS.md#2026-10-15-arena-touch).
+  // (docs/MEASUREMENTS.md#2026-10-15-arena-touch).
   std::vector<std::pair<const uint8_t *, uint64_t>> pieces;
   for (auto &hl : host_layers_)
     for (const uint8_t *p : hl->arena)
@@ -311,7 +311,7 @@ void Model::wake() {
 }
 
 // need bytes of the arena, in pieces of 1 GiB, as small pieces are slower to allocate and to read
-// (docs/RESULTS.md#2026-10-13-design-inputs). With Options::anon_arena (the default, ADR-0035) a piece is the
+// (docs/MEASUREMENTS.md#2026-10-13-design-inputs). With Options::anon_arena (the default, ADR-0035) a piece is the
 // process's own memory, 2 MiB aligned for huge pages, which the driver cannot take from the CPU; without it, the
 // driver's host memory (DESIGN.md, section 6).
 uint8_t *Model::arena_piece(uint64_t need) {
@@ -616,7 +616,7 @@ void Model::load_experts(bool first) {
   }
   // The prompt path's staging holds two layers of the experts not cached, each card's share of them: its rows of gate
   // and up, and its region of down. The arena keeps down in one region per card, so a card stages only the blocks it
-  // reads (docs/RESULTS.md#2026-10-17-staging-half-downs).
+  // reads (docs/MEASUREMENTS.md#2026-10-17-staging-half-downs).
   std::vector<uint64_t> stg_bytes(Q_LAYERS);
   for (uint32_t l = 0; l < Q_LAYERS; l++) {
     const GgufTensor &g = gguf_.tensor(blk(l, "ffn_gate_exps.weight")), &d = gguf_.tensor(blk(l, "ffn_down_exps.weight"));
@@ -833,7 +833,7 @@ void Model::record(Card &card, uint32_t W) {
   const float one = 1.0f, quarter = 0.25f;
   const uint32_t zero = 0, mode_silu = 1;
   // The kernels read the plan from the card's copy: a word in host memory makes each launch slower
-  // (docs/RESULTS.md#2026-10-16-bf16-products-occupancy).
+  // (docs/MEASUREMENTS.md#2026-10-16-bf16-products-occupancy).
   const StepPlan *plan = card.plan;
   const uint32_t *nrows = &plan->nrows;
 
@@ -865,7 +865,7 @@ void Model::record(Card &card, uint32_t W) {
     if (!normed) L.launch(q4("rms_norm"), {card.R, norm, plan, card.n, card.xb16}, Q_HC, W, 1, 256);
     // On the XMX units, with bf16 activations as the reference's BF16 products take them: the norm wrote xb16, and
     // the down product writes lr as bf16 for the up product. K split in 8, faster than 16 for 1-8 rows
-    // (docs/RESULTS.md#2026-10-15-hc-down-split).
+    // (docs/MEASUREMENTS.md#2026-10-15-hc-down-split).
     if (opt_.trace) L.label("mv_xmx_bf16 down");
     L.launch(common("mv_xmx_bf16"), {down, lw, (uint32_t)Q_HC_DIM, (uint32_t)Q_HC_DIM, card.xb16, nrows, lri, lw, mode_silu,
                                      quarter, post, 8u, card.lrb16}, (lw + 15) / 16, 1, 1, 16 * 8);
@@ -885,8 +885,8 @@ void Model::record(Card &card, uint32_t W) {
   };
   const size_t ex_layer = (size_t)C * STEP_MAX_ROWS * Q_EMBD;  // floats per layer in ex1_ and ex2_
   // The mixer's out product, this card's partial sums into ex1_; from 2 rows via card memory and one copy to host
-  // (docs/RESULTS.md#2026-10-16-out-products-host-writes). With two cards, 2 rows or more exchange card to card
-  // (ADR-0030, docs/RESULTS.md#2026-10-16-peer-exchange): a card's block of xp is copied to the same block of the
+  // (docs/MEASUREMENTS.md#2026-10-16-out-products-host-writes). With two cards, 2 rows or more exchange card to card
+  // (ADR-0030, docs/MEASUREMENTS.md#2026-10-16-peer-exchange): a card's block of xp is copied to the same block of the
   // other's, and the combine reads both in card order, so the sums match. k: 0 the mixer's exchange, 1 the MoE's.
   const bool peer = C > 1 && W > 1;
   auto xp_block = [&](const Card &to, uint32_t k) { return to.xp + ((size_t)k * C + c) * STEP_MAX_ROWS * Q_EMBD; };
@@ -994,7 +994,7 @@ void Model::record(Card &card, uint32_t W) {
     L.together(false);
     if (nslots_cached_ > 0) {
       // moe.cl's kernels where they take the type: the same results, faster
-      // (docs/RESULTS.md#2026-10-14-decode-expert-kernels).
+      // (docs/MEASUREMENTS.md#2026-10-14-decode-expert-kernels).
       std::string gm = moe_module(Ly.gu_type, W, false), dm = moe_module(Ly.down_type, W, true);
       uint32_t rpw = gm.empty() ? 4 : MOE_WG_ROWS, lx = gm.empty() ? 64 : kSgSize * MOE_WG_ROWS / MOE_GU_ROWS(W);
       uint32_t gbpr = Q_EMBD / quant_block_values(Ly.gu_type);

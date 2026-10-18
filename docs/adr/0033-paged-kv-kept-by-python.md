@@ -14,7 +14,7 @@ in host memory that this table cannot name.
 - **Versions 3 and 4 of the ABI did not.** Each slot kept its whole context's KV, and a checkpoint copied the KV up
   to its position, so `engine_open` pinned every checkpoint at the whole context's size. At 262,144 tokens that is
   about 4 GiB each; the engine's default of 8 took the host from 70.3 GiB of `MemAvailable` to under 20 GiB and was
-  killed ([record](../RESULTS.md#2026-10-16-engine-start-and-quit)). The default became 2 until now.
+  killed ([record](../MEASUREMENTS.md#2026-10-16-engine-start-and-quit)). The default became 2 until now.
 - **Python's half was already there.** `engine/seqstate/` keeps pages, reference counts, reservations and
   checkpoints, and the scheduler admits by page count; the native adapter dropped the page changes
   (ADR-0027, item 2).
@@ -48,7 +48,7 @@ in host memory that this table cannot name.
 ## Why
 
 The table costs no time that a decode or a prompt shows
-([record](../RESULTS.md#2026-10-17-paged-kv)). On doc-32k at 64K, one sequence, ABBA with 6 runs an arm: decode
+([record](../MEASUREMENTS.md#2026-10-17-paged-kv)). On doc-32k at 64K, one sequence, ABBA with 6 runs an arm: decode
 18.62 ms per step against 18.48 ms before, the ranges overlapping; with drafting 76.10 against 75.24 tokens/s; the
 prompt 2,243.5 tokens/s in both. Every run gave the same tokens. Traced, the five kernels that read the table add
 11-14 µs to an 18.3 ms step: one read of the table per cell or block they touch, from a few kilobytes per slot.

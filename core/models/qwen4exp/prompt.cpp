@@ -176,7 +176,7 @@ std::unique_ptr<ze::List> Model::prompt_copies(Card &card) {
     const uint64_t half = card.ff * hl.gate_row_bytes, dpart = hl.down_bytes / hl.down_parts;
     const uint64_t d0 = hl.down_parts > 1 ? card.c * dpart : 0;
     // Experts adjacent in the arena (load lays them out so) take one region copy a matrix: each copy has a fixed
-    // cost, higher from the anonymous arena (docs/RESULTS.md#2026-10-17-anon-arena-default). A run ends at a
+    // cost, higher from the anonymous arena (docs/MEASUREMENTS.md#2026-10-17-anon-arena-default). A run ends at a
     // piece's end or where a swap put an expert in a spare piece.
     const uint64_t stride = align256(2 * hl.gate_bytes + hl.down_bytes);
     for (size_t i = 0, n; i < hl.uncached.size(); i += n) {
@@ -216,7 +216,7 @@ ze::List &Model::prompt_list(Card &card, uint32_t T) {
   // tm tiles of 8 tokens and tn tiles of 16 rows a sub-group, sg sub-groups a work-group (kernels/gemm.cl): 8, 2
   // and 4, or for bf16 4, 2 or 1 and 4 (modules gemm_bf16_t4n<tn>), or 4, 2 and 11 (gemm_bf16_t4n2s11). y2: a second
   // fp16 output, or null. nt and rows, for x and y from a row other than 0: where the count of tokens is, and the most.
-  // Weights larger than the cards' 18 MiB cache (docs/RESULTS.md#2026-10-11-level-zero-report) are taken in
+  // Weights larger than the cards' 18 MiB cache (docs/MEASUREMENTS.md#2026-10-11-level-zero-report) are taken in
   // bands of 4 blocks of rows.
   auto gemm = [&](bool bf16, const uint16_t *W, uint32_t N, uint32_t K, const uint16_t *x, uint32_t ldx, void *y,
                   uint32_t ldy, bool yhalf, uint32_t mode, float scale, ze_event_handle_t sig = nullptr,
@@ -244,7 +244,7 @@ ze::List &Model::prompt_list(Card &card, uint32_t T) {
     gemm(false, P.w16, m.rows, m.K, x, ldx, y, ldy, yhalf, 0, 1.0f, sig, 8, 2, y2);
   };
   // An exchange: the kernel that makes each card's fp16 partial also writes it into the other card's memory as it
-  // computes, and signals (docs/RESULTS.md#2026-10-15-prompt-exchange-stores); both cards add the two partials
+  // computes, and signals (docs/MEASUREMENTS.md#2026-10-15-prompt-exchange-stores); both cards add the two partials
   // in card order, so their residuals stay the same. Exchange e = 2 l + which uses recv[e % 2]: a card writes e + 2
   // only after the other card has sent e + 1, which it does after reading e.
   PromptCard *peer = C > 1 ? cards_[1 - c]->pc.get() : nullptr;
@@ -275,8 +275,8 @@ ze::List &Model::prompt_list(Card &card, uint32_t T) {
   auto hc_mix = [&](const Layer &Ly, uint32_t i, bool normed, uint32_t block) {
     const uint32_t rows = r1 - r0;
     if (!normed) L.launch(q4("p_hc_norm"), {P.R, Ly.hc_norm[i], pp, P.rr, P.nb, r0, r1}, Q_HC, rows, 1, 256);
-    // Tiles of 4 tokens: faster with K or N short (docs/RESULTS.md#2026-10-15-prompt-gemm-tiles). From 1,024
-    // rows one work-group takes all 324 columns, reading its tokens once (docs/RESULTS.md#2026-10-17-hc-lowrank).
+    // Tiles of 4 tokens: faster with K or N short (docs/MEASUREMENTS.md#2026-10-15-prompt-gemm-tiles). From 1,024
+    // rows one work-group takes all 324 columns, reading its tokens once (docs/MEASUREMENTS.md#2026-10-17-hc-lowrank).
     const uint16_t *nb = P.nb + (size_t)r0 * Q_HC_DIM;
     float *lr = P.lr + (size_t)r0 * kLriW;
     if (rows >= 1024)
@@ -461,7 +461,7 @@ std::vector<Candidate> Model::prompt(uint32_t slot, uint32_t pos0, const int32_t
   }
   // The n-gram rows, read while the cards run layer 0; they wait for the event just before layer 1 (ADR-0015). A
   // chunk the last one named as next has its rows already, read during that run, since a gather can outlast layer 0
-  // (docs/RESULTS.md#2026-10-17-ngram-ahead).
+  // (docs/MEASUREMENTS.md#2026-10-17-ngram-ahead).
   const bool ahead = ahead_.valid && ahead_.slot == slot && ahead_.pos0 == pos0 && ahead_.p1 == p1 && ahead_.p2 == p2 &&
                      ahead_.tokens.size() == n && std::equal(tokens, tokens + n, ahead_.tokens.begin());
   ahead_.valid = false;

@@ -11,7 +11,7 @@
 #define DPAS dpas_f16
 #endif
 
-// Tile sizes from docs/RESULTS.md#2026-10-15-prompt-gemm-tiles; the TM 4 modules are for a short K or N.
+// Tile sizes from docs/MEASUREMENTS.md#2026-10-15-prompt-gemm-tiles; the TM 4 modules are for a short K or N.
 #ifndef TM
 #define TM 8      // tiles of 8 tokens per sub-group, a multiple of 4
 #endif
@@ -54,7 +54,7 @@ REQD_SG __kernel void gemm(__global const ushort *W, uint N, uint K, uint ldw, _
                            __global ushort *Y2, uint band) {
   const uint lane = sg_lane();
   uint gn = get_group_id(0), gt = get_group_id(1);
-  // A band's weights stay in L2 (docs/RESULTS.md#2026-10-15-prompt-gemm-bands).
+  // A band's weights stay in L2 (docs/MEASUREMENTS.md#2026-10-15-prompt-gemm-bands).
   if (band) {
     const uint nb = get_num_groups(0), tb = get_num_groups(1), g = gn + gt * nb;
     const uint b = g / (band * tb), r = g % (band * tb), w = min(band, nb - b * band);
@@ -101,7 +101,7 @@ REQD_SG __kernel void gemm(__global const ushort *W, uint N, uint K, uint ldw, _
         }
       }
     }
-    // One block write a token: small stores cross PCIe slowly (docs/RESULTS.md#2026-10-15-prompt-exchange-stores).
+    // One block write a token: small stores cross PCIe slowly (docs/MEASUREMENTS.md#2026-10-15-prompt-exchange-stores).
     if (Y2 && yhalf)
       for (uint m = 0; m < 8; m++) {
         const uint t = t0 + 8 * i + m;

@@ -41,4 +41,4 @@
 - P39 adds a determinism level to the tests: alone against batched, with the
   switches set.
 - The engine reports accepted tokens per window and wall time per window from its first end-to-end stage.
-- `docs/RESULTS.md#how-the-numbers-were-taken` (P11) describes an ABBA run.
+- `docs/MEASUREMENTS.md#how-the-numbers-were-taken` (P11) describes an ABBA run.
