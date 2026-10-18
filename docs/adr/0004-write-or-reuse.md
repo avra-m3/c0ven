@@ -14,8 +14,8 @@ P30 finds the SSD reads need io_uring.
   good libraries exist.
 - **The CPU's expert products:** ggml's CPU backend runs IQ2_S, IQ3_XXS and IQ3_S at 5.0-5.7 GB/s per core and
   40-44 GB/s on 16 cores; IQ4_XS and IQ4_NL hit a ~50 GB/s memory ceiling on 8 cores; Q2_0 has no x86 SIMD path and
-  runs 2.3 GB/s per core ([P36](../RESULTS.md#2026-10-11-cpu-bar)). In the decode step it answered a layer's one
-  miss in 88-95 µs, median ([P50 inputs](../RESULTS.md#2026-10-13-design-inputs)).
+  runs 2.3 GB/s per core ([P36](../MEASUREMENTS.md#2026-10-11-cpu-bar)). In the decode step it answered a layer's one
+  miss in 88-95 µs, median ([P50 inputs](../MEASUREMENTS.md#2026-10-13-design-inputs)).
 - **The n-gram reads:** P30, which would say whether io_uring works in the container
   and what the SSD gives, was moved to stage 1 ("measured where it bites"); there is no result yet.
 - The toolchain is pinned by [ADR-0002](0002-pin-the-toolchain.md); Python packages are pinned in the project's

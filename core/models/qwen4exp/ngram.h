@@ -1,7 +1,7 @@
 // The n-gram embedding's rows (docs/spec/MODEL_IO.md, 1.2 and 1.4): the hash of a token and the two before it, and
 // the 16 rows of the table it names. The table stays on the SSD (ADR-0015), read with O_DIRECT 4 KiB reads past the
 // page cache by a pool of reader threads, many because the SSD needs many reads in flight
-// (docs/RESULTS.md#2026-10-15-ngram-gather). Rows already read are cached in RAM.
+// (docs/MEASUREMENTS.md#2026-10-15-ngram-gather). Rows already read are cached in RAM.
 #pragma once
 
 #include <array>
