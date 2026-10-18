@@ -1,7 +1,8 @@
 # Reference outputs: what "correct" means end to end
 
-The tokens and probabilities the engine is compared against, made with llama.cpp on 2026-10-11 and 2026-10-12, and
-how they were made. The correctness rule they serve is [ADR-0012](adr/0012-correctness-reference.md).
+The tokens and probabilities the engine is compared against, made with llama.cpp on 2026-10-11 and 2026-10-12 (the
+outputs of two prompts again on 2026-10-18), and how they were made. The correctness rule they serve is
+[ADR-0012](adr/0012-correctness-reference.md).
 
 **Warning: the reference depends on how the prompt is chunked.** With the same file, the same prompt and greedy
 sampling, llama.cpp gives different tokens when its physical batch size (`-ub`) changes, and a mean KL of about 0.036
@@ -12,7 +13,7 @@ matter. So the reference is pinned to `-ub 512`, and the engine's prompt chunkin
 
 | File | What it is | Size |
 | --- | --- | ---: |
-| [`reference/prompts.jsonl`](../reference/prompts.jsonl) | 16 prompts: id, kind, thinking on/off, effort, the rendered text, and its token ids from llama.cpp's tokenizer | 330 KB |
+| [`reference/prompts.jsonl`](../reference/prompts.jsonl) | 16 prompts: id, kind, thinking on/off, effort, the rendered text, and its token ids from llama.cpp's tokenizer | 332 KB |
 | [`reference/llamacpp-3cf0325-IQ3_S-greedy.jsonl`](../reference/llamacpp-3cf0325-IQ3_S-greedy.jsonl) | greedy output token ids per prompt, first line names the commit, the backend and the model files with their sha256 | 9 KB |
 | The KL base (on the machine, not in Git) | llama.cpp's saved log-probabilities for 64 chunks of a fixed text | 8.1 GB |
 
@@ -70,14 +71,17 @@ built as shared libraries, and `libllama` is linked by the small program in [The
 | `tool-choose` | tool | off | 449 | 68 | eog | 9.3 | 12.2 |
 | `effort-xhigh` | effort | on (xhigh) | 959 | 128 | length | 22.6 | 23.8 |
 | `effort-low` | effort | on (low) | 947 | 128 | length | 19.6 | 25.2 |
-| `doc-4k-summary` | long | off | 4,150 | 128 | length | 110.7 | 27.0 |
+| `doc-4k-summary` | long | off | 4,150 | 128 | length | 155.1 | 44.4 |
 | `doc-4k-qa` | long | on | 4,159 | 128 | length | 95.8 | 24.5 |
-| `doc-32k` | long | off | 32,056 | 128 | length | 920.6 | 30.2 |
+| `doc-32k` | long | off | 32,010 | 128 | length | 803.0 | 26.3 |
 
 - "Stop" is `length` (128 new tokens) or `eog` (an end-of-generation token; it is kept as the last token).
 - Times are from one run, on the test machine. They are not a performance
   measurement. They include a cold start: the first prompts read the model file from disk, so the first decode rates
   (1.2-1.5 tokens/s, new tokens over decode time) are not the steady rate. The others decode at 2.1-5.8 tokens/s.
+- The rows of `doc-4k-summary` and `doc-32k` are from a second run on 2026-10-18, made after their text changed
+  ([The rerun](#the-rerun-of-2026-10-18)), on a host that was shared with other work. Their times are not comparable
+  with the other rows'.
 - Thinking "on" is the template's default: the prompt ends with `<think>\n`, so the first 128 tokens are the model's
   reasoning. "Off" is `enable_thinking=false`: the prompt ends with `<think>\n\n</think>\n\n`.
 
@@ -89,7 +93,7 @@ What each group holds:
 | code | 3 | write a function, find bugs in C, write SQL |
 | tool | 3 | tool definitions in the system block; one with a tool result fed back; one where two tools are needed |
 | effort | 2 | the same ~900-token system prompt and the same user question, with `reasoning_effort` `xhigh` and `low` |
-| long | 3 | text from this repository's own docs: about 4K, 4K and 32K tokens, with a question after the text |
+| long | 3 | text from this repository's docs: about 4K, 4K and 32K tokens, with a question after the text. `doc-4k-summary` is the start of `docs/DESIGN.md` at commit `fdfc1bb`; `doc-4k-qa` and `doc-32k` are older copies of pages |
 
 The effort pair shares only 9 tokens of prefix. The template puts the effort sentence at the start of the system
 block, before the long system prompt. So `effort-xhigh` and `effort-low` agree for 9 tokens
@@ -112,7 +116,9 @@ The token ids come from `llama_tokenize` on the loaded vocabulary (`vocab_only`)
 sets `add_bos_token` false) and `parse_special=true`, so `<|im_start|>`, `<think>` and the like become single tokens.
 `tests/end_to_end/qwen4exp/test_model_text.py` checks the engine's tokenizer against these ids.
 
-The two 4K prompts and the 32K prompt are cut by trial to 4,150, 4,159 and 32,056 tokens.
+The two 4K prompts and the 32K prompt are cut by trial to 4,150, 4,159 and 32,010 tokens. `doc-4k-summary` is the
+first 14,369 characters of `docs/DESIGN.md` at commit `fdfc1bb`, between `Here is a document.` and the instruction
+`Summarise the document's main points in five bullet points.`.
 
 ## The greedy outputs
 
@@ -147,6 +153,18 @@ LD_LIBRARY_PATH=build/bin timeout 3600 taskset -c 0-15 ./refgen gen $M prompts g
 
 The long prompts ran as separate invocations under `timeout 1800` (the two 4K prompts, 6 minutes in all) and
 `timeout 7200` (the 32K prompt, 16 minutes). All exited with code 0.
+
+### The rerun of 2026-10-18
+
+`doc-4k-summary` and `doc-32k` were made again after their text changed, with the same llama.cpp commit, build line,
+compiler and tool versions, model files and settings as above. `refgen` was written again from the steps above, and
+llama.cpp was rebuilt. Two checks show that the rerun reproduces the first:
+
+- `refgen tok` gives the stored token ids for the text of all 14 prompts that did not change.
+- The stored outputs of `chat-hashmap`, `tool-weather` and `doc-4k-qa` come out again byte for byte the same.
+
+The 4K prompts ran as one invocation, `doc-4k-summary` and then `doc-4k-qa` (the check), under `timeout 1800`. The 32K
+prompt ran as its own invocation under `timeout 7200`, 15 minutes. All exited with code 0.
 
 ## The KL base
 
@@ -232,7 +250,7 @@ report:
 | `tool-choose` | 449 | differs at token 0 (a sentence before the tool call, not the tool call) | identical |
 | `effort-xhigh` | 959 | first difference at token 58 | first difference at token 12 |
 | `effort-low` | 947 | first difference at token 53 | first difference at token 59 |
-| `doc-4k-summary` | 4,150 | not run | first difference at token 4 |
+| `doc-4k-summary`, before its text changed | 4,150 | not run | first difference at token 4 |
 | `doc-4k-qa` | 4,159 | not run | first difference at token 113 |
 
 A prompt that fits in one 512-token batch gives the same tokens under `-ub` 512 and 2048 (`code-cbug`,
@@ -260,7 +278,7 @@ gate, and `core/tests/api_test.c` checks the first 32 tokens of `chat-hashmap` e
 
 | Choice | What was done | Why | To revisit |
 | --- | --- | --- | --- |
-| Prompt text | written for this reference, plus this repository's docs for the long prompts; Strata's prompts were not at hand | no `tools/` or `bench/results/` of Strata was | swap in Strata's prompts if wanted |
+| Prompt text | written for this reference, plus this repository's docs for the long prompts (`doc-4k-summary` from the start of `docs/DESIGN.md`); Strata's prompts were not at hand | no `tools/` or `bench/results/` of Strata was | swap in Strata's prompts if wanted |
 | KL text | repository docs, 110,000 bytes, not a standard corpus | a standard text (wikitext-2) needs a download, which was not made | prose is easier to compare with other work; markdown tables are unusual text for a language model |
 | KL size | 64 chunks, 8.1 GB | about 16K scored positions gives a standard error of 0.0006 on the mean KL | more chunks if the gate needs a tighter error |
 | Thinking | on for 6 prompts, off for 10 | thinking-on outputs are all reasoning for 128 tokens; the tool and answer-format prompts need it off | |
