@@ -191,10 +191,10 @@ engine image.
 
 ### Running without the cards
 
-The engine runs with three backends ([DESIGN.md](DESIGN.md), section 1): `native` (the core, on the cards),
-`mock` (made-up tokens, real plans) and `reference` (replays the greedy tokens of the reference prompts,
-[REFERENCE_OUTPUTS.md](REFERENCE_OUTPUTS.md)). The last two need no core and no model file, so the front end runs
-against them anywhere, given the model's `tokenizer.json` and `chat_template.jinja`:
+The engine runs with three backends ([DESIGN.md, section 3](DESIGN.md#3-the-c-abi-between-python-and-c)): `native` (the
+core, on the cards), `mock` (made-up tokens, real plans) and `reference` (replays the greedy tokens of the reference
+prompts, [REFERENCE_OUTPUTS.md](REFERENCE_OUTPUTS.md)). The last two need no core and no model file, so the front end
+runs against them anywhere, given the model's `tokenizer.json` and `chat_template.jinja`:
 
 ```bash
 uv run python -m frontend --engine-backend mock --tokenizer tokenizer.json --chat-template chat_template.jinja --context 8192 --slots 2
@@ -225,5 +225,6 @@ uv run python -m tools.plan --context 262144 --slots 1
 
 `tools/attach.py` reads a running engine's timing rings into a Perfetto timeline. It runs in the engine's
 container. The engine's `INFO` line gives its pid and the timing region's fd, and the tool's docstring has the
-command. The tool follows DESIGN.md's shared timing region, which no backend provides: both report `timing_fd=-1`,
-and the core hands out timing records through `engine_read_timing` instead.
+command. The tool expects a shared timing region that no backend provides: both report `timing_fd=-1`, and the core
+hands out timing records through `engine_read_timing` instead
+([DESIGN.md, section 7](DESIGN.md#7-timing-and-debugging)).
