@@ -22,17 +22,23 @@ vLLM for those.
 
 ## Benchmarks
 
-<!-- IMAGE: decode speed chart, C0ven vs llama.cpp, docs/images/bench-decode.png -->
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/bench-decode-dark.png">
+  <img src="docs/images/bench-decode.png" alt="Decode speed, median of 6 runs: after a 4,159-token prompt C0ven 85.6 tokens/s, llama.cpp 17.0; after a 32,010-token prompt C0ven 75.0, llama.cpp 14.3" width="800">
+</picture>
 
 | Test | Prompt tokens | C0ven | llama.cpp (SYCL) |
 | --- | ---: | ---: | ---: |
-| Prompt reading (tokens/s) | 4k | TBD | TBD |
-| Prompt reading (tokens/s) | 32k | TBD | TBD |
-| Decode (tokens/s) | 4k | TBD | TBD |
-| Decode (tokens/s) | 32k | TBD | TBD |
-| Time to first token (s) | 4k | TBD | TBD |
+| Prompt reading (tokens/s) | 4k | [2,019](docs/MEASUREMENTS.md#2026-10-18-against-llama-cpp) | [357](docs/MEASUREMENTS.md#2026-10-18-against-llama-cpp) |
+| Prompt reading (tokens/s) | 32k | [2,066](docs/MEASUREMENTS.md#2026-10-18-against-llama-cpp) | [354](docs/MEASUREMENTS.md#2026-10-18-against-llama-cpp) |
+| Decode (tokens/s) | 4k | [85.6](docs/MEASUREMENTS.md#2026-10-18-against-llama-cpp) | [17.0](docs/MEASUREMENTS.md#2026-10-18-against-llama-cpp) |
+| Decode (tokens/s) | 32k | [75.0](docs/MEASUREMENTS.md#2026-10-18-against-llama-cpp) | [14.3](docs/MEASUREMENTS.md#2026-10-18-against-llama-cpp) |
+| Time to first token (s) | 4k | [2.06](docs/MEASUREMENTS.md#2026-10-18-against-llama-cpp) | [11.65](docs/MEASUREMENTS.md#2026-10-18-against-llama-cpp) |
 
-<!-- Each number links to its record in docs/measurements/ and names the machine, versions and method. -->
+One request at a time through each server's `/v1/chat/completions`: the reference prompts `doc-4k-qa` (4,159 tokens)
+and `doc-32k` (32,010 tokens), greedy, 512 tokens out. Both ran on the same two B60s with the same IQ3_S file and a
+262,144-token context: C0ven with its defaults, llama.cpp release b11719 with its SYCL backend and its own placement.
+Each number is the median of six runs, each a fresh server process.
 
 
 ## Features
