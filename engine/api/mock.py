@@ -98,8 +98,8 @@ class MockEngine:
         decode_step_ms: float = 11.0,
         realtime: bool = False,
     ) -> None:
-        """`prompt_row_ms` and `decode_step_ms` are the step times it reports (estimates: DESIGN.md, sections 5
-        and 11). With `realtime`, it also sleeps for them."""
+        """`prompt_row_ms` and `decode_step_ms` are the step times it reports (estimates from stand-in kernels:
+        docs/RESULTS.md#2026-10-13-design-inputs). With `realtime`, it also sleeps for them."""
         self._script = script
         self._row_ms = prompt_row_ms
         self._step_ms = decode_step_ms
