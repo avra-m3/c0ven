@@ -3,7 +3,7 @@
 **Status:** accepted, 2026-10-14, by the owner. Supersedes item 1 of
 [ADR-0024](0024-repository-layout.md) in part: the layout gains a `Dockerfile` at the root. Amended 2026-10-16 by
 the owner: decisions 6 and 7, the `serve` target, carry out the consequence that the `Dockerfile` copies the engine's
-code in and builds it.
+code in and builds it. Amended 2026-10-18: the `serve` target's directory is `/opt/c0ven`, after the project's name.
 **Revisit when:** the engine's run in service needs something a build image should not carry, or CI is set up
 ([TESTING.md](../TESTING.md#where-tests-run)).
 
@@ -31,10 +31,10 @@ code in and builds it.
 6. The `Dockerfile` has two targets. `engine` is the image of decisions 1-4, where the engine is built and tested.
    `serve` starts `FROM engine`, so it holds exactly ADR-0002's versions and pins none of its own. It copies the code
    the engine runs from (the core, its kernels and headers, the CMake files, the Python packages and their lock) to
-   `/opt/flash-next-b60`, its working directory, builds the core there in CMake's default build type (Release) into
-   `/opt/flash-next-b60/build`, and makes the venv at `/opt/flash-next-b60/.venv` with `uv sync --locked --no-dev`.
+   `/opt/c0ven`, its working directory, builds the core there in CMake's default build type (Release) into
+   `/opt/c0ven/build`, and makes the venv at `/opt/c0ven/.venv` with `uv sync --locked --no-dev`.
    Root owns all three; nothing moves them after the build. It sets `ENGINE_LIBRARY` to
-   `/opt/flash-next-b60/build/core/libengine.so`, puts the venv's `bin` first on `PATH` and sets
+   `/opt/c0ven/build/core/libengine.so`, puts the venv's `bin` first on `PATH` and sets
    `PYTHONDONTWRITEBYTECODE=1`. Its entrypoint is `python -m frontend`, with no command, so the arguments of
    `docker run` are the front end's flags. It runs as `ubuntu` (uid 1000) and writes nothing to its root filesystem,
    which may be mounted read-only.

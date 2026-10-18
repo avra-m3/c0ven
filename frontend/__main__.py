@@ -93,7 +93,7 @@ def table_cache(stack: contextlib.ExitStack) -> Path | None:
     """A directory for the engine's tensor table, removed at exit; None where nothing is writable, as in a container
     with a read-only root, and then each engine start reads the table from the GGUF."""
     try:
-        return Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="flash-next-b60-")))
+        return Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="c0ven-")))
     except OSError as exc:
         log.warning("no directory for the tensor table (%s); each engine start reads it from the GGUF", exc)
         return None
