@@ -1,6 +1,7 @@
 # ADR-0014: how work is done
 
-**Status:** accepted, 2026-10-09; rewritten by the owner, 2026-10-14.
+**Status:** accepted, 2026-10-09; rewritten by the owner, 2026-10-14. Item 5 amended 2026-10-18: the
+measurement records are kept privately, and [RESULTS.md](../RESULTS.md) gives their questions and answers.
 **Revisit when:** a rule costs more than it saves.
 
 The project is in active development: PRs are not required for now.

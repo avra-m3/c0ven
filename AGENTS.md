@@ -2,9 +2,9 @@
 
 For people and agents alike.
 
-- **Changes:** as pull requests, one small, coherent change each, titled by what it does. This repository is a copy
-  of the project's private one ([ADR-0036](docs/adr/0036-a-private-repository-and-its-public-copy.md)): a change
-  accepted here is applied there and comes back with the next copy.
+- **Changes:** as pull requests, one small, coherent change each, titled by what it does. The owner reviews them.
+- **Measurements:** the records are kept privately; [RESULTS.md](docs/RESULTS.md) gives each one's question and
+  answer. Nothing committed here, commit messages included, names the test machine or the setup around it.
 - **Decisions:** [ADRs](docs/adr/README.md) bind and are immutable. [ADR-0014](docs/adr/0014-how-work-is-done.md)
   says how work is done.
 - **Layout:** [ADR-0024](docs/adr/0024-repository-layout.md) says where code goes. A change that departs from it
