@@ -31,7 +31,7 @@ def test_long_prompts_every_16k():
     p = PROMPTS["doc-32k"]
     marks = checkpoint_positions(p)
     assert (16_384, False) in marks
-    assert (32_768, False) not in marks, "the prompt is 32,056 tokens"
+    assert (32_768, False) not in marks, "the prompt is 32,010 tokens"
 
 
 def test_a_long_system_prompt_is_kept():
