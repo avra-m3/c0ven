@@ -284,4 +284,5 @@ For developers:
 
 ## License
 
-<!-- TODO: choose a license and add LICENSE -->
+C0ven is under the [MIT License](LICENSE). The model files are not part of it: each comes under its
+publisher's own license, on its Hugging Face page ([MODEL_FILES.md](docs/MODEL_FILES.md)).
