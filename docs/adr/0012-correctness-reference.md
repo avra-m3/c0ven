@@ -1,0 +1,31 @@
+# ADR-0012: correctness - llama.cpp's CPU backend is the reference
+
+**Status:** accepted. The gate is from INTEL_SYCL_PLAN.md's stages (merged in PR #1, 2026-10-09). The method is per
+[P14](../precursor/P14-reference-outputs.md) and [P15](../precursor/P15-golden-activations.md).
+**Revisit when:** llama.cpp's implementation of this architecture is found to be wrong. The model's paper and the
+specs then decide ([P04](../precursor/P04-spec-decoder-layer.md), [P05](../precursor/P05-spec-around-the-layers.md)).
+
+## Context
+
+The engine starts from scratch, without Strata's parity tests ([ADR-0001](0001-level-zero-from-scratch.md)).
+Strata's output was checked against llama.cpp. llama.cpp's SYCL backend is not a safe reference on Xe2: its reorder
+path gave wrong output on a B70 ([llama.cpp #21893](https://github.com/ggml-org/llama.cpp/issues/21893)).
+
+## Decision
+
+1. **The reference is llama.cpp's CPU backend** at a pinned commit: Strata's `3cf03257f219afbe7334045ff7c6a06ac68c627d`.
+   Never its SYCL or Vulkan backend.
+2. **End to end:** the engine is correct when, on the same GGUF, it matches the reference in greedy-token agreement
+   and in mean KL divergence. The plan's gate is mean KL ~0.02, the paper's. The required agreement rate is set
+   with P14's data. Strata's one published figure (97.5-99% of positions on short greedy answers, 90-91% after a 16K
+   prompt) was measured on Unsloth's UD-Q4_K_XL file, not on these files.
+3. **Per layer:** the reference's intermediate tensors for fixed inputs (P15).
+4. **Per kernel:** reference values from ggml's CPU implementation, or a scalar reference inside the test
+   ([P39](../precursor/P39-testing-strategy.md)).
+5. **A test whose reference data is missing skips with a message. It never passes.**
+
+## Consequences
+
+- **The reference data is produced before any engine code** (P14, P15). It is regenerated only when the pinned
+  commit changes.
+- **Kernel PRs show their reference test passing on a B60,** since Level Zero has no CPU device.

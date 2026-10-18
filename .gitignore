@@ -1,0 +1,18 @@
+# Build directories
+build*/
+
+# Model files
+*.gguf
+
+# Probes and other measurement code, if put inside the checkout by accident
+scratch/
+
+# Personal Claude Code settings
+.claude/settings.local.json
+.claude/worktrees/
+
+# Python
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
