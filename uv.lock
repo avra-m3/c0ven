@@ -54,6 +54,51 @@ wheels = [
 ]
 
 [[package]]
+name = "c0ven"
+version = "0.0.0"
+source = { virtual = "." }
+dependencies = [
+    { name = "av" },
+    { name = "gguf" },
+    { name = "jinja2" },
+    { name = "numpy" },
+    { name = "pillow" },
+    { name = "starlette" },
+    { name = "tokenizers" },
+    { name = "uvicorn" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "basedpyright" },
+    { name = "httpx" },
+    { name = "py-spy" },
+    { name = "pytest" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "av", specifier = "==19.0.1" },
+    { name = "gguf", git = "https://github.com/ggml-org/llama.cpp?subdirectory=gguf-py&rev=3cf03257f219afbe7334045ff7c6a06ac68c627d" },
+    { name = "jinja2", specifier = "==3.1.6" },
+    { name = "numpy", specifier = "==2.5.4" },
+    { name = "pillow", specifier = "==11.3.0" },
+    { name = "starlette", specifier = "==1.8.0" },
+    { name = "tokenizers", specifier = "==0.23.3" },
+    { name = "uvicorn", specifier = "==0.54.0" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "basedpyright", specifier = "==1.40.2" },
+    { name = "httpx", specifier = "==0.28.1" },
+    { name = "py-spy", specifier = "==0.4.2" },
+    { name = "pytest", specifier = "==9.1.1" },
+    { name = "ruff", specifier = "==0.17.0" },
+]
+
+[[package]]
 name = "certifi"
 version = "2026.7.22"
 source = { registry = "https://pypi.org/simple" }
@@ -149,51 +194,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/35/c8/1d457d9150ff948f2ce6ada7715e0eeebbe5d3b58a45271a1e222474bcd3/filelock-4.1.1.tar.gz", hash = "sha256:7ba0927482c5a814b0a7f391d029ccdb8010f576f0a74c0dcde1811e8bc4c1b6", size = 563430, upload-time = "2026-10-11T16:11:54.373Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d7/8b/f837f52905395ba4510fe61f753c24833fb0a9c76e21267bb9f828b664a9/filelock-4.1.1-py3-none-any.whl", hash = "sha256:3f4a557945a7b0f95efeb1f432267affe5d45ac8ddde2aed1b97ebb62382c089", size = 132460, upload-time = "2026-10-11T16:11:52.753Z" },
-]
-
-[[package]]
-name = "flash-next-b60"
-version = "0.0.0"
-source = { virtual = "." }
-dependencies = [
-    { name = "av" },
-    { name = "gguf" },
-    { name = "jinja2" },
-    { name = "numpy" },
-    { name = "pillow" },
-    { name = "starlette" },
-    { name = "tokenizers" },
-    { name = "uvicorn" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "basedpyright" },
-    { name = "httpx" },
-    { name = "py-spy" },
-    { name = "pytest" },
-    { name = "ruff" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "av", specifier = "==19.0.1" },
-    { name = "gguf", git = "https://github.com/ggml-org/llama.cpp?subdirectory=gguf-py&rev=3cf03257f219afbe7334045ff7c6a06ac68c627d" },
-    { name = "jinja2", specifier = "==3.1.6" },
-    { name = "numpy", specifier = "==2.5.4" },
-    { name = "pillow", specifier = "==11.3.0" },
-    { name = "starlette", specifier = "==1.8.0" },
-    { name = "tokenizers", specifier = "==0.23.3" },
-    { name = "uvicorn", specifier = "==0.54.0" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "basedpyright", specifier = "==1.40.2" },
-    { name = "httpx", specifier = "==0.28.1" },
-    { name = "py-spy", specifier = "==0.4.2" },
-    { name = "pytest", specifier = "==9.1.1" },
-    { name = "ruff", specifier = "==0.17.0" },
 ]
 
 [[package]]

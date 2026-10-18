@@ -76,14 +76,14 @@ USER ubuntu
 WORKDIR /work
 CMD ["bash"]
 
-LABEL project=flash-next-b60
+LABEL project=c0ven
 
 # The checkout, the build and the venv, owned by root and read-only to the user, so the root filesystem can be
 # mounted read-only. The build's paths are compiled into the core (ENGINE_KERNEL_DIR, ENGINE_ROUTING_PROFILE), so
 # they never move. ocloc compiles the kernels without a card (ADR-0028).
 FROM engine AS serve
 USER root
-WORKDIR /opt/flash-next-b60
+WORKDIR /opt/c0ven
 COPY CMakeLists.txt pyproject.toml uv.lock .python-version protocol.py ./
 COPY cmake cmake
 COPY include include
@@ -93,12 +93,12 @@ COPY core core
 COPY tools tools
 COPY engine engine
 COPY frontend frontend
-RUN cmake -S /opt/flash-next-b60 -B /opt/flash-next-b60/build -G Ninja \
- && ninja -C /opt/flash-next-b60/build \
+RUN cmake -S /opt/c0ven -B /opt/c0ven/build -G Ninja \
+ && ninja -C /opt/c0ven/build \
  && UV_NO_CACHE=1 uv sync --locked --no-dev
 
-ENV ENGINE_LIBRARY=/opt/flash-next-b60/build/core/libengine.so \
-    PATH=/opt/flash-next-b60/.venv/bin:$PATH \
+ENV ENGINE_LIBRARY=/opt/c0ven/build/core/libengine.so \
+    PATH=/opt/c0ven/.venv/bin:$PATH \
     PYTHONDONTWRITEBYTECODE=1
 
 # The arguments of `docker run` are the front end's flags (frontend/__main__.py). The model comes in at /models.

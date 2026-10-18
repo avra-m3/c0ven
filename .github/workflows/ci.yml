@@ -55,7 +55,7 @@ jobs:
           load: true
           tags: |
             ${{ steps.meta.outputs.tags }}
-            flash-next-b60/engine:ci
+            c0ven/engine:ci
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -66,7 +66,7 @@ jobs:
           docker run -d --name engine -v "$GITHUB_WORKSPACE:/src:ro" -w /src \
             -e UV_PROJECT_ENVIRONMENT=/work/venv -e RUFF_CACHE_DIR=/work/ruff-cache -e PYTHONDONTWRITEBYTECODE=1 \
             -e ENGINE_LIBRARY=/work/build/core/libengine.so \
-            flash-next-b60/engine:ci sleep infinity
+            c0ven/engine:ci sleep infinity
 
       # ocloc compiles the kernels for bmg-g21 without a card.
       - name: Build the engine and every kernel
@@ -121,7 +121,7 @@ jobs:
           load: true
           tags: |
             ${{ steps.meta-serve.outputs.tags }}
-            flash-next-b60/serve:ci
+            c0ven/serve:ci
           labels: ${{ steps.meta-serve.outputs.labels }}
           cache-from: |
             type=gha
@@ -132,7 +132,7 @@ jobs:
       # label, and a read-only root filesystem from which the core and its kernels load. Loading the core needs no card.
       - name: Check the serving image
         run: |
-          image=flash-next-b60/serve:ci
+          image=c0ven/serve:ci
           test "$(docker inspect -f '{{json .Config.Entrypoint}} {{json .Config.Cmd}}' $image)" = '["python","-m","frontend"] null'
           test "$(docker inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' $image)" = "$GITHUB_SHA"
           docker run --rm --read-only --entrypoint id $image -u | grep -qx 1000

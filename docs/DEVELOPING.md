@@ -10,14 +10,14 @@ checked.
 The core builds in the image that the [`Dockerfile`](../Dockerfile) defines
 ([ADR-0025](adr/0025-the-engine-image.md)). It needs the Level Zero headers, `ocloc` and the llama.cpp tree at
 `/opt/llama.cpp`, and the image provides all three. Build the image with
-`docker build --target engine -t flash-next-b60/engine:<tag> .`, or pull the one CI pushes from `main`,
+`docker build --target engine -t c0ven/engine:<tag> .`, or pull the one CI pushes from `main`,
 `ghcr.io/avra-m3/c0ven/engine:main`. Then start a container with the cards, the model and the checkout. The
 render group's id is the group of `/dev/dri/renderD128` on the host (`stat -c %g /dev/dri/renderD128`):
 
 ```bash
-docker run -d --name engine-dev --label project=flash-next-b60 --device /dev/dri --group-add <render gid> \
-  -v <model dir>:/models:ro -v flash-next-b60-cache:/home/ubuntu/.cache -v <checkout>:/src -w /src \
-  flash-next-b60/engine:<tag> sleep infinity
+docker run -d --name engine-dev --label project=c0ven --device /dev/dri --group-add <render gid> \
+  -v <model dir>:/models:ro -v c0ven-cache:/home/ubuntu/.cache -v <checkout>:/src -w /src \
+  c0ven/engine:<tag> sleep infinity
 docker exec engine-dev bash -c 'cmake -S /src -B /src/build -G Ninja -DENGINE_WERROR=ON && ninja -C /src/build'
 ```
 
@@ -73,7 +73,7 @@ from that directory instead of quantising the BF16 tensors again (about 43 s for
 [record](RESULTS.md#2026-10-16-load-phases)). If the file is missing or does not match, the load quantises and
 writes it there. There is one file per card, named by a key built from the MTP directory's manifest, the expert type
 and the card split. Point the variable at a volume, such as the dev container's cache volume
-(`/home/ubuntu/.cache/flash-next-b60/mtp`), since the models are mounted read-only. When it is unset, every load
+(`/home/ubuntu/.cache/c0ven/mtp`), since the models are mounted read-only. When it is unset, every load
 quantises.
 
 `ZE_AFFINITY_MASK=0` limits a run to card 0. The model then runs whole on one card, with fewer experts cached.

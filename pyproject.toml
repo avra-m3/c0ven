@@ -2,7 +2,7 @@
 # Library choices and versions: ADR-0004. How to work with this file: docs/DEVELOPING.md.
 
 [project]
-name = "flash-next-b60"
+name = "c0ven"
 version = "0.0.0"
 description = "Front end and control plane of an inference engine for Qwen3.8-Flash-Next on two Intel Arc Pro B60s"
 readme = "README.md"
