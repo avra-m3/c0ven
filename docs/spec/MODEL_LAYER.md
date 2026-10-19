@@ -509,7 +509,7 @@ The reference is the CPU backend ([ADR-0012](../adr/0012-correctness-reference.m
 | Expert sum | F32, in rank order | `src/llama-graph.cpp:2334-2343` |
 
 This page does not cover the CPU's repacked weight layouts (`ggml/src/ggml-cpu/repack.cpp`) or its flash-attention
-kernel. [REFERENCE_OUTPUTS.md](../REFERENCE_OUTPUTS.md#how-stable-the-reference-is) says which attention kernel the
+kernel. [REFERENCE_OUTPUTS.md](../REFERENCE_OUTPUTS.md#the-known-cause) says which attention kernel the
 reference runs.
 
 ## 7. Where the sources differ

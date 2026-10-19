@@ -52,8 +52,8 @@ unless a row says otherwise.
 | FP16 products on the XMX units (the prompt path) | 2e-3 | fp16 carries 11 bits (a rounding of 4.9e-4 per value). The prompt kernels of the design-inputs record, the fp16 ones included, met 1e-7 to 3e-4 ([design-inputs record, part 8](MEASUREMENTS.md#2026-10-13-design-inputs)) |
 | BF16 outputs (the image encoder's kernels that write a product's next input, [MODEL_VISION.md](spec/MODEL_VISION.md)) | 1e-2 | bf16 carries 8 bits (a rounding of 3.9e-3 per value), on top of the fp16 error where the inputs are fp16 |
 | The DeltaNet recurrence over 2,048 tokens, FP32 state | 1e-5 | Checked against double precision in the same run of the design-inputs record; the state does not grow (its gate is below 1) |
-| End to end, the KL text | mean KL at most 0.02, top-1 agreement at least 95% | 0.02 is ADR-0012's gate. The reference against itself gives 99.99% top-1, and 0.035 KL / 91% when only llama.cpp's batch size changes ([REFERENCE_OUTPUTS.md](REFERENCE_OUTPUTS.md#how-stable-the-reference-is)), so the engine feeds the KL text in 512-token pieces for this check. *Provisional*: to be revisited with the first measurement |
-| End to end, greedy, teacher-forced | at least 95% of positions, on the prompts of up to 512 tokens | Those are the most reliable references ([REFERENCE_OUTPUTS.md](REFERENCE_OUTPUTS.md#how-stable-the-reference-is)); longer prompts are reported, not gated |
+| End to end, the KL text | mean KL at most 0.02, top-1 agreement at least 95% | 0.02 is ADR-0012's gate. The reference against itself gives 99.99% top-1, and 0.035 KL / 91% when only llama.cpp's batch size changes ([REFERENCE_OUTPUTS.md](REFERENCE_OUTPUTS.md#what-changes-it)), so the engine feeds the KL text in 512-token pieces for this check. *Provisional*: to be revisited with the first measurement |
+| End to end, greedy, teacher-forced | at least 95% of positions, on the prompts of up to 512 tokens | Those are the most reliable references ([REFERENCE_OUTPUTS.md](REFERENCE_OUTPUTS.md#which-greedy-outputs-to-trust)); longer prompts are reported, not gated |
 
 ## Test data
 

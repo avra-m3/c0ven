@@ -6,7 +6,7 @@ outputs of two prompts again on 2026-10-18), and how they were made. The correct
 
 **Warning: the reference depends on how the prompt is chunked.** With the same file, the same prompt and greedy
 sampling, llama.cpp gives different tokens when its physical batch size (`-ub`) changes, and a mean KL of about 0.036
-between two such runs ([How stable the reference is](#how-stable-the-reference-is)). The thread count does not
+between two such runs ([How far to trust the reference](#how-far-to-trust-the-reference)). The thread count does not
 matter. So the reference is pinned to `-ub 512`, and the engine's prompt chunking must be part of what is tested.
 
 ## What is here
@@ -29,7 +29,7 @@ Everything in `reference/` is text and holds no logits.
 | Build environment | Ubuntu 26.04.1, g++ 15.2.0, cmake 4.2.3, Ninja 1.13.2 |
 | Model | the IQ3_S file, both shards ([MODEL_FILES.md](MODEL_FILES.md)) |
 | Prompt chunking | `n_batch` 2048, `n_ubatch` 512: a 512-token physical batch |
-| Threads | 16, pinned with `taskset -c 0-15`. The thread count does not change the result: 8 and 16 gave mean KL 0.000000 ([below](#how-stable-the-reference-is)) |
+| Threads | 16, pinned with `taskset -c 0-15`. The thread count does not change the result: 8 and 16 gave mean KL 0.000000 ([below](#what-changes-it)) |
 | Context | 33,024 tokens (the 32K prompt plus 128 new tokens, with room), one sequence |
 
 The model files are the ones [MODEL_FILES.md](MODEL_FILES.md) lists with their sha256, read from `/models`, the
@@ -214,65 +214,96 @@ For llama.cpp itself, the last check is `llama-perplexity -m <file> -f kl-text.t
 <base> --kl-divergence`. The engine is not llama.cpp, so it needs its own comparator that reads the layout above.
 The repository has no such comparator, and no test reads the KL base.
 
-## How stable the reference is
+## How far to trust the reference
 
-Same model file, same text, each run read against the base file. Mean KL and "same top p" are from llama.cpp's own
-report:
+Run again with the same settings, the reference gives the same result. Whether that result is the most accurate one
+is not known.
 
-| Threads | `-ub` | Mean KL | Same top token | Notes |
-| ---: | ---: | ---: | ---: | --- |
-| 16 | 512 | 0.000000 | 99.988 % | the base's own settings, run again |
-| 8 | 512 | -0.000000 | 99.988 % | threads changed only |
-| 16 | 128 | 0.036092 ± 0.000597 | 91.305 % | `-ub` changed only |
-| 8 | 128 | 0.036092 ± 0.000597 | 91.305 % | both changed; the same KL and top-1 agreement as 16 threads at `-ub 128` |
-| 16 | 2048 | 0.035042 ± 0.000564 | 91.685 % | `-ub` changed only |
-| 16 | 256 | 0.035744 ± 0.000587 | 91.667 % | `-ub` changed only |
+### What changes it
 
-- The thread count changes nothing that matters. The two `-ub 512` runs differ from the base only in the 0.012 % of
-  positions where the top token flips on a tie.
-- `-ub` changes the answer. Any value other than 512 changes it by about the same amount, 0.035-0.036 KL, which is
-  more than the paper's gate of ~0.02. The model's prompt path depends on how the tokens are grouped.
-- Part of the cause is known. In a dump of every node at `-ub 512` and `-ub 16`, the first node to differ is the first
-  attention layer's `FLASH_ATTN_EXT`. llama.cpp's CPU flash attention (`ggml/src/ggml-cpu/ops.cpp:9212-9345` at
-  `3cf0325`) uses its tiled kernel, which accumulates in F32, when a physical batch has 64 or more query rows, and a
-  kernel with an F16 accumulator below that. So in the reference itself, decode and a prompt's last short piece round
-  attention differently from a full prompt batch. Why `-ub 128` and `-ub 256` still differ is not known.
-- On the KL text, `-ub 2048` does not split any sequence. Each chunk is one 512-token sequence, and `-b 2048` puts
-  4 of them in a batch. With `-ub 512` each physical batch holds one sequence; with `-ub 2048` it holds four. So the
-  0.035 from `-ub 2048` comes from putting several sequences in one physical batch. The greedy prompts are one
-  sequence each, and there `-ub 2048` changed only the prompts longer than 512 tokens.
-- Greedy tokens change with `-ub` too. Against the `-ub 512` outputs:
+Each run below uses the same model file and the KL text, read against the KL base, with one setting changed. Mean KL
+and "same top p" are from llama.cpp's own report. The thread count has no effect: 8 and 16 threads give the same
+numbers at `-ub 512` and `-ub 128`, so the table shows 16.
 
-| Prompt | Prompt tokens | `-ub` 128, 8 threads | `-ub` 2048, 16 threads |
+| `-ub` | Mean KL | Same top token |
+| ---: | ---: | ---: |
+| 512 (the reference) | 0.000000 | 99.988 % |
+| 128 | 0.036092 ± 0.000597 | 91.305 % |
+| 256 | 0.035744 ± 0.000587 | 91.667 % |
+| 2048 | 0.035042 ± 0.000564 | 91.685 % |
+
+```mermaid
+xychart-beta
+    title "Mean KL against the reference, by physical batch size"
+    x-axis "-ub" [128, 256, 512, 2048]
+    y-axis "Mean KL" 0 --> 0.04
+    bar [0.036092, 0.035744, 0, 0.035042]
+    line [0.02, 0.02, 0.02, 0.02]
+```
+
+The line is the KL gate, 0.02 ([TESTING.md](TESTING.md#tolerances)). At `-ub 512`, the 0.012 % of positions where the
+top token differs are ties. Any other `-ub` is above the KL gate, and its top-1 agreement is below the 95 % gate. An
+engine that matched llama.cpp's arithmetic exactly but grouped prompt tokens differently would fail both gates. So
+the engine's KL check feeds the text in 512-token pieces, as the reference does.
+
+On the KL text, `-ub 2048` splits no sequence. Each chunk is one 512-token sequence, and `-ub 2048` puts four of them
+in one physical batch. Its row measures batching several sequences together, not splitting one sequence differently.
+
+### Which greedy outputs to trust
+
+Greedy tokens against the `-ub 512` outputs:
+
+| Prompt | Prompt tokens | `-ub 128` | `-ub 2048` |
 | --- | ---: | --- | --- |
-| `chat-capital`, `chat-hashmap`, `chat-arith`, `chat-multiturn`, `code-intervals`, `code-sql`, `tool-weather`, `tool-result`, `chat-system` | 36-473 | identical | not run |
-| `code-cbug` | 138 | first difference at token 49 | identical |
-| `tool-choose` | 449 | differs at token 0 (a sentence before the tool call, not the tool call) | identical |
-| `effort-xhigh` | 959 | first difference at token 58 | first difference at token 12 |
-| `effort-low` | 947 | first difference at token 53 | first difference at token 59 |
-| `doc-4k-summary`, before its text changed | 4,150 | not run | first difference at token 4 |
-| `doc-4k-qa` | 4,159 | not run | first difference at token 113 |
+| `chat-capital`, `chat-hashmap`, `chat-arith`, `chat-multiturn`, `chat-system`, `code-intervals`, `code-sql`, `tool-weather`, `tool-result` | 36-473 | identical | not run |
+| `code-cbug` | 138 | differs from token 49 | identical |
+| `tool-choose` | 449 | differs from token 0, in a sentence before the tool call | identical |
+| `effort-xhigh` | 959 | differs from token 58 | differs from token 12 |
+| `effort-low` | 947 | differs from token 53 | differs from token 59 |
+| `doc-4k-summary`, before its text changed | 4,150 | not run | differs from token 4 |
+| `doc-4k-qa` | 4,159 | not run | differs from token 113 |
 
-A prompt that fits in one 512-token batch gives the same tokens under `-ub` 512 and 2048 (`code-cbug`,
-`tool-choose`). The tokens change when the prompt is split differently. So the reference tokens for prompts of up to
-512 tokens are the most reliable, and the long ones are tied to `-ub 512`.
+The tokens change only when the prompt is split into different physical batches. A prompt of up to 512 tokens is one
+batch at both `-ub 512` and `-ub 2048`, so those outputs are the most reliable. The teacher-forced gate covers only
+those prompts. The longer prompts are tied to `-ub 512` and are reported, not gated.
+
+### The known cause
+
+In a dump of every node at `-ub 512` and `-ub 16`, the first node to differ is the first attention layer's
+`FLASH_ATTN_EXT`. llama.cpp's CPU flash attention picks its kernel by the number of query rows in a physical batch
+(`ggml/src/ggml-cpu/ops.cpp:9212-9345` at `3cf0325`):
+
+```mermaid
+flowchart LR
+    B["Physical batch<br/>of query rows"] --> Q{"64 rows<br/>or more?"}
+    Q -- yes --> T["Tiled kernel<br/>F32 accumulator"]
+    Q -- no --> S["Other kernel<br/>F16 accumulator"]
+    P["Full prompt batch"] -.-> T
+    D["Decode: 1 row"] -.-> S
+    L["Last short piece<br/>of a prompt"] -.-> S
+```
+
+So inside the reference itself, full prompt batches and generated tokens round attention differently. An engine
+that accumulates attention in F32 everywhere can differ from the reference on generated tokens for this reason alone.
+
+### What is not known
+
+- Why `-ub 128` and `-ub 256` differ from 512, though all three use the tiled kernel. If the cause is a llama.cpp
+  bug at this commit, the reference is reproducible but not correct, and
+  [ADR-0012](adr/0012-correctness-reference.md)'s "revisit when llama.cpp's implementation is found to be wrong" may
+  apply.
+- Whether `-ub 512` is the most accurate setting. Only the agreement between settings is measured. `-ub 512` uses the
+  F32 kernel on full batches, which the code suggests is the more accurate one, but it is not checked against an F32
+  reference.
+- Whether the tool prompts match llama.cpp's own template engine. The prompt renderer writes tool JSON with Python's
+  default separators ([How the prompts were rendered](#how-the-prompts-were-rendered)). The prompt text and its token
+  ids agree with each other either way.
+- The reference on any model file other than IQ3_S ([ADR-0018](adr/0018-one-file-iq3s.md)).
 
 ## Agreement gates
 
 The gates are in [TESTING.md](TESTING.md#tolerances). `core/tests/greedy_test.cpp` applies the teacher-forced greedy
 gate, and `core/tests/api_test.c` checks the first 32 tokens of `chat-hashmap` exactly.
-
-
-## What is not known
-
-- Why `-ub` matters, beyond the attention kernels in [How stable the reference is](#how-stable-the-reference-is).
-  This might be a llama.cpp issue at this commit. If so, the reference is reproducible but not correct, and
-  [ADR-0012](adr/0012-correctness-reference.md)'s "revisit when llama.cpp's implementation is found to be wrong" may
-  apply.
-- Whether `-ub 512` is the most correct setting. Only the agreement between settings is measured, not which one is
-  right. `-ub 512` runs the F32 tiled attention kernel on full batches. From the code, that is likely the more
-  accurate of the two kernels. It is not checked against an F32 attention.
-- The reference on other model files. Only the IQ3_S file is run ([ADR-0018](adr/0018-one-file-iq3s.md)).
 
 ## Choices made
 
@@ -283,6 +314,6 @@ gate, and `core/tests/api_test.c` checks the first 32 tokens of `chat-hashmap` e
 | KL size | 64 chunks, 8.1 GB | about 16K scored positions gives a standard error of 0.0006 on the mean KL | more chunks if the gate needs a tighter error |
 | Thinking | on for 6 prompts, off for 10 | thinking-on outputs are all reasoning for 128 tokens; the tool and answer-format prompts need it off | |
 | Reference `-ub` | 512 | the llama.cpp default | see [What is not known](#what-is-not-known) |
-| Threads | 16, CPUs 0-15 | the thread count does not matter ([How stable the reference is](#how-stable-the-reference-is)) | |
+| Threads | 16, CPUs 0-15 | the thread count does not matter ([What changes it](#what-changes-it)) | |
 | Effort pair | `xhigh` against `low` | `medium` renders no sentence and `high` is `xhigh` | |
 | Tool JSON | Python `json.dumps` default separators | see [How the prompts were rendered](#how-the-prompts-were-rendered) | check against llama.cpp's own template engine |
