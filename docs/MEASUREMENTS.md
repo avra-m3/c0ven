@@ -305,6 +305,24 @@ One card's value is given first.
 | Greedy texts in six processes | one for each prompt on each arm. One card's doc-32k text differs from two cards' and llama.cpp's reference from its first token, and ends at 462 tokens | [2026-10-19](#2026-10-19-one-card) |
 | Host memory for a one-card load | the process's anonymous memory peaked at 42.5-43.3 GiB | [2026-10-19](#2026-10-19-one-card) |
 
+### Other quants
+
+ISTA-DASLab's IQ3_XXS, IQ2_XS and Q2_0 files of the same model, each against IQ3_S in its own ABBA series on two
+cards, six fresh server processes each, the tests of [Against llama.cpp](#against-llamacpp) plus `long-256k`: c0ven's
+own docs and source, 246,571 tokens. The quant's value is given first, then its series' IQ3_S.
+
+| Test | Value | Measured |
+| --- | --- | --- |
+| Experts a layer in VRAM | IQ3_XXS 369, IQ2_XS 460, Q2_0 481, against IQ3_S's 307 | <a id="2026-10-19-other-quants"></a>[2026-10-19](#2026-10-19-other-quants) |
+| Prompt reading, doc-4k-qa | IQ3_XXS 2,151.6 (2,141.8-2,152.7) against 2,008.6; IQ2_XS 2,251.9 (2,241.7-2,253.9) against 2,005.5; Q2_0 2,239.8 (2,233.1-2,245.6) against 2,014.1 tokens/s | [2026-10-19](#2026-10-19-other-quants) |
+| Prompt reading, doc-32k | IQ3_XXS 2,158.3 (2,001.3-2,159.4) against 2,066.4; IQ2_XS 2,240.0 (2,238.4-2,240.7) against 2,066.8; Q2_0 2,229.7 (2,228.9-2,230.5) against 2,067.2 tokens/s | [2026-10-19](#2026-10-19-other-quants) |
+| Prompt reading, long-256k | IQ3_XXS 1,868.1 (1,865.8-1,868.4) against 1,795.1; IQ2_XS 1,928.4 (1,927.4-1,928.6) against 1,794.2; Q2_0 1,925.0 (1,924.0-1,925.1) against 1,794.2 tokens/s | [2026-10-19](#2026-10-19-other-quants) |
+| Time to the first token, long-256k | IQ3_XXS 131.99 against 137.36; IQ2_XS 127.86 against 137.43; Q2_0 128.09 against 137.43 s | [2026-10-19](#2026-10-19-other-quants) |
+| Decode after doc-4k-qa | IQ3_XXS 98.30 (65.93-98.51) against 84.84; IQ2_XS 100.79 (100.64-101.01) against 85.30; Q2_0 104.42 (104.29-104.75) against 85.83 tokens/s | [2026-10-19](#2026-10-19-other-quants) |
+| Decode after doc-32k | IQ2_XS 108.70 (107.42-108.82) against 74.88; Q2_0 108.80 (108.50-108.88) against 74.49 tokens/s. IQ3_XXS's greedy answer ends at 110 tokens, so it is not compared | [2026-10-19](#2026-10-19-other-quants) |
+| Decode after long-256k | IQ2_XS 84.77 (84.49-84.84) against 79.25; Q2_0 79.63 (79.31-79.64) against 79.38 tokens/s, after doc-4k-qa and doc-32k in the same process. IQ3_XXS 68.46 (67.75-68.71) against 72.50, with long-256k alone | [2026-10-19](#2026-10-19-other-quants) |
+| Greedy agreement with IQ3_S's references, prompts of up to 512 tokens | IQ3_XXS 93.60%, IQ2_XS 90.31%, Q2_0 89.93% (995, 960 and 956 of 1,063), against IQ3_S's own 98.02% | [2026-10-19](#2026-10-19-other-quants) |
+
 ### Tried and not adopted
 
 | Idea | Value | Measured |
