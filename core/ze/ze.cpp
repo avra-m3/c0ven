@@ -1,6 +1,7 @@
 #include "ze.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <iterator>
 #include <stdexcept>
@@ -20,8 +21,15 @@ std::vector<uint8_t> read_file(const std::string &path) {
   return std::vector<uint8_t>((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
 }
 
+ze_result_t init() {
+  // compute-runtime reads these keys only with NEOReadDebugKeys set. A value already in the environment wins.
+  setenv("NEOReadDebugKeys", "1", 0);
+  setenv("NEO_EnableRecoverablePageFaults", "0", 0);
+  return zeInit(0);
+}
+
 Runtime::Runtime(uint32_t min_cards) {
-  ZE_CHECK(zeInit(0));
+  ZE_CHECK(init());
   uint32_t nd = 0;
   ZE_CHECK(zeDriverGet(&nd, nullptr));
   std::vector<ze_driver_handle_t> drivers(nd);
