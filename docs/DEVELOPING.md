@@ -15,7 +15,7 @@ The core builds in the image that the [`Dockerfile`](../Dockerfile) defines
 render group's id is the group of `/dev/dri/renderD128` on the host (`stat -c %g /dev/dri/renderD128`):
 
 ```bash
-docker run -d --name engine-dev --label project=c0ven --device /dev/dri --group-add <render gid> \
+docker run -d --name engine-dev --label project=c0ven --device /dev/dri --group-add <render gid> --ulimit memlock=-1:-1 \
   -v <model dir>:/models:ro -v c0ven-cache:/home/ubuntu/.cache -v <checkout>:/src -w /src \
   c0ven/engine:<tag> sleep infinity
 docker exec engine-dev bash -c 'cmake -S /src -B /src/build -G Ninja -DENGINE_WERROR=ON && ninja -C /src/build'
@@ -75,6 +75,12 @@ writes it there. There is one file per card, named by a key built from the MTP d
 and the card split. Point the variable at a volume, such as the dev container's cache volume
 (`/home/ubuntu/.cache/c0ven/mtp`), since the models are mounted read-only. When it is unset, every load
 quantises.
+
+A load locks the arena in memory and stops if it cannot, so the container needs `--ulimit memlock=-1:-1`. A Docker
+daemon that cannot raise the limit, such as one inside another container, refuses that flag. There, set
+`ENGINE_UNLOCKED_ARENA=1` to load with the arena unlocked. The kernel may then swap out or move arena pages the copy
+engines read, and under the host's reclaim a copy can reset a card's copy engine
+([ADR-0035](adr/0035-the-arena-in-the-engines-own-memory.md)). Do not time runs that way.
 
 `ZE_AFFINITY_MASK=0` limits a run to card 0. The model then runs whole on one card, with fewer experts cached.
 
