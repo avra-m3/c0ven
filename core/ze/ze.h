@@ -18,6 +18,10 @@ namespace engine::ze {
 void check(ze_result_t r, const char *what);
 #define ZE_CHECK(call) ::engine::ze::check((call), #call)
 
+// zeInit, with the cards' VMs out of page-fault mode (ADR-0037). The process's first zeInit fixes the mode, so every
+// caller goes through this one.
+ze_result_t init();
+
 struct Card {
   ze_device_handle_t device = nullptr;
   std::string name;

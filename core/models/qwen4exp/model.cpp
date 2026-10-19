@@ -117,15 +117,11 @@ Model::Model(const std::string &path, const Options &opt) : opt_(opt), gguf_(pat
   lib_ = std::make_unique<ze::Library>(*rt_);
   ncards_ = std::min(opt_.max_cards, rt_->ncards());
   if (ncards_ != 1 && ncards_ != 2) throw std::runtime_error("the engine runs on one or two cards");
-  // The copy engines read an anonymous arena only through shared system USM (ADR-0035), while the CPU reads it too.
-  const uint32_t svm = ZE_MEMORY_ACCESS_CAP_FLAG_RW | ZE_MEMORY_ACCESS_CAP_FLAG_CONCURRENT;
-  for (uint32_t c = 0; c < ncards_ && opt_.anon_arena && opt_.prompt_chunk; c++) {
-    const ze::Card &card = rt_->cards()[c];
-    if ((card.shared_system & svm) == svm) continue;
-    std::fprintf(stderr, "engine: %s has no concurrent shared system USM (capabilities 0x%x); the arena is driver "
-                 "memory instead\n", card.name.c_str(), card.shared_system);
-    opt_.anon_arena = false;
-  }
+  // The copy engines read an anonymous arena through a userptr binding of each copy's source (ADR-0035, item 2), which
+  // needs no shared system USM. Out of fault mode (ADR-0037) the cards report none: 0x0 here.
+  for (uint32_t c = 0; c < ncards_ && opt_.anon_arena; c++)
+    std::fprintf(stderr, "engine: %s: shared system USM capabilities 0x%x\n", rt_->cards()[c].name.c_str(),
+                 rt_->cards()[c].shared_system);
   npp_ = (opt_.max_ctx / KV_PAGE_CELLS + ncards_ - 1) / ncards_ * ncards_;
   kv_pages_ = opt_.kv_pages ? (opt_.kv_pages + ncards_ - 1) / ncards_ * ncards_ : opt_.slots * npp_;
   pool_ = std::make_unique<Pool>(opt_.cpu_threads > 1 ? opt_.cpu_threads - 1 : 0);

@@ -8,6 +8,8 @@
 #include <string>
 #include <vector>
 
+#include "ze/ze.h"
+
 #define EXPECT(cond, ...)                                       \
   do {                                                          \
     if (!(cond)) {                                              \
@@ -39,7 +41,7 @@ inline int skip(const std::string &why) {
 
 // The GPUs Level Zero lists, counted as ze::Runtime counts them: the first driver that has any.
 inline uint32_t gpus() {
-  if (zeInit(0) != ZE_RESULT_SUCCESS) return 0;
+  if (engine::ze::init() != ZE_RESULT_SUCCESS) return 0;
   uint32_t nd = 0;
   if (zeDriverGet(&nd, nullptr) != ZE_RESULT_SUCCESS) return 0;
   std::vector<ze_driver_handle_t> drivers(nd);
