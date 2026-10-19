@@ -85,12 +85,29 @@ C0ven reads one model:
 
 | File | Where from |
 | --- | --- |
-| The IQ3_S GGUF, 2 shards, 83.6 GB | [`ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF`](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF), folder `IQ3_S/` |
+| The IQ3_S GGUF, 2 shards, 83.6 GB, or a smaller size ([below](#which-model-file-to-pick)) | [`ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF`](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF), folder `IQ3_S/` or the size's own |
 | The MTP draft layer, in `mtp/` beside the GGUF | the 31 `mtp.*` tensors from [`Qwen/Qwen3.8-Flash-Next`](https://huggingface.co/Qwen/Qwen3.8-Flash-Next) |
 | The image encoder, beside the GGUF (for images) | `mmproj-Qwen3.8-Flash-Next-BF16.gguf`, in the same ISTA-DASLab repository |
 
 [MODEL_FILES.md](docs/MODEL_FILES.md) gives the pinned revisions and checksums, how to fetch the MTP tensors, how to
 lay the files out and how to point the engine at them.
+
+## Which model file to pick
+
+The same repository has the model in four sizes. IQ3_S is the default; the smaller files are faster and need less
+RAM, and give up some accuracy:
+
+| File | Download | RAM the engine takes | Decode, 4k prompt (tokens/s) | Benchmarks, share of the original's |
+| --- | ---: | ---: | ---: | ---: |
+| IQ3_S | 83.6 GB | [22.6 GiB](docs/MEASUREMENTS.md#2026-10-19-other-quants) | [85.6](docs/MEASUREMENTS.md#2026-10-18-against-llama-cpp) | 100.2% |
+| IQ3_XXS | 75.8 GB | [14.6 GiB](docs/MEASUREMENTS.md#2026-10-19-other-quants) | [98.3](docs/MEASUREMENTS.md#2026-10-19-other-quants) | 99.4% |
+| IQ2_XS | 68.0 GB | [7.1 GiB](docs/MEASUREMENTS.md#2026-10-19-other-quants) | [100.8](docs/MEASUREMENTS.md#2026-10-19-other-quants) | 95.7% |
+| Q2_0 | 66.4 GB | about 5.6 GiB (*estimate*) | [104.4](docs/MEASUREMENTS.md#2026-10-19-other-quants) | 95.7% |
+
+On two cards, one slot, a 262,144-token context. The benchmark column is ISTA-DASLab's, from
+[the files' model card](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF): the mean of AIME25,
+GPQA-Diamond and LiveCodeBench v6 against the original 16-bit model. [CHOOSING_A_MODEL.md](docs/CHOOSING_A_MODEL.md)
+explains each column and helps you choose.
 
 ## Options
 
@@ -274,6 +291,8 @@ For users:
 - This README: running the server, its options, its API and its limits.
 - [MODEL_FILES.md](docs/MODEL_FILES.md): the model files: where to get them, how to lay them out for the engine, and
   their tensors.
+- [CHOOSING_A_MODEL.md](docs/CHOOSING_A_MODEL.md): which of the four model files to pick, for your hardware and the
+  speed and accuracy you want.
 
 For developers:
 

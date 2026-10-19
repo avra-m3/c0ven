@@ -314,6 +314,8 @@ own docs and source, 246,571 tokens. The quant's value is given first, then its 
 | Test | Value | Measured |
 | --- | --- | --- |
 | Experts a layer in VRAM | IQ3_XXS 369, IQ2_XS 460, Q2_0 481, against IQ3_S's 307 | <a id="2026-10-19-other-quants"></a>[2026-10-19](#2026-10-19-other-quants) |
+| Experts in RAM (the arena), from the server's load log | IQ3_S 18.73, IQ3_XXS 11.15, IQ2_XS 3.35, Q2_0 1.91 GiB | [2026-10-19](#2026-10-19-other-quants) |
+| Peak anonymous memory over a run with long-256k | IQ3_S 21.77-22.64, IQ3_XXS 14.43-14.62, IQ2_XS 6.71-7.10 GiB: about the arena plus one 262K sequence's K and V. Q2_0's was not separable from other processes' | [2026-10-19](#2026-10-19-other-quants) |
 | Prompt reading, doc-4k-qa | IQ3_XXS 2,151.6 (2,141.8-2,152.7) against 2,008.6; IQ2_XS 2,251.9 (2,241.7-2,253.9) against 2,005.5; Q2_0 2,239.8 (2,233.1-2,245.6) against 2,014.1 tokens/s | [2026-10-19](#2026-10-19-other-quants) |
 | Prompt reading, doc-32k | IQ3_XXS 2,158.3 (2,001.3-2,159.4) against 2,066.4; IQ2_XS 2,240.0 (2,238.4-2,240.7) against 2,066.8; Q2_0 2,229.7 (2,228.9-2,230.5) against 2,067.2 tokens/s | [2026-10-19](#2026-10-19-other-quants) |
 | Prompt reading, long-256k | IQ3_XXS 1,868.1 (1,865.8-1,868.4) against 1,795.1; IQ2_XS 1,928.4 (1,927.4-1,928.6) against 1,794.2; Q2_0 1,925.0 (1,924.0-1,925.1) against 1,794.2 tokens/s | [2026-10-19](#2026-10-19-other-quants) |
