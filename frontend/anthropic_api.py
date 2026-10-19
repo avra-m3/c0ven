@@ -211,6 +211,7 @@ def _usage(end: End) -> JSONObject:
         "cache_read_input_tokens": end.cached_tokens,
         "cache_creation_input_tokens": 0,
         "output_tokens": end.completion_tokens,
+        **end.speeds(),
     }
 
 
@@ -304,7 +305,7 @@ async def stream_events(pieces: AsyncIterator[Piece | End], model: str, prompt_t
                     out.append(("error", {"type": "error", "error": {"type": "api_error", "message": piece.error}}))
                 else:
                     stop = {"stop_reason": _STOP_REASON[piece.finish], "stop_sequence": piece.stop_string}
-                    usage = {"output_tokens": piece.completion_tokens}
+                    usage = {"output_tokens": piece.completion_tokens, **piece.speeds()}
                     out.append(("message_delta", {"type": "message_delta", "delta": stop, "usage": usage}))
                     out.append(("message_stop", {"type": "message_stop"}))
         for event in out:

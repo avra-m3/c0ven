@@ -229,6 +229,7 @@ def _usage(end: End) -> JSONObject:
         "completion_tokens": end.completion_tokens,
         "total_tokens": end.prompt_tokens + end.completion_tokens,
         "prompt_tokens_details": {"cached_tokens": end.cached_tokens},
+        **end.speeds(),
     }
 
 
