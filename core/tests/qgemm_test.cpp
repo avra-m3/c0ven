@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstring>
 #include <random>
+#include <set>
 
 #include "ggml.h"
 #include "load/gguf.h"
@@ -61,8 +62,13 @@ int main() {
   std::normal_distribution<float> normal(0.0f, 1.0f);
   Checker ck;
 
-  // dequant_f16 on the first 200 rows of a dense tensor of each type.
-  for (uint32_t type : {QT_Q4_K, QT_Q5_K, QT_Q6_K, QT_IQ4_XS, QT_IQ4_NL, QT_Q8_0}) {
+  // dequant_f16 on the first 200 rows of a dense tensor of each quantised type the file has.
+  std::set<uint32_t> dense_types;
+  for (auto &[name, ti] : model.tensors())
+    if (quant_block_values(ti.type) > 1 && name.find("exps") == std::string::npos &&
+        name.find("per_layer") == std::string::npos)
+      dense_types.insert(ti.type);
+  for (uint32_t type : dense_types) {
     const GgufTensor *t = nullptr;
     for (auto &[name, ti] : model.tensors())
       if (ti.type == type && name.find("exps") == std::string::npos && name.find("per_layer") == std::string::npos) {

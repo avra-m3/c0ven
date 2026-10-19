@@ -39,6 +39,15 @@ static inline uint dec_u32(__global const uchar *p) { return ld_u32(p); }
 #elif QTYPE == QT_IQ4_NL || QTYPE == QT_IQ4_XS
 #define GRID_OFF QGRID_KVALUES
 #define GRID_BYTES 16
+#elif QTYPE == QT_IQ2_XXS
+#define GRID_OFF QGRID_IQ2XXS
+#define GRID_BYTES 2048
+#elif QTYPE == QT_IQ2_XS
+#define GRID_OFF QGRID_IQ2XS
+#define GRID_BYTES 4096
+#elif QTYPE == QT_IQ1_M
+#define GRID_OFF QGRID_IQ1S
+#define GRID_BYTES 16384
 #else
 #define GRID_BYTES 0
 #endif
@@ -85,6 +94,24 @@ static inline uint q2_byte(uint x) {
   return sub_bytes(t, 0x01010101u);
 }
 
+// Q4_0 / Q5_0: 4 bits of 4 values (one per byte) into the low bits of their bytes.
+static inline uint spread4(uint x) {
+  return (x & 1u) | ((x & 2u) << 7) | ((x & 4u) << 14) | ((x & 8u) << 21);
+}
+
+// Q3_K: the 6-bit scale i of 16 (12 bytes: low nibbles of 0-7, high nibbles of 0-7, then 2-bit tops in 8-11).
+static inline int q3k_scale(__global const uchar *sc, uint i) {
+  uint lo4 = i < 8 ? sc[i] & 15 : sc[i - 8] >> 4;
+  uint hi2 = (sc[8 + (i & 3)] >> (2 * (i / 4))) & 3;
+  return (int)(lo4 | (hi2 << 4)) - 32;
+}
+
+// IQ1_M: a grid word (4 values of -1, 0 or 1) times 8, plus or minus 1: 8 (g + delta) with delta = +-1/8.
+static inline uint iq1_word(uint g, uint neg) {
+  uint x = (g << 3) & 0xf8f8f8f8u;
+  return neg ? sub_bytes(x, 0x01010101u) : x | 0x01010101u;
+}
+
 static inline void decode_unit(__global const uchar *W, ulong n, ulong k, uint s, uint w[8], float *lo, float *hi,
                                float *mn GRID_PARAM) {
   *mn = 0.0f;
@@ -93,6 +120,86 @@ static inline void decode_unit(__global const uchar *W, ulong n, ulong k, uint s
   __global const uchar *qs = FIELD(0, k);
   for (uint i = 0; i < 8; i++) w[i] = dec_u32(qs + 4 * i);
   *lo = *hi = ld_half(FIELD(1, k));
+#elif QTYPE == QT_Q4_0 || QTYPE == QT_Q5_0
+  // Q4_0: y = d * (q - 8), byte j holding value j (low nibble) and value j + 16 (high nibble). Q5_0: bit j of qh is
+  // bit 4 of value j; y = d * (q - 16).
+  __global const uchar *qs = FIELD(0, k);
+#if QTYPE == QT_Q5_0
+  uint qh = dec_u32(FIELD(1, k));
+  for (uint i = 0; i < 4; i++) {
+    uint x = dec_u32(qs + 4 * i);
+    w[i] = sub_bytes((x & 0x0f0f0f0fu) | (spread4(qh >> (4 * i)) << 4), 0x10101010u);
+    w[4 + i] = sub_bytes(((x >> 4) & 0x0f0f0f0fu) | (spread4(qh >> (16 + 4 * i)) << 4), 0x10101010u);
+  }
+  *lo = *hi = ld_half(FIELD(2, k));
+#else
+  for (uint i = 0; i < 4; i++) {
+    uint x = dec_u32(qs + 4 * i);
+    w[i] = sub_bytes(x & 0x0f0f0f0fu, 0x08080808u);
+    w[4 + i] = sub_bytes((x >> 4) & 0x0f0f0f0fu, 0x08080808u);
+  }
+  *lo = *hi = ld_half(FIELD(1, k));
+#endif
+#elif QTYPE == QT_Q3_K
+  // Q3_K: y = d * (scale - 32) * (q - 4 * !h); unit s takes bits 2(s mod 4) of qs bytes 32(s / 4) .. + 31, and bit
+  // s of the hmask bytes; its two halves of 16 have scales 2s and 2s + 1.
+  __global const uchar *qs = FIELD(0, k) + 32 * (s / 4);
+  __global const uchar *hm = FIELD(1, k);
+  uint shift = 2 * (s % 4);
+  for (uint i = 0; i < 8; i++) {
+    uint low = (dec_u32(qs + 4 * i) >> shift) & 0x03030303u;
+    uint h = (dec_u32(hm + 4 * i) >> s) & 0x01010101u;
+    w[i] = sub_bytes(low | (h << 2), 0x04040404u);
+  }
+  float d = ld_half(FIELD(3, k));
+  *lo = d * (float)q3k_scale(FIELD(2, k), 2 * s);
+  *hi = d * (float)q3k_scale(FIELD(2, k), 2 * s + 1);
+#elif QTYPE == QT_IQ2_XXS
+  // IQ2_XXS: y = d * (0.5 + s) / 4 * grid byte * sign; 4 8-bit indices, then 4 x 7 sign bits (8th for even parity)
+  // and the 4-bit scale.
+  __global const uchar *qs = FIELD(0, k) + 8 * s;
+  uint idx = dec_u32(qs), aux = dec_u32(qs + 4);
+  for (uint l = 0; l < 4; l++) {
+    uint2 e = *(__local const uint2 *)(grid + 8 * ((idx >> (8 * l)) & 255));
+    uint s7 = (aux >> (7 * l)) & 127;
+    uint signs = s7 | ((popcount(s7) & 1) << 7);
+    w[2 * l] = apply_signs4(e.x, signs & 15);
+    w[2 * l + 1] = apply_signs4(e.y, signs >> 4);
+  }
+  *lo = *hi = ld_half(FIELD(1, k)) * (0.5f + (float)(aux >> 28)) * 0.25f;
+#elif QTYPE == QT_IQ2_XS
+  // IQ2_XS: as IQ2_XXS, but each 16-bit word holds a 9-bit index and 7 sign bits, and the scale is a nibble per half.
+  __global const uchar *qs = FIELD(0, k) + 8 * s;
+  for (uint l = 0; l < 4; l++) {
+    uint v = ld_u16(qs + 2 * l);
+    uint2 e = *(__local const uint2 *)(grid + 8 * (v & 511));
+    uint s7 = v >> 9;
+    uint signs = s7 | ((popcount(s7) & 1) << 7);
+    w[2 * l] = apply_signs4(e.x, signs & 15);
+    w[2 * l + 1] = apply_signs4(e.y, signs >> 4);
+  }
+  uint sc = FIELD(1, k)[s];
+  float d = ld_half(FIELD(2, k)) * 0.25f;
+  *lo = d * (0.5f + (float)(sc & 15));
+  *hi = d * (0.5f + (float)(sc >> 4));
+#elif QTYPE == QT_IQ1_M
+  // IQ1_M: y = dl * (grid value + delta), delta +-1/8 per 8 values, grid values -1, 0 or 1; so y = dl / 8 * (8 g +- 1),
+  // whole numbers. Indices are 8 bits of qs and 3 of qh; d is the top nibbles of the 4 scale words, and the unit's
+  // two 3-bit scales are bits 6(s mod 2) of word s / 2.
+  __global const uchar *qs = FIELD(0, k) + 4 * s;
+  __global const uchar *qh = FIELD(1, k) + 2 * s;
+  __global const uchar *scw = FIELD(2, k);
+  uint s0 = ld_u16(scw), s1 = ld_u16(scw + 2), s2 = ld_u16(scw + 4), s3 = ld_u16(scw + 6);
+  float d = (float)as_half((ushort)((s0 >> 12) | ((s1 >> 8) & 0x00f0u) | ((s2 >> 4) & 0x0f00u) | (s3 & 0xf000u)));
+  uint ss = ld_u16(scw + 2 * (s / 2)) >> (6 * (s & 1));
+  for (uint l = 0; l < 4; l++) {
+    uint h = qh[l / 2] >> (4 * (l & 1));
+    uint2 e = *(__local const uint2 *)(grid + 8 * (qs[l] | ((h & 7) << 8)));
+    w[2 * l] = iq1_word(e.x, h & 8);
+    w[2 * l + 1] = iq1_word(e.y, h & 8);
+  }
+  *lo = d * (float)(2 * (ss & 7) + 1) * 0.125f;
+  *hi = d * (float)(2 * ((ss >> 3) & 7) + 1) * 0.125f;
 #elif QTYPE == QT_Q2_0
   // Q2_0: value j is bits 2(j mod 4) of byte j / 4; y = (q - 1) * d.
   __global const uchar *qs = FIELD(0, k) + 8 * s;

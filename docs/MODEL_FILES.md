@@ -82,6 +82,20 @@ sha256sum Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-0000*-of-00002.gguf
 The Hub gives the same values at `GET /api/models/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/tree/<revision>/IQ3_S`
 (`lfs.oid`, `lfs.size`). Together the shards are 83,617,662,656 B (83.6 GB).
 
+#### The other quants
+
+The same repository's `IQ3_XXS/`, `IQ2_XS/` and `Q2_0/` folders load too, at the same revision
+([ADR-0038](adr/0038-the-other-quants-load.md), draft). Their second shard, the n-gram table, is byte for byte IQ3_S's
+(the sha256 above), so a link to it under the quant's name serves. Put the image encoder's file and `mtp/` beside them
+as for IQ3_S; without the encoder's file the engine leaves room for more experts and its speed is not comparable.
+Their speed and agreement with IQ3_S are in [MEASUREMENTS.md](MEASUREMENTS.md#other-quants).
+
+| First shard | Bytes | sha256 |
+| --- | ---: | --- |
+| `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf` | 47,039,860,096 | `219ea929900dfa9ef091f3aa473fdba6874b65fcb36526d7d851ac9e95856d15` |
+| `Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf` | 39,225,954,592 | `92cee27ae5bbadcd732416a0f7a7f0acc092399dbbe8f5a5efa707c2ec0a49d7` |
+| `Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf` | 37,623,740,192 | `69820c02ec7d0b45ef2ebb19d6620299db749fe2aded7f39f93c6b88b199b720` |
+
 ### The image encoder
 
 The same repository at revision `1c04b8102ca5346f1faf4d9914503e378d713021`

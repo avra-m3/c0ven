@@ -64,7 +64,8 @@ int main() {
   int failures = 0;
   for (bool down : {false, true}) {
     std::vector<uint32_t> types = down ? std::vector<uint32_t>{QT_IQ4_NL, QT_Q2_0}
-                                       : std::vector<uint32_t>{QT_IQ2_S, QT_IQ3_XXS, QT_IQ3_S, QT_IQ4_XS};
+                                       : std::vector<uint32_t>{QT_IQ2_S, QT_IQ3_XXS, QT_IQ3_S, QT_IQ4_XS, QT_IQ2_XXS,
+                                                                  QT_IQ2_XS, QT_IQ1_M};
     for (uint32_t type : types) {
       // The first layer whose experts are of the type.
       const GgufTensor *g = nullptr, *u = nullptr;
@@ -76,7 +77,11 @@ int main() {
           u = down ? nullptr : &model.tensor(b + "ffn_up_exps.weight");
         }
       }
-      EXPECT(g, "no experts of type %s", ggml_type_label(type));
+      if (!g) {  // moe.cl's types the file does not have
+        std::printf("%-5s %-8s no experts of the type in this file, skipped\n", down ? "down" : "gate",
+                    ggml_type_label(type));
+        continue;
+      }
       const uint32_t rows = down ? DOWN_ROWS : GU_ROWS, K = down ? FF : EMBD;
       const uint32_t bpr = K / quant_block_values(type);
       const uint64_t n = (uint64_t)rows * bpr, mat = align256(runs_bytes(type, n));

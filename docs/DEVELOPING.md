@@ -60,6 +60,8 @@ docker exec engine-dev bash -c 'cd /src/build && ENGINE_EXPECT_GPUS=2 ctest -L g
 
 A test whose model is missing skips (exit code 77). Tests find the model at `FLASH_MODEL_DIR`, by default
 `/models`; ctest gives `api_test` the path `/models/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf`.
+`FLASH_MODEL` names another file's first shard instead: `matvec_test`, `qgemm_test` and `moe_test` then check the
+kernels of every quantised type that file has (`gguf_test` and `greedy_test` hold the IQ3_S file's own numbers).
 A GPU test also skips when Level Zero lists no GPU, unless `ENGINE_EXPECT_GPUS` is set; then it fails. `api_test`
 checks only for the model, since the C ABI does not say why `engine_open` failed.
 

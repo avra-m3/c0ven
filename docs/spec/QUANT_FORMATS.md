@@ -42,10 +42,16 @@ commit [MODEL_LAYER.md](MODEL_LAYER.md) uses and the build the reference outputs
 | [IQ4_XS](#iq4_xs) | 23 | experts gate+up (layer 47), 42 dense, embedding | 256 | 136 | 4.25 | `kvalues_iq4nl`, 16 x 1 B | q8_1, DP4A | q8_K |
 | [IQ4_NL](#iq4_nl) | 20 | experts down (39 layers), 47 dense, n-gram table | 32 | 18 | 4.5 | `kvalues_iq4nl`, 16 x 1 B | q8_1, DP4A | q8_0 |
 | [Q2_0](#q2_0) | 42 | experts down (9 layers) | 64 | 18 | 2.25 | none | q8_1, DP4A | q8_0 |
+| [IQ2_XXS](#iq2_xxs) | 16 | not in the IQ3_S file; experts gate+up in the IQ3_XXS and IQ2_XS files | 256 | 66 | 2.0625 | `iq2xxs_grid`, 256 x 8 B | - | q8_K |
+| [IQ2_XS](#iq2_xs) | 17 | not in the IQ3_S file; experts gate+up in the IQ3_XXS file | 256 | 74 | 2.3125 | `iq2xs_grid`, 512 x 8 B | - | q8_K |
+| [IQ1_M](#iq1_m) | 29 | not in the IQ3_S file; experts gate+up in the IQ2_XS file | 256 | 56 | 1.75 | `iq1s_grid`, 2048 x 8 B | - | q8_K |
+| [Q3_K](#q3_k) | 11 | not in the IQ3_S file; dense and the embedding in the Q2_0 file | 256 | 110 | 3.4375 | none | - | q8_K |
 | [Q4_K](#q4_k) | 12 | 47 dense | 256 | 144 | 4.5 | none | q8_1, DP4A | q8_K |
 | [Q5_K](#q5_k) | 13 | 35 dense | 256 | 176 | 5.5 | none | q8_1, DP4A | q8_K |
 | [Q6_K](#q6_k) | 14 | 128 dense, the head | 256 | 210 | 6.5625 | none | q8_1, DP4A | q8_K |
 | [Q8_0](#q8_0) | 8 | 1 dense (`blk.47.ffn_down_shexp`); the KV cache | 32 | 34 | 8.5 | none | q8_1, DP4A | q8_0 |
+| [Q4_0](#q4_0-and-q5_0) | 2 | not in the IQ3_S file; 16 dense in the Q2_0 file | 32 | 18 | 4.5 | none | - | q8_0 |
+| [Q5_0](#q4_0-and-q5_0) | 6 | not in the IQ3_S file; 7 dense in the Q2_0 file | 32 | 22 | 5.5 | none | - | q8_0 |
 | [BF16](#bf16-f16-f32) | 30 | 484 (dense, head, PLE) | 1 | 2 | 16 | none | float kernels | bf16 |
 | [F16](#bf16-f16-f32) | 1 | 1 (`blk.1.ple_conv1d`) | 1 | 2 | 16 | none | float kernels | f16 |
 | [F32](#bf16-f16-f32) | 0 | 292 (norms and other small tensors) | 1 | 4 | 32 | none | float kernels | f32 |
@@ -56,8 +62,13 @@ The tensor counts are from the census in [MODEL_FILES.md](../MODEL_FILES.md). Ea
 bytes = values / values-per-block x bytes-per-block with this table, and every row is a whole number of blocks
 (checked against [tensors-IQ3_S.tsv](../model/tensors-IQ3_S.tsv); see [Sources](#sources-and-how-this-was-checked)).
 
-The CPU column is each type's `vec_dot_type` in `ggml-cpu.c` (Q2_0 `:234`, Q8_0 `:272`, Q4_K `:311`, Q5_K `:321`,
-Q6_K `:327`, IQ3_XXS `:349`, IQ3_S `:356`, IQ2_S `:362`, IQ4_NL `:380`, IQ4_XS `:386`, BF16 `:395`, F16 `:222`). It
+The rows marked "not in the IQ3_S file" are the types the other quants of the same repository add (the IQ3_XXS,
+IQ2_XS and Q2_0 folders, by their `tensor-allocation/*.rco-allocation.txt` lists); the engine reads them too, and their
+sections describe its own decoding rather than llama.cpp's GPU dot product.
+
+The CPU column is each type's `vec_dot_type` in `ggml-cpu.c` (Q2_0 `:234`, Q4_0 `:243`, Q5_0 `:263`, Q8_0 `:272`,
+Q3_K `:308`, Q4_K `:311`, Q5_K `:321`, Q6_K `:327`, IQ2_XXS `:340`, IQ2_XS `:346`, IQ3_XXS `:349`, IQ3_S `:356`,
+IQ2_S `:362`, IQ1_M `:377`, IQ4_NL `:380`, IQ4_XS `:386`, BF16 `:395`, F16 `:222`). It
 matters because the correctness reference is llama.cpp's CPU backend ([ADR-0012](../adr/0012-correctness-reference.md),
 [REFERENCE_OUTPUTS.md](../REFERENCE_OUTPUTS.md)). There the activation meets a K- or i-quant as q8_K, not q8_1.
 
@@ -249,7 +260,72 @@ DP4A, result **d · d_a · sumi** (`vecdotq.cuh:771`). On the CPU the activation
 the identity Σ(q − 1)a = Σ q·a − Σ a with a per-chunk activation sum instead (`include/strata/kernels/cpu/expert.hpp:61`
 at `1678de3`).
 
+### IQ2_XXS
+
+256 values in 66 B, 2.0625 bpw (`block_iq2_xxs`, `common.h:381-384`; `GGML_TYPE_IQ2_XXS = 16`, `ggml.h:406`).
+
+| Offset | Bytes | Field | Meaning |
+| ---: | ---: | --- | --- |
+| 0 | 2 | `d` (f16) | block scale |
+| 2 | 64 | `qs[32]` (u16) | per 32 values, two 32-bit words: four 8-bit grid indices, then four 7-bit sign groups and a 4-bit scale |
+| | **66** | | 2 + 64 |
+
+**Dequantisation** (`quants.c:2488-2512`): for 32-value group g, with words a0 (indices) and a1, each 8 values l take
+`iq2xxs_grid[byte l of a0]` (8 magnitudes of 8, 25 or 43), signs `ksigns_iq2xs[(a1 >> 7l) & 127]` (the 7 bits and an
+eighth for even parity), and **y = d · (0.5 + (a1 >> 28)) · 0.25 · grid byte · sign**. The engine computes the parity
+bit instead of reading the table, as for IQ3_XXS, and decodes a unit to 8 signed byte words with one scale.
+
+### IQ2_XS
+
+256 values in 74 B, 2.3125 bpw (`block_iq2_xs`, `common.h:388-392`; `GGML_TYPE_IQ2_XS = 17`, `ggml.h:407`).
+
+| Offset | Bytes | Field | Meaning |
+| ---: | ---: | --- | --- |
+| 0 | 2 | `d` (f16) | block scale |
+| 2 | 64 | `qs[32]` (u16) | per 8 values: a 9-bit index into `iq2xs_grid` (bits 0-8) and 7 sign bits (bits 9-15) |
+| 66 | 8 | `scales[8]` | per 32 values: a 4-bit scale for values 0-15 (low nibble) and one for 16-31 (high) |
+| | **74** | | 2 + 64 + 8 |
+
+**Dequantisation** (`quants.c:2516-2539`): **y = d · (0.5 + scale) · 0.25 · grid byte · sign**, the sign byte from
+the 7 bits and the even-parity eighth (`ksigns_iq2xs`). The two halves of a unit have their own scale, which the
+engine's unit takes as its two scales.
+
+### IQ1_M
+
+256 values in 56 B, 1.75 bpw (`block_iq1_m`, `common.h:433-437`; `GGML_TYPE_IQ1_M = 29`, `ggml.h:419`). **No field
+holds the block scale:** it is the top nibbles of the four 16-bit scale words (`iq1m_scale_t`, `common.h:444`).
+
+| Offset | Bytes | Field | Meaning |
+| ---: | ---: | --- | --- |
+| 0 | 32 | `qs[32]` | per 8 values: the low 8 bits of an 11-bit index into `iq1s_grid` |
+| 32 | 16 | `qh[16]` | per 8 values, a nibble: the index's top 3 bits and the sign of its delta (bit 3) |
+| 48 | 8 | `scales[8]` | 4 words: per 32 values two 3-bit scales (bits 6(s mod 2) of word s/2); bits 12-15 of the words hold d |
+| | **56** | | 32 + 16 + 8 |
+
+**Dequantisation** (`quants.c:2675-2723`): d is the f16 whose nibbles are bits 12-15 of words 0, 1, 2, 3, from low to
+high. For 8 values with grid entry g (each byte −1, 0 or 1) and delta δ = ±1/8 (`IQ1M_DELTA`, `common.h:1133`),
+**y = d · (2 · scale + 1) · (g + δ)**, values 0-15 of a group with its first scale and 16-31 with its second. The engine
+writes it as **(d · (2 · scale + 1) / 8) · (8g ± 1)**: whole numbers in −9..9, so a unit is 8 signed byte words and
+two scales with no offset term.
+
 ## The dense types
+
+### Q3_K
+
+256 values in 110 B, 3.4375 bpw (`block_q3_K`, `common.h:315-320`; `GGML_TYPE_Q3_K = 11`, `ggml.h:401`).
+
+| Offset | Bytes | Field | Meaning |
+| ---: | ---: | --- | --- |
+| 0 | 32 | `hmask[32]` | the high bit of every value: value v's is bit v / 32 of byte v mod 32 |
+| 32 | 64 | `qs[64]` | the low 2 bits: value v's are bits 2((v mod 128) / 32) of byte 32(v / 128) + v mod 32 |
+| 96 | 12 | `scales[12]` | 16 6-bit scales: low nibbles in bytes 0-7 (scales 0-7 low, 8-15 high), top 2 bits in bytes 8-11 |
+| 108 | 2 | `d` (f16) | block scale |
+| | **110** | | 32 + 64 + 12 + 2 |
+
+**Dequantisation** (`quants.c:1305-1353`): **y = d · (scale − 32) · (q − 4 · (1 − h))**, q the 2-bit code and h the
+high bit; scale i covers values 16i..16i+15. Scale i's low nibble is byte i's (i < 8) or byte i − 8's high nibble,
+and its top bits are bits 2(i / 4) of byte 8 + i mod 4 (the shuffle at `quants.c:1323-1328`). A 32-value unit s takes
+scales 2s and 2s + 1.
 
 ### Q4_K
 
@@ -348,6 +424,20 @@ d · d_a · sumi. In attention, llama.cpp's vector flash-attention kernel quanti
 (`vec_dot_fattn_vec_KQ_q8_0`, `:304-329`); it dequantizes Q8_0 values to f16 or f32 (`dequantize_V_q8_0`, `:588`). One
 K or V row of one head (256 values) is 8 blocks, 272 B.
 
+### Q4_0 and Q5_0
+
+32 values with one f16 scale, 4.5 and 5.5 bpw (`block_q4_0`, `common.h:194-198`; `block_q5_0`, `common.h:230-234`;
+`GGML_TYPE_Q4_0 = 2`, `GGML_TYPE_Q5_0 = 6`, `ggml.h:392`, `:396`).
+
+| Type | Offset | Bytes | Field | Meaning |
+| --- | ---: | ---: | --- | --- |
+| both | 0 | 2 | `d` (f16) | block scale |
+| Q5_0 | 2 | 4 | `qh[4]` | bit j: the fifth bit of value j |
+| both | 2 (Q4_0), 6 (Q5_0) | 16 | `qs[16]` | byte j: value j (low nibble), value j + 16 (high nibble) |
+
+**Dequantisation** (`quants.c:459-477`, `:500-524`): Q4_0 **y = d · (q − 8)**; Q5_0 **y = d · (q − 16)** with q's
+bit 4 from `qh`. Neither has a codebook or a second scale.
+
 ### BF16, F16, F32
 
 One value per "block": 2, 2 and 4 bytes, little-endian. BF16 widens to f32 by a 16-bit shift
@@ -402,9 +492,13 @@ values in order, each packed little-endian in the table's C type, so anyone can 
 | `kmask_iq2xs` | IQ2_S, IQ3_XXS, IQ3_S (dequantisation) | `uint8_t` x 8 | 8 | 509-511 | the 8 single-bit masks | `5ac9831b2e30eb285ef34f8501620f878432d5c04331ad1ae47f977a83ba41a5` |
 | `ksigns64` | IQ3_XXS (SYCL dot product) | `uint64_t` x 128 | 1,024 | 524-557 | 0x00 or 0xFF per byte | `6ca8598509cc63406eaece40cff6b60198f6fa1e0dff261de7bd8d73bfed770c` |
 
-The three grids together are 11,264 B. The sign tables can be replaced by arithmetic (parity and shifts), as the CUDA
-kernels do. The file's types use no other table: `iq2xxs_grid`, `iq2xs_grid`, `iq1s_grid` and `kvalues_fp4` belong
-to types the file does not hold.
+| `iq2xxs_grid` | IQ2_XXS | `uint64_t` x 256 | 2,048 | 560-625 | 8, 25, 43 | `05826b5d3e472a3a78f196be62ac78acf81df0f909626e12ab9fa2a5d490dd54` |
+| `iq2xs_grid` | IQ2_XS | `uint64_t` x 512 | 4,096 | 627-756 | 8, 25, 43 | `06e47aaca60b4dc1d9b5a3f34540437058a6b142b4d7a59d5ded769b4d1bf1de` |
+| `iq1s_grid` | IQ1_M | `uint64_t` x 2048 | 16,384 | 1135-1648 | −1, 0, 1 | `07540ffc1aeaf6ad4d97e96b0fcc765aae39671d4ae4a27bbd0e796fde167c6a` |
+
+The IQ3_S file's three grids together are 11,264 B; with the other quants' three the packed buffer the engine uploads
+is 33,808 B (`QGRID_BYTES`, shared/quant.h). The sign tables can be replaced by arithmetic (parity and shifts), as the
+CUDA kernels do. `kvalues_fp4` belongs to a type none of the files holds.
 
 ## Wide loads: a layout with quants in one run and scales in another
 
