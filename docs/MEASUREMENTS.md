@@ -346,6 +346,7 @@ own docs and source, 246,571 tokens. The quant's value is given first, then its 
 | Routed experts served by the cards, 24 a layer of 17,581 | 89.6% from a static cache, hottest first; 95.9% with swaps | <a id="2026-10-12-expert-hit-rates"></a>[2026-10-12](#2026-10-12-expert-hit-rates) |
 | Layers with no miss at 3 tokens | 26.9%; 46.1% with swaps | [2026-10-12](#2026-10-12-expert-hit-rates) |
 | Four requests sent within 0.1 ms | Without a wait the engine planned before reading all four in 10 of 51 runs, and the late ones reached their first token 0.55-1.78 s later. With up to 2 ms of wait after a GEN to an idle engine, 0 of 24. | <a id="2026-10-17-requests-sent-together"></a>[2026-10-17](#2026-10-17-requests-sent-together) |
+| Adaptive swaps shared out among the slots that wrote (a round's 64 over their count) | chats4 94.7 → 100.9 tokens/s while all write; staggered's two writers 37.9 → 39.1; four 1,536-token answers 145.9 → 146.8; one request 81.8 → 81.8 | <a id="2026-10-19-swaps-several-writers"></a>[2026-10-19](#2026-10-19-swaps-several-writers) |
 
 ### Agreement with references
 

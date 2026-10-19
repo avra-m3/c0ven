@@ -130,6 +130,7 @@ struct engine_ctx {
   uint32_t plans_done = 0, plans_taken = 0;
   bool running = false;  // a plan is being run
   bool prompt_ended = false;  // the plan being run read some slot's last prompt token
+  uint32_t writers = 0;  // the slots the plan being run decoded
   bool stop = false;
   bool asleep = false;
   uint64_t checkpoint_bytes = 0;
@@ -376,6 +377,7 @@ struct engine_ctx {
         who.push_back(s);
       }
     }
+    writers = (uint32_t)rows.size();
     if (rows.empty()) return;
     {
       std::unique_lock<std::mutex> lk(mu);
@@ -497,6 +499,7 @@ struct engine_ctx {
         seq = ++plans_taken;
         running = true;
         prompt_ended = false;
+        writers = 0;
       }
       try {
         apply_pages(pages);
@@ -506,8 +509,10 @@ struct engine_ctx {
         }
         decode(seq, plan);
         // A swap round after a plan that ended a prompt, and after every 16th plan. Never while a slot reads its
-        // prompt (docs/MEASUREMENTS.md#2026-10-16-drafting-and-swaps).
-        if (swaps && (prompt_ended || seq % 16 == 0) && !prompt_reading()) model->swap_round();
+        // prompt (docs/MEASUREMENTS.md#2026-10-16-drafting-and-swaps). While several slots write, the round's
+        // swaps are shared out: the cache follows several requests' routing at once.
+        if (swaps && (prompt_ended || seq % 16 == 0) && !prompt_reading())
+          model->swap_round(64 / std::max<uint32_t>(1, writers));
         std::lock_guard<std::mutex> lk(mu);
         emit({ENGINE_EVENT_STEP, 0, kNoToken, ++plans_done});
       } catch (const std::exception &ex) {
