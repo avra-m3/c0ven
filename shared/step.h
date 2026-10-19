@@ -21,21 +21,29 @@ typedef struct {
 typedef struct {
   u32 nrows;
   u32 step;    // counts steps, for the timing records
-  u32 window;  // 1: the rows are one sequence's window of consecutive positions, and the recurrent state is not
-               // committed; a commit (CommitPlan) then writes the accepted rows' state
+  u32 window;  // 1: the rows are windows of consecutive positions, one run of rows per sequence, and the recurrent
+               // state is not committed; a commit (CommitPlan) then writes the accepted rows' state
   u32 pad;
   StepRow rows[STEP_MAX_ROWS];
 } StepPlan;
 
-// After a window: its first n rows (the accepted ones) commit their recurrent state, from position pos0 of slot.
+// After a window: in each of nruns runs, the n rows from window row row0 (the accepted ones) commit their recurrent
+// state, from position pos0 of slot.
 typedef struct {
   u32 n;
   u32 pos0;
   u32 slot;
-  u32 pad;
+  u32 row0;
+} CommitRun;
+
+typedef struct {
+  u32 nruns;
+  u32 pad[3];
+  CommitRun runs[STEP_MAX_ROWS];
 } CommitPlan;
 
-SHARED_ASSERT(sizeof(CommitPlan) == 16, "CommitPlan layout");
+SHARED_ASSERT(sizeof(CommitRun) == 16, "CommitRun layout");
+SHARED_ASSERT(sizeof(CommitPlan) == 16 + 16 * STEP_MAX_ROWS, "CommitPlan layout");
 
 // A prompt chunk: n consecutive tokens of one sequence from position pos0, all computed in one pass (the prompt
 // path). The recorded chunk lists read it where it lies, so one list serves any n up to the size it was recorded for.

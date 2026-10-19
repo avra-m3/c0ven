@@ -74,7 +74,7 @@ typedef struct {
   uint32_t prompt_chunk;       /* 0: prompts go one token per step */
   uint32_t checkpoints;
   uint32_t max_step_rows;      /* decode rows per step at most */
-  uint32_t drafting;           /* 1: a plan with one decode slot runs a round of drafts verified in a window */
+  uint32_t drafting;           /* 1: a plan whose decode slots all write runs a round of drafts verified in a window */
   uint32_t image_tokens_max;   /* the most tokens an image may have; 0: no images */
   uint32_t kv_pages;           /* the KV cache's pages */
   uint32_t pages_per_slot;     /* logical pages a slot can map: the context's, rounded up to a multiple of the cards */
@@ -120,8 +120,11 @@ typedef struct {
 /* One plan: page changes, applied in order before anything else; some slots' prompt pieces, each of up to 64 tokens
  * with no image as decode windows, a longer one through the prompt path; then one decode step for the decode slots,
  * batched (up to max_step_rows). A slot still reading its prompt may be in decode: it then reads its next prompt token
- * in the step. The scheduler decides the mix and the pieces' sizes (ADR-0017). With drafting, a plan whose one decode
- * slot is writing runs a round: its drafts verified in one window, and up to draft_max + 1 tokens out. */
+ * in the step. The scheduler decides the mix and the pieces' sizes (ADR-0017). With drafting, a plan whose decode
+ * slots are all writing runs a round: each slot's drafts verified in one window, and up to draft_max + 1 tokens out
+ * for a lone slot, 3 for each of several. The slots share the window's max_step_rows rows, so each drafts fewer as
+ * there are more of them. Several slots run a round only while no slot has prompt left to read, and not for one's
+ * second token. */
 #define ENGINE_MAX_STEP_SLOTS 8
 #define ENGINE_MAX_PROMPT_PIECES 4
 typedef struct {

@@ -226,7 +226,7 @@ void Model::load_cards(bool first) {
     record_commit(*card);
     if (mtp_on_) {
       for (uint32_t W = 1; W <= STEP_MAX_ROWS; W *= 2) record_mtp(*card, W, false);
-      record_mtp(*card, 1, true);
+      for (uint32_t W = 1; W <= STEP_MAX_ROWS; W *= 2) record_mtp(*card, W, true);
     }
   }
   if (tmax_) {
@@ -1080,9 +1080,18 @@ void Model::record_commit(Card &card) {
 }
 
 void Model::commit(uint32_t slot, uint32_t pos0, uint32_t n) {
-  if (slot >= opt_.slots || n == 0 || n > STEP_MAX_ROWS) throw std::runtime_error("commit out of range");
+  CommitRun run{n, pos0, slot, 0};
+  commit_runs(&run, 1);
+}
+
+void Model::commit_runs(const CommitRun *runs, uint32_t n) {
+  if (n == 0 || n > STEP_MAX_ROWS) throw std::runtime_error("commit out of range");
+  for (uint32_t k = 0; k < n; k++)
+    if (runs[k].slot >= opt_.slots || runs[k].n == 0 || runs[k].row0 + runs[k].n > STEP_MAX_ROWS)
+      throw std::runtime_error("commit out of range");
   wait_commit();
-  *cplan_ = {n, pos0, slot, 0};
+  cplan_->nruns = n;
+  std::copy(runs, runs + n, cplan_->runs);
   for (auto &card : cards_) card->commit->execute();
   commit_pending_ = true;
 }
@@ -1146,9 +1155,13 @@ std::vector<Candidate> Model::step(uint32_t slot, uint32_t pos, int32_t token, i
 std::vector<std::vector<Candidate>> Model::step(const StepIn *rows, uint32_t n, bool window, bool prompt) {
   if (n == 0 || n > STEP_MAX_ROWS) throw std::runtime_error("a step takes 1 to 8 rows");
   if (window)
-    for (uint32_t r = 1; r < n; r++)
-      if (rows[r].slot != rows[0].slot || rows[r].pos != rows[0].pos + r)
-        throw std::runtime_error("a window's rows are consecutive positions of one sequence");
+    for (uint32_t r = 1; r < n; r++) {
+      bool same = rows[r].slot == rows[r - 1].slot;
+      for (uint32_t q = 0; q + 1 < r && !same; q++)
+        if (rows[q].slot == rows[r].slot) throw std::runtime_error("a window has one run of rows a sequence");
+      if (same && rows[r].pos != rows[r - 1].pos + 1)
+        throw std::runtime_error("a window's run is consecutive positions of one sequence");
+    }
   for (uint32_t r = 0; r < n; r++) {
     if (rows[r].slot >= opt_.slots) throw std::runtime_error("slot out of range");
     if (rows[r].pos >= opt_.max_ctx) throw std::runtime_error("position past the context");

@@ -71,6 +71,9 @@ struct Slot {
 // (docs/MEASUREMENTS.md#2026-10-17-prompt-windows).
 constexpr uint32_t kWindowPrompt = 64;
 
+// The most drafts each of several writing slots makes (docs/MEASUREMENTS.md#2026-10-19-draft-rounds-several-writers).
+constexpr uint32_t kSharedDrafts = 2;
+
 struct Checkpoint {
   uint8_t *data = nullptr;      // pinned host memory: a slot's fixed state
   uint64_t bytes = 0;
@@ -236,6 +239,72 @@ struct engine_ctx {
     return d;
   }
 
+  // One slot's drafting from a pass's row: its sampler, the first draft's position, the row's candidates, the row,
+  // the most drafts it may make, and the tokens before the first draft (draft_history).
+  struct DraftSeed {
+    uint32_t slot;
+    engine_settings settings;
+    uint32_t pos;
+    std::vector<Candidate> first;
+    uint32_t src;
+    uint32_t most;
+    std::vector<int32_t> hist;
+  };
+
+  // make_drafts for several slots at once, each further draft of every slot still drafting in one pass of the draft
+  // layer. Runs on the engine thread.
+  std::vector<std::vector<int32_t>> make_drafts_many(std::vector<DraftSeed> &seeds) {
+    const size_t n = seeds.size();
+    std::vector<std::vector<int32_t>> d(n);
+    std::vector<uint32_t> src(n), live;
+    for (size_t i = 0; i < n; i++) {
+      DraftSeed &sd = seeds[i];
+      if (sd.most == 0 || sd.first.empty()) continue;
+      std::pair<int32_t, double> pick = sample_p(sd.first, sd.settings, sd.pos, sd.hist);
+      if (pick.second < draft_min_p) continue;
+      d[i].push_back(pick.first);
+      src[i] = sd.src;
+      if (d[i].size() < sd.most && sd.pos + 2 < info.max_ctx) live.push_back((uint32_t)i);
+    }
+    while (!live.empty()) {
+      std::vector<StepIn> rows;
+      std::vector<uint32_t> from;
+      for (uint32_t i : live) {
+        rows.push_back({seeds[i].slot, seeds[i].pos + (uint32_t)d[i].size() - 2, d[i].back(), kNoToken, kNoToken});
+        from.push_back(src[i]);
+      }
+      auto c = model->mtp_drafts(rows.data(), (uint32_t)rows.size(), from.data());
+      std::vector<uint32_t> still;
+      for (size_t k = 0; k < live.size(); k++) {
+        const uint32_t i = live[k];
+        DraftSeed &sd = seeds[i];
+        src[i] = (uint32_t)k;
+        if (penalised(sd.settings)) sd.hist.push_back(d[i].back());
+        std::pair<int32_t, double> pick = sample_p(c[k], sd.settings, sd.pos + (uint32_t)d[i].size(), sd.hist);
+        if (pick.second < draft_min_p) continue;
+        d[i].push_back(pick.first);
+        if (d[i].size() < sd.most && sd.pos + d[i].size() + 1 < info.max_ctx) still.push_back(i);
+      }
+      live = std::move(still);
+    }
+    return d;
+  }
+
+  // The drafts the i-th of n writing slots may make: the window's rows (STEP_MAX_ROWS) shared out, each slot's row
+  // first, and at most draft_max, or kSharedDrafts with several slots.
+  uint32_t draft_share(uint32_t i, uint32_t n) const {
+    if (n >= STEP_MAX_ROWS) return 0;
+    const uint32_t spare = STEP_MAX_ROWS - n, most = n > 1 ? std::min(draft_max, kSharedDrafts) : draft_max;
+    return std::min(most, spare / n + (i < spare % n ? 1u : 0u));
+  }
+
+  // Whether a slot still has prompt to read. Under mu.
+  bool reading() const {
+    for (const Slot &sl : slots)
+      if (sl.used && !sl.done && sl.fed < sl.prompt.size()) return true;
+    return false;
+  }
+
   // A prompt piece through the prompt path. Runs on the engine thread.
   void prompt_piece(uint32_t plan, engine_prompt_piece pc) {
     std::vector<int32_t> toks, next;
@@ -388,6 +457,21 @@ struct engine_ctx {
         round(plan, rows[0], d);
         return;
       }
+      // Several slots, all writing, some with drafts: their windows in one pass. Not while a prompt is read, nor for a
+      // slot's second token, which already waits for the prompt steps after its first: a round there would lengthen
+      // the step that ends the wait (docs/MEASUREMENTS.md#2026-10-19-draft-rounds-several-writers).
+      bool writing = model->drafting() && rows.size() > 1 && !reading(), any = false;
+      std::vector<std::vector<int32_t>> ds;
+      for (uint32_t s : who) {
+        writing = writing && slots[s].fed >= slots[s].prompt.size() && slots[s].generated > 1;
+        any = any || !slots[s].drafts.empty();
+        ds.push_back(slots[s].drafts);
+      }
+      if (writing && any) {
+        lk.unlock();
+        rounds(plan, rows, ds);
+        return;
+      }
     }
     uint64_t t0 = now_ns();
     auto out = model->step(rows.data(), (uint32_t)rows.size());
@@ -412,10 +496,29 @@ struct engine_ctx {
         mr.push_back({s, rows[i].pos, sl.next, kNoToken, kNoToken});
       }
     }
-    // The draft layer reads every computed row, so its cells stay whole; a slot decoding alone gets drafts.
+    // The draft layer reads every computed row, so its cells stay whole; writing slots get drafts.
     if (!model->drafting() || mr.empty()) return;
     auto dc = model->mtp_catchup(mr.data(), (uint32_t)mr.size());
-    if (mr.size() != 1) return;
+    if (mr.size() != 1) {
+      std::vector<DraftSeed> seeds;
+      {
+        std::lock_guard<std::mutex> lk(mu);
+        if (reading()) return;
+        for (uint32_t i = 0; i < mr.size(); i++) {
+          const Slot &sl = slots[mr[i].slot];
+          if (sl.used && !sl.done)
+            seeds.push_back({mr[i].slot, sl.settings, sl.fed + 1, dc[i], i, draft_share(i, (uint32_t)mr.size()),
+                             draft_history(sl)});
+        }
+      }
+      auto d = make_drafts_many(seeds);
+      std::lock_guard<std::mutex> lk(mu);
+      for (size_t i = 0; i < seeds.size(); i++) {
+        Slot &sl = slots[seeds[i].slot];
+        if (sl.used && !sl.done) sl.drafts = d[i];
+      }
+      return;
+    }
     std::unique_lock<std::mutex> lk(mu);
     Slot &sl = slots[mr[0].slot];
     if (!sl.used || sl.done || sl.fed < sl.prompt.size()) return;
@@ -482,6 +585,101 @@ struct engine_ctx {
     auto d = make_drafts(s, settings, p + a + 2, dc[a], a, std::move(hist));
     std::lock_guard<std::mutex> lk(mu);
     if (slots[s].used && !slots[s].done) slots[s].drafts = d;
+  }
+
+  // A draft round for several slots in one window (round, slot by slot): each slot's run of rows, its token sampled
+  // last and its drafts, as many as the window's rows allow. Each run is accepted and committed as round's one, then
+  // the draft layer catches up on every row of the window (a run's rows past its accepted ones only fill cells that
+  // are written again before any row reads them) and drafts again for every slot. Runs on the engine thread.
+  void rounds(uint32_t plan, const std::vector<StepIn> &row0, const std::vector<std::vector<int32_t>> &drafts) {
+    const uint32_t ns = (uint32_t)row0.size();
+    std::vector<uint32_t> start(ns), k(ns);
+    std::vector<StepIn> rows;
+    {
+      std::lock_guard<std::mutex> lk(mu);
+      for (uint32_t i = 0; i < ns; i++) {
+        const uint32_t s = row0[i].slot, p = row0[i].pos;
+        uint32_t ki = (uint32_t)std::min<size_t>(drafts[i].size(), info.max_ctx - 1 - p);
+        ki = std::min(ki, mapped_cells(s) - 1 - p);
+        ki = std::min<uint32_t>(ki, STEP_MAX_ROWS - (uint32_t)rows.size() - (ns - i));
+        start[i] = (uint32_t)rows.size();
+        k[i] = ki;
+        rows.push_back(row0[i]);
+        for (uint32_t j = 0; j < ki; j++) {
+          const StepIn &b = rows.back();
+          rows.push_back({s, p + 1 + j, drafts[i][j], b.token, b.p1});
+        }
+      }
+    }
+    const uint32_t n = (uint32_t)rows.size();
+    uint64_t t0 = now_ns();
+    auto out = model->step(rows.data(), n, true);
+    std::vector<engine_settings> settings(ns);
+    std::vector<std::vector<int32_t>> hist(ns);  // each slot's tokens before the row being sampled, for the penalties
+    {
+      std::lock_guard<std::mutex> lk(mu);
+      for (uint32_t i = 0; i < ns; i++) {
+        settings[i] = slots[row0[i].slot].settings;
+        hist[i] = penalty_window(slots[row0[i].slot].tokens, settings[i]);
+      }
+    }
+    std::vector<std::vector<int32_t>> picks(ns);
+    std::vector<uint32_t> acc(ns);
+    std::vector<CommitRun> runs;
+    for (uint32_t i = 0; i < ns; i++) {
+      const uint32_t p = row0[i].pos;
+      const bool pen = penalised(settings[i]);
+      uint32_t a = 0;
+      for (; a <= k[i]; a++) {
+        if (pen) hist[i].push_back(rows[start[i] + a].token);
+        picks[i].push_back(sample_p(out[start[i] + a], settings[i], p + a + 1, hist[i]).first);
+        if (a == k[i] || drafts[i][a] != picks[i][a]) break;
+      }
+      acc[i] = a;
+      runs.push_back({a + 1, p, row0[i].slot, start[i]});
+    }
+    model->commit_runs(runs.data(), ns);
+    std::vector<bool> live(ns, false);
+    {
+      std::lock_guard<std::mutex> lk(mu);
+      record({ENGINE_TIMING_ROUND, plan, n, model->last_stats().misses, t0, now_ns()});
+      for (uint32_t i = 0; i < ns; i++) {
+        const uint32_t s = row0[i].slot, p = row0[i].pos, a = acc[i];
+        Slot &sl = slots[s];
+        if (!sl.used) continue;
+        for (uint32_t j = 0; j <= a; j++) sl.tokens.push_back(rows[start[i] + j].token);
+        sl.fed = p + a + 1;
+        bool done = false;
+        for (uint32_t j = 0; j <= a && !done; j++) done = emit_token(s, picks[i][j], p + j + 1);
+        sl.drafts.clear();
+        live[i] = !done;
+      }
+    }
+    std::vector<StepIn> mr;
+    for (uint32_t i = 0; i < ns; i++)
+      for (uint32_t j = 0; j <= k[i]; j++) {
+        const StepIn &r = rows[start[i] + j];
+        mr.push_back({r.slot, r.pos, j < acc[i] ? rows[start[i] + j + 1].token : picks[i][acc[i]], kNoToken, kNoToken});
+      }
+    auto dc = model->mtp_catchup(mr.data(), n);
+    {
+      std::lock_guard<std::mutex> lk(mu);
+      if (reading()) return;  // a request admitted while the round ran
+    }
+    std::vector<DraftSeed> seeds;
+    for (uint32_t i = 0; i < ns; i++)
+      if (live[i]) {
+        const uint32_t r = start[i] + acc[i];
+        if (penalised(settings[i])) hist[i].push_back(picks[i][acc[i]]);
+        seeds.push_back({row0[i].slot, settings[i], row0[i].pos + acc[i] + 2, dc[r], r, draft_share(i, ns),
+                         std::move(hist[i])});
+      }
+    auto d = make_drafts_many(seeds);
+    std::lock_guard<std::mutex> lk(mu);
+    for (size_t i = 0; i < seeds.size(); i++) {
+      Slot &sl = slots[seeds[i].slot];
+      if (sl.used && !sl.done) sl.drafts = d[i];
+    }
   }
 
   void run() {

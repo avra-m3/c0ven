@@ -1,8 +1,9 @@
 // Level 6 (docs/TESTING.md): a decode step of several rows gives each row exactly what it gets alone. Eight
 // sequences (the reference prompts' first 24 tokens) run one token per step, alone, then eight and four per step;
-// then one as windows of 4 positions, and one as draft windows with wrong drafts, committing the rows before the
-// first wrong one. Gate: every row's 64 candidates bit-identical to its single-row run (each row is computed alone
-// in every kernel, the CPU's misses are per row, and a commit replays the accepted rows' state).
+// then one as windows of 4 positions, one as draft windows with wrong drafts, committing the rows before the first
+// wrong one, and three as draft windows in one step, each committing its own. Gate: every row's 64 candidates
+// bit-identical to its single-row run (each row is computed alone in every kernel, the CPU's misses are per row, and
+// a commit replays the accepted rows' state).
 #include <algorithm>
 #include <cstring>
 #include <fstream>
@@ -124,6 +125,44 @@ int main(int argc, char **argv) {
       windows++;
     }
     std::printf("draft windows with wrong drafts: %u windows, %u committed rows differ from alone\n", windows, bad);
+    failures += bad != 0;
+  }
+  // Draft windows of three sequences in one step: runs of 3, 2 and 3 rows, wrong drafts at different places in each,
+  // each run's rows before its first wrong draft committed together.
+  {
+    const uint32_t seq[3] = {5, 6, 7}, len[3] = {3, 2, 3};
+    for (uint32_t s : seq) model.reset_slot(s);
+    uint32_t at[3] = {0, 0, 0}, bad = 0, windows = 0, drafts = 0, committed = 0;
+    while (at[0] < N || at[1] < N || at[2] < N) {
+      std::vector<qwen4exp::StepIn> rows;
+      std::vector<CommitRun> runs;
+      for (uint32_t k = 0; k < 3; k++) {
+        const uint32_t s = seq[k], w = std::min(len[k], N - std::min(at[k], N));
+        if (w == 0) continue;
+        CommitRun run{w, at[k], s, (uint32_t)rows.size()};
+        for (uint32_t j = 0; j < w; j++) {
+          auto r = row(s, at[k] + j);
+          if (j > 0 && (drafts++ % 4) == 1 + k % 2) {
+            r.token = (r.token + 11) % 1000 + 100;
+            if (run.n == w) run.n = j;
+          }
+          if (j > 0) r.p1 = rows.back().token, r.p2 = j > 1 ? rows[rows.size() - 2].token : r.p2;
+          rows.push_back(r);
+        }
+        runs.push_back(run);
+      }
+      auto out = model.step(rows.data(), (uint32_t)rows.size(), true);
+      for (const CommitRun &run : runs) {
+        const uint32_t k = run.slot - seq[0];
+        for (uint32_t j = 0; j < run.n; j++) bad += !same(out[run.row0 + j], alone[run.slot][run.pos0 + j]);
+        at[k] += run.n;
+        committed += run.n;
+      }
+      model.commit_runs(runs.data(), (uint32_t)runs.size());
+      windows++;
+    }
+    std::printf("draft windows of three sequences in one step: %u windows, %u of %u committed rows differ from alone\n",
+                windows, bad, committed);
     failures += bad != 0;
   }
   EXPECT(failures == 0, "rows of a step differ from their single-row runs");

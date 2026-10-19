@@ -465,11 +465,16 @@ the next step starts ([ADR-0027](adr/0027-the-c-abi-as-the-core-was-optimised.md
 
 ### Drafts
 
-When one slot decodes alone, a step is a draft round ([ADR-0029](adr/0029-the-engine-process-drafts-and-swaps.md)).
-The token sampled last and up to 3 drafts run as one window. A draft is accepted while it equals what the main model
-samples at its place, and the main model samples one more token after the accepted ones. The accepted rows are
-committed, and the draft layer reads them and drafts again. Drafting stops at a draft whose probability under the
-request's sampler is below 0.5. Drafts never change the tokens, because the main model samples every one.
+When the decoding slots all write, a step is a draft round
+([ADR-0029](adr/0029-the-engine-process-drafts-and-swaps.md)). For each slot, the token sampled last and its drafts run
+as one window, and the windows of all slots run in one step. The slots share the step's 8 rows: a lone slot takes up to
+3 drafts, and each of several up to 2, fewer as there are more of them. Each slot's window is accepted and committed on
+its own. A step of several slots runs no drafts while any slot has prompt left to read, or when it gives one of them its
+second token ([the record](MEASUREMENTS.md#2026-10-19-draft-rounds-several-writers)). A draft is accepted while it
+equals what the main model samples at its place, and the main model samples one more token after the accepted ones. The
+accepted rows are committed, and the draft layer reads them and drafts again. Drafting stops at a draft whose
+probability under the request's sampler is below 0.5. Drafts never change the tokens, because the main model samples
+every one.
 
 The draft layer is the model's MTP layer, split across the cards as an attention layer is. All its 512 experts sit on
 the cards, so a draft never waits for the CPU (`core/models/qwen4exp/mtp.cpp`).
