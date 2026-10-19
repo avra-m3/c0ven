@@ -1,6 +1,7 @@
 # The C++20 core: Level Zero, memory, loading, the step, the CPU's expert work (ADR-0022, ADR-0024).
 
 add_library(engine_core STATIC
+  api/sampling.cpp
   cpu/experts.cpp
   load/codebooks.cpp
   load/direct.cpp

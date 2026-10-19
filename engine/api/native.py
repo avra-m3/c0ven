@@ -1,7 +1,7 @@
 """The native engine: the C++ core, loaded with ctypes (ADR-0022, item 4), behind the engine interface.
 
 Two parts. `CtypesCore` is the header's calls, one method each, raising `EngineError` on a failed status.
-`NativeEngine` adapts version 6 of the header to `interface.Engine`, which the scheduler was written against
+`NativeEngine` adapts version 7 of the header to `interface.Engine`, which the scheduler was written against
 (DESIGN.md, section 3). Where the two differ, the adapter bridges them as ADR-0027 lists, item by item:
 
 - The core runs one step per plan and decodes only the slots a plan names; the interface's core keeps decoding
@@ -390,6 +390,11 @@ class NativeEngine:
         c.top_p = settings.top_p
         c.max_tokens = settings.max_new
         c.seed = settings.seed
+        c.min_p = settings.min_p
+        c.penalty_last_n = settings.penalty_last_n
+        c.penalty_repeat = settings.penalty_repeat
+        c.penalty_freq = settings.penalty_freq
+        c.penalty_present = settings.penalty_present
         c.n_stop = len(self._stop_ids)
         for i, token in enumerate(self._stop_ids):
             c.stop[i] = token

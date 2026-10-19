@@ -19,8 +19,11 @@
 #include <utility>
 #include <vector>
 
+#include "api/sampling.h"
 #include "models/qwen4exp/model.h"
 
+using engine::penalised;
+using engine::sample_p;
 using engine::qwen4exp::Candidate;
 using engine::qwen4exp::kNoToken;
 using engine::qwen4exp::StepIn;
@@ -89,54 +92,17 @@ uint64_t now_ns() {
              std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
-// A uniform number in [0, 1) from the request's seed and the position sampled at: a token depends only on these, not
-// on how the work was split into steps or windows (splitmix64).
-double uniform(uint64_t seed, uint32_t pos) {
-  uint64_t z = seed + 0x9e3779b97f4a7c15ull * (pos + 1ull);
-  z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ull;
-  z = (z ^ (z >> 27)) * 0x94d049bb133111ebull;
-  z ^= z >> 31;
-  return (double)(z >> 11) * (1.0 / 9007199254740992.0);
-}
+bool media(int32_t tok) { return tok == kImageToken || tok == kVideoToken; }
 
-// Sampling over the engine's candidates (the largest logits, highest first): temperature, top-k, top-p. Returns the
-// token and its probability under that distribution (greedy: the top candidate's under the plain softmax).
-std::pair<int32_t, double> sample_p(const std::vector<Candidate> &cand, const engine_settings &s, uint32_t pos) {
-  if (cand.empty()) return {kNoToken, 0.0};
-  if (s.temperature <= 0.0f) {
-    double sum = 0;
-    for (auto &x : cand) sum += std::exp((double)x.logit - cand[0].logit);
-    return {cand[0].token, 1.0 / sum};
-  }
-  size_t k = s.top_k == 0 ? cand.size() : std::min<size_t>(s.top_k, cand.size());
-  std::vector<double> p(k);
-  double sum = 0;
-  for (size_t i = 0; i < k; i++) sum += p[i] = std::exp((cand[i].logit - cand[0].logit) / s.temperature);
-  if (s.top_p > 0.0f && s.top_p < 1.0f) {
-    double acc = 0;
-    size_t keep = k;
-    for (size_t i = 0; i < k; i++) {
-      acc += p[i] / sum;
-      if (acc >= s.top_p) {
-        keep = i + 1;
-        break;
-      }
-    }
-    k = keep;
-    p.resize(k);
-    sum = 0;
-    for (double v : p) sum += v;
-  }
-  double r = uniform(s.seed, pos) * sum;
-  for (size_t i = 0; i < k; i++) {
-    r -= p[i];
-    if (r <= 0) return {cand[i].token, p[i] / sum};
-  }
-  return {cand[k - 1].token, p[k - 1] / sum};
-}
-
-int32_t sample(const std::vector<Candidate> &cand, const engine_settings &s, uint32_t pos) {
-  return sample_p(cand, s, pos).first;
+// The last tokens of hist the penalties count, oldest first, without image and video tokens, which llama.cpp's server
+// leaves out too (docs/spec/MODEL_IO.md, section 2.4); empty without penalties.
+std::vector<int32_t> penalty_window(const std::vector<int32_t> &hist, const engine_settings &s) {
+  std::vector<int32_t> w;
+  if (!penalised(s)) return w;
+  for (size_t i = hist.size(); i > 0 && w.size() < s.penalty_last_n; i--)
+    if (!media(hist[i - 1])) w.push_back(hist[i - 1]);
+  std::reverse(w.begin(), w.end());
+  return w;
 }
 
 constexpr size_t kTimingRing = 4096;
@@ -238,23 +204,31 @@ struct engine_ctx {
   // samples, emits and ends the request if it must. Under mu.
   void produce(uint32_t s, const std::vector<Candidate> &cand) {
     Slot &sl = slots[s];
-    emit_token(s, sample(cand, sl.settings, sl.fed), sl.fed);
+    emit_token(s, sample_p(cand, sl.settings, sl.fed, penalty_window(sl.tokens, sl.settings)).first, sl.fed);
+  }
+
+  // The tokens before a slot's first draft, for its penalties: what it has fed, then the token sampled last. Under mu.
+  std::vector<int32_t> draft_history(const Slot &sl) const {
+    std::vector<int32_t> h = penalty_window(sl.tokens, sl.settings);
+    if (penalised(sl.settings)) h.push_back(sl.next);
+    return h;
   }
 
   // The slot's drafts, up to draft_max, from a catch-up's last row's candidates (row src of its pass); pos is the
-  // first draft's position. A draft is the request's sampler's pick with its position's uniform, so the main model
-  // accepts it when it samples the same; drafting stops below draft_min_p. The draft after position q reads the draft
-  // layer's cell q - 1 (mtp.cpp). Runs on the engine thread.
+  // first draft's position and hist the tokens before it (draft_history). A draft is the request's sampler's pick with
+  // its position's uniform, so the main model accepts it when it samples the same; drafting stops below draft_min_p.
+  // The draft after position q reads the draft layer's cell q - 1 (mtp.cpp). Runs on the engine thread.
   std::vector<int32_t> make_drafts(uint32_t s, const engine_settings &st, uint32_t pos, const std::vector<Candidate> &first,
-                                   uint32_t src) {
+                                   uint32_t src, std::vector<int32_t> hist) {
     std::vector<int32_t> d;
-    std::pair<int32_t, double> pick = sample_p(first, st, pos);
+    std::pair<int32_t, double> pick = sample_p(first, st, pos, hist);
     if (first.empty() || pick.second < draft_min_p) return d;
     d.push_back(pick.first);
     while (d.size() < draft_max && pos + d.size() + 1 < info.max_ctx) {
       auto c = model->mtp_draft(s, pos + (uint32_t)d.size() - 2, d.back(), src);
       src = 0;
-      pick = sample_p(c, st, pos + (uint32_t)d.size());
+      if (penalised(st)) hist.push_back(d.back());
+      pick = sample_p(c, st, pos + (uint32_t)d.size(), hist);
       if (pick.second < draft_min_p) break;
       d.push_back(pick.first);
     }
@@ -323,7 +297,7 @@ struct engine_ctx {
     }
     model->mtp_start(pc.slot, fed - k);
     auto dc = model->mtp_catchup_prompt(mr.data(), k, n);
-    sl.drafts = make_drafts(pc.slot, sl.settings, fed + 1, dc[k - 1], k - 1);  // under mu: admit and release wait for it
+    sl.drafts = make_drafts(pc.slot, sl.settings, fed + 1, dc[k - 1], k - 1, draft_history(sl));  // under mu: admit and release wait for it
   }
 
   // A short prompt piece as decode windows of up to STEP_MAX_ROWS forced rows, each committed whole. The draft layer
@@ -373,7 +347,7 @@ struct engine_ctx {
     if (!mtp || sl.done) return;
     mr.back().token = sl.next;
     auto dc = model->mtp_catchup(mr.data(), (uint32_t)mr.size());
-    sl.drafts = make_drafts(s, sl.settings, sl.fed + 1, dc.back(), (uint32_t)mr.size() - 1);  // under mu, as above
+    sl.drafts = make_drafts(s, sl.settings, sl.fed + 1, dc.back(), (uint32_t)mr.size() - 1, draft_history(sl));  // under mu, as above
   }
 
   // One decode step for the plan's slots, batched. Runs on the engine thread.
@@ -445,8 +419,9 @@ struct engine_ctx {
     if (!sl.used || sl.done || sl.fed < sl.prompt.size()) return;
     const uint32_t s = mr[0].slot, pos = sl.fed + 1;
     const engine_settings st = sl.settings;
+    std::vector<int32_t> h = draft_history(sl);
     lk.unlock();
-    auto d = make_drafts(s, st, pos, dc[0], 0);
+    auto d = make_drafts(s, st, pos, dc[0], 0, std::move(h));
     lk.lock();
     if (slots[s].used && !slots[s].done) slots[s].drafts = d;
   }
@@ -471,13 +446,17 @@ struct engine_ctx {
     auto out = model->step(rows.data(), (uint32_t)rows.size(), true);
     std::vector<int32_t> picks;
     engine_settings settings;
+    std::vector<int32_t> hist;  // the tokens before the row being sampled, for the penalties
     {
       std::lock_guard<std::mutex> lk(mu);
       settings = slots[s].settings;
+      hist = penalty_window(slots[s].tokens, settings);
     }
+    const bool pen = penalised(settings);
     uint32_t a = 0;
     for (; a <= k; a++) {
-      picks.push_back(sample(out[a], settings, p + a + 1));
+      if (pen) hist.push_back(rows[a].token);
+      picks.push_back(sample_p(out[a], settings, p + a + 1, hist).first);
       if (a == k || drafts[a] != picks[a]) break;
     }
     model->commit(s, p, a + 1);
@@ -497,7 +476,8 @@ struct engine_ctx {
     std::vector<StepIn> mr;
     for (uint32_t j = 0; j <= a; j++) mr.push_back({s, p + j, picks[j], kNoToken, kNoToken});
     auto dc = model->mtp_catchup(mr.data(), (uint32_t)mr.size());
-    auto d = make_drafts(s, settings, p + a + 2, dc[a], a);
+    if (pen) hist.push_back(picks[a]);
+    auto d = make_drafts(s, settings, p + a + 2, dc[a], a, std::move(hist));
     std::lock_guard<std::mutex> lk(mu);
     if (slots[s].used && !slots[s].done) slots[s].drafts = d;
   }
@@ -644,6 +624,8 @@ engine_status engine_admit(engine_ctx *e, uint32_t slot, const engine_settings *
   std::lock_guard<std::mutex> lk(e->mu);
   if (slot >= e->slots.size()) return ENGINE_BAD_ARGUMENT;
   if (n_prompt > e->info.max_ctx) return ENGINE_BAD_ARGUMENT;
+  if (!(settings->min_p >= 0.0f && settings->min_p <= 1.0f)) return ENGINE_BAD_ARGUMENT;
+  if (penalised(*settings) && !(settings->penalty_repeat > 0.0f)) return ENGINE_BAD_ARGUMENT;
   if (e->sleeping()) return ENGINE_ERROR;
   Slot &sl = e->slots[slot];
   if (sl.used) return ENGINE_BUSY;
@@ -919,7 +901,9 @@ uint32_t engine_abi_layout(engine_abi_row *table, uint32_t cap) {
       SIZE(engine_info),
       ROW(engine_settings, temperature), ROW(engine_settings, top_k), ROW(engine_settings, top_p),
       ROW(engine_settings, max_tokens), ROW(engine_settings, seed), ROW(engine_settings, n_stop),
-      ROW(engine_settings, stop), SIZE(engine_settings),
+      ROW(engine_settings, stop), ROW(engine_settings, min_p), ROW(engine_settings, penalty_last_n),
+      ROW(engine_settings, penalty_repeat), ROW(engine_settings, penalty_freq), ROW(engine_settings, penalty_present),
+      SIZE(engine_settings),
       ROW(engine_page_change, slot), ROW(engine_page_change, logical), ROW(engine_page_change, page),
       ROW(engine_page_change, source), ROW(engine_page_change, cells), SIZE(engine_page_change),
       ROW(engine_prompt_piece, slot), ROW(engine_prompt_piece, tokens), SIZE(engine_prompt_piece),

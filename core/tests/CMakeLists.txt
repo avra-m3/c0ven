@@ -16,6 +16,7 @@ endfunction()
 
 engine_test(gguf_test SOURCES gguf_test.cpp)
 engine_test(mrope_test SOURCES mrope_test.cpp)
+engine_test(sampling_test SOURCES sampling_test.cpp)
 engine_test(ze_smoke_test GPU SOURCES ze_smoke_test.cpp)
 engine_test(matvec_test GPU SOURCES matvec_test.cpp)
 engine_test(moe_test GPU SOURCES moe_test.cpp)
