@@ -74,6 +74,8 @@ class FakeCore:
     """Plans that carried page changes."""
     config: abi.CConfig | None = None
     asleep: bool = False
+    error: str = ""
+    """What the next ERROR event reports through last_error."""
 
     def open(self, config: abi.CConfig) -> abi.CInfo:
         self.opened = (config.flags, config.mtp_dir)
@@ -270,6 +272,9 @@ class FakeCore:
         assert self.config is not None
         self.asleep = False
         return self._info(self.config)
+
+    def last_error(self) -> str:
+        return self.error
 
     def close(self) -> None:
         pass
@@ -522,3 +527,13 @@ def test_sleep_refuses_an_admitted_slot():
     run.engine.admit(0, GREEDY, (5, 6, 7))
     with pytest.raises(EngineError, match="admitted"):
         run.engine.sleep()
+
+
+def test_a_core_error_logs_what_the_core_said(caplog: pytest.LogCaptureFixture):
+    run = make()
+    run.core.error = "card 1 did not finish a list in 60 s"
+    run.core.events.append(abi.CEvent(kind=abi.CEventKind.ERROR, value=1))
+    with caplog.at_level("ERROR"):
+        events = run.engine.poll()
+    assert [e.kind for e in events] == [EventKind.ERROR]
+    assert "core error 1: card 1 did not finish a list in 60 s" in caplog.text
