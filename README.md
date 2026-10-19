@@ -9,7 +9,7 @@ Just like witches, GPU's work better together in a coven. This repository focuse
 
 Use C0ven if you have:
 
-- two Intel Arc Pro B60 cards (24 GB each) in one Linux machine, with the `xe` kernel driver,
+- two Intel Arc Pro B60 cards (24 GB each) in one Linux machine, with the `xe` kernel driver (*Other cards likely work but are untested),
 - a CPU with AVX-512 (VNNI, VBMI and BF16 among it), which computes the experts the cards do not hold,
 - enough RAM to hold the model (the test machine has 96 GiB),
 - one person, or a few requests at once, using the model.
