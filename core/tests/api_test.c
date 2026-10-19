@@ -345,9 +345,9 @@ int main(int argc, char **argv) {
   engine_close(e);
 
   /* With drafting, exactly the tokens of plain decoding: drafts change how many tokens a step gives, never which.
-   * The draft layer's memory leaves fewer experts cached, so the CPU rounds others and token 19 may flip: the plain
-   * tokens come from two slots in one step, which never drafts, and only their first 16 are checked against
-   * llama.cpp's. */
+   * The draft layer's memory leaves fewer experts cached, so the CPU rounds others and token 19 may flip: only the
+   * first 16 are checked against llama.cpp's. Two slots draft in one window, and give the same tokens; batch_test
+   * checks that a window's rows are those of plain steps. */
   if (getenv("FLASH_MTP_DIR") || access("/models/mtp/mtp-manifest.json", R_OK) == 0) {
     cfg.mtp_dir = getenv("FLASH_MTP_DIR") ? getenv("FLASH_MTP_DIR") : "/models/mtp";
     CHECK(engine_open(&cfg, &info, &e) == ENGINE_OK, "open with drafting: %s", engine_last_error(NULL));
@@ -357,13 +357,20 @@ int main(int argc, char **argv) {
     int32_t plain[64];
     CHECK(admit(e, 0, &s, prompt, np) == ENGINE_OK && admit(e, 1, &s, prompt, np) == ENGINE_OK, "admit");
     run_two(e, plain, out1, &n, &n1);
-    CHECK(n == 32 && n1 == 32, "plain with drafting loaded: %d and %d tokens", n, n1);
-    for (int i = 0; i < 16; i++) CHECK(plain[i] == expect[i], "plain, token %d: %d, expected %d", i, plain[i], expect[i]);
+    CHECK(n == 32 && n1 == 32, "two slots drafting: %d and %d tokens", n, n1);
+    for (int i = 0; i < 16; i++)
+      CHECK(plain[i] == expect[i], "two slots, token %d: %d, expected %d", i, plain[i], expect[i]);
+    for (int i = 0; i < 32; i++) CHECK(out1[i] == plain[i], "two slots, token %d: %d and %d", i, plain[i], out1[i]);
+    uint32_t rounds2 = 0, nt3 = 0;
+    CHECK(engine_read_timing(e, tr, 256, &nt3) == ENGINE_OK, "timing");
+    for (uint32_t i = 0; i < nt3; i++) rounds2 += tr[i].kind == ENGINE_TIMING_ROUND;
+    CHECK(rounds2 > 0, "no draft round ran for two slots");
     CHECK(engine_release(e, 0) == ENGINE_OK && engine_release(e, 1) == ENGINE_OK, "release both");
     CHECK(admit(e, 0, &s, prompt, np) == ENGINE_OK, "admit");
     n = run(e, 0, &s, out, 64);
     CHECK(n == 32, "drafting: %d tokens", n);
-    for (int i = 0; i < 32; i++) CHECK(out[i] == plain[i], "drafting, token %d: %d, plainly %d", i, out[i], plain[i]);
+    for (int i = 0; i < 32; i++)
+      CHECK(out[i] == plain[i], "drafting, token %d: %d, with two slots %d", i, out[i], plain[i]);
     CHECK(engine_release(e, 0) == ENGINE_OK, "release");
     /* With penalties, each window row and draft counts the rows and drafts before it: the same tokens again. */
     s.penalty_last_n = 64;
@@ -395,7 +402,7 @@ int main(int argc, char **argv) {
     CHECK(engine_read_timing(e, tr, 256, &nt2) == ENGINE_OK, "timing");
     for (uint32_t i = 0; i < nt2; i++) rounds += tr[i].kind == ENGINE_TIMING_ROUND;
     CHECK(rounds > 0, "no draft round ran");
-    printf("drafting: the 32 tokens of plain decoding, %u draft rounds in four requests\n", rounds);
+    printf("drafting: the 32 tokens of two slots drafting together, %u and %u draft rounds\n", rounds2, rounds);
     engine_close(e);
   }
 

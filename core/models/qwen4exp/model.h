@@ -126,13 +126,15 @@ class Model {
   std::vector<Candidate> step(uint32_t slot, uint32_t pos, int32_t token, int32_t p1, int32_t p2);
 
   // One step of n rows (1 to STEP_MAX_ROWS): rows of several sequences, or consecutive positions of one, in order.
-  // Returns each row's largest logits, highest first. With window, the rows are one sequence's consecutive positions
-  // and its recurrent state waits for commit, which keeps the first n rows' (the accepted drafts and the row before
-  // them) and forgets the rest. Their KV is overwritten when their positions come again. With prompt, the rows are
-  // prompt tokens, counted for adaptive swaps as the prompt path counts them.
+  // Returns each row's largest logits, highest first. With window, the rows are runs of consecutive positions, one run
+  // a sequence, and their recurrent state waits for commit, which keeps each run's first rows' (the accepted drafts
+  // and the row before them) and forgets the rest. Their KV is overwritten when their positions come again. With
+  // prompt, the rows are prompt tokens, counted for adaptive swaps as the prompt path counts them.
   std::vector<std::vector<Candidate>> step(const StepIn *rows, uint32_t n, bool window = false, bool prompt = false);
   // Returns before the cards finish; the next call on a slot's state waits for it (draft-layer passes run beside it).
+  // commit: one run, the window's first n rows. commit_runs: n runs of the window, each its own sequence's.
   void commit(uint32_t slot, uint32_t pos0, uint32_t n);
+  void commit_runs(const CommitRun *runs, uint32_t n);
 
   // The draft layer (mtp.cpp). mtp_catchup: rows r = (slot, position i, the token at i + 1), the hidden input the
   // main model's final residual of the last step's row r; returns each row's draft candidates (for i + 2).
@@ -141,6 +143,8 @@ class Model {
   bool drafting() const { return mtp_on_; }
   std::vector<std::vector<Candidate>> mtp_catchup(const StepIn *rows, uint32_t n);
   std::vector<Candidate> mtp_draft(uint32_t slot, uint32_t pos, int32_t token, uint32_t src_row);
+  // mtp_drafts: mtp_draft for rows of distinct sequences in one pass, row r's input row src_rows[r] of the last pass.
+  std::vector<std::vector<Candidate>> mtp_drafts(const StepIn *rows, uint32_t n, const uint32_t *src_rows);
   // mtp_catchup_prompt: mtp_catchup over the last n rows of the last prompt chunk (chunk_n rows), from the prompt
   // path's residuals. mtp_start: the slot's first cell the draft layer attends to (earlier ones were never computed).
   std::vector<std::vector<Candidate>> mtp_catchup_prompt(const StepIn *rows, uint32_t n, uint32_t chunk_n);
@@ -229,7 +233,7 @@ class Model {
   uint64_t mtp_bytes() const;
   void load_mtp(Card &card);
   void record_mtp(Card &card, uint32_t width, bool chain);
-  std::vector<std::vector<Candidate>> run_mtp(const StepIn *rows, uint32_t n, bool chain, uint32_t src_row);
+  std::vector<std::vector<Candidate>> run_mtp(const StepIn *rows, uint32_t n, bool chain, uint32_t src_rows);
   void load_prompt(Card &card);
   // The image encoder: first, its host side (the weights' stages, pixels, encoding); always, each card's side.
   void load_vision(bool first);

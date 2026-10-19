@@ -427,19 +427,19 @@ void Model::record_mtp(Card &card, uint32_t W, bool chain) {
                                  mtop_n_ + (size_t)c * STEP_MAX_ROWS}, W, 1, 1, 1024);
   L.close();
   if (chain)
-    M.chain = std::move(list);
+    M.chains[W] = std::move(list);
   else
     M.lists[W] = std::move(list);
 }
 
-std::vector<std::vector<Candidate>> Model::run_mtp(const StepIn *rows, uint32_t n, bool chain, uint32_t src_row) {
+std::vector<std::vector<Candidate>> Model::run_mtp(const StepIn *rows, uint32_t n, bool chain, uint32_t src_rows) {
   if (!mtp_on_) throw std::runtime_error("the draft layer is not loaded");
   uint32_t W = 1;
   while (W < n) W *= 2;
   mplan_->nrows = n;
   mplan_->step++;
   mplan_->window = 0;
-  mplan_->pad = src_row;
+  mplan_->pad = src_rows;
   const GgufTensor &te = gguf_.tensor("token_embd.weight");
   auto to_float = ggml_get_type_traits((ggml_type)te.type)->to_float;
   for (uint32_t r = 0; r < n; r++) {
@@ -453,7 +453,7 @@ std::vector<std::vector<Candidate>> Model::run_mtp(const StepIn *rows, uint32_t 
   }
   for (uint32_t i = 0; i < mevents_->size(); i++) ZE_CHECK(zeEventHostReset((*mevents_)[i]));
   std::vector<ze::List *> lists;
-  for (auto &card : cards_) lists.push_back(chain ? card->mtp->chain.get() : card->mtp->lists.at(W).get());
+  for (auto &card : cards_) lists.push_back(chain ? card->mtp->chains.at(W).get() : card->mtp->lists.at(W).get());
   for (uint32_t c = ncards_; c-- > 0;) lists[c]->execute();
   for (uint32_t c = 0; c < ncards_; c++) lists[c]->synchronize();
   std::vector<std::vector<Candidate>> out(n);
@@ -489,6 +489,18 @@ std::vector<std::vector<Candidate>> Model::mtp_catchup_prompt(const StepIn *rows
 std::vector<Candidate> Model::mtp_draft(uint32_t slot, uint32_t pos, int32_t token, uint32_t src_row) {
   StepIn r{slot, pos, token, kNoToken, kNoToken};
   return std::move(run_mtp(&r, 1, true, src_row)[0]);
+}
+
+std::vector<std::vector<Candidate>> Model::mtp_drafts(const StepIn *rows, uint32_t n, const uint32_t *src_rows) {
+  if (n == 0 || n > STEP_MAX_ROWS) throw std::runtime_error("a draft pass takes 1 to 8 rows");
+  uint32_t src = 0;
+  for (uint32_t r = 0; r < n; r++) {
+    if (src_rows[r] >= STEP_MAX_ROWS) throw std::runtime_error("a draft's source row is past the last pass");
+    for (uint32_t q = 0; q < r; q++)
+      if (rows[q].slot == rows[r].slot) throw std::runtime_error("a draft pass takes one row a sequence");
+    src |= src_rows[r] << (4 * r);
+  }
+  return run_mtp(rows, n, true, src);
 }
 
 void Model::mtp_start(uint32_t slot, uint32_t first) {

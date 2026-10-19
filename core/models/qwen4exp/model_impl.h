@@ -148,7 +148,7 @@ struct Model::MtpCard {
   StepPlan *plan = nullptr;     // the draft step's plan, copied from host memory by each list's first command
   uint32_t *counts = nullptr;   // counts[i] = i, for row counts that are not the plan's
   std::map<uint32_t, std::unique_ptr<ze::List>> lists;  // catch-up, per width
-  std::unique_ptr<ze::List> chain;                      // one draft step from the draft before
+  std::map<uint32_t, std::unique_ptr<ze::List>> chains; // one draft step from the draft before, per width
 };
 
 struct Model::Card {

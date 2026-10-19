@@ -269,6 +269,7 @@ reordered layout run 3.2-8.8 times faster than in the file's layout
 | KV cache read through a page table kept by Python ([ADR-0033](adr/0033-paged-kv-kept-by-python.md)) | no measurable cost: doc-32k 18.48 → 18.62 ms a step; the table's reads add about 11 µs to a step | <a id="2026-10-17-paged-kv"></a>[2026-10-17](#2026-10-17-paged-kv) |
 | Arena in anonymous memory, against the driver's arena | 16.58 and 16.56 → 16.54 and 16.61 ms a step; the driver's host buffers 9.07 → 0.06 GB | <a id="2026-10-17-anon-arena"></a>[2026-10-17](#2026-10-17-anon-arena) |
 | A decode step of 1, 2 and 4 requests' rows, 317 experts cached a layer, no swaps | 15.50, 19.25 and 25.46 ms; CPU misses 36.5, 71.4 and 141.7 a step. Of the 4-row step's 14.35 ms more (traced): 5.47 ms waiting for the CPU's misses, 4.22 ms in the cached experts' kernels, 1.23 ms in `gdn_recur`, 0.60 ms in the router | <a id="2026-10-19-four-rows-a-step"></a>[2026-10-19](#2026-10-19-four-rows-a-step) |
+| Draft rounds for several writing requests in one window, up to 2 drafts each | four 1,536-token answers 146.0 → 170.0 tokens/s while all write; shared4 130.1 → 152.0; duo 91.8 → 116.9; staggered's two writers 37.9 → 48.4 each; one request 81.6 → 81.5, lower in 5 of 7 pairs | <a id="2026-10-19-draft-rounds-several-writers"></a>[2026-10-19](#2026-10-19-draft-rounds-several-writers) |
 
 ### Against llama.cpp
 

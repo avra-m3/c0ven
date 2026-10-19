@@ -241,9 +241,10 @@ __kernel void hc_combine_norm(__global const float *P, uint ncards, uint width, 
 // reading local key head lv % nkh. Channels of m and u: [q: nkh x 128 | k: nkh x 128 | v: nvh x 128], rows nch apart.
 
 // The causal convolution and SiLU (2.3), row after row, then the L2 norm of the q and k heads (2.4). The ring keeps
-// the last three m by position. In a window (plan->window) it is not written: rows take earlier rows' m from m, wm
-// keeps the window's m (rows nch apart), and gdn_conv_commit writes the accepted rows'. Groups (nch / 128), 128, one
-// a head of channels; the first nqk (q, k) are normed in sub-groups of 32 as p_gdn_l2norm is, for the same sums.
+// the last three m by position. In a window (plan->window) it is not written: rows take earlier rows' m of their own
+// run from m, wm keeps the window's m (rows nch apart), and gdn_conv_commit writes the accepted rows'. Groups
+// (nch / 128), 128, one a head of channels; the first nqk (q, k) are normed in sub-groups of 32 as p_gdn_l2norm is,
+// for the same sums.
 __attribute__((intel_reqd_sub_group_size(32)))
 __kernel void gdn_conv(__global const float *m, __global const float *w, __global float *state, ulong slot_stride,
                        uint nch, uint nqk, __global const StepPlan *plan, __global float *u, __global float *wm) {
@@ -257,7 +258,8 @@ __kernel void gdn_conv(__global const float *m, __global const float *w, __globa
     __global float *st = state + plan->rows[r].slot * slot_stride;
     float mv[3];
     for (uint d = 1; d <= 3; d++)
-      mv[3 - d] = window && r >= d ? m[(ulong)(r - d) * nch + ch] : st[((pos + 3 - d) % 3) * nch + ch];
+      mv[3 - d] = window && r >= d && plan->rows[r - d].slot == plan->rows[r].slot ? m[(ulong)(r - d) * nch + ch]
+                                                                                 : st[((pos + 3 - d) % 3) * nch + ch];
     float mt = m[(ulong)r * nch + ch];
     float acc = k[0] * mv[0];
     acc += k[1] * mv[1];
@@ -273,13 +275,17 @@ __kernel void gdn_conv(__global const float *m, __global const float *w, __globa
   }
 }
 
-// The commit of a window's convolution rings: the accepted rows' m into the ring. Groups ceil(nch / 64), 64.
+// The commit of a window's convolution rings: each run's accepted rows' m into its slot's ring. Groups
+// ceil(nch / 64), 64.
 __kernel void gdn_conv_commit(__global const float *wm, __global float *state, ulong slot_stride, uint nch,
                               __global const CommitPlan *cp) {
   uint ch = get_global_id(0);
   if (ch >= nch) return;
-  __global float *st = state + cp->slot * slot_stride;
-  for (uint r = 0; r < cp->n; r++) st[((cp->pos0 + r) % 3) * nch + ch] = wm[(ulong)r * nch + ch];
+  for (uint k = 0; k < cp->nruns; k++) {
+    __global const CommitRun *run = cp->runs + k;
+    __global float *st = state + run->slot * slot_stride;
+    for (uint r = 0; r < run->n; r++) st[((run->pos0 + r) % 3) * nch + ch] = wm[(ulong)(run->row0 + r) * nch + ch];
+  }
 }
 
 // The recurrence's state by column: value column j of a head is 4 neighbouring lanes of one sub-group, lane part p
@@ -322,8 +328,9 @@ static inline float gdn_step(float s[GDN_PER], uint p, __local const float *k, _
 
 // The recurrence (2.5) and the gated output norm (2.6), row after row: one work-group of 512 per local value head,
 // 4 lanes per value column, the state in registers across rows. z and o rows are nvh x 128. In a window
-// (plan->window) the slot's state is not written: the last state goes to the scratch Sw (one slot's), and gdn_commit
-// replays the accepted rows on the slot from u and gb, which the window leaves in place. Groups (nvh, width), 512.
+// (plan->window) the slots' state is not written: the first run's last state goes to the scratch Sw (one slot's),
+// and gdn_commit replays the accepted rows on each slot from u and gb, which the window leaves in place. Groups
+// (nvh, width), 512.
 REQD_SG __kernel void gdn_recur(__global const float *u, uint nch, __global const float *ab, __global const float *A,
                                 __global const float *dt, __global float *gb, __global const float *z,
                                 __global float *S, ulong slot_stride, __global const float *norm, uint nkh, uint nvh,
@@ -334,18 +341,29 @@ REQD_SG __kernel void gdn_recur(__global const float *u, uint nch, __global cons
   const uint kh = lv % nkh;
   const bool window = plan->window != 0;
   const ulong col = ((ulong)lv * Q_GDN_D + j) * Q_GDN_D;
-  // Outside a window, rows of distinct slots are independent: work-group (lv, r) takes row r; else (lv, 0) takes all.
-  bool apart = !window;
-  for (uint a = 0; a < plan->nrows && apart; a++)
-    for (uint b = a + 1; b < plan->nrows; b++) apart = apart && plan->rows[a].slot != plan->rows[b].slot;
-  const uint g = get_group_id(1);
-  uint r0 = 0, r1 = plan->nrows;
-  if (apart) r0 = g, r1 = min(g + 1, plan->nrows);
-  else if (g > 0) return;
+  // Rows of distinct slots are independent. Outside a window, work-group (lv, r) takes row r if every row is another
+  // slot's, else (lv, 0) takes all. A window has one run of rows a slot: (lv, g) takes the g-th run, and with one run,
+  // the common case, (lv, 0) takes it without looking for runs.
+  const uint nr = plan->nrows, g = get_group_id(1);
+  uint r0 = 0, r1 = nr;
+  if (!window) {
+    bool apart = true;
+    for (uint a = 0; a < nr && apart; a++)
+      for (uint b = a + 1; b < nr; b++) apart = apart && plan->rows[a].slot != plan->rows[b].slot;
+    if (apart) r0 = g, r1 = min(g + 1, nr);
+    else if (g > 0) return;
+  } else if (plan->rows[nr - 1].slot != plan->rows[0].slot) {
+    uint k = 0;
+    for (r0 = 0; r0 < nr && k < g; r0++) k += r0 + 1 < nr && plan->rows[r0 + 1].slot != plan->rows[r0].slot;
+    if (r0 >= nr) return;
+    for (r1 = r0 + 1; r1 < nr && plan->rows[r1].slot == plan->rows[r0].slot;) r1++;
+  } else if (g > 0) {
+    return;
+  }
   float st[GDN_PER];
   for (uint r = r0; r < r1; r++) {
     __global float *sr = S + plan->rows[r].slot * slot_stride + col;
-    if (r == r0 || !window) gdn_load(sr, p, st);
+    if (r == r0 || !window || plan->rows[r].slot != plan->rows[r - 1].slot) gdn_load(sr, p, st);
     __global const float *ur = u + (ulong)r * nch;
     barrier(CLK_LOCAL_MEM_FENCE);
     if (lid < Q_GDN_D) {
@@ -375,32 +393,35 @@ REQD_SG __kernel void gdn_recur(__global const float *u, uint nch, __global cons
     const uint K = nvh * Q_GDN_D, i = sg_id();
     if (i < Q_GDN_D / 32) a8_store(vload2(sg_lane(), os + 32 * i), oa + (ulong)r * (K + K / 8), K, lv * 4 + i);
   }
-  if (window) gdn_store(Sw + col, p, st);
+  if (window && g == 0) gdn_store(Sw + col, p, st);
 }
 
-// The commit of a window's DeltaNet state: the accepted rows replayed on the slot's state from the window's u (rows
-// nch apart) and gb. Groups nvh, 512.
+// The commit of a window's DeltaNet state: each run's accepted rows replayed on its slot's state from the window's u
+// (rows nch apart) and gb. Groups nvh, 512.
 REQD_SG __kernel void gdn_commit(__global const float *u, uint nch, __global const float *gb, __global float *S,
                                  ulong slot_stride, uint nkh, uint nvh, __global const CommitPlan *cp) {
   __local float q[Q_GDN_D], k[Q_GDN_D];
   const uint lv = get_group_id(0), lid = get_local_id(0), j = lid / GDN_PARTS, p = lid % GDN_PARTS;
   const uint kh = lv % nkh;
-  __global float *s = S + cp->slot * slot_stride + ((ulong)lv * Q_GDN_D + j) * Q_GDN_D;
-  float st[GDN_PER];
-  gdn_load(s, p, st);
-  for (uint r = 0; r < cp->n; r++) {
-    __global const float *ur = u + (ulong)r * nch;
-    barrier(CLK_LOCAL_MEM_FENCE);
-    if (lid < Q_GDN_D) {
-      q[lid] = ur[kh * Q_GDN_D + lid];
-      k[lid] = ur[(nkh + kh) * Q_GDN_D + lid];
+  for (uint run = 0; run < cp->nruns; run++) {
+    __global const CommitRun *cr = cp->runs + run;
+    __global float *s = S + cr->slot * slot_stride + ((ulong)lv * Q_GDN_D + j) * Q_GDN_D;
+    float st[GDN_PER];
+    gdn_load(s, p, st);
+    for (uint r = cr->row0; r < cr->row0 + cr->n; r++) {
+      __global const float *ur = u + (ulong)r * nch;
+      barrier(CLK_LOCAL_MEM_FENCE);
+      if (lid < Q_GDN_D) {
+        q[lid] = ur[kh * Q_GDN_D + lid];
+        k[lid] = ur[(nkh + kh) * Q_GDN_D + lid];
+      }
+      barrier(CLK_LOCAL_MEM_FENCE);
+      float v = ur[(2 * nkh + lv) * Q_GDN_D + j];
+      float decay = exp(gb[(ulong)r * 2 * nvh + lv]), beta = gb[(ulong)r * 2 * nvh + nvh + lv];
+      (void)gdn_step(st, p, k, q, v, decay, beta);
     }
-    barrier(CLK_LOCAL_MEM_FENCE);
-    float v = ur[(2 * nkh + lv) * Q_GDN_D + j];
-    float decay = exp(gb[(ulong)r * 2 * nvh + lv]), beta = gb[(ulong)r * 2 * nvh + nvh + lv];
-    (void)gdn_step(st, p, k, q, v, decay, beta);
+    gdn_store(s, p, st);
   }
-  gdn_store(s, p, st);
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1048,8 +1069,8 @@ __kernel void ple_norm(__global const float *v, __global const float *gates, __g
 
 // Per channel, row after row: the dilated causal convolution and SiLU (step 7), then R += G + C (step 8). The
 // history keeps the last 9 N in a ring by position. In a window (plan->window) it is not written: a row takes the
-// window's earlier rows' N from N itself, and the commit (ple_commit) writes the accepted rows' (N stays in place for
-// it). Groups Q_HC_DIM / 64, 64.
+// earlier rows' N of its own run from N itself, and the commit (ple_commit) writes the accepted rows' (N stays in
+// place for it). Groups Q_HC_DIM / 64, 64.
 __kernel void ple_conv(__global const float *N, __global const float *v, __global const float *gates,
                        __global const float *w, __global float *hist, ulong slot_stride,
                        __global const StepPlan *plan, __global float *R) {
@@ -1062,7 +1083,9 @@ __kernel void ple_conv(__global const float *N, __global const float *v, __globa
     float nv[3];
     for (uint jj = 0; jj < 3; jj++) {
       uint d = Q_PLE_DIL * (3 - jj);
-      nv[jj] = window && r >= d ? N[(ulong)(r - d) * Q_HC_DIM + ch] : h[((pos + Q_PLE_HIST - d) % Q_PLE_HIST) * Q_HC_DIM + ch];
+      nv[jj] = window && r >= d && plan->rows[r - d].slot == plan->rows[r].slot
+                   ? N[(ulong)(r - d) * Q_HC_DIM + ch]
+                   : h[((pos + Q_PLE_HIST - d) % Q_PLE_HIST) * Q_HC_DIM + ch];
     }
     float nt = N[(ulong)r * Q_HC_DIM + ch];
     float acc = k[0] * nv[0];
@@ -1074,12 +1097,16 @@ __kernel void ple_conv(__global const float *N, __global const float *v, __globa
   }
 }
 
-// The commit of a window's PLE history. Groups Q_HC_DIM / 64, 64.
+// The commit of a window's PLE history, run by run. Groups Q_HC_DIM / 64, 64.
 __kernel void ple_commit(__global const float *N, __global float *hist, ulong slot_stride,
                          __global const CommitPlan *cp) {
   uint ch = get_global_id(0);
-  __global float *h = hist + cp->slot * slot_stride;
-  for (uint r = 0; r < cp->n; r++) h[((cp->pos0 + r) % 9) * Q_HC_DIM + ch] = N[(ulong)r * Q_HC_DIM + ch];
+  for (uint k = 0; k < cp->nruns; k++) {
+    __global const CommitRun *run = cp->runs + k;
+    __global float *h = hist + run->slot * slot_stride;
+    for (uint r = 0; r < run->n; r++)
+      h[((run->pos0 + r) % 9) * Q_HC_DIM + ch] = N[(ulong)(run->row0 + r) * Q_HC_DIM + ch];
+  }
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1099,13 +1126,14 @@ __kernel void mtp_norm_e(__global const float *e, __global const float *g, __glo
 }
 
 // mtp_norm_h: out[r] = RMSNorm(H[src_row(r)]) * g over all 10,240 values at once (not per stream). src_row: rows of
-// H in order, or, with chain, row plan->pad of H for row 0 (the draft before's own residual). Groups (width), 256.
+// H in order, or, with chain, the row in 4-bit field r of plan->pad (the draft before's own residual). Groups
+// (width), 256.
 __kernel void mtp_norm_h(__global const float *H, __global const float *g, uint chain, __global const StepPlan *plan,
                          __global float *out) {
   __local float red[64];
   uint r = get_group_id(0);
   ROW_OR_RETURN(r)
-  __global const float *x = H + (ulong)(chain ? plan->pad : r) * Q_HC_DIM;
+  __global const float *x = H + (ulong)(chain ? (plan->pad >> (4 * r)) & 15 : r) * Q_HC_DIM;
   float ss = 0.0f;
   for (uint i = get_local_id(0); i < Q_HC_DIM; i += get_local_size(0)) ss += x[i] * x[i];
   float rs = rsqrt(wg_sum(ss, red) / (float)Q_HC_DIM + Q_EPS);
