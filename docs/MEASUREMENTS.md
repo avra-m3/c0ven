@@ -314,6 +314,7 @@ One card's value is given first.
 | Other draft rules, 270 replayed on long-256k | best 64.34 tokens/s against the engine's 64.01 (up to 3 drafts, each at probability 0.5 or more) | <a id="2026-10-16-draft-rule-simulated"></a>[2026-10-16](#2026-10-16-draft-rule-simulated) |
 | Draft layer on `mv_xmx_bf16` and `hc_up_mix_xmx`, plan on the card | 0.15-0.45 ms a pass faster; long-32k 73.54 → 76.67 tokens/s, but long-4k 70.69 → 69.92, and its rounding moved | <a id="2026-10-16-draft-layer-xmx"></a>[2026-10-16](#2026-10-16-draft-layer-xmx) |
 | A smaller draft head | chain draft 0.98 ms; first drafts accepted 0.798 → 0.749 | [2026-10-16](#2026-10-16-draft-layer-passes) |
+| Draft-layer experts in Q8_0 instead of IQ4_NL (for BF16, whose products would read the same a8 activations); four drafts a round instead of three | first drafts accepted 0.878 → 0.881 greedy, 0.856 → 0.841 sampled, 307 → 293 experts cached a layer; decode over eight prompts 78.45 → 79.00 tokens/s greedy, 80.46 → 78.57 sampled. Four drafts: the fourth accepted 0.51-0.56 of the times reached, decode 77.69 and 78.70 | <a id="2026-10-19-draft-experts-q8-and-four-drafts"></a>[2026-10-19](#2026-10-19-draft-experts-q8-and-four-drafts) |
 
 ### Routing and requests
 
