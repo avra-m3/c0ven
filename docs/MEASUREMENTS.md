@@ -268,6 +268,7 @@ reordered layout run 3.2-8.8 times faster than in the file's layout
 | Exchanges written into the card's memory and copied into the other card's, from two rows | decode 0.9-2.0% faster: long-4k 72.19 → 72.88 tokens/s, long-256k 69.55 → 70.98 ([ADR-0030](adr/0030-exchanges-into-the-other-card.md)) | [2026-10-16](#2026-10-16-peer-exchange-decode) |
 | KV cache read through a page table kept by Python ([ADR-0033](adr/0033-paged-kv-kept-by-python.md)) | no measurable cost: doc-32k 18.48 → 18.62 ms a step; the table's reads add about 11 µs to a step | <a id="2026-10-17-paged-kv"></a>[2026-10-17](#2026-10-17-paged-kv) |
 | Arena in anonymous memory, against the driver's arena | 16.58 and 16.56 → 16.54 and 16.61 ms a step; the driver's host buffers 9.07 → 0.06 GB | <a id="2026-10-17-anon-arena"></a>[2026-10-17](#2026-10-17-anon-arena) |
+| A decode step of 1, 2 and 4 requests' rows, 317 experts cached a layer, no swaps | 15.50, 19.25 and 25.46 ms; CPU misses 36.5, 71.4 and 141.7 a step. Of the 4-row step's 14.35 ms more (traced): 5.47 ms waiting for the CPU's misses, 4.22 ms in the cached experts' kernels, 1.23 ms in `gdn_recur`, 0.60 ms in the router | <a id="2026-10-19-four-rows-a-step"></a>[2026-10-19](#2026-10-19-four-rows-a-step) |
 
 ### Against llama.cpp
 
