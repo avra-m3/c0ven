@@ -152,6 +152,7 @@ class Core(Protocol):
     def read_timing(self, cap: int) -> list[abi.CTiming]: ...
     def sleep(self) -> None: ...
     def wake(self) -> abi.CInfo: ...
+    def last_error(self) -> str: ...
     def close(self) -> None: ...
 
 
@@ -169,6 +170,10 @@ class CtypesCore:
             message = self._lib.engine_last_error(self._ctx)
             code = _STATUS_CODES.get(abi.Status(status), ErrorCode.INTERNAL)
             raise EngineError(code, f"{call}: {(message or b'').decode(errors='replace')}")
+
+    def last_error(self) -> str:
+        """What the core's last failure said: for an ERROR event, the exception that ended the step."""
+        return (self._lib.engine_last_error(self._ctx) or b"").decode(errors="replace")
 
     def open(self, config: abi.CConfig) -> abi.CInfo:
         info = abi.CInfo()
@@ -557,7 +562,7 @@ class NativeEngine:
             self._plan_finished(int(c.value))
             return
         if kind is abi.CEventKind.ERROR:
-            log.error("core error %d", c.value)
+            log.error("core error %d: %s", c.value, self._core.last_error())
             self._plan_finished(self._done + 1, failed=True)
             self._events.append(Event(EventKind.ERROR, NO_SLOT, self._done, ErrorCode.INTERNAL))
             return
