@@ -80,6 +80,23 @@ class End:
     cached_tokens: int
     stop_string: str | None = None
     error: str | None = None
+    prompt_ms: float = 0.0
+    """From the request's admission to its first token, as the engine timed it; 0 when it sent no time."""
+    decode_ms: float = 0.0
+    """From the first token to the last."""
+
+    def speeds(self) -> dict[str, float]:
+        """Prompt and decode speeds in tokens a second, and the time in seconds, under TabbyAPI's `usage` names,
+        which proxies read; empty without the engine's times."""
+        if self.prompt_ms <= 0:
+            return {}
+        out = {
+            "prompt_tokens_per_sec": round((self.prompt_tokens - self.cached_tokens) * 1e3 / self.prompt_ms, 2),
+            "total_time": round((self.prompt_ms + self.decode_ms) / 1e3, 3),
+        }
+        if self.decode_ms > 0 and self.completion_tokens > 1:
+            out["completion_tokens_per_sec"] = round((self.completion_tokens - 1) * 1e3 / self.decode_ms, 2)
+        return out
 
 
 @dataclass(slots=True)
@@ -210,7 +227,7 @@ async def stream(model: Model, engine: Engine, request: Request, prompt: Prompt)
                                 return
                         else:
                             yield piece
-                case protocol.Done(finish=finish, reused=reused):
+                case protocol.Done(finish=finish, reused=reused, prompt_ms=prompt_ms, decode_ms=decode_ms):
                     cached = reused or cached
                     try:
                         tail = pieces(detok.flush()) + list(parser.finish())
@@ -236,7 +253,7 @@ async def stream(model: Model, engine: Engine, request: Request, prompt: Prompt)
                     }[finish]
                     if why is Finish.STOP and parser.calls:
                         why = Finish.TOOL_CALLS
-                    yield End(why, len(prompt.ids), generated, cached)
+                    yield End(why, len(prompt.ids), generated, cached, prompt_ms=prompt_ms, decode_ms=decode_ms)
                     return
                 case protocol.Error(message=message):
                     yield End(Finish.ERROR, len(prompt.ids), generated, cached, error=message)

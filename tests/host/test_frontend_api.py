@@ -61,6 +61,10 @@ def test_openai_reasoning_and_content(client: TestClient, engine: FakeEngine):
     assert choice["finish_reason"] == "stop"
     usage = body["usage"]
     assert usage["prompt_tokens"] == len(engine.prompts[0])
+    # The fake engine reports a prompt of 1 ms and a decode of 2 ms.
+    assert usage["prompt_tokens_per_sec"] == len(engine.prompts[0]) * 1000
+    assert usage["completion_tokens_per_sec"] == (usage["completion_tokens"] - 1) * 500
+    assert usage["total_time"] == 0.003
 
 
 def test_openai_thinking_off_sends_the_closed_block(client: TestClient, engine: FakeEngine, tokenizer: Tokenizer):
@@ -116,6 +120,7 @@ def test_openai_stream(client: TestClient, engine: FakeEngine):
     assert "".join(d.get("content", "") for d in deltas) == "Hi!"
     assert [c["choices"][0]["finish_reason"] for c in chunks if c["choices"]][-1] == "stop"
     assert chunks[-1]["usage"]["completion_tokens"] > 0
+    assert chunks[-1]["usage"]["total_time"] == 0.003
 
 
 def test_openai_stop_string_stops_the_engine(client: TestClient, engine: FakeEngine):
@@ -175,6 +180,7 @@ def test_anthropic_message(client: TestClient, engine: FakeEngine, tokenizer: To
     ]
     assert body["stop_reason"] == "end_turn"
     assert body["usage"]["cache_read_input_tokens"] == 3
+    assert body["usage"]["prompt_tokens_per_sec"] == body["usage"]["input_tokens"] * 1000
     assert tokenizer.decode(engine.prompts[0], skip_special_tokens=False).startswith("<|im_start|>system\nBe French.")
 
 
@@ -223,6 +229,7 @@ def test_anthropic_stream(client: TestClient, engine: FakeEngine):
     assert names.count("content_block_start") == names.count("content_block_stop")
     (delta,) = [d for e, d in events if e == "message_delta"]
     assert delta["delta"]["stop_reason"] == "tool_use"
+    assert delta["usage"]["total_time"] == 0.003
 
 
 def test_anthropic_needs_max_tokens(client: TestClient):
