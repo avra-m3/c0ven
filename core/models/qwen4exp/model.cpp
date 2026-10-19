@@ -7,6 +7,7 @@
 #include <immintrin.h>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <stdexcept>
@@ -320,13 +321,23 @@ uint8_t *Model::arena_piece(uint64_t need) {
       const uint64_t huge = 2ull << 20, bytes = kArenaPiece + huge;
       void *m = mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
       if (m == MAP_FAILED) throw std::runtime_error("anon_arena: mmap of a piece failed");
+      // Locked as the load fills it: a page the kernel swaps out drops the cards' userptr bindings of it, and a copy
+      // that faults it back in under reclaim can fail and reset the copy engine. A memory lock too small for it
+      // (Docker's default) stops the load, unless ENGINE_UNLOCKED_ARENA is set (docs/DEVELOPING.md).
+      if (mlock2(m, bytes, MLOCK_ONFAULT) != 0) {
+        const int e = errno;
+        if (!std::getenv("ENGINE_UNLOCKED_ARENA")) {
+          munmap(m, bytes);
+          throw std::runtime_error(std::string("anon_arena: the arena cannot be locked in memory (mlock2: ") +
+                                   std::strerror(e) +
+                                   "); run the container with --ulimit memlock=-1:-1, or set ENGINE_UNLOCKED_ARENA=1 "
+                                   "to load it unlocked");
+        }
+        if (!arena_lock_errno_) arena_lock_errno_ = e;
+      }
       arena_at_ = reinterpret_cast<uint8_t *>((reinterpret_cast<uintptr_t>(m) + huge - 1) & ~(huge - 1));
       anon_pieces_.push_back({m, bytes, arena_at_, 0});
       madvise(arena_at_, kArenaPiece, MADV_HUGEPAGE);
-      // Locked as the load fills it: a page the kernel swaps out drops the cards' userptr bindings of it, and a copy
-      // that faults it back in under reclaim can fail and reset the copy engine. A memory lock too small for it
-      // (Docker's default) leaves the piece unlocked.
-      if (mlock2(m, bytes, MLOCK_ONFAULT) != 0 && !arena_lock_errno_) arena_lock_errno_ = errno;
     } else {
       arena_at_ = static_cast<uint8_t *>(rt_->alloc_host(kArenaPiece));
     }
