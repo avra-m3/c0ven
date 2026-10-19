@@ -148,6 +148,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--no-vision", action="store_true", help="read no images")
     p.add_argument("--prompt-budget-ms", type=float, default=SchedulerOptions().prompt_budget_ms)
     p.add_argument("--decode-share", type=float, default=SchedulerOptions().decode_share)
+    p.add_argument(
+        "--window-rows",
+        type=int,
+        default=SchedulerOptions().window_rows,
+        help="while others write, read a short prompt in pieces of this many rows, as decode windows (0: off)",
+    )
+    p.add_argument("--window-prompt-max", type=int, default=SchedulerOptions().window_prompt_max)
     p.add_argument("--realtime", action="store_true", help="the mock sleeps for the step times it reports")
     p.add_argument("--log-level", default="WARNING")
     args = p.parse_args(argv)
@@ -378,7 +385,12 @@ def main(argv: list[str] | None = None) -> int:
     vision = None if args.no_vision or not native or args.model is None else args.vision or vision_file(args.model)
     if vision is not None:
         config = dataclasses.replace(config, vision_path=str(vision))
-    sched = SchedulerOptions(prompt_budget_ms=args.prompt_budget_ms, decode_share=args.decode_share)
+    sched = SchedulerOptions(
+        prompt_budget_ms=args.prompt_budget_ms,
+        decode_share=args.decode_share,
+        window_rows=args.window_rows,
+        window_prompt_max=args.window_prompt_max,
+    )
     rule = cast("CheckpointRule", model.checkpoint_positions)
     return serve(
         make_engine(args.backend, args.realtime),

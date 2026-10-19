@@ -349,6 +349,7 @@ own docs and source, 246,571 tokens. The quant's value is given first, then its 
 | Layers with no miss at 3 tokens | 26.9%; 46.1% with swaps | [2026-10-12](#2026-10-12-expert-hit-rates) |
 | Four requests sent within 0.1 ms | Without a wait the engine planned before reading all four in 10 of 51 runs, and the late ones reached their first token 0.55-1.78 s later. With up to 2 ms of wait after a GEN to an idle engine, 0 of 24. | <a id="2026-10-17-requests-sent-together"></a>[2026-10-17](#2026-10-17-requests-sent-together) |
 | Adaptive swaps shared out among the slots that wrote (a round's 64 over their count) | chats4 94.7 → 100.9 tokens/s while all write; staggered's two writers 37.9 → 39.1; four 1,536-token answers 145.9 → 146.8; one request 81.8 → 81.8 | <a id="2026-10-19-swaps-several-writers"></a>[2026-10-19](#2026-10-19-swaps-several-writers) |
+| A prompt of at most 256 tokens read beside writers 64 rows a plan as decode windows, not as one prompt chunk | two writers' worst gap 1,007 → 614 ms with three chats arriving, the chats' first tokens 1,285 → 1,318 ms; four chats' slowest first token 3,415 → 3,470 ms; all scenarios but quad: prefill 874 → 868 tokens/s, output 76.0 → 75.7. 16 rows: gap 302 ms, first tokens 245-285 ms later | <a id="2026-10-19-short-prompts-in-windows"></a>[2026-10-19](#2026-10-19-short-prompts-in-windows) |
 
 ### Agreement with references
 

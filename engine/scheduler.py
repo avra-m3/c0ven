@@ -70,6 +70,12 @@ class SchedulerOptions:
     decode_batch: int = 256
     """Cells assigned at once when a slot's lookahead runs short. Each plan with page changes costs the core a write to
     the cards' page tables (ADR-0033), so they come in batches."""
+    window_rows: int = 64
+    """While others write, a request with at most `window_prompt_max` prompt tokens to read (past any prefix it
+    resumed from) reads them in pieces of this many rows, one piece a plan. The core reads a piece of up to 64 tokens
+    as decode windows, which cost the writers less time than a prompt chunk, which stages every uncached expert
+    whatever its size. 0: off."""
+    window_prompt_max: int = 256
 
 
 class Phase(Enum):
@@ -143,6 +149,7 @@ class Scheduler:
         self.owed_ms = 0.0
         self.spans_in_flight: dict[int, int] = {}
         self._serial = 0
+        self.windowed_plans: set[int] = set()
 
     @property
     def idle(self) -> bool:
@@ -347,6 +354,9 @@ class Scheduler:
             room = MAX_PAGE_CHANGES - self.state.pending_changes
             fits = (len(seq.pages) + room) * PAGE_CELLS - r.next_pos
             rows = min(rows, fits)
+            windowed = writing and 0 < o.window_rows < rows and len(r.prompt) - r.reused <= o.window_prompt_max
+            if windowed:
+                rows = o.window_rows
             if rows <= 0:
                 break
             self.state.grow(r.slot, r.next_pos + rows)
@@ -362,6 +372,9 @@ class Scheduler:
             if r.marks and r.marks[0][0] == r.next_pos:
                 position, kept = r.marks.pop(0)
                 marks.append((r, position, kept))
+            if windowed:
+                self.windowed_plans.add(plan.serial)
+                break
         for r in candidates:
             r.passes = 0 if r.rid in chosen else r.passes + 1
         return marks
@@ -372,7 +385,10 @@ class Scheduler:
         match event.kind:
             case EventKind.STEP_DONE:
                 ms = event.t_ns / 1e6
-                self.cost.observe(event.a, event.b, ms)
+                if event.step in self.windowed_plans:
+                    self.windowed_plans.discard(event.step)  # a row of windows costs far more than a chunk's row
+                else:
+                    self.cost.observe(event.a, event.b, ms)
                 writing = any(r.phase is Phase.DECODE for r in self.by_slot.values())
                 if event.b and writing:
                     prompt_ms = max(0.0, ms - (self.cost.decode_ms.value if event.a else 0.0))

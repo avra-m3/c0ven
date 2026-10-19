@@ -178,6 +178,36 @@ def test_prompt_steps_are_sized_by_time_while_others_write():
     assert min(gaps) >= 4, f"decode is owed half of each ~100 ms prompt step, ~5 steps of 11 ms: {gaps}"
 
 
+def test_a_short_prompt_beside_writers_is_read_in_window_pieces():
+    options = SchedulerOptions(window_rows=16, window_prompt_max=256)
+    run = make(open_config(slots=3, context=8192), options=options)
+    run.add(1, prompt(4), 400)
+    run.tick(3)
+    assert run.scheduler.by_rid[1].phase is Phase.DECODE
+    run.add(2, prompt(200, start=7), 2)
+    run.add(3, prompt(300, start=9), 2)
+    run.until_idle()
+    assert run.errors() == []
+    spans = [[(s.slot, s.count) for s in p.prompt] for p in run.engine.plans if p.prompt][1:]
+    assert all([c for _, c in p].count(16) <= 1 for p in spans), f"one window piece a plan: {spans}"
+    assert sum(c for p in spans for _, c in p) == 500
+    assert [c for p in spans for _, c in p].count(16) >= 200 // 16, f"the 200-token prompt in pieces of 16: {spans}"
+    assert max(c for p in spans for _, c in p) == 300, "the 300-token prompt, over window_prompt_max, is not split"
+
+
+def test_a_long_prompts_tail_beside_writers_is_not_read_in_window_pieces():
+    options = SchedulerOptions(prompt_budget_ms=100.0, decode_share=0.5, window_rows=16, window_prompt_max=256)
+    run = make(open_config(slots=2, context=8192), options=options)
+    run.add(1, prompt(4), 400)
+    run.tick(3)
+    run.add(2, prompt(2000, start=7), 2)
+    run.until_idle()
+    assert run.errors() == []
+    counts = [s.count for p in run.engine.plans for s in p.prompt if s.slot == 1]
+    assert sum(counts) == 2000
+    assert counts.count(16) <= 1, f"only whole prompts of up to 256 tokens are read in windows: {counts}"
+
+
 def test_a_long_prompt_alone_takes_whole_chunks():
     run = make(open_config(slots=1, context=8192))
     run.add(1, prompt(5000), 2)
