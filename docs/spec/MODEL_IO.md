@@ -260,6 +260,25 @@ The model ships defaults in two places, and they agree: GGUF `general.sampling.t
 top_k 20, top_p 0.95, `eos_token_id` [248046, 248044] (generation stops at `<|im_end|>` or `<|endoftext|>`).
 No min_p, repetition or presence penalty is given.
 
+### 2.4 The sampler
+
+llama.cpp's default chain applies, in order: the penalties, top-k, top-p, min-p, then the temperature, and draws from
+what is left (`common/common.h:261-271`; DRY, top-n-sigma, typical-p and XTC sit between them and are off by
+default). Each step works on the logits the step before left (`src/llama-sampler.cpp`):
+
+| Step | Rule | Lines |
+| --- | --- | --- |
+| Penalties | For each candidate that occurs c > 0 times in the last `penalty_last_n` tokens: its logit l becomes l / r when l > 0 and l · r otherwise, for `penalty_repeat` r; then l − c · `penalty_freq` − `penalty_present`. Off when `penalty_last_n` is 0, or r is 1 and both others 0 | `:2885-2896`, `:2919-2980` |
+| Top-k | the k largest logits | `:321` |
+| Top-p | softmax of the logits left (at temperature 1), highest first; keep up to and including the first token at which the running sum reaches p | `:1549-1602` |
+| Min-p | keep the tokens whose logit is at least the largest plus log(p), the top one always | `:1749-1801` |
+| Temperature | logits divided by t; t <= 0 keeps only the largest | `:265-291` |
+
+The penalties' tokens are the ones the sampler was given: llama.cpp's server gives it the whole prompt, except image
+and other media positions, then each token it samples (`tools/server/server-context.cpp:409-427`). The model's
+defaults (section 2.3) turn no penalty on and set the temperature to 1, so with them the order of top-p and the
+temperature makes no difference.
+
 ## 3. The draft (MTP) layer
 
 **Where its weights come from.** Not from the GGUF: llama.cpp's converter at the pinned commit drops the `mtp.*`

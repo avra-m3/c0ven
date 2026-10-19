@@ -30,7 +30,7 @@ def test_sizes_from_the_header():
     """Sizes worked out by hand from engine_api.h, on x86-64."""
     assert ctypes.sizeof(abi.CConfig) == 88
     assert ctypes.sizeof(abi.CInfo) == 88
-    assert ctypes.sizeof(abi.CSettings) == 64
+    assert ctypes.sizeof(abi.CSettings) == 80
     assert ctypes.sizeof(abi.CPageChange) == 20
     assert ctypes.sizeof(abi.CStepPlan) == 4 + 4 * abi.MAX_STEP_SLOTS + 4 + 8 * abi.MAX_PROMPT_PIECES + 4 + 4 + 8
     assert ctypes.sizeof(abi.CEvent) == 16

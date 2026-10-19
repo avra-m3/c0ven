@@ -140,6 +140,16 @@ static void run_two(engine_ctx *e, int32_t *out0, int32_t *out1, int *n0, int *n
   }
 }
 
+/* Whether no token of out[0..n) is among the last_n tokens before it, the prompt's included. */
+static int no_repeat(const int32_t *p, uint32_t np, const int32_t *out, int n, uint32_t last_n) {
+  for (int i = 0; i < n; i++)
+    for (uint32_t back = 1; back <= last_n && back <= np + (uint32_t)i; back++) {
+      int32_t before = back <= (uint32_t)i ? out[i - (int)back] : p[np + (uint32_t)i - back];
+      if (before == out[i]) return 0;
+    }
+  return 1;
+}
+
 int main(int argc, char **argv) {
   CHECK(argc == 2, "usage: api_test <first shard>");
   FILE *f = fopen(argv[1], "rb");
@@ -313,6 +323,22 @@ int main(int argc, char **argv) {
   CHECK(engine_release(e, 0) == ENGINE_OK, "release");
   printf("after a sleep and a wake: the 32 tokens, and the prompt path's 16 of the longer prompt\n");
 
+  /* A presence penalty that no counted token survives: greedy then repeats no token of the last 64, prompt included,
+   * where the plain tokens repeat one (5010). */
+  s.max_tokens = 32;
+  s.penalty_last_n = 64;
+  s.penalty_repeat = 1.0f;
+  s.penalty_present = 1000.0f;
+  CHECK(admit(e, 0, &s, prompt, np) == ENGINE_OK, "admit with a penalty");
+  n = run(e, 0, &s, out, 64);
+  CHECK(n == 32, "penalised: %d tokens", n);
+  CHECK(no_repeat(prompt, np, out, n, 64), "penalised: a token of the last 64 came again");
+  CHECK(memcmp(out, ref, sizeof ref) != 0, "penalised: the plain tokens");
+  CHECK(engine_release(e, 0) == ENGINE_OK, "release");
+  s.penalty_last_n = 0;
+  s.penalty_present = 0.0f;
+  printf("a presence penalty: 32 tokens, none among the 64 before it\n");
+
   engine_abi_row rows[128];
   uint32_t nr = engine_abi_layout(rows, 128);
   CHECK(nr > 0 && nr <= 128, "layout rows");
@@ -339,6 +365,23 @@ int main(int argc, char **argv) {
     CHECK(n == 32, "drafting: %d tokens", n);
     for (int i = 0; i < 32; i++) CHECK(out[i] == plain[i], "drafting, token %d: %d, plainly %d", i, out[i], plain[i]);
     CHECK(engine_release(e, 0) == ENGINE_OK, "release");
+    /* With penalties, each window row and draft counts the rows and drafts before it: the same tokens again. */
+    s.penalty_last_n = 64;
+    s.penalty_repeat = 1.3f;
+    s.penalty_freq = 0.5f;
+    CHECK(admit(e, 0, &s, prompt, np) == ENGINE_OK && admit(e, 1, &s, prompt, np) == ENGINE_OK, "admit");
+    run_two(e, plain, out1, &n, &n1);
+    CHECK(n == 32 && n1 == 32, "penalised, plain: %d and %d tokens", n, n1);
+    CHECK(engine_release(e, 0) == ENGINE_OK && engine_release(e, 1) == ENGINE_OK, "release both");
+    CHECK(admit(e, 0, &s, prompt, np) == ENGINE_OK, "admit");
+    n = run(e, 0, &s, out, 64);
+    CHECK(n == 32, "penalised, drafting: %d tokens", n);
+    for (int i = 0; i < 32; i++)
+      CHECK(out[i] == plain[i], "penalised, drafting, token %d: %d, plainly %d", i, out[i], plain[i]);
+    CHECK(engine_release(e, 0) == ENGINE_OK, "release");
+    s.penalty_last_n = 0;
+    s.penalty_repeat = 1.0f;
+    s.penalty_freq = 0.0f;
     CHECK(admit(e, 0, &s, prompt, np) == ENGINE_OK, "admit");
     n = run_with(e, 0, 64, out, 64);
     CHECK(n == 32, "drafting after windows: %d tokens", n);

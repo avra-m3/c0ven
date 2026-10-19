@@ -20,7 +20,7 @@ extern "C" {
 #define ENGINE_API
 #endif
 
-#define ENGINE_API_VERSION 6
+#define ENGINE_API_VERSION 7
 
 typedef enum {
   ENGINE_OK = 0,
@@ -80,8 +80,9 @@ typedef struct {
   uint32_t pages_per_slot;     /* logical pages a slot can map: the context's, rounded up to a multiple of the cards */
 } engine_info;
 
-/* A request's sampling and stopping, copied once by admit. A sampled token depends only on the seed and its
- * position, never on how the work was split into steps. */
+/* A request's sampling and stopping, copied once by admit. The core samples in llama.cpp's order: penalties, top-k,
+ * top-p, min-p, temperature (docs/spec/MODEL_IO.md, section 2.4). A sampled token depends only on the seed, its
+ * position and the tokens before it, never on how the work was split into steps. */
 #define ENGINE_MAX_STOP 8
 typedef struct {
   float temperature;           /* 0: greedy */
@@ -91,6 +92,12 @@ typedef struct {
   uint64_t seed;
   uint32_t n_stop;
   int32_t stop[ENGINE_MAX_STOP];  /* token ids that end the request (kept as its last token) */
+  float min_p;                 /* keep the tokens at least min_p times as likely as the top one; 0: off */
+  uint32_t penalty_last_n;     /* the penalties count the last this many tokens before the one sampled, the prompt's
+                                  included and image and video tokens not; 0: no penalties */
+  float penalty_repeat;        /* a counted token's logit divided by it (multiplied when <= 0); 1: off */
+  float penalty_freq;          /* subtracted from a counted token's logit once per occurrence; 0: off */
+  float penalty_present;       /* subtracted from a counted token's logit once; 0: off */
 } engine_settings;
 
 /* The KV cache is paged, and the caller keeps the page table (docs/DESIGN.md, section 4). A page is 4 cells: logical
@@ -171,7 +178,8 @@ typedef struct {
 ENGINE_API engine_status engine_open(const engine_config *config, engine_info *info, engine_ctx **out);
 
 /* Copies a request into a free slot: its settings and prompt ids. The slot's state is reset and its pages unmapped;
- * no queued plan may name the slot, in its decode slots, pieces or page changes. */
+ * no queued plan may name the slot, in its decode slots, pieces or page changes. ENGINE_BAD_ARGUMENT for min_p outside
+ * [0, 1], or a penalty with penalty_repeat <= 0. */
 ENGINE_API engine_status engine_admit(engine_ctx *e, uint32_t slot, const engine_settings *settings, const int32_t *prompt,
                            uint32_t n_prompt);
 

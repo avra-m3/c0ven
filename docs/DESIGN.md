@@ -157,9 +157,10 @@ sequenceDiagram
 5. The core runs each plan in order: its page changes, its prompt pieces, then one decode step for every slot that
    is writing. Python keeps two plans queued while any slot decodes, so the core never waits for Python between
    steps.
-6. The core samples each token on the host from the cards' candidates, with the request's temperature, top-k, top-p
-   and seed. A token depends only on the seed and its position, never on how the work was split into steps. The core
-   takes no other sampling setting ([ADR-0027](adr/0027-the-c-abi-as-the-core-was-optimised.md), item 4).
+6. The core samples each token on the host from the cards' candidates, as llama.cpp does: the request's penalties,
+   top-k, top-p, min-p, then its temperature and seed ([MODEL_IO.md, 2.4](spec/MODEL_IO.md#24-the-sampler)). A token
+   depends only on the seed, its position and the tokens before it, never on how the work was split into steps.
+   The penalties reorder those candidates only, so a penalised token never falls below one the cards did not return.
 7. The scheduler turns each token event into a `T` line. The front end detokenizes, splits reasoning, content and
    tool calls, and streams.
 8. The core ends a request at a stop token, at `max_tokens` or at the end of the context. The front end ends one at
@@ -169,7 +170,7 @@ sequenceDiagram
 
 ## 3. The C ABI between Python and C++
 
-[`include/engine_api.h`](../include/engine_api.h), version 6, is the one boundary between the Python side and the
+[`include/engine_api.h`](../include/engine_api.h), version 7, is the one boundary between the Python side and the
 core ([ADR-0022](adr/0022-two-processes-python-and-cpp.md)). Python loads the core with `ctypes`
 (`engine/api/native.py`). `engine/api/abi.py` mirrors the header by hand, and a test checks every size and offset
 against the built library.

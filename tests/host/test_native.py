@@ -497,6 +497,15 @@ def test_the_facts_fit_the_protocols_info_line():
     protocol.Info({"version": facts.version, "cards": str(facts.cards)}).encode()
 
 
+def test_admit_passes_min_p_and_the_penalties_to_the_core():
+    run = make()
+    run.engine.admit(0, SlotSettings(0.7, 0.9, 20, 0.05, 64, 1.1, 0.25, 0.5, 7, 4), tuple(prompt_of(8)))
+    c = run.core.slots[0].settings
+    assert (c.min_p, c.penalty_last_n, c.penalty_repeat, c.penalty_freq, c.penalty_present) == pytest.approx(
+        (0.05, 64, 1.1, 0.25, 0.5)
+    )
+
+
 def test_open_asks_for_swaps_and_drafting_but_with_adr_0016s_switches():
     fake = FakeCore()
     NativeEngine(core=fake).open(replace(open_config(), shard_paths=("m.gguf",), draft_dir="/models/mtp"))

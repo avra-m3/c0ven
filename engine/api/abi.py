@@ -1,4 +1,4 @@
-"""A hand-written mirror of `include/engine_api.h`, the C ABI, version 6 (ADR-0024, item 6).
+"""A hand-written mirror of `include/engine_api.h`, the C ABI, version 7 (ADR-0024, item 6).
 
 This file and the header must agree byte for byte. `layout()` lists every struct's size and every field's offset in
 the form the core's `engine_abi_layout` returns them, and tests/host/test_abi.py compares the two.
@@ -12,7 +12,8 @@ in `interface.py`; ADR-0027 lists each difference as a decision still to be made
 encoder's file to the config, its limit to the info, and `engine_admit_images`. Sleep (ADR-0032) adds
 `engine_sleep` and `engine_wake`. Version 5 pages the KV cache (ADR-0033): Python keeps the page table and sends its
 changes in each plan, a slot without a page for its next position stalls, and a checkpoint holds only the fixed state.
-Version 6 adds `engine_image.frames` for video (ADR-0034).
+Version 6 adds `engine_image.frames` for video (ADR-0034). Version 7 adds min-p and the penalties to
+`engine_settings`.
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ import ctypes
 from dataclasses import dataclass
 from enum import IntEnum
 
-ABI_VERSION = 6
+ABI_VERSION = 7
 
 MAX_STOP = 8
 MAX_STEP_SLOTS = 8
@@ -126,6 +127,11 @@ class CSettings(ctypes.Structure):
         ("seed", ctypes.c_uint64),
         ("n_stop", ctypes.c_uint32),
         ("stop", ctypes.c_int32 * MAX_STOP),
+        ("min_p", ctypes.c_float),
+        ("penalty_last_n", ctypes.c_uint32),
+        ("penalty_repeat", ctypes.c_float),
+        ("penalty_freq", ctypes.c_float),
+        ("penalty_present", ctypes.c_float),
     )
 
 
