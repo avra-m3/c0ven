@@ -22,8 +22,10 @@
 
 namespace test {
 
-// The first shard of the IQ3_S file, or "" (the test then skips with exit code 77).
+// The model's first shard: FLASH_MODEL, or the IQ3_S file in FLASH_MODEL_DIR (default /models); "" when neither
+// is set and the IQ3_S file is missing (the test then skips with exit code 77).
 inline std::string model_path() {
+  if (const char *m = std::getenv("FLASH_MODEL")) return m;
   const char *d = std::getenv("FLASH_MODEL_DIR");
   std::string dir = d ? d : "/models";
   std::string p = dir + "/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf";

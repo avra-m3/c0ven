@@ -402,7 +402,17 @@ void Model::load_card(Card &card) {
     return upload<uint8_t>(card, t.data, t.bytes);
   };
   auto f32 = [&](const std::string &name) { return reinterpret_cast<float *>(raw(name)); };
-  auto bf16 = [&](const std::string &name) { return reinterpret_cast<uint16_t *>(raw(name)); };
+  // A file may store a tensor the kernels take as BF16 in a quantised type (blk.1.ple_key is Q2_0 in the Q2_0 file):
+  // widened to BF16 once.
+  auto bf16 = [&](const std::string &name) {
+    const GgufTensor &t = src(name);
+    if (t.type == QT_BF16) return reinterpret_cast<uint16_t *>(raw(name));
+    std::vector<float> f(t.elements());
+    ggml_get_type_traits((ggml_type)t.type)->to_float(t.data, f.data(), (int64_t)f.size());
+    std::vector<uint16_t> b(f.size());
+    for (size_t i = 0; i < f.size(); i++) b[i] = bf16_bits(f[i]);
+    return upload<uint16_t>(card, b.data(), b.size() * 2);
+  };
   // The hyper-connections' up projections, rows reordered from stream-major (s * 2560 + i) to value-major
   // (i * 4 + s), so the 4 streams of a value sit in 4 neighbouring rows: the prompt path sums them inside its product
   // (gemm_hcmix), and the decode step's hc_mix reads them so.

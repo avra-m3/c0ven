@@ -26,10 +26,11 @@ static inline float act_unit(__global const uchar *a, uint K, uint u, uint q[8])
 // ---------------------------------------------------------------------------------------------------------------
 // Gate and up: 256 values a block, 8 units. Lane l takes unit l & 7 of blocks (l >> 3), (l >> 3) + 2, ...
 
-#if QTYPE == QT_IQ2_S || QTYPE == QT_IQ3_XXS || QTYPE == QT_IQ3_S || QTYPE == QT_IQ4_XS
+#if QTYPE == QT_IQ2_S || QTYPE == QT_IQ3_XXS || QTYPE == QT_IQ3_S || QTYPE == QT_IQ4_XS || QTYPE == QT_IQ2_XXS || \
+    QTYPE == QT_IQ2_XS || QTYPE == QT_IQ1_M
 
-// Unit s of block k as 8 magnitude words g and 8 nibbles of sign bits (bit j: byte j negative), or for IQ4_XS as 8
-// signed words and no signs; lo and hi as decode_unit gives them.
+// Unit s of block k as 8 magnitude words g and 8 nibbles of sign bits (bit j: byte j negative), or for IQ4_XS and
+// IQ1_M as 8 signed words and no signs; lo and hi as decode_unit gives them.
 static inline void gu_decode(__global const uchar *W, uint n, uint k, uint s, uint g[8], uint sg[8], float *lo,
                              float *hi GRID_PARAM) {
 #if QTYPE == QT_IQ3_XXS
@@ -78,6 +79,46 @@ static inline void gu_decode(__global const uchar *W, uint n, uint k, uint s, ui
   float d = vload_half(0, (__global const half *)(W + RUN(4) + k * 2)) * 0.25f;
   *lo = d * (0.5f + (float)(sc & 15));
   *hi = d * (0.5f + (float)(sc >> 4));
+#elif QTYPE == QT_IQ2_XXS || QTYPE == QT_IQ2_XS
+  uint2 qs = vload2(0, (__global const uint *)(W + RUN(0) + k * 64 + 8 * s));
+  for (uint l = 0; l < 4; l++) {
+#if QTYPE == QT_IQ2_XXS
+    uint idx = (qs.s0 >> (8 * l)) & 255u, s7 = (qs.s1 >> (7 * l)) & 127u;
+#else
+    uint v = ((l < 2 ? qs.s0 : qs.s1) >> (16 * (l & 1))) & 0xffffu;
+    uint idx = v & 511u, s7 = v >> 9;
+#endif
+    uint2 e = *(__local const uint2 *)(grid + 8 * idx);
+    uint bits = s7 | ((popcount(s7) & 1) << 7);
+    g[2 * l] = e.s0;
+    g[2 * l + 1] = e.s1;
+    sg[2 * l] = bits & 15;
+    sg[2 * l + 1] = bits >> 4;
+  }
+#if QTYPE == QT_IQ2_XXS
+  *lo = *hi = vload_half(0, (__global const half *)(W + RUN(1) + k * 2)) * (0.5f + (float)(qs.s1 >> 28)) * 0.25f;
+#else
+  uint sc = W[RUN(1) + k * 8 + s];
+  float d = vload_half(0, (__global const half *)(W + RUN(2) + k * 2)) * 0.25f;
+  *lo = d * (0.5f + (float)(sc & 15));
+  *hi = d * (0.5f + (float)(sc >> 4));
+#endif
+#elif QTYPE == QT_IQ1_M
+  uint qs4 = ld_u32x(W + RUN(0) + k * 32 + 4 * s);
+  uint qh2 = *(__global const ushort *)(W + RUN(1) + k * 16 + 2 * s);
+  uint2 sc = vload2(0, (__global const uint *)(W + RUN(2) + k * 8));
+  float d = (float)as_half((ushort)(((sc.s0 >> 12) & 0x000fu) | ((sc.s0 >> 24) & 0x00f0u) | ((sc.s1 >> 4) & 0x0f00u) |
+                                    ((sc.s1 >> 16) & 0xf000u)));
+  uint ss = (((s < 4 ? sc.s0 : sc.s1) >> (16 * ((s / 2) & 1))) & 0xffffu) >> (6 * (s & 1));
+  for (uint l = 0; l < 4; l++) {
+    uint h = (qh2 >> (4 * l)) & 15u;
+    uint2 e = *(__local const uint2 *)(grid + 8 * (((qs4 >> (8 * l)) & 255u) | ((h & 7u) << 8)));
+    g[2 * l] = iq1_word(e.s0, h & 8u);
+    g[2 * l + 1] = iq1_word(e.s1, h & 8u);
+    sg[2 * l] = sg[2 * l + 1] = 0;
+  }
+  *lo = d * (float)(2 * (ss & 7) + 1) * 0.125f;
+  *hi = d * (float)(2 * ((ss >> 3) & 7) + 1) * 0.125f;
 #elif QTYPE == QT_IQ4_XS
   uint4 qv = vload4(0, (__global const uint *)(W + RUN(0) + k * 128 + 16 * s));
   uint xw[4] = {qv.s0, qv.s1, qv.s2, qv.s3};
@@ -98,7 +139,7 @@ static inline void gu_decode(__global const uchar *W, uint n, uint k, uint s, ui
 #endif
 }
 
-#if QTYPE == QT_IQ4_XS
+#if QTYPE == QT_IQ4_XS || QTYPE == QT_IQ1_M
 #define SIGNED_GRID 0
 #else
 #define SIGNED_GRID 1

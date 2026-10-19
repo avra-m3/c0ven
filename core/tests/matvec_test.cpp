@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstring>
 #include <random>
+#include <set>
 
 #include "ggml.h"
 #include "load/gguf.h"
@@ -52,9 +53,10 @@ int main() {
   up.copy(grids, codebooks().data(), QGRID_BYTES);
   up.synchronize();
 
-  // The first tensor of each type, by name order; rows of 2,560 or more values take 16 lanes, shorter ones 4.
-  const uint32_t types[] = {QT_Q8_0, QT_Q2_0, QT_IQ4_NL, QT_IQ4_XS, QT_Q4_K, QT_Q5_K, QT_Q6_K,
-                            QT_IQ2_S, QT_IQ3_XXS, QT_IQ3_S};
+  // Every quantised type of the file; the first tensor of each, by name order.
+  std::set<uint32_t> types;
+  for (auto &[name, ti] : model.tensors())
+    if (quant_block_values(ti.type) > 1 && name.find("per_layer") == std::string::npos) types.insert(ti.type);
   std::mt19937 rng(1234);
   std::normal_distribution<float> normal(0.0f, 1.0f);
   int failures = 0;

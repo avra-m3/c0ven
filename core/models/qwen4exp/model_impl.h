@@ -41,7 +41,7 @@ inline bool is_raw(uint32_t type) { return type == QT_F32 || type == QT_F16 || t
 // rows, the fastest of each (docs/MEASUREMENTS.md#2026-10-11-kernel-spike).
 inline uint32_t lanes_for(uint32_t type, uint32_t K) {
   if (K / 32 < 40) return 4;
-  if (type == QT_Q4_K || type == QT_Q5_K || type == QT_Q6_K || type == QT_IQ4_XS) return 8;
+  if (type == QT_Q3_K || type == QT_Q4_K || type == QT_Q5_K || type == QT_Q6_K || type == QT_IQ4_XS) return 8;
   return 16;
 }
 
@@ -66,7 +66,8 @@ inline std::string mv_module(uint32_t type, uint32_t lanes) {
 // has no kernel for the type (matvec.cl's then).
 inline std::string moe_module(uint32_t type, uint32_t W, bool down) {
   bool has = down ? type == QT_IQ4_NL || type == QT_Q2_0
-                  : type == QT_IQ2_S || type == QT_IQ3_XXS || type == QT_IQ3_S || type == QT_IQ4_XS;
+                  : type == QT_IQ2_S || type == QT_IQ3_XXS || type == QT_IQ3_S || type == QT_IQ4_XS ||
+                        type == QT_IQ2_XXS || type == QT_IQ2_XS || type == QT_IQ1_M;
   if (!has) return "";
   std::string s = std::string("moe_") + ggml_type_label(type) + "_g" + std::to_string(W);
   for (auto &c : s) c = (char)std::tolower(c);
