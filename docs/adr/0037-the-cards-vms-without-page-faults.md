@@ -24,8 +24,9 @@ setting; xe retries a userptr re-pin that fails; or the engine needs shared syst
   created in long-running mode only, and the cards report no shared system USM (`0x0`). By xe's source, a migrated
   page then stops the VM's queues until xe binds the range again. The same copy loop ran clean under 23,518-45,670
   host migrations, and the engine on two cards under 117,121-3,031,892, with the same tokens and prompt speed as the
-  fault-mode series of 2026-10-18, and decode 1.1-2.4 tokens/s lower; the two were not run in one sitting (the same
-  record). The setting alone does nothing: a release build reads it only with `NEOReadDebugKeys=1`.
+  fault-mode series of 2026-10-18 (the same record). Run against its base in one sitting, three ABBA rounds on two
+  cards, the mode changes neither prompt reading, nor decode, nor the first token
+  ([the speed record](../MEASUREMENTS.md#2026-10-19-vm-without-fault-mode-speed)). The setting alone does nothing: a release build reads it only with `NEOReadDebugKeys=1`.
 - **The engine uses no shared system USM.** It never passes the cards a host pointer it did not bind through a
   copy, and the runtime binds a copy's source with or without shared system USM.
 
@@ -51,7 +52,8 @@ setting; xe retries a userptr re-pin that fails; or the engine needs shared syst
 ## Consequences
 
 - A host migration under a binding costs the card a stall instead of a reset. The copy loop's slowest copy rose
-  from about 0.02 s to 0.076-0.127 s (the same record). Under prompts, the stall's cost is not measured.
+  from about 0.02 s to 0.076-0.127 s (the same record). Under the engine's prompts and decode, with the arena in
+  2 MiB pages, no cost was measured ([the speed record](../MEASUREMENTS.md#2026-10-19-vm-without-fault-mode-speed)).
 - `NEOReadDebugKeys=1` makes the runtime read every compute-runtime debug key from the environment, so a stray key
   in a serving container takes effect.
 - [LEVEL_ZERO.md](../LEVEL_ZERO.md) row 31 says how the copies from the arena behave in each mode.
