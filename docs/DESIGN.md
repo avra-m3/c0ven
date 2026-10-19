@@ -477,9 +477,9 @@ the cards, so a draft never waits for the CPU (`core/models/qwen4exp/mtp.cpp`).
 
 The core counts which experts the requests route to. Between plans it lets the uncached experts used most replace the
 cached ones used least, up to 64 in a round: after a plan that ends a prompt and after every 16th plan, never while a
-slot is reading its prompt (`core/models/qwen4exp/swap.cpp`). A swap changes which experts the CPU computes, and so
-their rounding. Tokens repeat exactly from run to run only with `--deterministic`, which turns swaps off
-([ADR-0029](adr/0029-the-engine-process-drafts-and-swaps.md)).
+slot is reading its prompt or after a plan in which several slots wrote (`core/models/qwen4exp/swap.cpp`). A swap
+changes which experts the CPU computes, and so their rounding. Tokens repeat exactly from run to run only with
+`--deterministic`, which turns swaps off ([ADR-0029](adr/0029-the-engine-process-drafts-and-swaps.md)).
 
 ### A prompt chunk
 
