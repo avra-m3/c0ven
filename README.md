@@ -3,10 +3,7 @@
 A fast inference engine for one architecture, [Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next), on two
 Intel Arc Pro B60 cards. It is built for one user running a few threads on one machine, and it is fast for that case.
 
-It talks to the GPUs through Intel's Level Zero API directly, with no SYCL and no oneAPI
-([ADR-0001](docs/adr/0001-level-zero-from-scratch.md)). The GPU path is written here. The CPU computes the experts the
-cards miss with ggml, llama.cpp's CPU backend, at a pinned commit ([ADR-0004](docs/adr/0004-write-or-reuse.md)). It
-serves the OpenAI and Anthropic APIs, so existing clients work with it.
+Just like witches, GPU's work better together in a coven. This repository focuses on optimizing inference between the CPU and one or more Battlemage GPU's through Intel's Level Zero API. Slots right in to your existing setup with OpenAI and Anthropic API compatibility.
 
 ## Is this for you?
 
