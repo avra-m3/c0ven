@@ -317,12 +317,19 @@ void List::execute() {
   submitted_ = true;
 }
 
+// A list on a queue whose engine the driver reset never finishes, and the driver's job timeout does not apply to the
+// engine's long-running queues, so an unbounded wait hangs the process. No list the engine records runs this long.
+constexpr uint64_t kListWaitNs = 60'000'000'000ull;
+
 void List::synchronize() {
-  if (kind_ == immediate) {
-    ZE_CHECK(zeCommandListHostSynchronize(list_, UINT64_MAX));
-  } else if (submitted_) {
-    ZE_CHECK(zeFenceHostSynchronize(fence_, UINT64_MAX));
-  }
+  if (kind_ != immediate && !submitted_) return;
+  const ze_result_t r = kind_ == immediate ? zeCommandListHostSynchronize(list_, kListWaitNs)
+                                           : zeFenceHostSynchronize(fence_, kListWaitNs);
+  if (r == ZE_RESULT_NOT_READY)
+    throw std::runtime_error("card " + std::to_string(card_) + " did not finish a list in " +
+                             std::to_string(kListWaitNs / 1'000'000'000ull) +
+                             " s; its engine may have been reset (the kernel log, /sys/class/devcoredump)");
+  check(r, kind_ == immediate ? "zeCommandListHostSynchronize" : "zeFenceHostSynchronize");
 }
 
 void List::reset_list() {
