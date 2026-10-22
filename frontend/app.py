@@ -116,6 +116,27 @@ async def _body(request: Request) -> JSONObject:
     return body  # pyright: ignore[reportUnknownVariableType]
 
 
+async def _unless_gone[T](request: Request, work: Coroutine[Any, Any, T]) -> T | None:
+    """work's result, or None if the client goes first. Then work is cancelled, which closes the request's events
+    and so sends the engine STOP (frontend/engine_client.py)."""
+    task = asyncio.create_task(work)
+
+    async def gone() -> None:
+        # The body is read, so the next message is the disconnect.
+        while (await request.receive())["type"] != "http.disconnect":
+            pass
+
+    watch = asyncio.create_task(gone())
+    try:
+        await asyncio.wait((task, watch), return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        watch.cancel()
+        if not task.done():
+            task.cancel()
+            await asyncio.wait((task,))
+    return None if task.cancelled() else task.result()
+
+
 def _sse(data: JSONObject | None, event: str | None = None) -> bytes:
     payload = "[DONE]" if data is None else json.dumps(data, ensure_ascii=False)
     head = f"event: {event}\n" if event else ""
@@ -166,7 +187,9 @@ def create_app(
         req = replace(req, max_tokens=generate.budget(engine, prompt, req.max_tokens, default_max_tokens))
         pieces = recorded(generate.stream(model, engine, req, prompt), "openai")
         if not streaming:
-            result = await generate.collect(pieces)
+            result = await _unless_gone(request, generate.collect(pieces))
+            if result is None:
+                return Response(status_code=499)  # nginx's "client closed request", for the access log
             assert result.end is not None
             if result.end.error is not None:
                 return error(500, result.end.error, "server_error")
@@ -187,7 +210,9 @@ def create_app(
         req = replace(req, max_tokens=generate.budget(engine, prompt, req.max_tokens, default_max_tokens))
         pieces = recorded(generate.stream(model, engine, req, prompt), "anthropic")
         if not streaming:
-            result = await generate.collect(pieces)
+            result = await _unless_gone(request, generate.collect(pieces))
+            if result is None:
+                return Response(status_code=499)  # nginx's "client closed request", for the access log
             assert result.end is not None
             if result.end.error is not None:
                 return error(500, result.end.error, "api_error")
