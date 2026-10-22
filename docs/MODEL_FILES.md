@@ -1,0 +1,127 @@
+# Model files
+
+C0ven runs one model, Qwen3.8-Flash-Next, from ISTA-DASLab's GSQ-RCO IQ3_S GGUF
+([ADR-0006](adr/0006-scope.md), [ADR-0018](adr/0018-one-file-iq3s.md)). This page says which files to get, how to
+check them, how to lay them out, and how to point the engine at them.
+
+| Part | Files | Size | Needed for |
+| --- | --- | ---: | --- |
+| The model | the IQ3_S GGUF, 2 shards | 83.6 GB | everything |
+| The draft (MTP) layer | 31 tensors from Qwen's BF16 checkpoint, in `mtp/` | 5.2 GB | drafting; without it the engine decodes one token a step |
+| The image encoder | `mmproj-Qwen3.8-Flash-Next-BF16.gguf` | 0.9 GB | images and video in requests |
+
+## The model directory
+
+Put every file in one directory:
+
+```
+<model dir>/
+  Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf
+  Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf
+  mmproj-Qwen3.8-Flash-Next-BF16.gguf
+  mtp/
+    mtp-manifest.json
+    mtp.fc_embedding.weight
+    ... (one file per tensor, 31 in all)
+```
+
+Keep the shards' names: the engine finds each shard from the other by the `-0000N-of-00002` suffix. Keep the
+directory on a filesystem that allows `O_DIRECT` reads, such as ext4 or xfs. The engine reads the weights and the
+n-gram table that way, and a filesystem that refuses them stops it ([ADR-0015](adr/0015-ngram-table-on-the-ssd.md),
+[ADR-0032](adr/0032-sleep-the-front-end-stays-the-engine-keeps-the-arena.md)). The engine only reads the directory, so
+it can be mounted read-only.
+
+## Pointing the engine at the files
+
+`--model` takes the path of either shard. From that path the engine finds the rest:
+
+| Part | Where the engine looks | To change it |
+| --- | --- | --- |
+| The other shard | beside it, by name | - |
+| The draft layer | `mtp/` beside the model, when it holds `mtp-manifest.json` | `--engine-arg=--draft-dir=<dir>`; `--engine-arg=--no-draft` decodes without it |
+| The image encoder | the one `mmproj-*.gguf` beside the model; with two or more, none | `--engine-arg=--vision=<file>`; `--engine-arg=--no-vision` reads no images |
+| The tokenizer and chat template | the GGUF's metadata | `--tokenizer <tokenizer.json>`, `--chat-template <chat_template.jinja>` |
+
+A missing draft layer or encoder is not an error: the engine runs without it.
+
+At each load the engine quantises the draft layer's experts from BF16, which takes tens of seconds. Set
+`ENGINE_MTP_CACHE_DIR` to a writable directory to keep the result between loads. The cache is keyed by the bytes of
+`mtp-manifest.json`, the expert type and the card split, and a file that does not match is written again
+([DEVELOPING.md](DEVELOPING.md)).
+
+With Docker, mount the model directory at `/models` and give a volume for the cache, as in the README's
+[quick start](../README.md#quick-start):
+
+```bash
+docker run ... -v <model dir>:/models:ro -v c0ven-mtp:/cache -e ENGINE_MTP_CACHE_DIR=/cache/mtp \
+  ghcr.io/avra-m3/c0ven/serve:main --model /models/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf ...
+```
+
+The tests find the same directory through `FLASH_MODEL_DIR`, by default `/models`, and skip when it is missing
+([TESTING.md](TESTING.md)).
+
+## Getting the files
+
+### The model
+
+[`ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF`](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF)
+at revision `ed59f92082b1e93c0e96d60a8b11aab089b52f09`, the revision Strata's `setup.py` pins. At that revision the
+shards are in `IQ3_S/`:
+
+```bash
+base=https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/ed59f92082b1e93c0e96d60a8b11aab089b52f09/IQ3_S
+wget -c "$base/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf" "$base/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf"
+sha256sum Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-0000*-of-00002.gguf
+```
+
+| Shard | Bytes | sha256 (= the Hub's LFS oid) |
+| --- | ---: | --- |
+| `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf` | 54,817,524,224 | `4c1eb2ceb4915e1192f4f386021897bde56a97f40a0bb78bb86465e0f7d2aca3` |
+| `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf` | 28,800,138,432 | `316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113` |
+
+The Hub gives the same values at `GET /api/models/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/tree/<revision>/IQ3_S`
+(`lfs.oid`, `lfs.size`). Together the shards are 83,617,662,656 B (83.6 GB).
+
+#### The other quants
+
+The same repository's `IQ3_XXS/`, `IQ2_XS/` and `Q2_0/` folders load too, at the same revision
+([ADR-0038](adr/0038-the-other-quants-load.md), draft). Their second shard, the n-gram table, is byte for byte IQ3_S's
+(the sha256 above), so a link to it under the quant's name serves. Put the image encoder's file and `mtp/` beside them
+as for IQ3_S; without the encoder's file the engine leaves room for more experts and its speed is not comparable.
+Their speed and agreement with IQ3_S are in [measurements/MEASUREMENTS.md](measurements/MEASUREMENTS.md#other-quants).
+
+| First shard | Bytes | sha256 |
+| --- | ---: | --- |
+| `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf` | 47,039,860,096 | `219ea929900dfa9ef091f3aa473fdba6874b65fcb36526d7d851ac9e95856d15` |
+| `Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf` | 39,225,954,592 | `92cee27ae5bbadcd732416a0f7a7f0acc092399dbbe8f5a5efa707c2ec0a49d7` |
+| `Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf` | 37,623,740,192 | `69820c02ec7d0b45ef2ebb19d6620299db749fe2aded7f39f93c6b88b199b720` |
+
+### The image encoder
+
+The same repository at revision `1c04b8102ca5346f1faf4d9914503e378d713021`
+([ADR-0031](adr/0031-images-through-the-prompt-path.md)), at its top level:
+
+```bash
+wget -c https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/resolve/1c04b8102ca5346f1faf4d9914503e378d713021/mmproj-Qwen3.8-Flash-Next-BF16.gguf
+```
+
+It is 907,543,008 B, with sha256 `b1a82259702816a5330d7bd7607cd9676b11780e79ff7348c21103ff3ce49bd0`. What it holds
+is in [spec/MODEL_VISION.md](spec/MODEL_VISION.md).
+
+### The MTP layer
+
+The GSQ-RCO GGUF has no draft (MTP) head: it has no `mtp` or `nextn` tensor. The head comes
+from Qwen's BF16 checkpoint, [`Qwen/Qwen3.8-Flash-Next`](https://huggingface.co/Qwen/Qwen3.8-Flash-Next)
+at revision `de4b8e4d43b917e7706784d8bb445c9af86a3540`, as in Strata's `tools/mtp_fetch.py` (at `1678de3`). The
+checkpoint is 131 safetensors shards (360 GB), and its 31 `mtp.*` tensors are spread over 28 of them. Range requests
+fetch only those 5.2 GB:
+
+1. Read `model.safetensors.index.json` at the revision, and keep the names that start with `mtp.`.
+2. For each shard that holds one, request its first 8 bytes (the header's length), then the JSON header.
+3. For each tensor, request its byte range: `8 + header length + data_offsets`. Check that each answer is `206`,
+   with a `Content-Range` equal to the range asked for.
+4. Write each tensor's bytes, as they are, to `mtp/<tensor name>`: raw little-endian BF16, with no header.
+5. Check each file's sha256 against the sums in Strata's `tools/mtp_fetch.py` at `1678de3`, which are for the same
+   revision. The Hub's sha256 covers whole shards, so it cannot check a byte range.
+6. Write `mtp/mtp-manifest.json`, listing for each tensor its dtype, shape, source shard, byte range and sha256.
+   The engine needs the file to find the directory, and keys its quantised cache by the file's bytes.

@@ -1,0 +1,182 @@
+# The engine on a runner without a card (ADR-0028): the image, the engine and every kernel built in it, the Python
+# half's checks (ADR-0026), the tests a runner can run, and the GPU tests' skip path. Then the serving image, with
+# the engine built inside, and its check (ADR-0025). From main, the serving image goes to GHCR, tagged with VERSION
+# too (ADR-0042); the engine image stays on the runner (ADR-0043). Levels 2-7 run on the machine
+# (docs/TESTING.md, "Where tests run").
+name: ci
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  engine:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: write
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - id: version
+        name: Read the version
+        run: echo "version=$(cat VERSION)" >> "$GITHUB_OUTPUT"
+
+      - id: meta-serve
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ghcr.io/${{ github.repository }}/serve
+          tags: |
+            type=ref,event=branch
+            type=raw,value=${{ steps.version.outputs.version }},enable={{is_default_branch}}
+            type=sha
+          labels: org.opencontainers.image.version=${{ steps.version.outputs.version }}
+
+      # Loaded into the runner's Docker, for the steps below.
+      - name: Build the image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          target: engine
+          load: true
+          tags: c0ven/engine:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # The checkout is read-only inside: the build, the venv and the caches go to /work, which the image's user owns.
+      - name: Start a container from it
+        run: |
+          docker run -d --name engine -v "$GITHUB_WORKSPACE:/src:ro" -w /src \
+            -e UV_PROJECT_ENVIRONMENT=/work/venv -e RUFF_CACHE_DIR=/work/ruff-cache -e PYTHONDONTWRITEBYTECODE=1 \
+            -e ENGINE_LIBRARY=/work/build/core/libengine.so \
+            c0ven/engine:ci sleep infinity
+
+      # ocloc compiles the kernels for bmg-g21 without a card.
+      - name: Build the engine and every kernel
+        run: |
+          docker exec engine cmake -S /src -B /work/build -G Ninja -DENGINE_WERROR=ON
+          docker exec engine ninja -C /work/build
+
+      - name: Install the Python packages
+        run: docker exec engine uv sync --locked
+
+      - name: Check the Python formatting
+        run: docker exec engine uv run --locked ruff format --check
+
+      - name: Lint the Python
+        run: docker exec engine uv run --locked ruff check
+
+      - name: Check the Python types
+        run: docker exec engine uv run --locked basedpyright
+
+      # The ABI check loads the core built above, through ENGINE_LIBRARY.
+      - name: Run the Python tests
+        run: docker exec engine uv run --locked pytest -p no:cacheprovider
+
+      - name: Run the core's tests that need no card
+        run: docker exec engine ctest --test-dir /work/build -LE gpu --output-on-failure
+
+      # A GPU test that passes or fails here has a broken skip path (docs/TESTING.md, "Test data").
+      - name: Check that every GPU test skips without a card
+        run: |
+          docker exec engine ctest --test-dir /work/build -L gpu --output-on-failure | tee gpu.log
+          total=$(docker exec engine ctest --test-dir /work/build -N -L gpu | sed -n 's/^Total Tests: //p')
+          skipped=$(grep -c -- '\*\*\*Skipped' gpu.log || true)
+          echo "$skipped of $total GPU tests skipped"
+          if [ "$skipped" != "$total" ]; then
+            echo "::error::$skipped of $total GPU tests skipped without a card"
+            exit 1
+          fi
+
+      - name: Check that ENGINE_EXPECT_GPUS fails a run without a card
+        run: |
+          if docker exec -e ENGINE_EXPECT_GPUS=2 engine ctest --test-dir /work/build -R '^ze_smoke_test$'; then
+            echo "::error::ze_smoke_test did not fail with ENGINE_EXPECT_GPUS=2 and no card"
+            exit 1
+          fi
+
+      # Its own cache scope, so the engine image's cache stays as it was.
+      - name: Build the serving image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          target: serve
+          load: true
+          tags: |
+            ${{ steps.meta-serve.outputs.tags }}
+            c0ven/serve:ci
+          labels: ${{ steps.meta-serve.outputs.labels }}
+          cache-from: |
+            type=gha
+            type=gha,scope=serve
+          cache-to: type=gha,scope=serve,mode=max
+
+      # What running the engine from it relies on (ADR-0025, decision 6): the entrypoint, the user, the source commit's
+      # label, and a read-only root filesystem from which the core and its kernels load. Loading the core needs no card.
+      - name: Check the serving image
+        run: |
+          image=c0ven/serve:ci
+          test "$(docker inspect -f '{{json .Config.Entrypoint}} {{json .Config.Cmd}}' $image)" = '["python","-m","frontend"] null'
+          test "$(docker inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' $image)" = "$GITHUB_SHA"
+          docker run --rm --read-only --entrypoint id $image -u | grep -qx 1000
+          docker run --rm --read-only $image --help
+          docker run --rm --read-only --entrypoint python $image -c '
+          import os
+          from pathlib import Path
+          import engine, frontend
+          from engine.api.native import library_path, load_library
+          print(os.environ["ENGINE_LIBRARY"])
+          load_library(library_path())
+          kernels = sorted(Path("build/kernels").glob("*.bin"))
+          assert kernels, "no kernels"
+          print(len(kernels), "kernel modules")
+          '
+
+      - name: Log in to GHCR
+        if: github.ref == 'refs/heads/main'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # A version is published from one commit only. A rerun of this commit finds its own sha- tag on the same image.
+      - name: Check that the version is not published from another commit
+        if: github.ref == 'refs/heads/main'
+        run: |
+          image=ghcr.io/${{ github.repository }}/serve
+          version=${{ steps.version.outputs.version }}
+          if published=$(docker buildx imagetools inspect "$image:$version" --format '{{.Manifest.Digest}}' 2>/dev/null); then
+            ours=$(docker buildx imagetools inspect "$image:sha-${GITHUB_SHA::7}" --format '{{.Manifest.Digest}}' 2>/dev/null || true)
+            if [ "$published" != "$ours" ]; then
+              echo "::error::serve:$version is already published from another commit; raise VERSION"
+              exit 1
+            fi
+          fi
+
+      # The same build, from the cache: only an image built from an engine that passed the steps above is pushed.
+      - name: Push the serving image
+        if: github.ref == 'refs/heads/main'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          target: serve
+          push: true
+          tags: ${{ steps.meta-serve.outputs.tags }}
+          labels: ${{ steps.meta-serve.outputs.labels }}
+          cache-from: |
+            type=gha
+            type=gha,scope=serve

@@ -1,0 +1,31 @@
+# Each pull request raises VERSION above its base's; the author picks major, minor or patch (ADR-0042).
+name: version
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  raised:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The base's tip as it is now, so a version another pull request took since this one opened counts.
+      - name: Check that VERSION is raised
+        run: |
+          git fetch --depth=1 origin "$GITHUB_BASE_REF"
+          new=$(cat VERSION)
+          old=$(git show FETCH_HEAD:VERSION 2>/dev/null || echo 0.0.0)
+          if ! [[ "$new" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error file=VERSION::VERSION holds '$new', not MAJOR.MINOR.PATCH"
+            exit 1
+          fi
+          if [ "$new" = "$old" ] || [ "$(printf '%s\n' "$old" "$new" | sort -V | tail -1)" != "$new" ]; then
+            echo "::error file=VERSION::VERSION is $new and $GITHUB_BASE_REF's is $old; raise it (docs/DEVELOPING.md, Releases)"
+            exit 1
+          fi
+          echo "$old -> $new"

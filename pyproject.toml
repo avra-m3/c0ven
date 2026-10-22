@@ -1,0 +1,75 @@
+# The Python half of the engine: the front end, the control plane, the tools and the tests (ADR-0022).
+# Library choices and versions: ADR-0004. How to work with this file: docs/DEVELOPING.md.
+
+[project]
+name = "c0ven"
+# The version is in VERSION (ADR-0042); the project is not built, so nothing fills this in.
+dynamic = ["version"]
+description = "Front end and control plane of an inference engine for Qwen3.8-Flash-Next on two Intel Arc Pro B60s"
+readme = "README.md"
+requires-python = ">=3.14.4,<3.15"
+dependencies = [
+    "av==19.0.1",
+    "gguf==0.19.0",
+    "jinja2==3.1.6",
+    "numpy==2.5.4",
+    "pillow==11.3.0",
+    "starlette==1.8.0",
+    "tokenizers==0.23.3",
+    "uvicorn==0.54.0",
+]
+
+[dependency-groups]
+dev = [
+    "basedpyright==1.40.2",
+    "httpx==0.28.1",
+    "py-spy==0.4.2",
+    "pytest==9.1.1",
+    "ruff==0.17.0",
+]
+
+[tool.uv]
+# The image's uv (ADR-0002). The packages are top-level (ADR-0024), so the project is not installed.
+required-version = "==0.12.22"
+package = false
+
+[tool.uv.sources]
+# gguf 0.19.0 from PyPI does not know type 42 (Q2_0), which the file's down experts use. The same version at the
+# commit ADR-0012 pins does.
+gguf = { git = "https://github.com/ggml-org/llama.cpp", rev = "3cf03257f219afbe7334045ff7c6a06ac68c627d", subdirectory = "gguf-py" }
+
+[tool.ruff]
+line-length = 120
+target-version = "py314"
+extend-exclude = ["docs", "reference"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "UP", "SIM", "RUF", "PL", "N", "ANN", "PT", "PTH", "TID"]
+ignore = [
+    "PLR0911",  # many returns: protocol and API parsers return per case
+    "PLR0912",
+    "PLR0913",  # the ABI's calls take what the header takes
+    "PLR0915",
+    "PLR2004",  # numbers from the specs are named where they are used
+    "PLW2901",  # a loop variable narrowed in place (`m = obj(m, ...)`)
+    "N818",     # exceptions are named for what happened, not "...Error"
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["ANN", "PLR2004"]
+
+[tool.basedpyright]
+pythonVersion = "3.14"
+include = ["protocol.py", "frontend", "engine", "tools", "tests"]
+typeCheckingMode = "strict"
+# gguf ships no stubs; its values are checked where they enter (frontend/model.py, engine/models/*/tensors.py).
+reportMissingTypeStubs = false
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = ["-ra", "--strict-markers", "--import-mode=importlib"]
+markers = [
+    "gpu: needs both B60s (TESTING.md, where tests run)",
+    "model: needs the model files under FLASH_MODEL_DIR",
+]
