@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Iterator
 from typing import Any
 
 import pytest
 from starlette.testclient import TestClient
+from starlette.types import Message, Scope
 from tokenizers import Tokenizer
 
 from frontend.app import create_app
@@ -128,6 +130,50 @@ def test_openai_stop_string_stops_the_engine(client: TestClient, engine: FakeEng
     body = chat(client, stop=["STOP"], chat_template_kwargs={"enable_thinking": False})
     assert body["choices"][0]["message"]["content"] == "one two "
     assert engine.stopped_early == 1
+
+
+@pytest.mark.parametrize(
+    ("path", "body"),
+    [
+        ("/v1/chat/completions", {}),
+        ("/v1/messages", {"max_tokens": 64}),
+    ],
+)
+def test_a_client_gone_stops_its_request(model: Model, engine: FakeEngine, path: str, body: dict[str, object]):
+    engine.hang = True
+    app = create_app(model, engine)
+    messages: list[Message] = [
+        {"type": "http.request", "body": json.dumps({"messages": [{"role": "user", "content": "hi"}], **body}).encode()}
+    ]
+    gone = asyncio.Event()
+    statuses: list[int] = []
+
+    async def receive() -> Message:
+        if messages:
+            return messages.pop()
+        await gone.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message: Message) -> None:
+        if message["type"] == "http.response.start":
+            statuses.append(message["status"])
+
+    async def main() -> None:
+        scope: Scope = {
+            "type": "http",
+            "method": "POST",
+            "path": path,
+            "headers": [(b"content-type", b"application/json")],
+        }
+        call = asyncio.create_task(app(scope, receive, send))
+        while not engine.prompts:
+            await asyncio.sleep(0)
+        gone.set()
+        await asyncio.wait_for(call, 5)
+
+    asyncio.run(main())
+    assert engine.stopped_early == 1
+    assert statuses == [499]
 
 
 def test_openai_refuses_what_exceeds_the_context(client: TestClient, engine: FakeEngine):

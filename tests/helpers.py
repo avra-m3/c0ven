@@ -3,6 +3,7 @@ fake engine. The model's own tokenizer and template are tested in tests/end_to_e
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass, field
 
@@ -94,6 +95,8 @@ class FakeEngine:
     max_news: list[int] = field(default_factory=lambda: [])
     """The max_new each generation was given."""
     stopped_early: int = 0
+    hang: bool = False
+    """After its tokens, wait for a stop instead of finishing."""
     image_tokens_max: int = 0
     images: list[list[PromptImage]] = field(default_factory=lambda: [])
     status: str = "ready"
@@ -159,6 +162,8 @@ class FakeEngine:
                 yield protocol.Resume(1, self.reused)
             for i in ids:
                 yield protocol.Tokens(1, (i,))
+            if self.hang:
+                await asyncio.Event().wait()
             done = True
             yield protocol.Done(1, len(ids), len(prompt), 1.0, 2.0, finish, self.reused)
         finally:
