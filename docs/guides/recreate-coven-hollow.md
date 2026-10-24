@@ -64,6 +64,11 @@ and the point it looks at drifts along a third. `?pump&tour` selects them.
 
 One tour is eight periods of the 8 s scene, so it loops the same way. 60 s is not a whole number of
 periods, so the tour runs 64 s: the closest length to a minute that still closes. GIF delays are whole
-hundredths of a second, so 25 fps, one frame every 40 ms, is the smoothest this GIF can play. It is
-55 MB at 512x288: a GIF stores what changes between frames, and a pan across a scene this detailed
-changes nearly every pixel of every frame.
+hundredths of a second, so 25 fps, one frame every 40 ms, is the smoothest this GIF can play.
+
+<video controls loop muted preload="none" src="coven-hollow-tour.webm"></video>
+
+The same frames as a video look much better and cost far less:
+[coven-hollow-tour.webm](coven-hollow-tour.webm), 960x540 at 25 fps, 22.7 MB. The GIF is 55 MB at
+512x288: a GIF stores what changes between frames, and a pan across a scene this detailed changes
+nearly every pixel of every frame. Video does not have that problem.
