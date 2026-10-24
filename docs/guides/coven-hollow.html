@@ -1,7 +1,8 @@
 <!DOCTYPE html>
 <!-- Coven Hollow: a three.js scene drawn entirely by code: witches, cottages, a garden, a pond at dusk.
      Every part repeats every 8 s, so a recording of it loops with no seam; "?pump" hands the clock to a
-     capture script one frame at a time (docs/guides/recreate-coven-hollow.md). -->
+     capture script one frame at a time, and "?pump&tour" adds a slow 64 s camera tour
+     (docs/guides/recreate-coven-hollow.md). -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -106,6 +107,7 @@ const addTime = m => { timed.push({ uniform: m.uniforms.uTime, mat: m }); return
 
 /* ---------------------------------------------------------------- renderer */
 const PUMP = new URLSearchParams(location.search).has('pump'); // deterministic frame-stepping for GIF capture
+const TOUR = PUMP && new URLSearchParams(location.search).has('tour'); // 64 s ambient tour instead of the 8 s one
 const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance', preserveDrawingBuffer: PUMP });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 1.8));
 renderer.setSize(innerWidth, innerHeight);
@@ -1659,7 +1661,21 @@ const camCurve = PUMP ? new THREE.CatmullRomCurve3([
   new THREE.Vector3( 1, 9.0, 7),    new THREE.Vector3( 8, 8.6, 10),
   new THREE.Vector3(10, 8.0, 18),   new THREE.Vector3( 8, 7.5, 22.5),
 ], true, 'centripetal') : null; // closed: one glide-circuit per lap, seam-exact
+const tourCurve = TOUR ? new THREE.CatmullRomCurve3([
+  new THREE.Vector3( 6, 4.5, 17),    new THREE.Vector3(11, 4.2, 13),    // skim low over the pond's edge
+  new THREE.Vector3(16, 5.5, 12),    new THREE.Vector3(17, 8.5, 2),     // past the willow, rising
+  new THREE.Vector3(10, 12.5, -4),   new THREE.Vector3( 2, 13.5, -8),   // over both roofs, the high perch
+  new THREE.Vector3(-8, 10.0, -6),   new THREE.Vector3(-13, 7.5, 3),    // behind the first cottage, west
+  new THREE.Vector3(-11, 5.0, 11),   new THREE.Vector3(-8.5, 4.2, 19),  // low across the glowing garden
+  new THREE.Vector3( 0, 4.0, 20.5),  new THREE.Vector3( 5.5, 5.0, 19),  // low front, lanterns at eye level
+], true, 'centripetal') : null; // ~98 units over 64 s: one slow breath around the hollow
+const tourTarget = TOUR ? new THREE.CatmullRomCurve3([
+  new THREE.Vector3( 0, 1.6, 0),     new THREE.Vector3(-5.5, 1.4, 4.2), // cauldron, then the garden
+  new THREE.Vector3( 12, -0.2, 10.5),new THREE.Vector3( 12.5, 1.2, -8.5), // pond, then the second cottage
+  new THREE.Vector3(-3, 2.5, -12.5), new THREE.Vector3( 0, 1.8, 2),    // the oak, home again
+], true, 'centripetal') : null; // where the eye rests; it drifts once per tour
 const camPos = new THREE.Vector3();
+const camTgt = new THREE.Vector3();
 let _lap = 0;
 const _rngSeed0 = _s;
 function tick(dt, t) {
@@ -1832,9 +1848,17 @@ function tick(dt, t) {
 
   updateSparks(dt);
   if (camCurve) {
-    camCurve.getPointAt((t % 8) / 8, camPos);
-    camera.position.copy(camPos);
-    camera.lookAt(0, 2, 0);
+    if (TOUR) {
+      const u = (t % 64) / 64;
+      tourCurve.getPointAt(u, camPos);
+      tourTarget.getPointAt(u, camTgt);
+      camera.position.copy(camPos);
+      camera.lookAt(camTgt);
+    } else {
+      camCurve.getPointAt((t % 8) / 8, camPos);
+      camera.position.copy(camPos);
+      camera.lookAt(0, 2, 0);
+    }
   }
   composer.render();
 }

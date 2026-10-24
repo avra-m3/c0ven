@@ -53,3 +53,17 @@ The scene in [coven-hollow.html](coven-hollow.html) repeats every 8 s.
 
 With `?pump` in the address, the page stops its own render loop. A script then moves the scene forward one frame
 at a time and reads each frame as an image. The script runs two full periods to warm up, then records the third.
+
+## The slow tour
+
+![Coven Hollow, one slow tour](coven-hollow-tour.gif)
+
+The second recording is the same scene taken slowly: 64 s at 25 fps, one easy circuit that dips low over
+the pond, rises over the roofs and passes behind the cottages. The camera follows a second, taller path,
+and the point it looks at drifts along a third. `?pump&tour` selects them.
+
+One tour is eight periods of the 8 s scene, so it loops the same way. 60 s is not a whole number of
+periods, so the tour runs 64 s: the closest length to a minute that still closes. GIF delays are whole
+hundredths of a second, so 25 fps, one frame every 40 ms, is the smoothest this GIF can play. It is
+55 MB at 512x288: a GIF stores what changes between frames, and a pan across a scene this detailed
+changes nearly every pixel of every frame.
