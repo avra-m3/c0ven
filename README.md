@@ -152,7 +152,7 @@ The server's flags:
 
 `--kv-tokens` sets the KV cache's size apart from `--slots`. With `--slots 4 --kv-tokens 512k`, four requests run
 at once, and their prompts and answers together may hold up to 524,288 tokens. A request reserves its prompt plus
-`max_tokens` when it starts, and waits while the cache cannot hold that. A request without `max_tokens` reserves the
+`max_tokens`, cut to the rest of the context, when it starts, and waits while the cache cannot hold that. A request without `max_tokens` reserves the
 rest of the context, so with a shared cache set `--default-max-tokens` too: with `--kv-tokens 512k
 --default-max-tokens 32k`, short requests without `max_tokens` run four at once. One that reaches the limit ends with
 the finish reason `length`.

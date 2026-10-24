@@ -1,6 +1,7 @@
 """One request through the pipeline both APIs share: render, tokenize, generate, detokenize, parse.
 
-A request whose prompt plus `max_tokens` exceeds the context is refused, never truncated (DESIGN.md, section 2).
+A prompt that fills the context is refused, never truncated; a `max_tokens` past the context's end is cut to the rest
+of the context (DESIGN.md, section 2).
 Stop strings are matched in the content as it streams; the first one ends the output and stops the request.
 """
 
@@ -151,21 +152,18 @@ def render(model: Model, request: Request, image_tokens_max: int = 0) -> Prompt:
 
 
 def budget(engine: Engine, prompt: Prompt, max_tokens: int | None, default: int = 0) -> int:
-    """The tokens a request may write. default: the limit for a request without max_tokens, 0 for the rest of the
-    context. The engine reserves KV for all of them when it admits the request."""
-    room = engine.max_context - len(prompt.ids)
-    if max_tokens is None:
-        if room < 1:
-            raise BadRequest(f"the prompt ({len(prompt.ids)} tokens) fills the context ({engine.max_context})")
-        return min(room, default) if default else room
-    if max_tokens < 1:
+    """The tokens a request may write: max_tokens, cut to the rest of the context. default: the limit for a request
+    without max_tokens, 0 for the rest of the context. The engine reserves KV for all of them when it admits the
+    request. Agent clients send one max_tokens however long the conversation grows, so a limit past the context's
+    end is cut. Raises BadRequest when max_tokens is below 1 or the prompt fills the context."""
+    if max_tokens is not None and max_tokens < 1:
         raise BadRequest("max_tokens must be at least 1")
-    if max_tokens > room:
-        raise BadRequest(
-            f"the prompt ({len(prompt.ids)} tokens) plus max_tokens ({max_tokens}) exceeds the context "
-            f"({engine.max_context})"
-        )
-    return max_tokens
+    room = engine.max_context - len(prompt.ids)
+    if room < 1:
+        raise BadRequest(f"the prompt ({len(prompt.ids)} tokens) fills the context ({engine.max_context})")
+    if max_tokens is None:
+        return min(room, default) if default else room
+    return min(room, max_tokens)
 
 
 class _StopStrings:

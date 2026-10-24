@@ -142,8 +142,9 @@ sequenceDiagram
 ```
 
 1. The front end checks the request, renders it through the chat template
-   ([MODEL_IO.md, section 4](spec/MODEL_IO.md#4-the-tokenizer-and-the-chat-template)) and tokenizes it. A request
-   whose prompt plus `max_tokens` exceeds the context is refused, never truncated. A request's images and video frame
+   ([MODEL_IO.md, section 4](spec/MODEL_IO.md#4-the-tokenizer-and-the-chat-template)) and tokenizes it. A prompt
+   that fills the context is refused, never truncated. A `max_tokens` past the context's end is cut to the rest of the
+   context, and a request that reaches it ends with the finish reason `length`. A request's images and video frame
    pairs go before its `GEN`, one `IMG` line each, with the patches in a memfd that the engine reads.
 2. The engine process reads lines on a thread of its own. After a `GEN` reaches an idle engine, it waits 2 ms for more
    lines before it plans, so requests sent together read their prompts in one plan
