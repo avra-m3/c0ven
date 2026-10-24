@@ -329,6 +329,7 @@ For users:
 - [MODEL_FILES.md](docs/MODEL_FILES.md): the model files: where to get them and how to lay them out for the engine.
 - [CHOOSING_A_MODEL.md](docs/CHOOSING_A_MODEL.md): which of the four model files to pick, for your hardware and the
   speed and accuracy you want.
+- [CACHING.md](docs/CACHING.md): how the server reuses the start of a prompt, and what load does to that.
 
 For developers:
 

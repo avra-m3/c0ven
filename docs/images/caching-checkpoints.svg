@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 330" width="800" height="330" role="img" aria-labelledby="t d" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <title id="t">Where a conversation is checkpointed, and how the next turn reuses it</title>
+  <desc id="d">The first request is a 3K-token system message and a 10K-token question. Checkpoints are taken at the end of the system message and where the answer starts, at 13K. The second request repeats those 13K tokens, then adds the 1K-token answer and a 5K-token question. It starts from the checkpoint at 13K and reads only the 6K new tokens. Two new checkpoints are taken: at 16K and where its answer starts, at 19K.</desc>
+  <style>
+    .bg { fill: #ffffff; }
+    .ink { fill: #1f2328; }
+    .muted { fill: #59636e; }
+    .sys { fill: #c8d1ff; }
+    .user { fill: #b6e3c6; }
+    .ans { fill: #f6d7a7; }
+    .reused { fill: #e7e9ec; }
+    .edge { stroke: #1f2328; stroke-width: 1; fill: none; }
+    .ck { fill: #8b5cf6; stroke: #ffffff; stroke-width: 1.5; }
+    .ckline { stroke: #8b5cf6; stroke-width: 1.5; stroke-dasharray: 4 3; }
+    .arrow { stroke: #59636e; stroke-width: 1.5; fill: none; }
+    .head { fill: #59636e; }
+    @media (prefers-color-scheme: dark) {
+      .bg { fill: #0d1117; }
+      .ink { fill: #e6edf3; }
+      .muted { fill: #9198a1; }
+      .sys { fill: #3b4a8f; }
+      .user { fill: #23633b; }
+      .ans { fill: #8a5a17; }
+      .reused { fill: #262c36; }
+      .edge { stroke: #9198a1; }
+      .ck { fill: #a78bfa; stroke: #0d1117; }
+      .ckline { stroke: #a78bfa; }
+      .arrow { stroke: #9198a1; }
+      .head { fill: #9198a1; }
+    }
+    text { font-size: 13px; }
+    .small { font-size: 11.5px; }
+    .bold { font-weight: 600; }
+  </style>
+  <rect class="bg" width="800" height="330" rx="8"/>
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="head" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+  </defs>
+
+  <text class="ink bold" x="20" y="34">First request</text>
+  <text class="muted small" x="20" y="52">reads 13K tokens</text>
+  <text class="ink bold" x="20" y="160">Next request</text>
+  <text class="muted small" x="20" y="178">reads only 6K</text>
+  <!-- scale: 30 px per 1K tokens, from x=110, shifted right by 30 -->
+  <g transform="translate(30,0)">
+  <rect class="sys" x="110" y="24" width="90" height="34"/>
+  <rect class="user" x="200" y="24" width="300" height="34"/>
+  <rect class="edge" x="110" y="24" width="390" height="34"/>
+  <line class="edge" x1="200" y1="24" x2="200" y2="58"/>
+  <text class="ink small" x="155" y="45" text-anchor="middle">system 3K</text>
+  <text class="ink small" x="350" y="45" text-anchor="middle">question 10K</text>
+  <text class="muted small" x="512" y="45">then it writes its answer</text>
+
+  <path class="ck" d="M200,62 l7,8 l-7,8 l-7,-8 z"/>
+  <path class="ck" d="M500,62 l7,8 l-7,8 l-7,-8 z"/>
+  <text class="ink small" x="200" y="96" text-anchor="middle">kept checkpoint</text>
+  <text class="muted small" x="200" y="110" text-anchor="middle">end of a long system message</text>
+  <text class="ink small" x="500" y="96" text-anchor="middle">checkpoint</text>
+  <text class="muted small" x="500" y="110" text-anchor="middle">where the answer starts</text>
+
+  <rect class="reused" x="110" y="150" width="390" height="34"/>
+  <rect class="ans" x="500" y="150" width="30" height="34"/>
+  <rect class="user" x="530" y="150" width="150" height="34"/>
+  <rect class="edge" x="110" y="150" width="570" height="34"/>
+  <line class="edge" x1="500" y1="150" x2="500" y2="184"/>
+  <line class="edge" x1="530" y1="150" x2="530" y2="184"/>
+  <text class="muted small" x="305" y="171" text-anchor="middle">the same 13K tokens: not read again</text>
+  <text class="ink small" x="515" y="200" text-anchor="middle">answer 1K</text>
+  <text class="ink small" x="605" y="171" text-anchor="middle">question 5K</text>
+
+  <path class="ck" d="M590,188 l7,8 l-7,8 l-7,-8 z"/>
+  <path class="ck" d="M680,188 l7,8 l-7,8 l-7,-8 z"/>
+  <line class="ckline" x1="590" y1="206" x2="590" y2="232"/>
+  <line class="ckline" x1="680" y1="206" x2="680" y2="232"/>
+  <text class="ink small" x="590" y="246" text-anchor="end">every 16K</text>
+  <text class="ink small" x="740" y="246" text-anchor="end">answer starts</text>
+  <text class="muted small" x="740" y="260" text-anchor="end">(next turn resumes here)</text>
+
+  <path class="arrow" d="M500,118 L500,146" marker-end="url(#ah)"/>
+  <text class="ink small" x="110" y="296">The next request starts from the checkpoint at 13K: it copies the saved state back</text>
+  <text class="ink small" x="110" y="314">and shares the first 13K tokens' place in the cache, then reads the 6K that are new.</text>
+  </g>
+</svg>
