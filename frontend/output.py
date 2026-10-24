@@ -12,7 +12,7 @@ at `</think>`. Tool calls are the template's format (spec/MODEL_IO.md, section 4
     </tool_call>
 
 A value is kept as text when the tool's schema says the parameter is a string, and read as JSON otherwise, falling
-back to text.
+back to text. A call's name is yielded as soon as its `<function=NAME>` is read, and its arguments once it closes.
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ THINK_END = "</think>"
 CALL_START = "<tool_call>"
 CALL_END = "</tool_call>"
 
+_FUNCTION_START = re.compile(r"<function=([^>\n]+)>")
 _FUNCTION = re.compile(r"<function=([^>\n]+)>(.*?)</function>", re.DOTALL)
 _PARAMETER = re.compile(r"<parameter=([^>\n]+)>(.*?)</parameter>", re.DOTALL)
 
@@ -43,13 +44,20 @@ class Content:
 
 
 @dataclass(frozen=True, slots=True)
+class ToolCallStart:
+    """A tool call has begun; its ToolCall follows, unless the output ends first."""
+
+    name: str
+
+
+@dataclass(frozen=True, slots=True)
 class ToolCall:
     name: str
     arguments: dict[str, Any]
     raw: str = ""
 
 
-type Piece = Reasoning | Content | ToolCall
+type Piece = Reasoning | Content | ToolCallStart | ToolCall
 
 
 class ToolCallError(ValueError):
@@ -116,6 +124,8 @@ class OutputParser:
     _buffer: str = ""
     _started: bool = False
     """Something has been yielded in the current mode."""
+    _named: bool = False
+    """The current tool call's ToolCallStart has been yielded."""
 
     def __post_init__(self) -> None:
         self._mode = _Mode.REASONING if self.thinking else _Mode.CONTENT
@@ -136,6 +146,9 @@ class OutputParser:
                         return
                     self._switch(_Mode.TOOL_CALL)
                 case _Mode.TOOL_CALL:
+                    if not self._named and (m := _FUNCTION_START.search(self._buffer)):
+                        self._named = True
+                        yield ToolCallStart(m.group(1).strip())
                     i = self._buffer.find(CALL_END)
                     if i < 0:
                         return
@@ -159,6 +172,7 @@ class OutputParser:
     def _switch(self, mode: _Mode) -> None:
         self._mode = mode
         self._started = False
+        self._named = False
 
     def _until(self, tag: str | None, kind: type[Reasoning] | type[Content]) -> Iterator[Piece]:
         """Yield the buffer's text up to `tag`, consuming the tag. Returns whether the tag was found."""

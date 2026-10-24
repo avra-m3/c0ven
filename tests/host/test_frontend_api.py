@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Iterator
+from collections.abc import AsyncGenerator, Iterator
 from typing import Any
 
 import pytest
@@ -12,7 +12,7 @@ from starlette.testclient import TestClient
 from starlette.types import Message, Scope
 from tokenizers import Tokenizer
 
-from frontend.app import create_app
+from frontend.app import KEEPALIVE, _kept_alive, create_app  # pyright: ignore[reportPrivateUsage]
 from frontend.model import Model
 from tests.helpers import FakeEngine
 
@@ -132,6 +132,24 @@ def test_openai_stream(client: TestClient, engine: FakeEngine):
     assert chunks[-1]["usage"]["total_time"] == 0.003
 
 
+def test_openai_stream_names_a_tool_call_before_its_arguments(client: TestClient, engine: FakeEngine):
+    engine.output = CALL
+    r = client.post(
+        "/v1/chat/completions",
+        json={
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": True,
+            "tools": [TOOL],
+            "chat_template_kwargs": {"enable_thinking": False},
+        },
+    )
+    deltas = [d["choices"][0]["delta"] for _, d in sse(r.text)[:-1]]
+    first, second = [d["tool_calls"][0] for d in deltas if "tool_calls" in d]
+    assert first["function"] == {"name": "get_weather", "arguments": ""}
+    assert first["id"].startswith("call_")
+    assert second == {"index": 0, "function": {"arguments": '{"city": "Paris"}'}}
+
+
 def test_openai_stop_string_stops_the_engine(client: TestClient, engine: FakeEngine):
     engine.output = "one two STOP three"
     body = chat(client, stop=["STOP"], chat_template_kwargs={"enable_thinking": False})
@@ -144,6 +162,8 @@ def test_openai_stop_string_stops_the_engine(client: TestClient, engine: FakeEng
     [
         ("/v1/chat/completions", {}),
         ("/v1/messages", {"max_tokens": 64}),
+        ("/v1/chat/completions", {"stream": True}),
+        ("/v1/messages", {"max_tokens": 64, "stream": True}),
     ],
 )
 def test_a_client_gone_stops_its_request(model: Model, engine: FakeEngine, path: str, body: dict[str, object]):
@@ -180,7 +200,45 @@ def test_a_client_gone_stops_its_request(model: Model, engine: FakeEngine, path:
 
     asyncio.run(main())
     assert engine.stopped_early == 1
-    assert statuses == [499]
+    assert statuses == [200 if body.get("stream") else 499]
+
+
+def test_a_quiet_stream_is_kept_alive():
+    async def slow() -> AsyncGenerator[bytes]:
+        yield b"a"
+        await asyncio.sleep(0.05)
+        yield b"b"
+
+    async def main() -> list[bytes]:
+        return [x async for x in _kept_alive(slow(), 0.01)]
+
+    out = asyncio.run(main())
+    assert (out[0], out[-1]) == (b"a", b"b")
+    assert set(out[1:-1]) == {KEEPALIVE}
+
+
+@pytest.mark.parametrize("waiting", [False, True], ids=["after-an-event", "while-waiting"])
+def test_closing_a_kept_alive_stream_closes_its_source(waiting: bool):
+    closed: list[bool] = []
+
+    async def source() -> AsyncGenerator[bytes]:
+        try:
+            yield b"a"
+            await asyncio.Event().wait()
+        finally:
+            closed.append(True)
+
+    async def main() -> None:
+        stream = _kept_alive(source(), 0.01)
+        assert await anext(stream) == b"a"
+        if waiting:
+            assert await anext(stream) == KEEPALIVE
+        await stream.aclose()
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+    asyncio.run(main())
+    assert closed == [True]
 
 
 def test_openai_cuts_max_tokens_to_the_context(client: TestClient, engine: FakeEngine):
@@ -300,8 +358,11 @@ def test_anthropic_stream(client: TestClient, engine: FakeEngine):
     names = [e for e, _ in events]
     assert names[0] == "message_start"
     assert names[-1] == "message_stop"
-    starts = [d["content_block"]["type"] for e, d in events if e == "content_block_start"]
-    assert starts == ["thinking", "text", "tool_use"]
+    starts = [d["content_block"] for e, d in events if e == "content_block_start"]
+    assert [b["type"] for b in starts] == ["thinking", "text", "tool_use"]
+    assert starts[-1]["name"] == "get_weather"
+    (call,) = [d["delta"] for e, d in events if e == "content_block_delta" and d["delta"]["type"] == "input_json_delta"]
+    assert json.loads(call["partial_json"]) == {"city": "Paris"}
     assert names.count("content_block_start") == names.count("content_block_stop")
     (delta,) = [d for e, d in events if e == "message_delta"]
     assert delta["delta"]["stop_reason"] == "tool_use"
