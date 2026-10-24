@@ -17,7 +17,7 @@ import protocol
 from frontend import video
 from frontend.images import IMAGE_PAD, ImageError, PromptImage, expand, prepare
 from frontend.model import Model
-from frontend.output import Content, OutputParser, Piece, Reasoning, ToolCall, ToolCallError
+from frontend.output import Content, OutputParser, Piece, Reasoning, ToolCall, ToolCallError, ToolCallStart
 from frontend.template import Conversation, TemplateFailed
 from frontend.tokenizer import Detokenizer, encode
 
@@ -270,6 +270,8 @@ async def collect(pieces: AsyncIterator[Piece | End]) -> Result:
                 result.reasoning.append(t)
             case Content(text=t):
                 result.content.append(t)
+            case ToolCallStart():
+                pass
             case ToolCall():
                 result.calls.append(piece)
             case End():

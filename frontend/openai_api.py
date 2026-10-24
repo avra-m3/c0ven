@@ -20,7 +20,7 @@ from frontend import video
 from frontend.body import array, boolean, number, obj, settings
 from frontend.generate import BadRequest, End, Finish, Request, Result
 from frontend.images import ImageError, from_data_url
-from frontend.output import Content, Piece, Reasoning, ToolCall
+from frontend.output import Content, Piece, Reasoning, ToolCall, ToolCallStart
 from frontend.template import Conversation
 
 type JSONObject = dict[str, Any]
@@ -214,10 +214,14 @@ def wants_json(body: JSONObject) -> bool:
     return isinstance(fmt, dict) and cast(JSONObject, fmt).get("type") in ("json_object", "json_schema")
 
 
+def _call_id() -> str:
+    return f"call_{uuid.uuid4().hex[:24]}"
+
+
 def _call_json(call: ToolCall, index: int) -> JSONObject:
     return {
         "index": index,
-        "id": f"call_{uuid.uuid4().hex[:24]}",
+        "id": _call_id(),
         "type": "function",
         "function": {"name": call.name, "arguments": json.dumps(call.arguments, ensure_ascii=False)},
     }
@@ -281,8 +285,17 @@ async def stream_events(
                 yield chunk({"reasoning_content": t})
             case Content(text=t):
                 yield chunk({"content": t})
-            case ToolCall():
-                yield chunk({"tool_calls": [_call_json(piece, calls)]})
+            case ToolCallStart(name=name):
+                call = {
+                    "index": calls,
+                    "id": _call_id(),
+                    "type": "function",
+                    "function": {"name": name, "arguments": ""},
+                }
+                yield chunk({"tool_calls": [call]})
+            case ToolCall(arguments=arguments):
+                arguments = json.dumps(arguments, ensure_ascii=False)
+                yield chunk({"tool_calls": [{"index": calls, "function": {"arguments": arguments}}]})
                 calls += 1
             case End():
                 if piece.error is not None:

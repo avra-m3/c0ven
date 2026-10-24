@@ -137,6 +137,50 @@ async def _unless_gone[T](request: Request, work: Coroutine[Any, Any, T]) -> T |
     return None if task.cancelled() else task.result()
 
 
+KEEPALIVE_S = 10.0
+"""The longest a stream goes without a byte. A long prompt, or a tool call held back until it closes, would otherwise
+leave the connection silent for a proxy's or a client's idle timeout to cut."""
+KEEPALIVE = b": keepalive\n\n"
+"""An SSE comment, which clients ignore."""
+
+
+_closing: set[asyncio.Task[None]] = set()
+"""Streams being closed, kept so the loop does not drop the tasks."""
+
+
+async def _kept_alive(events: AsyncGenerator[bytes], interval: float = KEEPALIVE_S) -> AsyncGenerator[bytes]:
+    """events, with KEEPALIVE between any two that are more than interval seconds apart."""
+
+    async def step() -> bytes:
+        return await anext(events)
+
+    async def close() -> None:
+        await events.aclose()
+
+    def close_later(_: asyncio.Task[bytes]) -> None:
+        closing = asyncio.get_running_loop().create_task(close())
+        _closing.add(closing)
+        closing.add_done_callback(_closing.discard)
+
+    pending = asyncio.create_task(step())
+    try:
+        while True:
+            done, _ = await asyncio.wait((pending,), timeout=interval)
+            if not done:
+                yield KEEPALIVE
+                continue
+            try:
+                event = pending.result()
+            except StopAsyncIteration:
+                return
+            yield event
+            pending = asyncio.create_task(step())
+    finally:
+        # Closing events stops the request (as in _unless_gone), whether the step was waiting or done.
+        pending.cancel()
+        pending.add_done_callback(close_later)
+
+
 def _sse(data: JSONObject | None, event: str | None = None) -> bytes:
     payload = "[DONE]" if data is None else json.dumps(data, ensure_ascii=False)
     head = f"event: {event}\n" if event else ""
@@ -196,11 +240,11 @@ def create_app(
             return JSONResponse(openai_api.response(result, model.name, openai_api.wants_json(body)))
         usage = bool(obj(body.get("stream_options") or {}, "stream_options").get("include_usage"))
 
-        async def events() -> AsyncIterator[bytes]:
+        async def events() -> AsyncGenerator[bytes]:
             async for chunk in openai_api.stream_events(pieces, model.name, usage):
                 yield _sse(chunk)
 
-        return StreamingResponse(events(), media_type="text/event-stream")
+        return StreamingResponse(_kept_alive(events()), media_type="text/event-stream")
 
     async def messages(request: Request) -> Response:
         admitting()
@@ -218,11 +262,11 @@ def create_app(
                 return error(500, result.end.error, "api_error")
             return JSONResponse(anthropic_api.response(result, model.name))
 
-        async def events() -> AsyncIterator[bytes]:
+        async def events() -> AsyncGenerator[bytes]:
             async for name, data in anthropic_api.stream_events(pieces, model.name, len(prompt.ids)):
                 yield _sse(data, name)
 
-        return StreamingResponse(events(), media_type="text/event-stream")
+        return StreamingResponse(_kept_alive(events()), media_type="text/event-stream")
 
     async def count_tokens(request: Request) -> Response:
         body = await _body(request)
