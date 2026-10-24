@@ -3,6 +3,9 @@
 For people and agents alike.
 
 - **Changes:** as pull requests, one small, coherent change each, titled by what it does. The owner reviews them.
+- **Version:** each pull request raises [`VERSION`](VERSION) above its base's, in a commit of its own: the minor
+  number for a change to the server's options, its API or the model files it accepts, the patch number for any other
+  ([ADR-0042](docs/adr/0042-version-numbers.md)). The `version` workflow fails a pull request that does not.
 - **Decisions:** [ADRs](docs/adr/README.md) bind and are immutable. [ADR-0014](docs/adr/0014-how-work-is-done.md)
   says how work is done.
 - **Layout:** [ADR-0024](docs/adr/0024-repository-layout.md) says where code goes. A change that departs from it
