@@ -18,7 +18,7 @@ from frontend.body import array, boolean, obj, settings
 from frontend.generate import BadRequest, End, Finish, Request, Result
 from frontend.images import ImageError, from_base64
 from frontend.openai_api import EFFORTS
-from frontend.output import Content, Piece, Reasoning, ToolCall
+from frontend.output import Content, Piece, Reasoning, ToolCall, ToolCallStart
 from frontend.template import Conversation
 
 type JSONObject = dict[str, Any]
@@ -165,8 +165,10 @@ def conversation(
         kind = cast(JSONObject, thinking).get("type")
         enable = False if kind == "disabled" else True if kind in ("enabled", "adaptive") else None
     effort = body.get("reasoning_effort")
-    if effort is not None and EFFORTS.get(str(effort)) is None:
+    if effort is not None and str(effort) not in EFFORTS:
         raise BadRequest(f"reasoning_effort {effort!r} is not one of {sorted(EFFORTS)}")
+    if enable is None and effort == "none":
+        enable = False
     kwargs = obj(body.get("chat_template_kwargs") or {}, "chat_template_kwargs")
     return (
         Conversation(
@@ -288,14 +290,15 @@ async def stream_events(pieces: AsyncIterator[Piece | End], model: str, prompt_t
                 if blocks.open != "text":
                     out += blocks.start("text", {"type": "text", "text": ""})
                 out.append(blocks.delta({"type": "text_delta", "text": t}))
-            case ToolCall():
+            case ToolCallStart(name=name):
                 block: JSONObject = {
                     "type": "tool_use",
                     "id": f"toolu_{uuid.uuid4().hex[:24]}",
-                    "name": piece.name,
+                    "name": name,
                     "input": {},
                 }
                 out += blocks.start("tool_use", block)
+            case ToolCall():
                 arguments = json.dumps(piece.arguments, ensure_ascii=False)
                 out.append(blocks.delta({"type": "input_json_delta", "partial_json": arguments}))
                 out += blocks.close()

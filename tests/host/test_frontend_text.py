@@ -5,7 +5,16 @@ from __future__ import annotations
 import pytest
 from tokenizers import Tokenizer
 
-from frontend.output import Content, OutputParser, Piece, Reasoning, ToolCall, ToolCallError, parse_tool_call
+from frontend.output import (
+    Content,
+    OutputParser,
+    Piece,
+    Reasoning,
+    ToolCall,
+    ToolCallError,
+    ToolCallStart,
+    parse_tool_call,
+)
 from frontend.template import ChatTemplate, Conversation, TemplateFailed
 from frontend.tokenizer import Detokenizer, encode
 from tests.helpers import TINY_TEMPLATE
@@ -74,6 +83,27 @@ def test_reasoning_content_and_calls_at_any_chunking(step: int):
     r, c, calls = joined(pieces_of(out, True, step, schemas=schemas))
     assert (r, c) == ("Check the weather.", "Looking it up.")
     assert [(x.name, x.arguments) for x in calls] == [("get_weather", {"city": "Paris", "days": 3})]
+
+
+@pytest.mark.parametrize("step", [1, 7, 1000])
+def test_each_call_is_named_before_its_arguments(step: int):
+    call = "<tool_call>\n<function={}>\n<parameter=x>\n1\n</parameter>\n</function>\n</tool_call>"
+    pieces = pieces_of(call.format("f") + "\n" + call.format("g"), False, step)
+    assert [type(x) for x in pieces] == [ToolCallStart, ToolCall, ToolCallStart, ToolCall]
+    assert [x.name for x in pieces if isinstance(x, ToolCall | ToolCallStart)] == ["f", "f", "g", "g"]
+
+
+def test_a_call_is_named_while_its_arguments_are_written():
+    p = OutputParser(False)
+    got = list(p.feed("<tool_call>\n<function=write>\n<parameter=content>\nmany lines"))
+    assert got == [ToolCallStart("write")]
+    assert list(p.feed(" more\n</parameter>\n</function>\n</tool_call>")) == [
+        ToolCall(
+            "write",
+            {"content": "many lines more"},
+            "\n<function=write>\n<parameter=content>\nmany lines more\n</parameter>\n</function>\n",
+        )
+    ]
 
 
 @pytest.mark.parametrize("step", [1, 3, 1000])

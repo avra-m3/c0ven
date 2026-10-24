@@ -2,9 +2,9 @@
 
 Beside OpenAI's own fields it takes the ones llama.cpp's and vLLM's servers take: `top_k`, `min_p`,
 `repetition_penalty`, `reasoning_content` on assistant messages, and `chat_template_kwargs` (`enable_thinking`,
-`reasoning_effort`, `preserve_thinking`). OpenAI's `reasoning_effort` maps onto the template's three levels. A user
-message's `image_url` parts are read when they are `data:` URLs (frontend/images.py), and so are its `video_url` parts
-(frontend/video.py), as vLLM's server names them.
+`reasoning_effort`, `preserve_thinking`). OpenAI's `reasoning_effort` maps onto the template's three levels, and its
+`none` turns thinking off. A user message's `image_url` parts are read when they are `data:` URLs (frontend/images.py),
+and so are its `video_url` parts (frontend/video.py), as vLLM's server names them.
 """
 
 from __future__ import annotations
@@ -20,12 +20,13 @@ from frontend import video
 from frontend.body import array, boolean, number, obj, settings
 from frontend.generate import BadRequest, End, Finish, Request, Result
 from frontend.images import ImageError, from_data_url
-from frontend.output import Content, Piece, Reasoning, ToolCall
+from frontend.output import Content, Piece, Reasoning, ToolCall, ToolCallStart
 from frontend.template import Conversation
 
 type JSONObject = dict[str, Any]
 
-EFFORTS = {"minimal": "low", "low": "low", "medium": "medium", "high": "xhigh", "xhigh": "xhigh"}
+# "none" maps to no level: thinking is turned off instead.
+EFFORTS = {"none": None, "minimal": "low", "low": "low", "medium": "medium", "high": "xhigh", "xhigh": "xhigh"}
 JSON_INSTRUCTION = "Answer with a single JSON value only, with no other text."
 
 _FINISH = {
@@ -167,17 +168,18 @@ def parse(body: JSONObject, defaults: protocol.Settings) -> tuple[Request, bool]
         tools = []
     kwargs = obj(body.get("chat_template_kwargs") or {}, "chat_template_kwargs")
     effort = kwargs.get("reasoning_effort")
-    if effort is None and isinstance(body.get("reasoning_effort"), str):
-        effort = EFFORTS.get(body["reasoning_effort"])
-        if effort is None:
-            raise BadRequest(f"reasoning_effort {body['reasoning_effort']!r} is not one of {sorted(EFFORTS)}")
+    asked = body.get("reasoning_effort")
+    if effort is None and isinstance(asked, str):
+        if asked not in EFFORTS:
+            raise BadRequest(f"reasoning_effort {asked!r} is not one of {sorted(EFFORTS)}")
+        effort = EFFORTS[asked]
     fmt = body.get("response_format")
     if isinstance(fmt, dict) and cast(JSONObject, fmt).get("type") in ("json_object", "json_schema"):
         messages = _with_json_instruction(messages, cast(JSONObject, fmt))
     conversation = Conversation(
         messages,
         tools or None,
-        enable_thinking=boolean(kwargs.get("enable_thinking")),
+        enable_thinking=boolean(kwargs.get("enable_thinking", False if asked == "none" else None)),
         reasoning_effort=effort if isinstance(effort, str) else None,
         preserve_thinking=boolean(kwargs.get("preserve_thinking")),
     )
@@ -214,10 +216,14 @@ def wants_json(body: JSONObject) -> bool:
     return isinstance(fmt, dict) and cast(JSONObject, fmt).get("type") in ("json_object", "json_schema")
 
 
+def _call_id() -> str:
+    return f"call_{uuid.uuid4().hex[:24]}"
+
+
 def _call_json(call: ToolCall, index: int) -> JSONObject:
     return {
         "index": index,
-        "id": f"call_{uuid.uuid4().hex[:24]}",
+        "id": _call_id(),
         "type": "function",
         "function": {"name": call.name, "arguments": json.dumps(call.arguments, ensure_ascii=False)},
     }
@@ -281,8 +287,17 @@ async def stream_events(
                 yield chunk({"reasoning_content": t})
             case Content(text=t):
                 yield chunk({"content": t})
-            case ToolCall():
-                yield chunk({"tool_calls": [_call_json(piece, calls)]})
+            case ToolCallStart(name=name):
+                call = {
+                    "index": calls,
+                    "id": _call_id(),
+                    "type": "function",
+                    "function": {"name": name, "arguments": ""},
+                }
+                yield chunk({"tool_calls": [call]})
+            case ToolCall(arguments=arguments):
+                arguments = json.dumps(arguments, ensure_ascii=False)
+                yield chunk({"tool_calls": [{"index": calls, "function": {"arguments": arguments}}]})
                 calls += 1
             case End():
                 if piece.error is not None:
