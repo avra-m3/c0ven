@@ -1,0 +1,107 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 780 392" width="780" height="392" role="img" aria-labelledby="t d" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <title id="t">A 512K-token cache as four agents arrive</title>
+  <desc id="d">Three bars, each the whole 512K-token cache. First: three paused conversations' checkpoints hold 100K, 60K and 30K, and 322K is free. Second: three agents have each reserved 102K, 70K for the prompt and 32K for the answer, leaving 16K free. Third: the fourth agent needs 102K, so the checkpoints of conversations C and B are dropped; conversation A's checkpoint stays and 4K is free.</desc>
+  <style>
+    .bg { fill: #ffffff; }
+    .ink { fill: #1f2328; }
+    .muted { fill: #59636e; }
+    .ckA { fill: #8b5cf6; }
+    .ckB { fill: #a98bf7; }
+    .ckC { fill: #c7b5fa; }
+    .prompt { fill: #3b82f6; }
+    .room { fill: #93c5fd; }
+    .free { fill: #d1fae5; }
+    .gone { fill: none; stroke: #cf222e; stroke-width: 1.5; stroke-dasharray: 5 3; }
+    .edge { stroke: #1f2328; stroke-width: 1; fill: none; }
+    .sep { stroke: #ffffff; stroke-width: 1.5; }
+    .x { fill: #cf222e; }
+    @media (prefers-color-scheme: dark) {
+      .bg { fill: #0d1117; }
+      .ink { fill: #e6edf3; }
+      .muted { fill: #9198a1; }
+      .ckA { fill: #7c4ddb; }
+      .ckB { fill: #9a7af0; }
+      .ckC { fill: #b9a3f5; }
+      .prompt { fill: #2563eb; }
+      .room { fill: #1e4f8f; }
+      .free { fill: #134e3a; }
+      .gone { stroke: #ff7b72; }
+      .edge { stroke: #9198a1; }
+      .sep { stroke: #0d1117; }
+      .x { fill: #ff7b72; }
+    }
+    text { font-size: 13px; }
+    .small { font-size: 11.5px; }
+    .tiny { font-size: 10.5px; }
+    .bold { font-weight: 600; }
+  </style>
+  <rect class="bg" width="780" height="392" rx="8"/>
+
+  <!-- scale: 1.25 px per 1K tokens; bar from x=120 to x=760 (512K) -->
+  <text class="ink bold" x="20" y="30">Quiet</text>
+  <text class="muted small" x="20" y="46">3 paused chats</text>
+  <rect class="ckA" x="120" y="18" width="125" height="36"/>
+  <rect class="ckB" x="245" y="18" width="75" height="36"/>
+  <rect class="ckC" x="320" y="18" width="37.5" height="36"/>
+  <rect class="free" x="357.5" y="18" width="402.5" height="36"/>
+  <line class="sep" x1="245" y1="18" x2="245" y2="54"/><line class="sep" x1="320" y1="18" x2="320" y2="54"/>
+  <rect class="edge" x="120" y="18" width="640" height="36"/>
+  <text class="ink small" x="182" y="40" text-anchor="middle">A 100K</text>
+  <text class="ink small" x="282" y="40" text-anchor="middle">B 60K</text>
+  <text class="ink tiny" x="338" y="40" text-anchor="middle">C 30K</text>
+  <text class="ink small" x="558" y="40" text-anchor="middle">free 322K, lent to the expert cache</text>
+
+  <text class="ink bold" x="20" y="112">Busy</text>
+  <text class="muted small" x="20" y="128">3 agents start</text>
+  <rect class="ckA" x="120" y="100" width="125" height="36"/>
+  <rect class="ckB" x="245" y="100" width="75" height="36"/>
+  <rect class="ckC" x="320" y="100" width="37.5" height="36"/>
+  <g>
+    <rect class="prompt" x="357.5" y="100" width="87.5" height="36"/><rect class="room" x="445" y="100" width="40" height="36"/>
+    <rect class="prompt" x="485" y="100" width="87.5" height="36"/><rect class="room" x="572.5" y="100" width="40" height="36"/>
+    <rect class="prompt" x="612.5" y="100" width="87.5" height="36"/><rect class="room" x="700" y="100" width="40" height="36"/>
+  </g>
+  <rect class="free" x="740" y="100" width="20" height="36"/>
+  <line class="sep" x1="245" y1="100" x2="245" y2="136"/><line class="sep" x1="320" y1="100" x2="320" y2="136"/>
+  <line class="sep" x1="357.5" y1="100" x2="357.5" y2="136"/><line class="sep" x1="485" y1="100" x2="485" y2="136"/><line class="sep" x1="612.5" y1="100" x2="612.5" y2="136"/><line class="sep" x1="740" y1="100" x2="740" y2="136"/>
+  <rect class="edge" x="120" y="100" width="640" height="36"/>
+  <text class="ink small" x="182" y="122" text-anchor="middle">A</text>
+  <text class="ink small" x="282" y="122" text-anchor="middle">B</text>
+  <text class="ink tiny" x="338" y="122" text-anchor="middle">C</text>
+  <text class="ink small" x="421" y="122" text-anchor="middle">agent 1</text>
+  <text class="ink small" x="548" y="122" text-anchor="middle">agent 2</text>
+  <text class="ink small" x="676" y="122" text-anchor="middle">agent 3</text>
+  <text class="muted small" x="750" y="152" text-anchor="middle">16K</text>
+
+  <text class="ink bold" x="20" y="208">Full</text>
+  <text class="muted small" x="20" y="224">agent 4 starts</text>
+  <rect class="ckA" x="120" y="196" width="125" height="36"/>
+  <g>
+    <rect class="prompt" x="245" y="196" width="87.5" height="36"/><rect class="room" x="332.5" y="196" width="40" height="36"/>
+    <rect class="prompt" x="372.5" y="196" width="87.5" height="36"/><rect class="room" x="460" y="196" width="40" height="36"/>
+    <rect class="prompt" x="500" y="196" width="87.5" height="36"/><rect class="room" x="587.5" y="196" width="40" height="36"/>
+    <rect class="prompt" x="627.5" y="196" width="87.5" height="36"/><rect class="room" x="715" y="196" width="40" height="36"/>
+  </g>
+  <rect class="free" x="755" y="196" width="5" height="36"/>
+  <line class="sep" x1="245" y1="196" x2="245" y2="232"/><line class="sep" x1="372.5" y1="196" x2="372.5" y2="232"/><line class="sep" x1="500" y1="196" x2="500" y2="232"/><line class="sep" x1="627.5" y1="196" x2="627.5" y2="232"/>
+  <rect class="edge" x="120" y="196" width="640" height="36"/>
+  <text class="ink small" x="182" y="218" text-anchor="middle">A</text>
+  <text class="ink small" x="309" y="218" text-anchor="middle">agent 1</text>
+  <text class="ink small" x="436" y="218" text-anchor="middle">agent 2</text>
+  <text class="ink small" x="564" y="218" text-anchor="middle">agent 3</text>
+  <text class="ink small" x="691" y="218" text-anchor="middle">agent 4</text>
+
+  <rect class="gone" x="120" y="248" width="75" height="28" rx="3"/>
+  <text class="x small" x="157" y="266" text-anchor="middle">B dropped</text>
+  <rect class="gone" x="205" y="248" width="75" height="28" rx="3"/>
+  <text class="x small" x="242" y="266" text-anchor="middle">C dropped</text>
+  <text class="muted small" x="292" y="266">C first: it was used longest ago. B next, to make the last 102K.</text>
+
+  <!-- legend -->
+  <rect class="ckA" x="120" y="306" width="14" height="14"/><text class="ink small" x="140" y="318">a checkpoint's tokens</text>
+  <rect class="prompt" x="300" y="306" width="14" height="14"/><text class="ink small" x="320" y="318">prompt, 70K</text>
+  <rect class="room" x="420" y="306" width="14" height="14"/><text class="ink small" x="440" y="318">room held for the answer, 32K</text>
+  <rect class="free" x="640" y="306" width="14" height="14"/><text class="ink small" x="660" y="318">free</text>
+  <text class="muted small" x="120" y="350">Each bar is the whole cache: 524,288 tokens (512K). Lengths are to scale.</text>
+  <text class="muted small" x="120" y="368">Room held for an answer stays lent to the expert cache until the answer is written into it.</text>
+</svg>
