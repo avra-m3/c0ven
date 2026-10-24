@@ -16,3 +16,7 @@ scratch/
 __pycache__/
 .pytest_cache/
 .ruff_cache/
+
+# The published site and its cache (zensical.toml)
+_site/
+.cache/

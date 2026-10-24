@@ -179,31 +179,7 @@ C0ven can run as a service of its own that [llama-swap](https://github.com/mostl
 sleep, so that other models can have the cards in between ([ADR-0032](docs/adr/0032-sleep-the-front-end-stays-the-engine-keeps-the-arena.md)).
 Asleep, the engine gives back the cards' memory and keeps its RAM, so a wake loads only the cards. A sleep took
 0.38-0.72 s and a wake 14.2-20.7 s ([the record](docs/measurements/MEASUREMENTS.md#2026-10-17-sleep-and-wake)).
-
-Start it asleep, with the admin routes on a second port:
-
-```bash
-docker run -d --name c0ven --device /dev/dri --group-add 993 --ulimit memlock=-1:-1 --read-only -p 127.0.0.1:8090:8080 -p 127.0.0.1:8091:8081 -v /path/to/models:/models:ro -v c0ven-mtp:/cache -e ENGINE_MTP_CACHE_DIR=/cache/mtp ghcr.io/avra-m3/c0ven/serve:main --model /models/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf --slots 4 --context 262144 --host 0.0.0.0 --port 8080 --start asleep --admin-host 0.0.0.0 --admin-port 8081
-```
-
-In llama-swap's config, the model's `cmd` holds a lease, which wakes the engine and keeps it awake, and its `cmdStop`
-puts it to sleep. Use the address at which llama-swap reaches the two ports:
-
-```yaml
-models:
-  qwen3.8-flash-next:
-    proxy: http://<c0ven>:8090
-    checkEndpoint: /health
-    cmd: curl -sfN -X POST http://<c0ven>:8091/admin/lease
-    cmdStop: curl -sf -X POST http://<c0ven>:8091/admin/sleep
-```
-
-Where C0ven's code is installed, `python -m frontend.lease http://<c0ven>:8091` does what the `cmd` does, and the same
-with `--sleep` what the `cmdStop` does.
-
-While the engine sleeps or loads, `/health` and every request get 503, so only a lease wakes it. If the lease's
-connection ends without a sleep, the engine goes to sleep on its own. A sleep lets running requests go on for
-`--drain-timeout` seconds, then cancels them.
+[The guide](docs/guides/share-the-cards.md) gives the steps.
 
 ## Known limits
 
@@ -321,11 +297,13 @@ locally.
 ## Documentation
 
 Each page is the one source of truth for its subject. Plans and work in progress are
-[GitHub issues](https://github.com/avra-m3/c0ven/issues).
+[GitHub issues](https://github.com/avra-m3/c0ven/issues). The pages are also published as a site, with search:
+<https://avra-m3.github.io/c0ven/> ([ADR-0047](docs/adr/0047-the-docs-site-built-by-zensical.md)).
 
 For users:
 
 - This README: running the server, its options, its API and its limits.
+- [Guides](docs/guides/index.md): how to do one thing, step by step.
 - [MODEL_FILES.md](docs/MODEL_FILES.md): the model files: where to get them and how to lay them out for the engine.
 - [CHOOSING_A_MODEL.md](docs/CHOOSING_A_MODEL.md): which of the four model files to pick, for your hardware and the
   speed and accuracy you want.

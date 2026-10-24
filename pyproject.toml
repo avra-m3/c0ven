@@ -26,6 +26,11 @@ dev = [
     "py-spy==0.4.2",
     "pytest==9.1.1",
     "ruff==0.17.0",
+    { include-group = "site" },
+]
+# Builds the published site from the Markdown pages (zensical.toml, ADR-0047). The image does not need it.
+site = [
+    "zensical==0.0.72",
 ]
 
 [tool.uv]
