@@ -36,4 +36,6 @@
 
 - The first guide is [sharing the cards through llama-swap](../../guides/share-the-cards.html), moved out of the
   README.
-- Nothing publishes the folder yet. It is read from a checkout or served from any static host.
+- The `guides` workflow publishes the folder, and the logo beside it, to GitHub Pages on each push to `main` that
+  changes them. The repository's Pages source must be set to GitHub Actions. A guide's links into `docs/` and the
+  README resolve in a checkout; on the published site they lead to files Pages does not serve.
