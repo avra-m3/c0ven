@@ -1,8 +1,8 @@
-"""A Markdown extension for the published site (zensical.toml): links to files it does not hold go to GitHub.
+"""A Markdown extension for the published site (zensical.toml). It points links to files outside the site at GitHub.
 
-The pages link the code and other files by relative paths, as GitHub reads them. The site holds only the pages, so
-such a link is rewritten to the file's page in the repository on GitHub. Zensical keeps rendered pages in .cache/,
-which a change to this file does not clear: delete it.
+The pages link to code and other files by relative paths. The site holds only the pages, so this changes such a
+link to the file's address on GitHub. Zensical caches pages in .cache/ and does not notice a change to this file:
+delete .cache/ after you change it.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from zensical.extensions.context import ContextPreprocessor
 
 ROOT = Path(__file__).resolve().parents[1]
 REPOSITORY = "https://github.com/avra-m3/c0ven"
-# What the site holds: the paths zensical.toml's exclude_docs keeps.
+# The paths on the site. They match exclude_docs in zensical.toml.
 SITE = ("README.md", "AGENTS.md", "docs")
 
 
@@ -34,7 +34,7 @@ class OutsideLinks(Treeprocessor):
                 el.set(attr, new)
 
     def rewrite(self, url: str, here: str) -> str | None:
-        """The GitHub address for a relative link to a file the site does not hold; None to leave the link."""
+        """The GitHub address for a link to a file outside the site, or None to keep the link."""
         if url.startswith(("#", "/")) or ":" in url.split("/", 1)[0]:
             return None
         path, hash_, frag = url.partition("#")
@@ -48,7 +48,7 @@ class OutsideLinks(Treeprocessor):
 
 class DocsLinks(Extension):
     def extendMarkdown(self, md: Markdown) -> None:  # noqa: N802 (Python-Markdown's name)
-        # Priority 0: after the inline links are made.
+        # Priority 0 runs after the links are made.
         md.treeprocessors.register(OutsideLinks(md), "docs_links", 0)
 
 

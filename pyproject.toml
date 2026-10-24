@@ -28,7 +28,7 @@ dev = [
     "ruff==0.17.0",
     { include-group = "site" },
 ]
-# Builds the published site from the Markdown pages (zensical.toml, ADR-0047). The image does not need it.
+# Builds the published site (zensical.toml, ADR-0047). The image does not need it.
 site = [
     "zensical==0.0.72",
 ]

@@ -1,21 +1,24 @@
 # Guides
 
-Each guide is for doing one thing with C0ven. The guides are listed beside this page. What the server is, how it
-works, and what its flags and API are, is in the [README](../../README.md) and the other pages of the site:
-explanation and reference. The guides link there and do not repeat it.
+A guide shows how to do one task with C0ven. The list of guides is in the menu beside this page.
+
+A guide does not explain how the server works or list its options. The [README](../../README.md) and the other
+pages do that, and a guide links to them.
 
 ## Writing a guide
 
-A guide is one Markdown file in this folder, written as for GitHub. Its first heading names the goal and is its
-title in the site's navigation, which lists every page in `docs/` by itself. The guide lists what the reader needs,
-gives the steps in order, and ends when the goal is met. A step that needs a fact the reader may lack links the
-page that holds it, by its relative path and GitHub's anchor for the heading. A picture goes beside the guide.
+A guide is a Markdown file in this folder. Write it as you would for GitHub.
 
-To see the site as it will be published, with the guide in it:
+- The first heading is the guide's title. The site's menu shows it. You do not add the guide to any list.
+- Start with what the reader needs. Then give the steps, in order. Stop when the task is done.
+- Link to other pages with relative paths, such as `../MODEL_FILES.md#getting-the-files`.
+- Put images in this folder, next to the guide.
+
+To see the site on your computer:
 
 ```bash
 uv run python -m zensical serve
 ```
 
-It serves the site at <http://localhost:8000> and rebuilds it as files change. The build stops on a link to a page
-or heading that does not exist. Merged to `main`, the guide is published.
+Open <http://localhost:8000>. The site updates when you save a file. The build fails if a link points to a page or
+heading that does not exist. The site is published when the change is merged to `main`.

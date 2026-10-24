@@ -1,5 +1,5 @@
-# Builds the site (zensical.toml, ADR-0047) on every change to it, so that a broken link fails the pull request,
-# and publishes it to GitHub Pages from main.
+# Builds the site (zensical.toml, ADR-0047) for each change to it. A broken link fails the pull request. From
+# main, it publishes the site to GitHub Pages.
 name: site
 
 on:
@@ -26,7 +26,7 @@ jobs:
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           version: "0.12.22"
-      # python -m puts the checkout on the path, where zensical.toml's tools.docs_links is.
+      # python -m puts the checkout on the import path, so zensical.toml can load tools.docs_links.
       - name: Build the site
         run: uv run --locked --only-group site python -m zensical build
       - if: github.ref == 'refs/heads/main'

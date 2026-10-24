@@ -1,5 +1,5 @@
-# The published site (ADR-0047): the README, AGENTS.md and docs/, as Zensical renders them. Each page is in the
-# navigation, under its folder, by its first heading; nothing here lists them. Building it: docs/guides/index.md.
+# The published site (ADR-0047). It holds the README, AGENTS.md and docs/. The menu comes from the folders and
+# each page's first heading. How to build it: docs/guides/index.md.
 [project]
 site_name = "C0ven"
 site_url = "https://avra-m3.github.io/c0ven/"
@@ -8,7 +8,7 @@ repo_url = "https://github.com/avra-m3/c0ven"
 repo_name = "avra-m3/c0ven"
 edit_uri = "edit/main/"
 docs_dir = "."
-# The rest of the repository is code; tools.docs_links sends the pages' links to it to GitHub.
+# Only the pages are on the site. tools.docs_links points links to other files at GitHub.
 exclude_docs = """
 /*
 !/README.md
@@ -17,11 +17,11 @@ exclude_docs = """
 """
 site_dir = "_site"
 extra_css = ["docs/stylesheets/logo-colours.css"]
-# A page's links are checked as the site is built; strict stops the build on a broken one.
+# Fail the build on a link to a page or heading that does not exist.
 strict = true
 
 [project.theme]
-# The header in the primary colour, the logo's forest green.
+# Colour the header with the primary colour, the logo's green.
 variant = "classic"
 logo = "docs/images/logo-mark.svg"
 favicon = "docs/images/logo-mark.svg"
@@ -50,8 +50,8 @@ accent = "custom"
 toggle.icon = "lucide/moon"
 toggle.name = "Switch to light mode"
 
-# Markdown as GitHub reads it, so a page reads the same in both places. Left out of Zensical's defaults: the
-# extensions that change text GitHub shows as typed, such as $ for maths and (c) for the copyright sign.
+# Only extensions that render Markdown the same way GitHub does. Zensical's defaults also turn $ into maths and
+# (c) into a copyright sign, which GitHub does not.
 [project.markdown_extensions.abbr]
 [project.markdown_extensions.admonition]
 [project.markdown_extensions.attr_list]
@@ -60,7 +60,7 @@ toggle.name = "Switch to light mode"
 [project.markdown_extensions.tables]
 [project.markdown_extensions.toc]
 permalink = true
-# GitHub's heading anchors, which the pages' links use.
+# Make heading anchors the way GitHub does.
 slugify = { object = "pymdownx.slugs.slugify", kwds = { case = "lower" } }
 [project.markdown_extensions."pymdownx.highlight"]
 anchor_linenums = true

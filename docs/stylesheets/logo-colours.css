@@ -1,5 +1,5 @@
-/* The site's colours are the logo's (docs/images/logo.svg): forest #1F3B34, teal #2F786A, mint #44AE8E, gold
-   #F5B83D. A change to the logo's colours changes these in the same pull request (ADR-0047). */
+/* The logo's colours (docs/images/logo.svg). If the logo's colours change, change these in the same pull request
+   (ADR-0047). */
 :root > * {
   --md-primary-fg-color: #1f3b34;
   --md-primary-fg-color--light: #2f786a;
@@ -15,7 +15,7 @@
 .md-header {
   border-bottom: 4px solid #f5b83d;
 }
-/* The README opens with the logo in place of a heading, so the title the theme adds for it is not shown. */
+/* The README has the logo instead of a heading. Hide the title the theme adds above it. */
 .md-typeset h1:has(+ p[align="center"] img[alt="C0ven"]) {
   display: none;
 }
