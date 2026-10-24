@@ -165,8 +165,10 @@ def conversation(
         kind = cast(JSONObject, thinking).get("type")
         enable = False if kind == "disabled" else True if kind in ("enabled", "adaptive") else None
     effort = body.get("reasoning_effort")
-    if effort is not None and EFFORTS.get(str(effort)) is None:
+    if effort is not None and str(effort) not in EFFORTS:
         raise BadRequest(f"reasoning_effort {effort!r} is not one of {sorted(EFFORTS)}")
+    if enable is None and effort == "none":
+        enable = False
     kwargs = obj(body.get("chat_template_kwargs") or {}, "chat_template_kwargs")
     return (
         Conversation(
