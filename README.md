@@ -17,6 +17,10 @@ Use C0ven if you have:
 C0ven is the wrong tool if you want to run other models, other GPUs, one card, or serve many users. Use llama.cpp or
 vLLM for those.
 
+C0ven owes a great deal to [Strata](https://github.com/mach10x/strata), which runs the same model on consumer
+hardware and whose design C0ven borrows from ([docs/spec/](docs/spec/)). C0ven does not support NVIDIA or AMD cards;
+if you have one, try Strata.
+
 ## Benchmarks
 
 <picture>
