@@ -176,13 +176,23 @@ def test_a_client_gone_stops_its_request(model: Model, engine: FakeEngine, path:
     assert statuses == [499]
 
 
-def test_openai_refuses_what_exceeds_the_context(client: TestClient, engine: FakeEngine):
-    engine.max_context = 40
+def test_openai_cuts_max_tokens_to_the_context(client: TestClient, engine: FakeEngine):
+    engine.max_context = 80
+    r = client.post(
+        "/v1/chat/completions", json={"messages": [{"role": "user", "content": "x" * 30}], "max_tokens": 80}
+    )
+    assert r.status_code == 200
+    assert len(engine.prompts) == 1
+    assert engine.max_news == [80 - len(engine.prompts[0])], "the rest of the context"
+
+
+def test_openai_refuses_a_prompt_that_fills_the_context(client: TestClient, engine: FakeEngine):
+    engine.max_context = 20
     r = client.post(
         "/v1/chat/completions", json={"messages": [{"role": "user", "content": "x" * 30}], "max_tokens": 20}
     )
     assert r.status_code == 400
-    assert "exceeds the context" in r.json()["error"]["message"]
+    assert "fills the context" in r.json()["error"]["message"]
     assert engine.prompts == [], "refused, never truncated"
 
 
