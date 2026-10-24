@@ -193,6 +193,8 @@ applies the safe fixes.
 so annotate every function's parameters and returns. A line that must break a rule carries
 `# pyright: ignore[rule]`, naming the rule.
 
+<a id="tests-1"></a>
+
 ### Tests
 
 `uv run pytest` runs every level that the computer at hand can run ([TESTING.md](TESTING.md)). A test whose data is

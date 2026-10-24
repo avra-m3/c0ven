@@ -1,0 +1,52 @@
+# Builds the site (zensical.toml, ADR-0047) for each change to it. A broken link fails the pull request. From
+# main, it publishes the site to GitHub Pages.
+name: site
+
+on:
+  push:
+    branches: [main]
+    paths: [README.md, AGENTS.md, docs/**, zensical.toml, tools/docs_links.py, pyproject.toml, uv.lock, .github/workflows/site.yml]
+  pull_request:
+    paths: [README.md, AGENTS.md, docs/**, zensical.toml, tools/docs_links.py, pyproject.toml, uv.lock, .github/workflows/site.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: site-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.12.22"
+      # python -m puts the checkout on the import path, so zensical.toml can load tools.docs_links.
+      - name: Build the site
+        run: uv run --locked --only-group site python -m zensical build
+      - if: github.ref == 'refs/heads/main'
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+      - if: github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: _site
+
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

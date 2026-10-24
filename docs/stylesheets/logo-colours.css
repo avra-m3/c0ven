@@ -1,0 +1,21 @@
+/* The logo's colours (docs/images/logo.svg). If the logo's colours change, change these in the same pull request
+   (ADR-0047). */
+:root > * {
+  --md-primary-fg-color: #1f3b34;
+  --md-primary-fg-color--light: #2f786a;
+  --md-primary-fg-color--dark: #143229;
+  --md-accent-fg-color: #b07a12;
+  --md-typeset-a-color: #2f786a;
+}
+[data-md-color-scheme="slate"] {
+  --md-hue: 162;
+  --md-accent-fg-color: #f5b83d;
+  --md-typeset-a-color: #44ae8e;
+}
+.md-header {
+  border-bottom: 4px solid #f5b83d;
+}
+/* The README has the logo instead of a heading. Hide the title the theme adds above it. */
+.md-typeset h1:has(+ p[align="center"] img[alt="C0ven"]) {
+  display: none;
+}
