@@ -1,5 +1,9 @@
 <p align="center"><img src="docs/images/logo.svg" alt="C0ven" width="520"></p>
 
+<p align="center"><a href="docs/guides/coven-hollow.html"><img src="docs/guides/coven-hollow-loop.gif" alt="Coven Hollow: witches, cottages and a cauldron in a woodland clearing at dusk, seen from a camera circling the hollow" width="800"></a></p>
+
+*Coven Hollow, a scene a coding agent wrote in one HTML file. [Make your own.](docs/guides/recreate-coven-hollow.md)*
+
 A fast inference engine for one architecture, [Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next), on two
 Intel Arc Pro B60 cards. It is built for one user running a few threads on one machine, and it is fast for that case.
 
