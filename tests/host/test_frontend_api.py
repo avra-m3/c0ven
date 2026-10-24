@@ -76,6 +76,13 @@ def test_openai_thinking_off_sends_the_closed_block(client: TestClient, engine: 
     assert tokenizer.decode(engine.prompts[0], skip_special_tokens=False).endswith("<think>\n\n</think>\n\n")
 
 
+def test_openai_reasoning_effort_none_turns_thinking_off(client: TestClient, engine: FakeEngine, tokenizer: Tokenizer):
+    engine.output = "Hello."
+    body = chat(client, reasoning_effort="none")
+    assert body["choices"][0]["message"]["content"] == "Hello."
+    assert tokenizer.decode(engine.prompts[0], skip_special_tokens=False).endswith("<think>\n\n</think>\n\n")
+
+
 def test_openai_tool_calls(client: TestClient, engine: FakeEngine):
     engine.output = CALL
     body = chat(client, tools=[TOOL], chat_template_kwargs={"enable_thinking": False})
@@ -267,6 +274,19 @@ def test_openai_refuses_a_prompt_that_fills_the_context(client: TestClient, engi
 )
 def test_openai_bad_requests(client: TestClient, body: dict[str, object]):
     assert client.post("/v1/chat/completions", json=body).status_code == 400
+
+
+def test_anthropic_reasoning_effort_none_turns_thinking_off(
+    client: TestClient, engine: FakeEngine, tokenizer: Tokenizer
+):
+    engine.output = "Hello."
+    r = client.post(
+        "/v1/messages",
+        json={"max_tokens": 50, "reasoning_effort": "none", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["content"] == [{"type": "text", "text": "Hello."}]
+    assert tokenizer.decode(engine.prompts[0], skip_special_tokens=False).endswith("<think>\n\n</think>\n\n")
 
 
 def test_openai_json_output_is_checked(client: TestClient, engine: FakeEngine, tokenizer: Tokenizer):
