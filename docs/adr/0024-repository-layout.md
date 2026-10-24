@@ -2,7 +2,8 @@
 
 **Status:** accepted, 2026-10-14. Item 1 superseded in part by
 [ADR-0025](0025-the-engine-image.md): the layout gains a `Dockerfile` at the root; and by
-[ADR-0028](0028-ci-without-a-card.md): it gains `.github/workflows/`.
+[ADR-0028](0028-ci-without-a-card.md): it gains `.github/workflows/`; and by
+[ADR-0047](0047-guides-for-actions.md): it gains `guides/`.
 **Revisit when:** a second model architecture is added ([ADR-0006](0006-scope.md)).
 
 ## Context

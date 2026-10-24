@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Share the cards with other models - C0ven guides</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header><a href="index.html"><img src="../docs/images/logo.svg" alt="C0ven"></a></header>
+<main>
+<p class="kind">How-to guide</p>
+<h1>Share the cards with other models through llama-swap</h1>
+<p>This guide has <a href="https://github.com/mostlygeek/llama-swap">llama-swap</a> wake C0ven when a request for
+its model arrives and put it to sleep when another model needs the cards. Asleep, the engine gives back the
+cards' memory and keeps its RAM, so a wake loads only the cards. A sleep took 0.38-0.72 s and a wake 14.2-20.7 s
+(<a href="../docs/measurements/MEASUREMENTS.md#2026-10-17-sleep-and-wake">the record</a>). The design is
+<a href="../docs/adr/0032-sleep-the-front-end-stays-the-engine-keeps-the-arena.md">ADR-0032</a>.</p>
+
+<h2>You need</h2>
+<ul>
+<li>The model files, laid out as in <a href="../docs/MODEL_FILES.md">MODEL_FILES.md</a>.</li>
+<li>A running llama-swap that can reach the machine with the cards.</li>
+</ul>
+
+<h2>1. Start C0ven asleep, with the admin routes on a second port</h2>
+<p>Replace <code>993</code> with your render group's ID and <code>/path/to/models</code> with your model
+directory.</p>
+<pre><code>docker run -d --name c0ven --device /dev/dri --group-add 993 --ulimit memlock=-1:-1 --read-only -p 127.0.0.1:8090:8080 -p 127.0.0.1:8091:8081 -v /path/to/models:/models:ro -v c0ven-mtp:/cache -e ENGINE_MTP_CACHE_DIR=/cache/mtp ghcr.io/avra-m3/c0ven/serve:main --model /models/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf --slots 4 --context 262144 --host 0.0.0.0 --port 8080 --start asleep --admin-host 0.0.0.0 --admin-port 8081</code></pre>
+
+<h2>2. Add the model to llama-swap's config</h2>
+<p>The model's <code>cmd</code> holds a lease, which wakes the engine and keeps it awake. Its
+<code>cmdStop</code> puts it to sleep. Use the address at which llama-swap reaches the two ports:</p>
+<pre><code>models:
+  qwen3.8-flash-next:
+    proxy: http://&lt;c0ven&gt;:8090
+    checkEndpoint: /health
+    cmd: curl -sfN -X POST http://&lt;c0ven&gt;:8091/admin/lease
+    cmdStop: curl -sf -X POST http://&lt;c0ven&gt;:8091/admin/sleep</code></pre>
+<p>Where C0ven's code is installed, <code>python -m frontend.lease http://&lt;c0ven&gt;:8091</code> does what the
+<code>cmd</code> does, and the same with <code>--sleep</code> what the <code>cmdStop</code> does.</p>
+
+<h2>3. Check it</h2>
+<p>Request the model through llama-swap. The first request waits for the wake. Then request another model: the
+cards go to it, and <code>docker logs c0ven</code> shows the sleep.</p>
+
+<h2>If it does not work</h2>
+<ul>
+<li>While the engine sleeps or loads, <code>/health</code> and every request get 503, so only a lease wakes it.</li>
+<li>If the lease's connection ends without a sleep, the engine goes to sleep on its own.</li>
+<li>A sleep lets running requests go on for <code>--drain-timeout</code> seconds (30 by default), then cancels
+them.</li>
+<li>Asleep, the engine still holds about 20 GiB of RAM and 0.32 GiB of VRAM a card.
+<code>--sleep-mode exit</code> gives the RAM back, and each wake is then a full load. The
+<a href="../README.md#known-limits">known limits</a> have the rest.</li>
+</ul>
+</main>
+</body>
+</html>
