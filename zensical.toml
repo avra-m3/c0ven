@@ -21,7 +21,6 @@ extra_css = ["docs/stylesheets/logo-colours.css"]
 strict = true
 
 [project.theme]
-# Colour the header with the primary colour, the logo's green.
 variant = "classic"
 logo = "docs/images/logo-mark.svg"
 favicon = "docs/images/logo-mark.svg"
@@ -33,6 +32,8 @@ features = [
     "navigation.top",
     "search.highlight",
 ]
+font.text = "Inter"
+font.code = "JetBrains Mono"
 
 [[project.theme.palette]]
 media = "(prefers-color-scheme: light)"
