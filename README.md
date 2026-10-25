@@ -1,8 +1,8 @@
 <p align="center"><img src="docs/images/logo.svg" alt="C0ven" width="520"></p>
 
-<p align="center"><a href="docs/showcase/coven-hollow.md"><img src="docs/showcase/coven-hollow-loop.webp" alt="Coven Hollow: witches, cottages and a cauldron in a woodland clearing at dusk, seen from a camera circling the hollow" width="800"></a></p>
+<p align="center"><a href="https://avra-m3.github.io/c0ven/docs/showcase/coven-hollow.html"><img src="docs/showcase/coven-hollow-loop.webp" alt="Coven Hollow: witches, cottages and a cauldron in a woodland clearing at dusk, seen from a camera circling the hollow" width="800"></a></p>
 
-*Coven Hollow, a scene a coding agent wrote in one HTML file. [How to make this.](docs/showcase/coven-hollow.md#how-to-make-this)*
+*Coven Hollow, a scene a coding agent wrote in one HTML file. [See it live](https://avra-m3.github.io/c0ven/docs/showcase/coven-hollow.html), or [how to make this](https://avra-m3.github.io/c0ven/docs/showcase/coven-hollow/#how-to-make-this).*
 
 A fast inference engine for one architecture, [Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next), on two
 Intel Arc Pro B60 cards. It is built for one user running a few threads on one machine, and it is fast for that case.
