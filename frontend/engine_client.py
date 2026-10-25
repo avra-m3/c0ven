@@ -72,6 +72,9 @@ class EngineClient:
         self._sleeping = False
         self._control: asyncio.Queue[protocol.Event] = asyncio.Queue()
         """The lines about the engine, not a request: INFO, READY, ASLEEP, and ERR - or the child's exit."""
+        self._stats: asyncio.Queue[protocol.StatsReport] = asyncio.Queue()
+        self._stats_lock = asyncio.Lock()
+        """One STATS question at a time, so each answer is its own."""
         self._process: asyncio.subprocess.Process | None = None
         self._reader: asyncio.Task[None] | None = None
         self._queues: dict[int, asyncio.Queue[protocol.Event]] = {}
@@ -256,7 +259,9 @@ class EngineClient:
                     log.error("the engine failed: %s", event.message)
                     self._control.put_nowait(event)
                     break
-                if isinstance(event, (protocol.Info, protocol.Ready, protocol.Asleep)):
+                if isinstance(event, protocol.StatsReport):
+                    self._stats.put_nowait(event)
+                elif isinstance(event, (protocol.Info, protocol.Ready, protocol.Asleep)):
                     self._control.put_nowait(event)
                 elif isinstance(rid, int) and (q := self._queues.get(rid)) is not None:
                     q.put_nowait(event)
@@ -266,6 +271,21 @@ class EngineClient:
             self._control.put_nowait(protocol.Error(None, f"the engine exited ({code})"))
             for rid, q in self._queues.items():
                 q.put_nowait(protocol.Error(rid, f"the engine exited ({code})"))
+
+    async def stats(self) -> dict[str, str]:
+        """The engine's counters since it started (STATS): the core's and the scheduler's. Empty when no child runs,
+        or none answers within 5 s. Never starts the engine."""
+        if not self.alive:
+            return {}
+        async with self._stats_lock:
+            while not self._stats.empty():
+                self._stats.get_nowait()
+            try:
+                await self._send(protocol.Stats().encode())
+                async with asyncio.timeout(5):
+                    return (await self._stats.get()).counts
+            except EngineUnavailable, ConnectionError, TimeoutError:
+                return {}
 
     async def _send(self, line: str) -> None:
         process = self._process

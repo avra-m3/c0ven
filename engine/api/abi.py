@@ -1,4 +1,4 @@
-"""A hand-written mirror of `include/engine_api.h`, the C ABI, version 7 (ADR-0024, item 6).
+"""A hand-written mirror of `include/engine_api.h`, the C ABI, version 9 (ADR-0024, item 6).
 
 This file and the header must agree byte for byte. `layout()` lists every struct's size and every field's offset in
 the form the core's `engine_abi_layout` returns them, and tests/host/test_abi.py compares the two.
@@ -13,7 +13,7 @@ encoder's file to the config, its limit to the info, and `engine_admit_images`. 
 `engine_sleep` and `engine_wake`. Version 5 pages the KV cache (ADR-0033): Python keeps the page table and sends its
 changes in each plan, a slot without a page for its next position stalls, and a checkpoint holds only the fixed state.
 Version 6 adds `engine_image.frames` for video (ADR-0034). Version 7 adds min-p and the penalties to
-`engine_settings`.
+`engine_settings`. Version 9 adds the counters: `engine_read_stats` and `engine_read_slot_stats` (ADR-0048).
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ import ctypes
 from dataclasses import dataclass
 from enum import IntEnum
 
-ABI_VERSION = 8
+ABI_VERSION = 9
 
 MAX_STOP = 8
 MAX_STEP_SLOTS = 8
@@ -199,6 +199,64 @@ class CImage(ctypes.Structure):
     )
 
 
+STATS_FIELDS = (
+    "up_ns",
+    "plans",
+    "busy_ns",
+    "prompt_chunks",
+    "prompt_rows",
+    "prompt_ns",
+    "window_pieces",
+    "window_rows",
+    "window_ns",
+    "steps",
+    "step_rows",
+    "step_ns",
+    "step_misses",
+    "step_layers_missed",
+    "undrafted_steps",
+    "rounds",
+    "round_rows",
+    "round_ns",
+    "round_misses",
+    "round_layers_missed",
+    "layer_runs",
+    "layer_drafts",
+    "layer_accepted",
+    "layer_ns",
+    "lookup_runs",
+    "lookup_drafts",
+    "lookup_accepted",
+    "lookup_ns",
+    "swap_rounds",
+    "swaps",
+    "swap_ns",
+    "stalls",
+    "checkpoints_taken",
+    "restores",
+    "ngram_rows",
+    "ngram_hits",
+    "ngram_reads",
+    "experts_cached",
+)
+"""`engine_stats`'s fields, in the header's order; all 64-bit counts."""
+
+SLOT_STATS_FIELDS = ("steps", "rounds", "drafts", "accepted", "lookup_rounds", "lookup_drafts", "lookup_accepted")
+"""`engine_slot_stats`'s fields."""
+
+
+class CStats(ctypes.Structure):
+    """`engine_stats`: the engine's counters since open (DESIGN.md, section 7)."""
+
+    _fields_ = tuple((name, ctypes.c_uint64) for name in STATS_FIELDS)
+
+
+class CSlotStats(ctypes.Structure):
+    """`engine_slot_stats`: one admitted slot's decode counters."""
+
+    _fields_ = tuple((name, ctypes.c_uint64) for name in SLOT_STATS_FIELDS)
+
+
 class CAbiRow(ctypes.Structure):
     """One row of the table `engine_abi_layout` fills: "struct.field" with its offset and size, or "struct" with
     offset 0 and its size."""
@@ -220,6 +278,8 @@ STRUCTS: dict[str, type[ctypes.Structure]] = {
     "engine_event": CEvent,
     "engine_timing": CTiming,
     "engine_image": CImage,
+    "engine_stats": CStats,
+    "engine_slot_stats": CSlotStats,
     "engine_abi_row": CAbiRow,
 }
 

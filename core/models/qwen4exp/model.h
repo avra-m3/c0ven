@@ -220,6 +220,10 @@ class Model {
 
   const LoadInfo &info() const { return info_; }
   const StepStats &last_stats() const { return stats_; }
+  // Experts cached per layer now: with Options::share_kv the cache gives blocks to the KV pool and takes them back.
+  uint32_t experts_cached() const { return nslots_cached_; }
+  // The n-gram table's counters (ngram.h); zeros without the table. Between steps, on the engine thread.
+  NgramStats ngram_stats() const { return ngram_ ? ngram_->stats() : NgramStats{}; }
   const Options &options() const { return opt_; }
 
  public:

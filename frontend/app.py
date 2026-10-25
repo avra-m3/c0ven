@@ -9,7 +9,7 @@
 | `GET /health`, `/api/health` | the engine's status and context: 200 once it is READY, 503 while it loads or sleeps |
 | `GET /props` | chat template, context, generation defaults, model path |
 | `GET /slots` | the engine's slots and how many are busy |
-| `GET /metrics` | the engine's facts (its INFO line) and the front end's counters, as JSON |
+| `GET /metrics` | the engine's facts (INFO) and counters (STATS), the front end's counters, and their ratios |
 
 With an `Admin`, the routes of `frontend/admin.py` too. While the engine sleeps, every request is refused with 503
 before it reaches the engine, so none wakes it (ADR-0032).
@@ -37,6 +37,7 @@ from frontend.admin import Admin
 from frontend.body import obj
 from frontend.engine_client import EngineUnavailable
 from frontend.generate import BadRequest, Engine
+from frontend.metrics import derive, numbers
 from frontend.model import Model
 from frontend.output import Piece
 
@@ -57,6 +58,10 @@ class ServedEngine(Engine, Protocol):
 
     @property
     def busy(self) -> int: ...
+
+    async def stats(self) -> dict[str, str]:
+        """The engine's STATS line; empty when it is not running."""
+        ...
 
     @property
     def status(self) -> str: ...
@@ -80,6 +85,11 @@ class Counters:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     cached_tokens: int = 0
+    steps: int = 0
+    """Decode steps and draft rounds the requests' tokens came out of; `drafts` verified and `accepted` for them."""
+    drafts: int = 0
+    accepted: int = 0
+    queue_seconds: float = 0.0
     recent: list[JSONObject] = field(default_factory=lambda: [])
 
     def record(self, end: generate.End, api: str, seconds: float) -> None:
@@ -87,6 +97,10 @@ class Counters:
         self.prompt_tokens += end.prompt_tokens
         self.completion_tokens += end.completion_tokens
         self.cached_tokens += end.cached_tokens
+        self.steps += end.steps
+        self.drafts += end.drafts
+        self.accepted += end.accepted
+        self.queue_seconds += end.queue_ms / 1e3
         if end.error is not None:
             self.errors += 1
         self.recent.append(
@@ -97,6 +111,14 @@ class Counters:
                 "completion_tokens": end.completion_tokens,
                 "cached_tokens": end.cached_tokens,
                 "seconds": round(seconds, 3),
+                "queue_ms": round(end.queue_ms, 3),
+                "prompt_ms": round(end.prompt_ms, 3),
+                "decode_ms": round(end.decode_ms, 3),
+                "steps": end.steps,
+                "drafts": end.drafts,
+                "accepted": end.accepted,
+                "lookup_drafts": end.lookup_drafts,
+                "lookup_accepted": end.lookup_accepted,
             }
         )
         del self.recent[:-12]
@@ -316,6 +338,7 @@ def create_app(
 
     async def metrics(_: Request) -> Response:
         c = counters
+        report = await engine.stats()
         return JSONResponse(
             {
                 "engine": engine.info,
@@ -326,8 +349,14 @@ def create_app(
                     "prompt_tokens": c.prompt_tokens,
                     "completion_tokens": c.completion_tokens,
                     "cached_tokens": c.cached_tokens,
+                    "steps": c.steps,
+                    "drafts": c.drafts,
+                    "accepted": c.accepted,
+                    "queue_seconds": round(c.queue_seconds, 3),
                 },
                 "recent": c.recent,
+                "core": numbers(report),
+                "derived": derive(report),
             }
         )
 

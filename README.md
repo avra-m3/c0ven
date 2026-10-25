@@ -174,7 +174,7 @@ the finish reason `length`.
 | `GET /health` | 200 and the engine's context when it is ready; 503 while it loads or sleeps |
 | `GET /props` | Chat template, context, generation defaults |
 | `GET /slots` | Slots and how many are busy |
-| `GET /metrics` | Engine and front end counters, as JSON |
+| `GET /metrics` | Engine and front end counters, as JSON: requests, the core's steps, misses, drafts and swaps, and the ratios read from them |
 | `POST /admin/wake`, `/admin/sleep`, `/admin/lease` | On `--admin-port` only: load the model, give the cards back, and hold it awake ([Sharing the cards](#sharing-the-cards-with-other-models)) |
 
 ## Sharing the cards with other models

@@ -14,7 +14,7 @@ import pytest
 
 import protocol
 from engine.api import abi
-from engine.api.interface import EngineError, EventKind, Image, OpenConfig, SlotSettings
+from engine.api.interface import EngineError, ErrorCode, EventKind, Image, OpenConfig, SlotSettings
 from engine.api.native import NativeEngine
 from engine.scheduler import CheckpointRule, Scheduler, SchedulerOptions, every_16k
 from tests.helpers import open_config
@@ -41,6 +41,8 @@ class _Slot:
     generated: int = 0
     done: bool = False
     stalled: bool = False
+    steps: int = 0
+    """Decode steps that fed it one of its own tokens."""
 
 
 @dataclass
@@ -53,6 +55,8 @@ class FakeCore:
     timing: deque[abi.CTiming] = field(default_factory=deque)
     checkpoints: dict[int, list[int]] = field(default_factory=lambda: {})
     seq: int = 0
+    decode_steps: int = 0
+    decode_rows: int = 0
     log: list[tuple[list[tuple[int, int]], list[int]]] = field(default_factory=lambda: [])
     """Each plan run: its pieces and its decode slots."""
     queue_limit: int = 64
@@ -222,9 +226,12 @@ class FakeCore:
                 continue
             self._write(slot, s, [s.next])
             rows += 1
+            s.steps += 1
             self._produce(slot, s)
         if rows:
             self.timing.append(abi.CTiming(abi.CTimingKind.DECODE, self.seq, rows, 0, 0, 10_000_000))
+            self.decode_steps += 1
+            self.decode_rows += rows
         self._emit(abi.CEventKind.STEP, 0, -1, self.seq)
 
     def _drain(self) -> None:
@@ -263,6 +270,15 @@ class FakeCore:
         while self.timing and len(out) < cap:
             out.append(self.timing.popleft())
         return out
+
+    def read_stats(self) -> abi.CStats:
+        return abi.CStats(up_ns=1_000_000_000, plans=self.seq, steps=self.decode_steps, step_rows=self.decode_rows)
+
+    def slot_stats(self, slot: int) -> abi.CSlotStats:
+        s = self.slots.get(slot)
+        if s is None:
+            raise EngineError(ErrorCode.INVALID_ARGUMENT, "slot_stats: the slot is not admitted")
+        return abi.CSlotStats(steps=s.steps)
 
     def sleep(self) -> None:
         assert not self.slots, "asleep with a slot admitted"
@@ -482,6 +498,28 @@ def test_step_done_carries_the_rows_and_the_time():
         run.scheduler._plan()  # pyright: ignore[reportPrivateUsage]
     assert (0, 150, 150_000, 1) in steps, "two pieces, the 50-row one read as windows"
     assert (2, 0, 10_000_000, 0) in steps
+
+
+def test_done_carries_the_slots_counters_and_the_queue_wait():
+    run = make()
+    run.add(1, prompt_of(40), 5)
+    run.until_idle()
+    done = run.done(1)
+    assert done.steps == done.generated - 1 == 4, "the first token comes with the prompt, each later one from a step"
+    assert done.queue_ms >= 0
+    assert (done.drafts, done.accepted) == (0, 0)
+
+
+def test_the_engines_stats_are_the_cores():
+    run = make()
+    assert run.engine.stats().plans == 0
+    run.add(1, prompt_of(40), 3)
+    run.until_idle()
+    stats = run.engine.stats()
+    assert stats.plans == run.core.seq > 0
+    assert stats.steps == run.core.decode_steps >= 2
+    assert stats.up_ns == 1_000_000_000
+    assert run.engine.slot_stats(7).steps == 0, "zeros for a slot not admitted"
 
 
 def test_a_full_plan_queue_is_waited_out():

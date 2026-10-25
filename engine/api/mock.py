@@ -16,7 +16,7 @@ from __future__ import annotations
 import time
 from collections import deque
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 
@@ -28,6 +28,7 @@ from engine.api.interface import (
     WINDOW_ROWS,
     EngineError,
     EngineFacts,
+    EngineStats,
     ErrorCode,
     Event,
     EventKind,
@@ -36,6 +37,7 @@ from engine.api.interface import (
     OpenConfig,
     PageOp,
     SlotSettings,
+    SlotStats,
     StepPlan,
     TimingRecords,
 )
@@ -76,6 +78,8 @@ class _Slot:
     pending: int | None = None
     """The last sampled token, not yet processed (it is processed at the next decode step)."""
     generated: int = 0
+    steps: int = 0
+    """Decode steps that processed one of its own tokens."""
 
 
 @dataclass(slots=True)
@@ -117,6 +121,8 @@ class MockEngine:
         self._queue: deque[StepPlan | _Op] = deque()
         self._events: deque[Event] = deque()
         self._timing: list[tuple[int, int, int, int]] = []
+        self._stats = EngineStats()
+        self._t0 = time.monotonic_ns()
         self._step = 0
         self._serial = -1
         self._asleep = False
@@ -221,6 +227,14 @@ class MockEngine:
         if not events and timeout_s > 0:
             time.sleep(min(timeout_s, 0.001))
         return events
+
+    def stats(self) -> EngineStats:
+        """What the mock counts: plans, steps, rows and the times it reports; the rest stays zero."""
+        return replace(self._stats, up_ns=time.monotonic_ns() - self._t0)
+
+    def slot_stats(self, slot: int) -> SlotStats:
+        s = self._slots.get(slot)
+        return SlotStats() if s is None else SlotStats(steps=s.steps)
 
     def read_timing(self, max_records: int = 4096) -> TimingRecords:
         rows = self._timing[:max_records]
@@ -388,9 +402,11 @@ class MockEngine:
             if not self._write(slot, s, s.pending):
                 if not s.stalled:
                     s.stalled = True
+                    self._stats = replace(self._stats, stalls=self._stats.stalls + 1)
                     self._emit(EventKind.STALLED, slot, len(s.tokens))
                 continue
             decoded += 1
+            s.steps += 1
             try:
                 self._emit_token(slot, s)
             except PlanFault as fault:
@@ -399,6 +415,18 @@ class MockEngine:
         if self._realtime:
             time.sleep(t_ms / 1e3)
         t_ns = int(t_ms * 1e6)
+        st = self._stats
+        self._stats = replace(
+            st,
+            plans=st.plans + 1,
+            busy_ns=st.busy_ns + t_ns,
+            prompt_chunks=st.prompt_chunks + chunks,
+            prompt_rows=st.prompt_rows + rows,
+            prompt_ns=st.prompt_ns + int(rows * self._row_ms * 1e6 + chunks * self._chunk_ms * 1e6),
+            steps=st.steps + (1 if decoded else 0),
+            step_rows=st.step_rows + decoded,
+            step_ns=st.step_ns + (int(self._step_ms * 1e6) if decoded else 0),
+        )
         self._timing.append((time.monotonic_ns(), t_ns, self._step, rows))
         self._emit(EventKind.STEP_DONE, NO_SLOT, decoded, rows, t_ns, c=chunks)
 

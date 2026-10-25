@@ -104,6 +104,8 @@ class FakeEngine:
     sleeps: list[int] = field(default_factory=lambda: [])
     """The drain each sleep was given, in ms."""
     wakes: int = 0
+    counts: dict[str, str] = field(default_factory=lambda: {"plans": "4", "steps": "3", "step_ns": "30000000"})
+    """Its STATS line."""
 
     @property
     def info(self) -> dict[str, str]:
@@ -139,6 +141,9 @@ class FakeEngine:
     async def close(self) -> None:
         pass
 
+    async def stats(self) -> dict[str, str]:
+        return dict(self.counts)
+
     async def generate(
         self,
         prompt: Sequence[int],
@@ -165,7 +170,7 @@ class FakeEngine:
             if self.hang:
                 await asyncio.Event().wait()
             done = True
-            yield protocol.Done(1, len(ids), len(prompt), 1.0, 2.0, finish, self.reused)
+            yield protocol.Done(1, len(ids), len(prompt), 1.0, 2.0, finish, self.reused, 0.5, len(ids), 2, 1)
         finally:
             if not done:
                 self.stopped_early += 1

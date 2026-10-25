@@ -171,6 +171,26 @@ def test_sleep_cancels_the_running_request_and_refuses_the_queued_one():
     assert e.quit() == 0
 
 
+def test_stats_are_answered_awake_and_asleep():
+    e = Pipe("--context", "1024")
+    e.until(protocol.Ready)
+    e.send(protocol.Gen(1, 3, (1, 2, 3)))
+    e.until(protocol.Done)
+    e.send(protocol.Stats())
+    report = e.until(protocol.StatsReport)[-1]
+    assert isinstance(report, protocol.StatsReport)
+    assert int(report.counts["plans"]) > 0
+    assert int(report.counts["steps"]) >= 2
+    assert report.counts["writing"] == "0"
+    e.send(protocol.Sleep())
+    e.until(protocol.Asleep)
+    e.send(protocol.Stats())
+    asleep = e.until(protocol.StatsReport)[-1]
+    assert isinstance(asleep, protocol.StatsReport)
+    assert asleep.counts["plans"] == report.counts["plans"]
+    assert e.quit() == 0
+
+
 def test_the_load_facts_are_in_the_info_line():
     e = Pipe()
     info = e.until(protocol.Ready)[0]

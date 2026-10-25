@@ -20,7 +20,7 @@ extern "C" {
 #define ENGINE_API
 #endif
 
-#define ENGINE_API_VERSION 8
+#define ENGINE_API_VERSION 9
 
 typedef enum {
   ENGINE_OK = 0,
@@ -183,6 +183,60 @@ typedef struct {
   uint64_t end_ns;
 } engine_timing;
 
+/* The engine's counters since open (docs/DESIGN.md, section 7): sums over everything the engine thread ran. A reader
+ * takes two snapshots and differences them. Times are the steady clock's nanoseconds, as the timing records'. */
+typedef struct {
+  uint64_t up_ns;              /* since open */
+  uint64_t plans;              /* plans run */
+  uint64_t busy_ns;            /* the engine thread's time in plans */
+  uint64_t prompt_chunks;      /* prompt chunks through the prompt path */
+  uint64_t prompt_rows;
+  uint64_t prompt_ns;
+  uint64_t window_pieces;      /* prompt pieces read as decode windows */
+  uint64_t window_rows;
+  uint64_t window_ns;
+  uint64_t steps;              /* decode steps that verified no drafts */
+  uint64_t step_rows;
+  uint64_t step_ns;
+  uint64_t step_misses;        /* experts the CPU computed in them */
+  uint64_t step_layers_missed; /* layers with a miss, summed over them */
+  uint64_t undrafted_steps;    /* of the steps, with drafting on, those whose rows were all writing: no slot had a draft */
+  uint64_t rounds;             /* draft rounds: windows that verified drafts, of one slot or several */
+  uint64_t round_rows;
+  uint64_t round_ns;
+  uint64_t round_misses;
+  uint64_t round_layers_missed;
+  uint64_t layer_runs;         /* a slot's run in a round with the draft layer's drafts */
+  uint64_t layer_drafts;       /* drafts verified in them */
+  uint64_t layer_accepted;
+  uint64_t layer_ns;           /* the rounds' time, by the source of a lone slot's drafts; several slots' to the layer */
+  uint64_t lookup_runs;        /* a slot's run with drafts from its own tokens (ADR-0041) */
+  uint64_t lookup_drafts;
+  uint64_t lookup_accepted;
+  uint64_t lookup_ns;
+  uint64_t swap_rounds;        /* swap rounds run (ENGINE_CONFIG_SWAPS) */
+  uint64_t swaps;              /* experts swapped in them */
+  uint64_t swap_ns;            /* the engine thread's time in them */
+  uint64_t stalls;             /* ENGINE_EVENT_STALLED sent */
+  uint64_t checkpoints_taken;
+  uint64_t restores;
+  uint64_t ngram_rows;         /* the n-gram table's rows asked for (ADR-0015) */
+  uint64_t ngram_hits;         /* of them, served by its cache */
+  uint64_t ngram_reads;        /* rows read from the SSD */
+  uint64_t experts_cached;     /* experts cached per layer at the last plan's end */
+} engine_stats;
+
+/* One slot's counters since admit: its own decode, not its prompt. */
+typedef struct {
+  uint64_t steps;              /* decode steps and rounds that fed it one of its own tokens */
+  uint64_t rounds;             /* of them, draft rounds */
+  uint64_t drafts;             /* drafts verified for it */
+  uint64_t accepted;
+  uint64_t lookup_rounds;      /* of the rounds, those with drafts from its own tokens */
+  uint64_t lookup_drafts;
+  uint64_t lookup_accepted;
+} engine_slot_stats;
+
 /* Loads the model and allocates everything. Blocks until ready. */
 ENGINE_API engine_status engine_open(const engine_config *config, engine_info *info, engine_ctx **out);
 
@@ -237,6 +291,12 @@ ENGINE_API engine_status engine_drop(engine_ctx *e, uint32_t id);
 
 /* Moves up to cap timing records into buf, oldest first; *n receives how many. A full ring drops the oldest. */
 ENGINE_API engine_status engine_read_timing(engine_ctx *e, engine_timing *buf, uint32_t cap, uint32_t *n);
+
+/* Copies the counters into *out. Awake or asleep. */
+ENGINE_API engine_status engine_read_stats(engine_ctx *e, engine_stats *out);
+
+/* Copies an admitted slot's counters into *out; ENGINE_BAD_ARGUMENT for a slot not admitted. */
+ENGINE_API engine_status engine_read_slot_stats(engine_ctx *e, uint32_t slot, engine_slot_stats *out);
 
 /* Sleep (ADR-0032): frees everything the engine holds on the cards, the image encoder's included, and the
  * checkpoints, and keeps the host's copy of the experts the cards do not cache and of the encoder's weights, so a

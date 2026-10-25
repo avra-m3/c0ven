@@ -97,6 +97,22 @@ def test_one_request():
     assert run.scheduler.state.pool.free == run.scheduler.state.pool.size
 
 
+def test_done_counts_the_wait_for_a_slot_and_the_steps():
+    run = make(open_config(slots=1))
+    run.add(1, prompt(9), 4)
+    run.add(2, prompt(9), 3)
+    run.until_idle()
+    first, second = run.done(1), run.done(2)
+    assert (first.steps, second.steps) == (3, 2), "each token after the first comes from a decode step"
+    assert first.queue_ms >= 0
+    assert second.queue_ms > first.queue_ms, "the second waited for the slot"
+    report = run.scheduler.report()
+    assert int(report["plans"]) > 0
+    assert int(report["steps"]) >= 5
+    assert (report["waiting"], report["reading"], report["writing"]) == ("0", "0", "0")
+    assert float(report["decode_ms"]) > 0
+
+
 def test_eos_finishes_with_stop():
     run = make(script=lambda tokens: 2 if len(tokens) >= 12 else 7)
     run.add(1, prompt(10), 50)
