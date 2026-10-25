@@ -89,14 +89,78 @@
 .md-typeset h1:has(+ p[align="center"] img[alt="C0ven"]) {
   display: none;
 }
-/* The home page: room around the logo, and the first paragraph a size larger. */
+/* The hero (docs/overrides/main.html) shows the logo, so the README's logo is hidden. The paragraph under it is
+   a size larger. */
 .md-typeset p[align="center"]:has(img[alt="C0ven"]) {
-  margin: 1.5em 0 2em;
-}
-.md-typeset p[align="center"]:has(img[alt="C0ven"]) img {
-  width: min(26rem, 100%);
+  display: none;
 }
 .md-typeset p[align="center"]:has(img[alt="C0ven"]) + p {
   font-size: 1.15em;
   line-height: 1.6;
+}
+
+/* The home page's hero: the logo on its own near-black (#070B0A), over a grid the size of its pixels. */
+.c0-hero {
+  background-color: #070b0a;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+  background-size: 16px 16px;
+  background-position: center top;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.78);
+}
+.c0-hero__inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 3.5rem 0.8rem 3rem;
+  text-align: center;
+}
+@media screen and (max-width: 44.9375em) {
+  .c0-hero__inner {
+    padding: 2.2rem 0.8rem 2rem;
+  }
+}
+.c0-hero__logo {
+  width: min(30rem, 100%);
+  image-rendering: pixelated;
+}
+.c0-hero__description {
+  max-width: 34rem;
+  margin: 1.6rem 0 0;
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+.c0-hero__links {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.6rem;
+  margin-top: 1.8rem;
+}
+.c0-hero__link {
+  padding: 0.5rem 1.1rem;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 0.2rem;
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 0.75rem;
+  font-weight: 600;
+  transition: border-color 0.15s, background-color 0.15s;
+}
+.c0-hero__link:hover,
+.c0-hero__link:focus-visible {
+  border-color: rgba(255, 255, 255, 0.6);
+  color: #fff;
+}
+.c0-hero__link--primary {
+  border-color: #f5b83d;
+  background-color: #f5b83d;
+  color: #070b0a;
+}
+.c0-hero__link--primary:hover,
+.c0-hero__link--primary:focus-visible {
+  border-color: #ffe08a;
+  background-color: #ffe08a;
+  color: #070b0a;
 }

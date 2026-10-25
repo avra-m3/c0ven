@@ -1,0 +1,19 @@
+{#- The site's templates (zensical.toml's custom_dir). The home page opens with the logo, the site's description
+    and links into the README. The README itself stays as GitHub shows it (ADR-0047). Zensical leaves
+    page.is_homepage empty, so the home page is the page whose address is the site's. -#}
+{% extends "base.html" %}
+
+{% block hero %}
+  {% if page.canonical_url == config.site_url %}
+    <section class="c0-hero">
+      <div class="c0-hero__inner md-grid">
+        <img class="c0-hero__logo" src="{{ 'docs/images/logo.svg' | url }}" alt="{{ config.site_name }}">
+        <p class="c0-hero__description">{{ config.site_description }}</p>
+        <nav class="c0-hero__links" aria-label="Start here">
+          <a class="c0-hero__link c0-hero__link--primary" href="#quick-start">Quick start</a>
+          <a class="c0-hero__link" href="#benchmarks">Benchmarks</a>
+        </nav>
+      </div>
+    </section>
+  {% endif %}
+{% endblock %}
