@@ -174,10 +174,14 @@ reordered layout run 3.2-8.8 times faster than in the file's layout
 
 GB/s each kernel reads with a card's slice of a layer at 640, 320, 160 and 80 rows of the experts' gate and up (or
 columns of their down), as one, two, four and eight cards a layer would hold, and the dense products split in the
-same shares. Real IQ3_S weights on one card at 2,400 MHz, 128 experts cached, each row with its own 10 experts: the
-median of five processes of 100 launches, within 2.5% across them. A column split that cuts a quant block has no
-value. The load check's rows are its own: in the loaded engine on two cards, 64 experts, zero activations, the
-median of 20 launches, the median of six loads (within 1.2% across them).
+same shares. Real IQ3_S weights on one card at 2,400 MHz, in a process that sees only that card, 128 experts cached,
+each row with its own 10 experts: the median of five processes of 100 launches, within 2.5% across them. A column
+split that cuts a quant block has no value. In a process that sees both cards, as the engine on two cards does, the
+experts' kernels read at other rates: the rows "both cards visible", the median of three processes. The dense
+products at 640 and 320 move by under 3% there (`ffn_down_shexp` at 320 by 12.8%). The load check's rows are its own: in the
+loaded engine on two cards, 64 experts, zero activations, the median of 20 launches, the median of six loads (within
+1.2% across them); 128 experts, random activations or 100 launches move them by under 4%. They are within 4.4% of
+the rows with both cards visible.
 
 | Kernel | Rows | 640 | 320 | 160 | 80 | Measured |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
@@ -203,6 +207,21 @@ median of 20 launches, the median of six loads (within 1.2% across them).
 | `ffn_gate_shexp`, Q4_K, by rows | 1 | 96 | 82 | 49 | 25 (a launch costs about 4.6 µs whatever it reads) | [2026-10-25](#2026-10-25-slice-width-kernels) |
 | `ffn_down_shexp`, IQ4_NL, by columns | 1 | 148 | 101 | 71 | not whole blocks | [2026-10-25](#2026-10-25-slice-width-kernels) |
 | `output`, Q6_K, by rows | 1 | 446 | 444 | 440 | 429 | [2026-10-25](#2026-10-25-slice-width-kernels) |
+| IQ3_S gate and up, both cards visible | 1 | 230 | 264 | | | <a id="2026-10-26-two-cards-visible"></a>[2026-10-26](#2026-10-26-two-cards-visible) |
+|  | 2 | 250 | 209 | | | [2026-10-26](#2026-10-26-two-cards-visible) |
+|  | 4 | 289 | 273 | | | [2026-10-26](#2026-10-26-two-cards-visible) |
+| IQ3_XXS gate and up, both cards visible | 1 | 233 | 264 | | | [2026-10-26](#2026-10-26-two-cards-visible) |
+|  | 2 | 259 | 222 | | | [2026-10-26](#2026-10-26-two-cards-visible) |
+|  | 4 | 295 | 280 | | | [2026-10-26](#2026-10-26-two-cards-visible) |
+| IQ2_S gate and up, both cards visible | 1 | 182 | 212 | | | [2026-10-26](#2026-10-26-two-cards-visible) |
+|  | 2 | 202 | 176 | | | [2026-10-26](#2026-10-26-two-cards-visible) |
+|  | 4 | 243 | 227 | | | [2026-10-26](#2026-10-26-two-cards-visible) |
+| IQ4_NL down, both cards visible | 1 | 255 | 218 | | | [2026-10-26](#2026-10-26-two-cards-visible) |
+|  | 2 | 278 | 240 | | | [2026-10-26](#2026-10-26-two-cards-visible) |
+|  | 4 | 285 | 241 | | | [2026-10-26](#2026-10-26-two-cards-visible) |
+| Q2_0 down, both cards visible | 1 | 265 | 226 | | | [2026-10-26](#2026-10-26-two-cards-visible) |
+|  | 2 | 273 | 208 | | | [2026-10-26](#2026-10-26-two-cards-visible) |
+|  | 4 | 228 | 181 | | | [2026-10-26](#2026-10-26-two-cards-visible) |
 | IQ3_S gate and up, the load check | 1 | 228 | 261 | | | [2026-10-25](#2026-10-25-step-metrics) |
 |  | 2 | 248 | 210 | | | [2026-10-25](#2026-10-25-step-metrics) |
 |  | 4 | 289 | 273 | | | [2026-10-25](#2026-10-25-step-metrics) |
