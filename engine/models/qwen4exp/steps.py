@@ -21,20 +21,21 @@ from engine.step_time import Class, ModelSteps, Product, Terms, calibrate
 _GATE_UP_AS = {"IQ4_XS": "IQ3_S"}
 """Expert types with no measured rate, and the measured type each is costed as."""
 
-_ROLE = {
-    "attn_qkv": "attn_qkv",
-    "attn_q": "attn_qkv",
-    "attn_k": "attn_qkv",
-    "attn_v": "attn_qkv",
-    "attn_gate": "attn_gate",
-    "attn_output": "attn_output",
-    "ssm_out": "ssm_out",
-    "ffn_gate_shexp": "ffn_gate_shexp",
-    "ffn_up_shexp": "ffn_gate_shexp",
-    "ffn_down_shexp": "ffn_down_shexp",
-}
-"""The dense products a step's time counts, each with the measured product of its role. The router, the norms, the
-hyper-connections and the indexer are in F."""
+_DENSE = frozenset(
+    {
+        "attn_qkv",
+        "attn_q",
+        "attn_k",
+        "attn_v",
+        "attn_gate",
+        "attn_output",
+        "ssm_out",
+        "ffn_gate_shexp",
+        "ffn_up_shexp",
+        "ffn_down_shexp",
+    }
+)
+"""The dense products a step's time counts. The router, the norms, the hyper-connections and the indexer are in F."""
 
 _MEASURED_DENSE = {
     "attn_qkv": ("Q6_K", (2560, 10240)),
@@ -67,13 +68,15 @@ def _bits(type_name: str) -> float:
     return 8 * size / values
 
 
-def _dense_kernel(role: str, t: FileTensor) -> str:
-    """The nearest measured product: of those measured on its shape, the one nearest its bits per weight; with none
-    of its shape, its role's."""
-    same = [p for p, (_, shape) in _MEASURED_DENSE.items() if shape == t.shape]
-    if not same:
-        return _ROLE[role]
-    return min(same, key=lambda p: abs(_bits(_MEASURED_DENSE[p][0]) - _bits(t.type_name)))
+def _dense_kernel(t: FileTensor) -> str:
+    """The nearest measured product: of those split the same way, the nearest in size, then in bits per weight.
+    Small products take a small product's rate, since launches, not bytes, bound them."""
+    kind = split_of(t.name)
+    same = [p for p in _MEASURED_DENSE if split_of(f"blk.0.{p}.weight") is kind]
+    size = math.prod(t.shape)
+    gap = {p: abs(math.log(math.prod(_MEASURED_DENSE[p][1]) / size)) for p in same}
+    nearest = [p for p in same if math.isclose(gap[p], min(gap.values()))]
+    return min(nearest, key=lambda p: abs(_bits(_MEASURED_DENSE[p][0]) - _bits(t.type_name)))
 
 
 def model_steps(table: TensorTable) -> ModelSteps:
@@ -101,8 +104,8 @@ def model_steps(table: TensorTable) -> ModelSteps:
         ]
         for t in table.tensors:
             m = _BLK.match(t.name)
-            if t.layer == n and m and m.group("name") in _ROLE:
-                kernel = _dense_kernel(m.group("name"), t)
+            if t.layer == n and m and m.group("name") in _DENSE:
+                kernel = _dense_kernel(t)
                 cols = t.shape[0] if split_of(t.name) is SplitKind.COLUMNS else 0
                 products.append(Product(kernel, Class.DENSE, _nbytes(t), False, cols, _block(t)[0]))
         layers.append(tuple(products))

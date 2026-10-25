@@ -42,7 +42,7 @@ def test_calibration():
     s = step_time(TERMS, STEPS, TODAY, 1)
     print("\n".join(s.lines()))
     assert TERMS.fixed_ms is not None
-    assert 0 < TERMS.fixed_ms < 8.5
+    assert 0 < TERMS.fixed_ms < 8
     assert s.step_ms == pytest.approx(TERMS.step_ms)
 
 
