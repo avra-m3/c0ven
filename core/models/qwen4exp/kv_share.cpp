@@ -438,6 +438,12 @@ void Model::kv_ahead() {
   if (!evict_next_.empty()) start_round();  // the eviction only: no swaps chosen with it
 }
 
+uint32_t Model::experts_cached() const {
+  uint64_t sum = 0;
+  for (auto &hl : host_layers_) sum += Q_EXPERTS - (uint32_t)hl->uncached.size();
+  return (uint32_t)(sum / Q_LAYERS);
+}
+
 // A change of the split, on stderr: t0, when given, the time it took from.
 void Model::log_share(const char *why, std::chrono::steady_clock::time_point t0) {
   uint32_t lo = Q_EXPERTS, hi = 0;

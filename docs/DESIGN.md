@@ -374,7 +374,7 @@ verified no drafts, with their rows, time, the experts the CPU computed and the 
 same, and each slot's run in a round by the source of its drafts, the draft layer or the slot's own tokens, with the
 drafts verified and accepted and the rounds' time; swap rounds, the experts they swapped and their time; stalls,
 checkpoints and restores; the n-gram table's rows, cache hits and SSD reads; and the experts cached per layer at the
-last plan's end. Each counter is one addition where the timing record is already written, so the step pays nothing
+last plan's end, beside the fewest the load keeps room for (ADR-0045). Each counter is one addition where the timing record is already written, so the step pays nothing
 that a measurement could see. `engine_read_stats` copies them out, awake or asleep; `engine_read_slot_stats` gives one
 admitted slot's: its steps, rounds, drafts and the accepted ones, and the part from its own tokens
 ([ADR-0048](adr/0048-counters-in-the-core-read-by-a-snapshot-call.md)).

@@ -44,10 +44,12 @@
   found no cost: prompt rates within 0.3%, decode medians 0.995-1.043 of the base's on seven of eight prompts (the
   eighth, long-gen, 0.905 in the series and 1.10 alone), four writers together 93.9 against 93.3 tokens/s
   ([the record](../measurements/MEASUREMENTS.md#2026-10-25-counters-abba)).
-- The same record reads the counters: with the KV pool lending to the cache the cards hold 246 experts a layer in
-  use of 331 at load, a decode row misses 66 experts, the engine thread is busy 99.3% of the time, and rounds with
-  drafts give 112-126 tokens a second of card time against 67 for plain steps. On one card the pool leaves 19 experts
-  a layer and a row misses 243. None of this was visible before.
+- The same record reads the counters: the cards hold 331 experts a layer at load and 328 at the end, with the KV
+  pool's pages costing 3-4 of them (the floor the load keeps room for, 246, is reported beside the count); a decode
+  row misses 66 experts; the engine thread is busy 99.3% of the time; rounds with drafts give 112-126 tokens a second
+  of card time against 67 for plain steps. On one card 104 experts a layer are cached and a row misses 243. None of
+  this was visible before, and the first reading of the series mistook the floor for the count, which is why the
+  struct carries both.
 
 ## Options not chosen
 

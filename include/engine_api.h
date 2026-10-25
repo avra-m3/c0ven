@@ -223,7 +223,8 @@ typedef struct {
   uint64_t ngram_rows;         /* the n-gram table's rows asked for (ADR-0015) */
   uint64_t ngram_hits;         /* of them, served by its cache */
   uint64_t ngram_reads;        /* rows read from the SSD */
-  uint64_t experts_cached;     /* experts cached per layer at the last plan's end */
+  uint64_t experts_cached;     /* experts cached per layer at the last plan's end, the mean over the layers */
+  uint64_t experts_floor;      /* the fewest the load keeps room for, whatever the KV pool holds (ENGINE_CONFIG_SHARE_KV) */
 } engine_stats;
 
 /* One slot's counters since admit: its own decode, not its prompt. */

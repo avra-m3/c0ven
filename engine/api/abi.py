@@ -238,6 +238,7 @@ STATS_FIELDS = (
     "ngram_hits",
     "ngram_reads",
     "experts_cached",
+    "experts_floor",
 )
 """`engine_stats`'s fields, in the header's order; all 64-bit counts."""
 

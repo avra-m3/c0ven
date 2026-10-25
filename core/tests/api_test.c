@@ -306,8 +306,9 @@ int main(int argc, char **argv) {
         (unsigned long long)cs.prompt_rows, (unsigned long long)cs.window_pieces, (unsigned long long)cs.window_rows);
   CHECK(cs.restores > 0 && cs.checkpoints_taken > 0, "stats: checkpoints");
   CHECK(cs.rounds == 0 && cs.undrafted_steps == 0, "stats: rounds without drafting");
-  CHECK(cs.experts_cached == info.experts_per_layer, "stats: %llu experts cached, info says %u",
-        (unsigned long long)cs.experts_cached, info.experts_per_layer);
+  CHECK(cs.experts_cached == info.experts_per_layer && cs.experts_floor <= cs.experts_cached,
+        "stats: %llu experts cached (floor %llu), info says %u", (unsigned long long)cs.experts_cached,
+        (unsigned long long)cs.experts_floor, info.experts_per_layer);
   engine_slot_stats sst;
   CHECK(engine_read_slot_stats(e, info.slots, &sst) == ENGINE_BAD_ARGUMENT, "slot stats of a slot out of range");
   for (uint32_t i = 0; i < nt; i++) CHECK(tr[i].end_ns >= tr[i].start_ns && tr[i].rows > 0, "timing record %u", i);

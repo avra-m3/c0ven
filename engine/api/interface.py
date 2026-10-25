@@ -364,7 +364,9 @@ class EngineStats:
     ngram_hits: int = 0
     ngram_reads: int = 0
     experts_cached: int = 0
-    """Per layer, at the last plan's end."""
+    """Per layer at the last plan's end, the mean over the layers; `experts_floor` the fewest the load keeps room
+    for, whatever the KV pool holds (ADR-0045)."""
+    experts_floor: int = 0
 
 
 @dataclass(frozen=True, slots=True)

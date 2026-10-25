@@ -901,6 +901,7 @@ struct engine_ctx {
         stats.ngram_hits = ng.hits;
         stats.ngram_reads = ng.reads;
         stats.experts_cached = model->experts_cached();
+        stats.experts_floor = model->experts_floor();
         emit({ENGINE_EVENT_STEP, 0, kNoToken, ++plans_done});
       } catch (const std::exception &ex) {
         std::lock_guard<std::mutex> lk(mu);
@@ -992,6 +993,7 @@ engine_status engine_open(const engine_config *config, engine_info *info, engine
     e->swaps = opt.adapt_swaps;
     e->t_open = now_ns();
     e->stats.experts_cached = e->model->experts_cached();
+    e->stats.experts_floor = e->model->experts_floor();
     // The checkpoints, each a slot's fixed state, in pinned host memory: allocated now, never on the token path
     // (docs/DESIGN.md, section 6).
     uint32_t nck = config->checkpoints ? config->checkpoints : 2;
@@ -1342,7 +1344,7 @@ uint32_t engine_abi_layout(engine_abi_row *table, uint32_t cap) {
       ROW(engine_stats, swaps), ROW(engine_stats, swap_ns), ROW(engine_stats, stalls),
       ROW(engine_stats, checkpoints_taken), ROW(engine_stats, restores), ROW(engine_stats, ngram_rows),
       ROW(engine_stats, ngram_hits), ROW(engine_stats, ngram_reads), ROW(engine_stats, experts_cached),
-      SIZE(engine_stats),
+      ROW(engine_stats, experts_floor), SIZE(engine_stats),
       ROW(engine_slot_stats, steps), ROW(engine_slot_stats, rounds), ROW(engine_slot_stats, drafts),
       ROW(engine_slot_stats, accepted), ROW(engine_slot_stats, lookup_rounds), ROW(engine_slot_stats, lookup_drafts),
       ROW(engine_slot_stats, lookup_accepted), SIZE(engine_slot_stats),

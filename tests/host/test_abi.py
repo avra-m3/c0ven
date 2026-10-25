@@ -38,7 +38,7 @@ def test_sizes_from_the_header():
     assert ctypes.sizeof(abi.CEvent) == 16
     assert ctypes.sizeof(abi.CTiming) == 32
     assert ctypes.sizeof(abi.CImage) == 24
-    assert ctypes.sizeof(abi.CStats) == 8 * 38
+    assert ctypes.sizeof(abi.CStats) == 8 * 39
     assert ctypes.sizeof(abi.CSlotStats) == 8 * 7
     assert ctypes.sizeof(abi.CTimingRing) == 32
 
