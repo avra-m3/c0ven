@@ -321,6 +321,26 @@ answer, the step plan, the token ids. What those cost is time spent waiting for 
 No card is kept busy to hold its clock up. In decode both cards stay at 2,400 MHz in 99.74-100% of samples
 ([the record](measurements/MEASUREMENTS.md#2026-10-16-gpu-clock-in-decode)).
 
+### Groups of cards
+
+The core can also put the cards in groups (`engine_config.groups`, `Options::groups`;
+[ADR-0049](adr/0049-the-core-runs-groups-of-cards-in-turn.md)). Each group holds an equal range of the layers, and
+each card of a group a share of every one of them, split as the table above says. One group of both cards is the
+split above. Two groups of one card each give card 0 layers 0-23 whole, with the PLE module, and card 1 layers
+24-47, the final mixer, the vocabulary head and the draft layer.
+
+- The groups run in turn. The first starts from the token's embedding; each other group's list waits for an event.
+  After its last layer a group copies its residuals, 10,240 floats a row, into the next group's card of the same
+  rank, and signals that event.
+- The first card of each group hands its own layers' misses to the CPU. The host loop is the same: it waits for
+  each layer's record in order.
+- A card holds only its own layers' KV pages, DeltaNet state and cached experts. With
+  [ADR-0045](adr/0045-the-kv-pool-and-the-expert-cache-share-each-cards-memory.md) a group's cards lend their own
+  KV's free memory to their own layers' caches; one group's cards never take memory from another's.
+- A prompt chunk runs the same way: each group reads all the chunk's rows through its layers, then hands the
+  chunk's residuals to the next.
+- The image encoder runs on both cards in every layout.
+
 ### The step-time model
 
 `engine/step_time.py` predicts the time of one decode step on other ways of laying the layers over the cards, before
@@ -341,17 +361,19 @@ column split would cut a quant block, whose slice width has no measured bandwidt
 [the slice-width rows](measurements/MEASUREMENTS.md#2026-10-25-slice-width-kernels), the hit rate from
 [the hit-rate row](measurements/MEASUREMENTS.md#2026-10-25-hit-rate-against-experts-cached), the misses' cost from
 [the CPU's answer](measurements/MEASUREMENTS.md#2026-10-16-cpu-answer-per-layer), and the steps and the CPU's wait F and M are calibrated on
-from [the four-rows row](measurements/MEASUREMENTS.md#2026-10-19-four-rows-a-step). The model's assumptions, among them that groups pipeline
-rows from different requests, are in `step_time`'s docstring.
+from [the four-rows row](measurements/MEASUREMENTS.md#2026-10-19-four-rows-a-step). The model's assumptions are in `step_time`'s docstring.
+Among them is how groups would pipeline rows from different requests; the core runs the groups in turn, so the model
+costs a token at the whole step over its rows unless `pipelined` is set.
 
 At open the engine process times the kernels on the cards it has (the load check, section 7) and puts those rates
 in place of the recorded ones at the widths it timed: each recorded rate of the experts' gate and up, their down, or
 the dense products and head is scaled by how the check's kernel of that group compares with its recorded rate. Then
 `engine/layout.py` chooses the layout: `--layout auto` (the default) costs every layout the constraints allow at the
 rows a step had in the engine's last life (one row when there is none) and takes the cheapest the core runs;
-`tensor`, `layers` or `groups:<g>x<w>` name one, and the load fails if the core does not run it. The core runs
-`groups(1, n)` only, so on two cards `auto` takes `groups(1, 2)` and the layout costs only reach the log. The `INFO`
-line names the layout. Every 256 steps the engine process logs, at each row count, the predicted step and CPU wait
+`tensor`, `layers` or `groups:<g>x<w>` name one. The core runs the layout it was opened with: `auto` and `tensor`
+open one group of every card, so on two cards `auto` takes `groups(1, 2)` and the other layouts' costs only reach
+the log; `layers` and `groups:<g>x<w>` open their own groups, and the load fails if the layout breaks a constraint.
+The `INFO` line names the layout. Every 256 steps the engine process logs, at each row count, the predicted step and CPU wait
 beside the measured medians. The prediction takes M from each step's own misses, not the hit-rate curve's: the text
 decides how often a row misses, and with the curve's M most four-row steps were off by more than 15%
 ([record](measurements/MEASUREMENTS.md#2026-10-25-step-metrics)).

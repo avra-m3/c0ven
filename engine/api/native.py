@@ -1,7 +1,7 @@
 """The native engine: the C++ core, loaded with ctypes (ADR-0022, item 4), behind the engine interface.
 
 Two parts. `CtypesCore` is the header's calls, one method each, raising `EngineError` on a failed status.
-`NativeEngine` adapts version 10 of the header to `interface.Engine`, which the scheduler was written against
+`NativeEngine` adapts version 11 of the header to `interface.Engine`, which the scheduler was written against
 (DESIGN.md, section 3). Where the two differ, the adapter bridges them as ADR-0027 lists, item by item:
 
 - The core runs one step per plan and decodes only the slots a plan names; the interface's core keeps decoding
@@ -350,6 +350,7 @@ class NativeEngine:
         c.cpu_threads = config.cpu_workers
         c.checkpoints = config.checkpoints
         c.kv_pages = config.pages
+        c.groups = config.groups
         # Adaptive swaps but with ADR-0016's switches; drafting when the draft layer is given (ADR-0029).
         if not config.deterministic:
             c.flags |= abi.ConfigFlag.SWAPS | abi.ConfigFlag.SHARE_KV
@@ -369,9 +370,10 @@ class NativeEngine:
         self._info = info
         self._stop_ids = tuple(config.eos_ids[: abi.MAX_STOP])
         log.info(
-            "core open: %d card(s), %d experts per layer, prompt chunk %d, drafting %d, images up to %d tokens, "
-            "swaps %d, %.1f s",
+            "core open: %d card(s) in %d group(s), %d experts per layer, prompt chunk %d, drafting %d, images up to %d "
+            "tokens, swaps %d, %.1f s",
             info.cards,
+            info.groups,
             info.experts_per_layer,
             info.prompt_chunk,
             info.drafting,
@@ -396,6 +398,7 @@ class NativeEngine:
             version=f"core-abi{info.api_version}",
             image_tokens_max=int(info.image_tokens_max),
             check_key=info.check_key.decode(),
+            groups=int(info.groups),
         )
 
     def sleep(self) -> None:

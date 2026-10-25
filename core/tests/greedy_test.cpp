@@ -77,10 +77,13 @@ int main(int argc, char **argv) {
   // FLASH_SWAPS=1: adaptive swaps on, a round every 16 steps (and after each prompt), as the engine runs them.
   const bool swaps = std::getenv("FLASH_SWAPS") != nullptr;
   opt.adapt_swaps = swaps;
+  // FLASH_GROUPS=n: the cards in n groups (Options::groups).
+  if (const char *g = std::getenv("FLASH_GROUPS")) opt.groups = (uint32_t)std::stoul(g);
   qwen4exp::Model model(path, opt);
   const auto &info = model.info();
-  std::printf("loaded in %.1f s: %u card(s), %u experts per layer cached, %.2f / %.2f GiB on the cards, %.2f GiB arena\n",
-              info.seconds, info.cards, info.experts_per_layer, info.device_bytes[0] / 1073741824.0,
+  std::printf("loaded in %.1f s: %u card(s) in %u group(s), %u experts per layer cached, %.2f / %.2f GiB on the cards, "
+              "%.2f GiB arena\n",
+              info.seconds, info.cards, info.groups, info.experts_per_layer, info.device_bytes[0] / 1073741824.0,
               info.device_bytes[1] / 1073741824.0, info.arena_bytes / 1073741824.0);
 
   uint64_t gated_ok = 0, gated_n = 0;

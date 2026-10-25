@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from engine.api.interface import StepRecord
-from engine.layout import StepLog, choose, histogram, parse, read_histogram
+from engine.layout import StepLog, choose, histogram, open_groups, parse, read_histogram
 from engine.memory_plan import PlanOptions
 from engine.models.qwen4exp.memory import model_memory
 from engine.models.qwen4exp.steps import MEASURED, checked_terms, measured_terms, model_steps, with_check
@@ -33,6 +33,11 @@ def test_the_layouts_asked_for(spec: str, want: tuple[int, int] | None):
     assert parse(spec, 2) == want
 
 
+@pytest.mark.parametrize(("spec", "groups"), [("auto", 1), ("tensor", 1), ("layers", 2), ("groups:2x1", 2)])
+def test_the_core_opens_the_named_layouts_groups(spec: str, groups: int):
+    assert open_groups(spec, 2) == groups
+
+
 @pytest.mark.parametrize("spec", ["groups", "groups:2", "groups:axb", "rows", ""])
 def test_a_layout_that_does_not_parse(spec: str):
     with pytest.raises(ValueError, match="--layout"):
@@ -46,6 +51,13 @@ def test_auto_takes_the_layout_the_core_runs_and_costs_them_all(rows: dict[int, 
     assert set(c.costs) == {"groups(1, 2)", "groups(2, 1)"}
     assert c.rows == (rows or {1: 1})
     print(c.line())
+
+
+def test_the_layout_the_core_opened_with_is_taken():
+    c = choose("layers", 2, STEPS, TERMS, memory=MEMORY, options=OPTIONS, rows={}, runs={(2, 1)})
+    assert str(c.layout) == "groups(2, 1)"
+    with pytest.raises(LayoutError, match="does not run"):
+        choose("tensor", 2, STEPS, TERMS, memory=MEMORY, options=OPTIONS, rows={}, runs={(2, 1)})
 
 
 def test_a_layout_the_core_does_not_run_is_refused():

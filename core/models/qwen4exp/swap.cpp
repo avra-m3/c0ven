@@ -21,16 +21,20 @@ void Model::note_routing(uint32_t layer, const int32_t *ids, uint32_t n, float w
     if (ids[k] >= 0 && ids[k] < (int32_t)Q_EXPERTS) u[ids[k]] += weight;
 }
 
-// The prompt path's counts of the last chunk (P.prof, kept when swaps are on) into the decayed counts, then zeroed.
+// The prompt path's counts of the last chunk (P.prof on each group's first card, for its layers, kept when swaps are
+// on) into the decayed counts, then zeroed.
 void Model::note_prompt_routing() {
-  const PromptCard *P = cards_[0]->pc.get();
-  if (!P || !P->prof) return;
-  std::vector<uint32_t> v(Q_LAYERS * Q_EXPERTS);
-  cards_[0]->up->copy(v.data(), P->prof, v.size() * 4);
-  const uint32_t z = 0;
-  cards_[0]->up->fill(P->prof, &z, 4, v.size() * 4);
-  cards_[0]->up->synchronize();
-  for (size_t i = 0; i < v.size(); i++) use_[i] += kPromptRouting * (float)v[i];
+  for (uint32_t g = 0; g < ngroups_; g++) {
+    Card &card = group_card(g, 0);
+    const PromptCard *P = card.pc.get();
+    if (!P || !P->prof) return;
+    std::vector<uint32_t> v(Q_LAYERS * Q_EXPERTS);
+    card.up->copy(v.data(), P->prof, v.size() * 4);
+    const uint32_t z = 0;
+    card.up->fill(P->prof, &z, 4, v.size() * 4);
+    card.up->synchronize();
+    for (size_t i = 0; i < v.size(); i++) use_[i] += kPromptRouting * (float)v[i];
+  }
 }
 
 // A round applies the previous round's choice: the incoming experts' halves into their cache slots and the maps,
@@ -103,13 +107,14 @@ uint32_t Model::apply_round() {
       if (w.out == kNoExpert) top[w.l] = std::max(top[w.l], w.slot);
     for (uint32_t l = 0; l < Q_LAYERS; l++) {
       if (top[l] < 0) continue;
-      size_t b = cards_[0]->cache[l].blocks.size();
+      size_t b = home(l).cache[l].blocks.size();
       while (cache_slots(l, b) <= (uint32_t)top[l]) b++;
-      for (auto &card : cards_) map_cache(*card, l, b);
+      for (uint32_t r = 0; r < width_; r++) map_cache(group_card(home(l).g, r), l, b);
     }
-    for (size_t i = 0; i < applied * ncards_; i++) {
-      const SwapPlan &w = swap_next_[i / ncards_];
-      Card &card = *cards_[i % ncards_];
+    // Each swap's halves in swap_buf_, one a card of its layer's group, by rank.
+    for (size_t i = 0; i < applied * width_; i++) {
+      const SwapPlan &w = swap_next_[i / width_];
+      Card &card = group_card(home(w.l).g, (uint32_t)(i % width_));
       Layer &L = card.layers[w.l];
       const int32_t s = w.out == kNoExpert ? w.slot : host_layers_[w.l]->slot_of[w.out];
       card.up->copy(L.cache + (uint64_t)s * L.slot_bytes, swap_buf_ + i * slot_max, L.slot_bytes);
@@ -144,10 +149,11 @@ uint32_t Model::apply_round() {
     for (uint32_t l = 0; l < Q_LAYERS; l++) {
       if (!changed[l]) continue;
       HostLayer &hl = *host_layers_[l];
-      for (auto &card : cards_) {
-        card->up->copy(card->layers[l].slot_map, hl.slot_of.data(), Q_EXPERTS * 4);
-        if (card->pc && !card->pc->stage_map.empty())
-          card->up->copy(card->pc->stage_map[l], hl.stage_of.data(), Q_EXPERTS * 4);
+      for (uint32_t r = 0; r < width_; r++) {
+        Card &card = group_card(home(l).g, r);
+        card.up->copy(card.layers[l].slot_map, hl.slot_of.data(), Q_EXPERTS * 4);
+        if (card.pc && !card.pc->stage_map.empty())
+          card.up->copy(card.pc->stage_map[l], hl.stage_of.data(), Q_EXPERTS * 4);
       }
     }
     for (auto &card : cards_) card->up->synchronize();
@@ -177,8 +183,8 @@ void Model::start_round(std::vector<float> use, uint32_t max_swaps) {
   uint64_t slot_max = 0;
   for (auto &L : cards_[0]->layers) slot_max = std::max(slot_max, L.slot_bytes);
   const size_t most = std::max<size_t>(swap_next_.size(), max_swaps);
-  if (swap_buf_bytes_ < most * ncards_ * slot_max) {
-    swap_buf_bytes_ = (uint64_t)std::max<size_t>(64, most) * ncards_ * slot_max;
+  if (swap_buf_bytes_ < most * width_ * slot_max) {
+    swap_buf_bytes_ = (uint64_t)std::max<size_t>(64, most) * width_ * slot_max;
     swap_buf_ = static_cast<uint8_t *>(rt_->alloc_host(swap_buf_bytes_));
   }
   if (!swap_pool_) swap_pool_ = std::make_unique<Pool>(3);
@@ -193,7 +199,7 @@ void Model::start_round(std::vector<float> use, uint32_t max_swaps) {
     std::vector<std::pair<uint32_t, uint32_t>> victims;  // (eviction, victim)
     for (uint32_t v = 0; v < evict_next_.size(); v++)
       for (uint32_t k = 0; k < evict_next_[v].victims.size(); k++) victims.push_back({v, k});
-    const uint64_t nw = swap_next_.size() * (ncards_ + 1);
+    const uint64_t nw = swap_next_.size() * (width_ + 1);
     swap_pool_->run(nw + victims.size(), [&](uint64_t i) {
       if (i >= nw) {
         const Evict &ev = evict_next_[victims[i - nw].first];
@@ -201,9 +207,9 @@ void Model::start_round(std::vector<float> use, uint32_t max_swaps) {
         fill_piece(ev.l, ev.victims[k], host_layers_[ev.l]->pieces[ev.first + k]);
         return;
       }
-      const SwapPlan &w = swap_next_[i / (ncards_ + 1)];
-      const uint32_t k = i % (ncards_ + 1);
-      if (k == ncards_) {
+      const SwapPlan &w = swap_next_[i / (width_ + 1)];
+      const uint32_t k = i % (width_ + 1);
+      if (k == width_) {
         if (w.out != kNoExpert) fill_piece(w.l, w.out, w.piece);
         return;
       }
@@ -211,12 +217,12 @@ void Model::start_round(std::vector<float> use, uint32_t max_swaps) {
       // has them, and down as one region per card (write_down), so card c's blocks are region c's whole rows.
       const GgufTensor &g = gguf_.tensor(blk(w.l, "ffn_gate_exps.weight")), &d = gguf_.tensor(blk(w.l, "ffn_down_exps.weight"));
       const uint64_t ed = d.bytes / Q_EXPERTS;
-      Card &card = *cards_[k];
+      Card &card = group_card(home(w.l).g, k);
       Layer &L = card.layers[w.l];
       const ExpertWeights &x = host_layers_[w.l]->weights[w.in];
       const uint32_t f0 = card.c * card.ff, dqk = quant_block_values(d.type);
       const uint64_t gbpr = Q_EMBD / quant_block_values(g.type), part = ed / x.down_parts;
-      uint8_t *buf = swap_buf_ + ((i / (ncards_ + 1)) * ncards_ + k) * slot_max;
+      uint8_t *buf = swap_buf_ + ((i / (width_ + 1)) * width_ + k) * slot_max;
       to_runs(g.type, {{x.gate, g.row_bytes(), f0, card.ff, 0, gbpr}}, buf);
       to_runs(g.type, {{x.up, g.row_bytes(), f0, card.ff, 0, gbpr}}, buf + L.up_off);
       to_runs(d.type, {{x.down + card.c * part, d.row_bytes() / x.down_parts, 0, Q_EMBD, 0, card.ff / dqk}},

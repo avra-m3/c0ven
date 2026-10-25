@@ -1,8 +1,9 @@
 // The prompt path: a chunk of up to prompt_chunk tokens, in runs of consecutive tokens of up to PROMPT_MAX_RUNS
-// sequences, in one pass on both cards (docs/DEVELOPING.md, "How a prompt chunk runs"). Each card records lists per
-// chunk size (the powers of two from 64, and prompt_chunk) at load, one for a run and one for several; the kernels
-// read the plans (PromptPlan) in host memory, so a list serves every chunk up to its size. The kernels that follow a
-// sequence run once per run. The cards exchange fp16 partial sums twice per layer (ADR-0030).
+// sequences, in one pass on the cards, a group after another (docs/DEVELOPING.md, "How a prompt chunk runs"). Each
+// card records lists per chunk size (the powers of two from 64, and prompt_chunk) at load, one for a run and one for
+// several; the kernels read the plans (PromptPlan) in host memory, so a list serves every chunk up to its size. The
+// kernels that follow a sequence run once per run. The cards of a group exchange fp16 partial sums twice per layer
+// (ADR-0030).
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -20,7 +21,7 @@ using namespace detail;
 namespace {
 
 // The events' kinds.
-constexpr uint32_t kEx = 0, kStaged = 1, kFree = 2, kNgram = 3, kIdx = 4, kMix = 5, kLast = 6, kRouted = 7;
+constexpr uint32_t kEx = 0, kStaged = 1, kFree = 2, kNgram = 3, kIdx = 4, kMix = 5, kLast = 6, kRouted = 7, kHand = 8;
 
 uint32_t bucket(uint32_t n, uint32_t tmax) {
   uint32_t b = 64;
@@ -36,8 +37,9 @@ constexpr uint32_t kLriW = 336;
 
 }  // namespace
 
-// kind kEx and kMix: (layer, exchange or block 0 or 1 as layer * 2 + which, card); kStaged, kFree and kRouted:
-// (layer, card); kNgram: the one event the host signals when the chunk's n-gram rows are in; kLast: (0, card).
+// kind kEx and kMix: (layer, exchange or block 0 or 1 as layer * 2 + which, rank); kStaged, kFree and kRouted:
+// (layer, rank); kNgram: the one event the host signals when the chunk's n-gram rows are in; kLast: (0, rank); kHand:
+// (0, card), the residuals in the card's from the group before. A layer is one group's, so its ranks name its cards.
 uint32_t Model::pev(uint32_t kind, uint32_t layer, uint32_t c) const {
   const uint32_t C = ncards_, mix = 4 * Q_LAYERS * C + 1 + kAttn * C;
   if (kind == kEx) return layer * C + c;  // layer here is 2 l + which
@@ -46,6 +48,7 @@ uint32_t Model::pev(uint32_t kind, uint32_t layer, uint32_t c) const {
   if (kind == kMix) return mix + layer * C + c;
   if (kind == kLast) return mix + 2 * Q_LAYERS * C + c;
   if (kind == kRouted) return mix + 2 * Q_LAYERS * C + C + layer * C + c;
+  if (kind == kHand) return mix + 3 * Q_LAYERS * C + C + c;
   return 2 * Q_LAYERS * C + (kind - 1) * Q_LAYERS * C + layer * C + c;
 }
 
@@ -54,7 +57,7 @@ void Model::load_prompt(Card &card) {
   card.pc = std::make_unique<PromptCard>();
   PromptCard &P = *card.pc;
   const uint64_t T = tmax_;
-  auto dev = [&](uint64_t bytes) { return static_cast<uint8_t *>(rt_->alloc_device(card.c, std::max<uint64_t>(bytes, 256))); };
+  auto dev = [&](uint64_t bytes) { return static_cast<uint8_t *>(rt_->alloc_device(card.dev, std::max<uint64_t>(bytes, 256))); };
   auto f32 = [&](uint64_t n) { return reinterpret_cast<float *>(dev(n * 4)); };
   auto u16 = [&](uint64_t n) { return reinterpret_cast<uint16_t *>(dev(n * 2)); };
   auto u32 = [&](uint64_t n) { return reinterpret_cast<uint32_t *>(dev(n * 4)); };
@@ -88,7 +91,7 @@ void Model::load_prompt(Card &card) {
   // Region B: DeltaNet (m, z, u, raw) or attention (Q, K, V, iq, scores, blocks, bscores, cells).
   {
     // The scores of this card's blocks only, as p_idx_score writes them: rows nbl apart.
-    const uint64_t nbl = (opt_.max_ctx / Q_IDX_BLOCK + ncards_ - 1) / ncards_;
+    const uint64_t nbl = (opt_.max_ctx / Q_IDX_BLOCK + card.C - 1) / card.C;
     uint64_t gdn[] = {T * card.nch * 4, T * card.nvh * Q_GDN_D * 4, T * card.nch * 4, T * card.nvh * Q_GDN_D * 4};
     uint64_t att[] = {T * card.nq * 2 * Q_ATT_D * 4, T * card.nkv * Q_ATT_D * 4, T * card.nkv * Q_ATT_D * 4,
                       T * (Q_IDX_H + 1) * Q_IDX_D * 4, T * nbl * 4, T * (Q_IDX_BLOCKS + 1) * 4,
@@ -145,7 +148,7 @@ void Model::load_prompt(Card &card) {
     for (const Mat *m : {&L.qkv, &L.z, &L.out, &L.q, &L.k, &L.v, &L.o, &L.sh_gate, &L.sh_up, &L.sh_down})
       w16 = std::max<uint64_t>(w16, (uint64_t)m->rows * m->K);
   P.w16 = u16(w16);
-  if ((opt_.profile_routing || opt_.adapt_swaps) && card.c == 0) {
+  if ((opt_.profile_routing || opt_.adapt_swaps) && card.c == 0) {  // its group's layers
     const uint32_t z = 0;
     P.prof = u32(Q_LAYERS * Q_EXPERTS);
     card.up->fill(P.prof, &z, 4, Q_LAYERS * Q_EXPERTS * 4);
@@ -157,23 +160,24 @@ void Model::load_prompt(Card &card) {
 }
 
 // The staging buffer, the experts' staging maps, and the copy list that streams the experts a chunk of more than
-// kFetchRows needs: every layer's uncached experts, card c's half of gate and up and its region of down, into slot
-// l % 2, after the chunk's list has freed that slot (event kFree of layer l - 2); event kStaged of layer l says they
-// are in. A slot holds every expert the cache may leave out of the largest layer (HostLayer::pieces). Shorter chunks
-// fetch their experts on the fetch list (fetch_experts).
+// kFetchRows needs: every layer of the card's group, its uncached experts, the card's share of gate and up and its
+// region of down, into slot l % 2, after the chunk's list has freed that slot (event kFree of layer l - 2); event
+// kStaged of layer l says they are in. A slot holds every expert the cache may leave out of the group's largest layer
+// (HostLayer::pieces). Shorter chunks fetch their experts on the fetch list (fetch_experts).
 void Model::record_prompt_copy(Card &card) {
   PromptCard &P = *card.pc;
-  for (auto &hl : host_layers_) P.stage_slot = std::max<uint64_t>(P.stage_slot, hl->pieces.size() * hl->stg_bytes);
-  if (P.stage_slot) P.stage = static_cast<uint8_t *>(rt_->alloc_device(card.c, 2 * P.stage_slot));
+  for (uint32_t l = card.l0; l < card.l1; l++)
+    P.stage_slot = std::max<uint64_t>(P.stage_slot, host_layers_[l]->pieces.size() * host_layers_[l]->stg_bytes);
+  if (P.stage_slot) P.stage = static_cast<uint8_t *>(rt_->alloc_device(card.dev, 2 * P.stage_slot));
   for (uint32_t l = 0; l < Q_LAYERS; l++)
     P.stage_map.push_back(upload<int32_t>(card, host_layers_[l]->stage_of.data(), Q_EXPERTS * 4));
   P.copy = prompt_copies(card, staging_now(), copy_count_);
   if (P.stage_slot) {
-    P.fetch = std::make_unique<ze::List>(*rt_, card.c, ze::List::immediate, true);
+    P.fetch = std::make_unique<ze::List>(*rt_, card.dev, ze::List::immediate, true);
     P.routed = static_cast<uint32_t *>(rt_->alloc_host((size_t)Q_LAYERS * Q_EXPERTS * 4));
     // The staging buffer written once through the fetch list, in copies of the size it makes: the runtime's first
     // CPU copy into a page of a card's memory takes several times as long as the next ones.
-    const HostLayer &hl = *host_layers_[0];
+    const HostLayer &hl = *host_layers_[card.l0];
     const uint64_t piece = hl.stg_up_off;
     for (uint64_t off = 0; off < 2 * P.stage_slot; off += piece)
       P.fetch->copy(P.stage + off, hl.pieces[0], std::min(piece, 2 * P.stage_slot - off));
@@ -185,8 +189,9 @@ void Model::record_prompt_copy(Card &card) {
 // on kStaged before the staged experts' products. Each layer's experts go into slot l % 2 once kFree of layer l - 2
 // says the chunk is done with it. Every expert the chunk routes to is staged before kStaged, so the products are the
 // recorded list's; which experts go ahead of the router changes only the time.
-void Model::fetch_experts(uint32_t c, const std::vector<std::vector<uint32_t>> &order) {
-  Card &card = *cards_[c];
+void Model::fetch_experts(uint32_t dev, const std::vector<std::vector<uint32_t>> &order) {
+  Card &card = *cards_[dev];
+  const uint32_t c = card.c;
   PromptCard &P = *card.pc;
   ze::List &F = *P.fetch;
   const uint64_t f0 = (uint64_t)c * card.ff;
@@ -209,11 +214,11 @@ void Model::fetch_experts(uint32_t c, const std::vector<std::vector<uint32_t>> &
     ZE_CHECK(r);
   };
   std::vector<uint8_t> done(Q_EXPERTS);
-  for (uint32_t l = 0; l < Q_LAYERS; l++) {
+  for (uint32_t l = card.l0; l < card.l1; l++) {
     const HostLayer &hl = *host_layers_[l];
     uint8_t *slot = P.stage + (l % 2) * P.stage_slot;
     const ze_event_handle_t routed = (*pevents_)[pev(kRouted, l, c)];
-    if (l >= 2) wait((*pevents_)[pev(kFree, l - 2, c)]);
+    if (l >= card.l0 + 2) wait((*pevents_)[pev(kFree, l - 2, c)]);
     std::fill(done.begin(), done.end(), 0);
     for (uint32_t e : order[l]) {
       if (zeEventQueryStatus(routed) == ZE_RESULT_SUCCESS) break;
@@ -247,14 +252,14 @@ Model::Staging Model::staging_now() const {
 // (kv_share.cpp). copies: the list's copies.
 std::unique_ptr<ze::List> Model::prompt_copies(Card &card, const Staging &st, uint32_t &copies) {
   PromptCard &P = *card.pc;
-  auto list = std::make_unique<ze::List>(*rt_, card.c, ze::List::regular, true);
+  auto list = std::make_unique<ze::List>(*rt_, card.dev, ze::List::regular, true);
   ze::List &L = *list;
   const uint64_t f0 = (uint64_t)card.c * card.ff;
   copies = 0;
-  for (uint32_t l = 0; l < Q_LAYERS; l++) {
+  for (uint32_t l = card.l0; l < card.l1; l++) {
     const HostLayer &hl = *host_layers_[l];
     const std::vector<ExpertWeights> &sw = st[l];
-    if (l >= 2) L.wait({(*pevents_)[pev(kFree, l - 2, card.c)]});
+    if (l >= card.l0 + 2) L.wait({(*pevents_)[pev(kFree, l - 2, card.c)]});
     uint8_t *slot = P.stage + (l % 2) * P.stage_slot;
     const uint64_t half = card.ff * hl.gate_row_bytes, dpart = hl.down_bytes / hl.down_parts;
     const uint64_t d0 = hl.down_parts > 1 ? card.c * dpart : 0;
@@ -286,15 +291,15 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
   const uint32_t key = runs << 16 | T;
   auto it = P.lists.find(key);
   if (it != P.lists.end()) return *it->second;
-  auto list = std::make_unique<ze::List>(*rt_, card.c, ze::List::regular);
+  auto list = std::make_unique<ze::List>(*rt_, card.dev, ze::List::regular);
   ze::List &L = *list;
   if (opt_.trace) {
     const size_t cap = 1 << 16;
     P.trace[key] = static_cast<uint64_t *>(rt_->alloc_host(cap * 8));
     L.trace(P.trace[key], cap);
   }
-  const uint32_t c = card.c, C = ncards_;
-  auto q4 = [&](const char *name) { return kernel(c, "qwen4exp_prompt", name); };
+  const uint32_t c = card.c, C = card.C, dev = card.dev;
+  auto q4 = [&](const char *name) { return kernel(dev, "qwen4exp_prompt", name); };
   const PromptPlan *pp = pplan_;
   // Run r's plan and positions, for the kernels that follow a sequence.
   auto run = [&](uint32_t r) { return pplan_ + 1 + r; };
@@ -319,7 +324,7 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
     if (sg != 4) mod += "s" + std::to_string(sg);
     if (opt_.trace) L.label(std::string(bf16 ? "gemm_bf16 " : "gemm_f16 ") + std::to_string(N) + "x" + std::to_string(K));
     const uint32_t band = (uint64_t)N * K * 2 > (18u << 20) ? 4 : 0;
-    L.launch(kernel(c, mod, "gemm"), {W, N, K, K, x, ldx, n, y, ldy, yh, mode, scale, y2, band},
+    L.launch(kernel(dev, mod, "gemm"), {W, N, K, K, x, ldx, n, y, ldy, yh, mode, scale, y2, band},
              (N + kSgSize * tn * sg - 1) / (kSgSize * tn * sg), (rows + 8 * tm - 1) / (8 * tm), 1, kSgSize * sg, 1,
              1, sig);
   };
@@ -328,15 +333,15 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
     std::string mod = std::string("qgemm_") + ggml_type_label(m.type);
     for (auto &ch : mod) ch = (char)std::tolower(ch);
     const uint32_t units = m.K / 32;
-    L.launch(kernel(c, mod, "dequant_f16"), {m.p, m.rows, m.bpr, zero, units, P.w16, m.K, card.grids},
+    L.launch(kernel(dev, mod, "dequant_f16"), {m.p, m.rows, m.bpr, zero, units, P.w16, m.K, card.grids},
              (m.rows * units + 63) / 64, 1, 1, 64);
     gemm(false, P.w16, m.rows, m.K, x, ldx, y, ldy, yhalf, 0, 1.0f, sig, 8, 2, y2);
   };
   // An exchange: the kernel that makes each card's fp16 partial also writes it into the other card's memory as it
   // computes, and signals (docs/measurements/MEASUREMENTS.md#2026-10-15-prompt-exchange-stores); both cards add the two partials
   // in card order, so their residuals stay the same. Exchange e = 2 l + which uses recv[e % 2]: a card writes e + 2
-  // only after the other card has sent e + 1, which it does after reading e.
-  PromptCard *peer = C > 1 ? cards_[1 - c]->pc.get() : nullptr;
+  // only after the other card has sent e + 1, which it does after reading e. The other card is the group's.
+  PromptCard *peer = C > 1 ? group_card(card.g, 1 - c).pc.get() : nullptr;
   // From layer 1's PLE module on, a chunk of kHcSplitRows or more splits the hyper-connections' rows between the
   // cards: card c keeps R for rows r0 .. r1 - 1 (prows_[c] of them) and sends the other card its rows of the mixed x
   // (event kMix). Before, both cards compute every row, as the PLE module's convolution reads across rows.
@@ -385,8 +390,15 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
     if (send) L.wait({(*pevents_)[pev(kMix, block, 1 - c)]});
   };
 
-  L.launch(q4("p_hc_init"), {pembed_, pp, P.R}, Q_HC_DIM / 64, T, 1, 64);
-  for (uint32_t l = 0; l < Q_LAYERS; l++) {
+  // The first group starts from the embeddings; the others from the residuals the group before copies in, each card
+  // its rows when the rows split.
+  if (card.first()) {
+    L.launch(q4("p_hc_init"), {pembed_, pp, P.R}, Q_HC_DIM / 64, T, 1, 64);
+  } else {
+    L.wait({(*pevents_)[pev(kHand, 0, dev)]});
+    if (split) r0 = c * half, r1 = r0 + half, nown = prows_ + c;
+  }
+  for (uint32_t l = card.l0; l < card.l1; l++) {
     Layer &Ly = card.layers[l];
     HostLayer &hl = *host_layers_[l];
     if (l == 1) {  // the PLE module
@@ -404,7 +416,9 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
         L.launch(q4("p_ple_save"), {P.N, card.ple_hist, card.ple_stride, run(r)}, Q_HC_DIM / 64, 1, 1, 64);
       if (split) r0 = c * half, r1 = r0 + half, nown = prows_ + c;
     }
-    hc_mix(Ly, 0, l >= 2, 2 * l);  // after layer 0 the PLE module stands between the combine and the norm
+    // After layer 0 the PLE module stands between the combine and the norm; a group's first layer has no combine
+    // before it on its cards.
+    hc_mix(Ly, 0, l >= 2 && l != card.l0, 2 * l);
     // Where this card's partial of exchange `which` also goes, and the event that says it is there.
     auto peer_part = [&](uint32_t which) { return C > 1 ? peer->recv[(2 * l + which) % 2] : nullptr; };
     auto sent = [&](uint32_t which) { return C > 1 ? (*pevents_)[pev(kEx, 2 * l + which, c)] : nullptr; };
@@ -421,7 +435,7 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
       L.launch(q4("p_gdn_l2norm"), {P.u, nch, pp}, 2 * card.nkh, T, 1, Q_GDN_D);
       L.launch(q4("p_gdn_gates"), {P.ab, Ly.A, Ly.dt, card.nvh, pp, P.gb}, 1, T, 1, 64);
       for (uint32_t r = 0; r < runs; r++)
-        L.launch(kernel(c, "qwen4exp_gdn", "p_gdn_recur"),
+        L.launch(kernel(dev, "qwen4exp_gdn", "p_gdn_recur"),
                  {P.u, nch, P.gb, Ly.S, Ly.S_stride, card.nkh, card.nvh, run(r), P.raw}, card.nvh * 8, 1, 1, 64);
       L.launch(q4("p_gdn_out"), {P.raw, P.z, Ly.ssm_norm, card.nvh, pp, P.o16}, card.nvh, T, 1, Q_GDN_D);
       dense(Ly.out, P.o16, nvo, P.part, Q_EMBD, true, peer_part(0), sent(0));
@@ -460,10 +474,10 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
       for (uint32_t r = 0; r < runs; r++) {
         L.launch(q4("p_kv16"), {Ly.kc, Ly.vc, card.ptab, npp_, card.nkv, run(r), P.kh, P.vh},
                  (2 * card.nkv * Q_ATT_D / 32 + 63) / 64, opt_.max_ctx, 1, 64);
-        L.launch(kernel(c, "qwen4exp_attn", "p_attn_xmx"),
+        L.launch(kernel(dev, "qwen4exp_attn", "p_attn_xmx"),
                  {P.qt, P.Q, P.kh, P.vh, card.nq, P.hp, card.nkv, P.cells, P.ncells, run(r), P.o16}, 1,
                  (T + kAttXmxRows - 1) / kAttXmxRows, 1, 16 * (P.hp / 8) * kAttXmxRows);
-        L.launch(kernel(c, "qwen4exp_attn", "p_attn_tiled"),
+        L.launch(kernel(dev, "qwen4exp_attn", "p_attn_tiled"),
                  {P.q16, P.Q, P.kh, P.vh, card.nq, card.nkv, P.sel, P.nbw, P.wbx, run(r), P.o16}, card.nq, (T + 7) / 8,
                  1, 16);
       }
@@ -493,10 +507,10 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
     // The cached experts and the shared expert first: they give the staging its last moments. Each expert's rows of
     // hg and yg are its own, so the order changes no result.
     if (nslots_cached_ > 0) {
-      L.launch(kernel(c, gm, "moe_gate_up_t"), {Ly.cache, Ly.slot_bytes, P.tiles_c, P.ntiles_c, ff, gbpr, Ly.up_off,
+      L.launch(kernel(dev, gm, "moe_gate_up_t"), {Ly.cache, Ly.slot_bytes, P.tiles_c, P.ntiles_c, ff, gbpr, Ly.up_off,
                                                 P.xg, E, E, P.hg, hsig, card.grids}, ff / 64, mt, 1, 64);
       uint32_t dbpr = ff / dqk;
-      L.launch(kernel(c, dm, "moe_down_t"), {Ly.cache, Ly.slot_bytes, Ly.down_off, P.tiles_c, P.ntiles_c, E, dbpr, zero,
+      L.launch(kernel(dev, dm, "moe_down_t"), {Ly.cache, Ly.slot_bytes, Ly.down_off, P.tiles_c, P.ntiles_c, E, dbpr, zero,
                                              P.hg, ff, P.yg, card.grids}, E / 64, mt, 1, 64);
     }
     dense(Ly.sh_gate, P.x16, Q_EMBD, P.shg, ff, false);
@@ -505,30 +519,35 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
     dense(Ly.sh_down, P.shh, ff, P.s, Q_EMBD, false);
     L.wait({(*pevents_)[pev(kStaged, l, c)]});
     if (!hl.pieces.empty())
-      L.launch(kernel(c, gm + "_file", "moe_gate_up_t"), {stage, hl.stg_bytes, P.tiles_s, P.ntiles_s, ff, gbpr,
+      L.launch(kernel(dev, gm + "_file", "moe_gate_up_t"), {stage, hl.stg_bytes, P.tiles_s, P.ntiles_s, ff, gbpr,
                                                           hl.stg_up_off, P.xg, E, E, P.hg, hsig, card.grids}, ff / 64, mt, 1, 64);
     if (!hl.pieces.empty()) {
       // The staged down holds this card's blocks of each row only, unless the arena keeps it whole.
       const bool part = hl.down_parts > 1;
       uint32_t dbpr = (part ? ff : Q_FF) / dqk, b0 = part ? 0 : c * ff / dqk;
-      L.launch(kernel(c, dm + "_file", "moe_down_t"), {stage, hl.stg_bytes, hl.stg_down_off, P.tiles_s, P.ntiles_s, E,
+      L.launch(kernel(dev, dm + "_file", "moe_down_t"), {stage, hl.stg_bytes, hl.stg_down_off, P.tiles_s, P.ntiles_s, E,
                                                        dbpr, b0, P.hg, ff, P.yg, card.grids}, E / 64, mt, 1, 64);
     }
     L.signal((*pevents_)[pev(kFree, l, c)]);
     L.launch(q4("p_moe_combine"), {P.yg, P.inv, P.w, P.s, P.rl, pp, P.part, peer_part(1)}, Q_EMBD / 128, T, 1, 64, 1,
              1, sent(1));
-    exchange(l, 1, P.inj[1], l >= 1 && l + 1 < Q_LAYERS ? card.layers[l + 1].hc_norm[0] : nullptr);
+    exchange(l, 1, P.inj[1], l >= 1 && l + 1 < card.l1 ? card.layers[l + 1].hc_norm[0] : nullptr);
   }
-  if (split) {  // each run's rows the head and the draft layer read, on both cards
+  if (!card.last()) {  // the residuals to the next group's card of this rank
+    Card &next = group_card(card.g + 1, c);
+    L.copy(next.pc->R, P.R, (size_t)T * Q_HC_DIM * 4, (*pevents_)[pev(kHand, 0, next.dev)]);
+  } else {
+    if (split) {  // each run's rows the head and the draft layer read, on both cards
+      for (uint32_t r = 0; r < runs; r++)
+        L.launch(q4("p_hc_share"), {P.R, run(r), r0, r1, peer->R}, Q_HC_DIM / 64, STEP_MAX_ROWS, 1, 64, 1, 1,
+                 r + 1 == runs ? (*pevents_)[pev(kLast, 0, c)] : nullptr);
+      L.wait({(*pevents_)[pev(kLast, 0, 1 - c)]});
+    }
+    // Each run's last row's head, as in the decode step: run r's in row r.
     for (uint32_t r = 0; r < runs; r++)
-      L.launch(q4("p_hc_share"), {P.R, run(r), r0, r1, peer->R}, Q_HC_DIM / 64, STEP_MAX_ROWS, 1, 64, 1, 1,
-               r + 1 == runs ? (*pevents_)[pev(kLast, 0, c)] : nullptr);
-    L.wait({(*pevents_)[pev(kLast, 0, 1 - c)]});
+      L.launch(q4("p_take_last"), {P.R, run(r), card.R + (size_t)r * Q_HC_DIM}, Q_HC_DIM / 64, 1, 1, 64);
+    record_head(L, card, head_plan_, runs);
   }
-  // Each run's last row's head, as in the decode step: run r's in row r.
-  for (uint32_t r = 0; r < runs; r++)
-    L.launch(q4("p_take_last"), {P.R, run(r), card.R + (size_t)r * Q_HC_DIM}, Q_HC_DIM / 64, 1, 1, 64);
-  record_head(L, card, head_plan_, runs);
   L.close();
   ze::List &ref = *list;
   P.lists[key] = std::move(list);
@@ -634,7 +653,8 @@ std::vector<std::vector<Candidate>> Model::prompt_runs(const PromptRun *runs, ui
           fetch_experts(c, order);
         } catch (...) {
           fetch_err[c] = std::current_exception();
-          for (uint32_t l = 0; l < Q_LAYERS; l++) zeEventHostSignal((*pevents_)[pev(kStaged, l, c)]);
+          const Card &card = *cards_[c];
+          for (uint32_t l = card.l0; l < card.l1; l++) zeEventHostSignal((*pevents_)[pev(kStaged, l, card.c)]);
         }
       });
   }
@@ -698,7 +718,7 @@ std::vector<std::vector<Candidate>> Model::prompt_runs(const PromptRun *runs, ui
   std::vector<std::vector<Candidate>> out(nruns);
   for (uint32_t r = 0; r < nruns; r++) {
     auto &o = out[r];
-    for (uint32_t c = 0; c < ncards_; c++) {
+    for (uint32_t c = 0; c < width_; c++) {  // the last group's ranks
       const size_t base = ((size_t)c * STEP_MAX_ROWS + r) * opt_.candidates;
       for (uint32_t i = 0; i < top_n_[c * STEP_MAX_ROWS + r]; i++) o.push_back({(int32_t)top_idx_[base + i], top_val_[base + i]});
     }
@@ -710,12 +730,17 @@ std::vector<std::vector<Candidate>> Model::prompt_runs(const PromptRun *runs, ui
   return out;
 }
 
+// The sum of each group's first card's counts, which hold its own layers'.
 std::vector<uint32_t> Model::routing_counts() const {
-  std::vector<uint32_t> v(Q_LAYERS * Q_EXPERTS, 0);
-  const PromptCard *P = cards_[0]->pc.get();
-  if (!P || !P->prof) return v;
-  cards_[0]->up->copy(v.data(), P->prof, v.size() * 4);
-  cards_[0]->up->synchronize();
+  std::vector<uint32_t> v(Q_LAYERS * Q_EXPERTS, 0), w(v.size());
+  for (uint32_t g = 0; g < ngroups_; g++) {
+    Card &card = group_card(g, 0);
+    const PromptCard *P = card.pc.get();
+    if (!P || !P->prof) return v;
+    card.up->copy(w.data(), P->prof, w.size() * 4);
+    card.up->synchronize();
+    for (size_t i = 0; i < v.size(); i++) v[i] += w[i];
+  }
   return v;
 }
 

@@ -20,7 +20,7 @@ extern "C" {
 #define ENGINE_API
 #endif
 
-#define ENGINE_API_VERSION 10
+#define ENGINE_API_VERSION 11
 
 typedef enum {
   ENGINE_OK = 0,
@@ -53,6 +53,9 @@ typedef struct {
   const char *vision_path;     /* the image encoder's file (the mmproj GGUF); null: no images. Needs the prompt path */
   uint32_t kv_pages;           /* the KV cache's pages of 4 cells, on each card, rounded up to a multiple of the cards;
                                   default: slots x the context's */
+  uint32_t groups;             /* the cards in groups that run the layers in turn, each group an equal share of the
+                                  layers, each card of a group a share of every matrix of them: 1 (all cards split
+                                  every layer) or the cards (each card its own layers); default 1 */
 } engine_config;
 
 #define ENGINE_CONFIG_EXPERTS_SET 1u  /* experts_per_layer is meaningful, 0 included */
@@ -83,6 +86,7 @@ typedef struct {
   uint32_t pages_per_slot;     /* logical pages a slot can map: the context's, rounded up to a multiple of the cards */
   char check_key[128];         /* what a load check's result holds for (engine_run_check): the cards' ids, the driver's
                                   version and a hash of the kernels' files */
+  uint32_t groups;             /* engine_config.groups as loaded */
 } engine_info;
 
 /* A request's sampling and stopping, copied once by admit. The core samples in llama.cpp's order: penalties, top-k,

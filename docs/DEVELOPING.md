@@ -70,7 +70,8 @@ checks only for the model, since the C ABI does not say why `engine_open` failed
 `greedy_test <reference dir> <max prompt tokens> <cards> [prompt chunk]` also runs by hand on longer prompts. It
 reports them without gating. Given a chunk size, it reads each prompt through the prompt path, in chunks of at most
 that many tokens, and reports the prompt's tokens per second. With `FLASH_SWAPS=1` it runs adaptive swaps, one round
-every 16 steps and one after each prompt, and reports how many experts came onto the cards.
+every 16 steps and one after each prompt, and reports how many experts came onto the cards. `FLASH_GROUPS=2` puts
+the cards in two groups (DESIGN.md, section 5) for `greedy_test`, `batch_test` and `api_test`.
 
 `ENGINE_MTP_CACHE_DIR` keeps the draft layer's quantised experts between loads. When it is set, a load reads them
 from that directory instead of quantising the BF16 tensors again (about 43 s for both cards,
@@ -129,8 +130,11 @@ consecutive tokens of up to four sequences (`Model::prompt_runs`):
   the cached experts' and the shared expert's products. The runtime makes these copies from the anonymous arena with
   the CPU ([measurements/LEVEL_ZERO.md](measurements/LEVEL_ZERO.md) row 31; [the record](measurements/MEASUREMENTS.md#2026-10-21-short-chunk-fetch);
   [ADR-0046](adr/0046-a-short-chunk-fetches-the-experts-its-router-picks.md)).
-- The cards exchange fp16 partial sums. The kernel that makes a card's partial sum also writes it into the other
-  card's memory while it computes, 64 bytes per store. Stores of 32 bytes or less cross at a tenth of the rate
+- With the cards in groups (DESIGN.md, section 5), each group reads the whole chunk through its own layers, then
+  copies the chunk's residuals into the next group's card and signals an event that the next group's list waits on.
+  Only the first group runs the PLE module, and only the last the head.
+- The cards of a group exchange fp16 partial sums. The kernel that makes a card's partial sum also writes it into
+  the other card's memory while it computes, 64 bytes per store. Stores of 32 bytes or less cross at a tenth of the rate
   ([the record](measurements/MEASUREMENTS.md#2026-10-15-prompt-exchange-stores)).
 - `Options::trace` times every kernel of the chunk's lists; `Model::prompt_trace` sums them per kernel.
 

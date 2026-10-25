@@ -114,8 +114,8 @@ static std::vector<uint16_t> mtp_tensor(const std::string &dir, const std::strin
 }
 
 uint64_t Model::mtp_bytes() const {
-  // Per card: each expert's half, IQ4_NL (18 bytes per 32 values), gate, up and down.
-  const uint64_t ff = Q_FF / ncards_;
+  // Per card of the last group: each expert's share, IQ4_NL (18 bytes per 32 values), gate, up and down.
+  const uint64_t ff = Q_FF / width_;
   return (uint64_t)Q_EXPERTS * (2 * align256(ff * (Q_EMBD / 32) * 18) + align256(Q_EMBD * (ff / 32) * 18));
 }
 
@@ -124,7 +124,7 @@ void Model::load_mtp(Card &card) {
   mtp_type_ = QT_IQ4_NL;
   card.mtp = std::make_unique<MtpCard>();
   MtpCard &M = *card.mtp;
-  const uint32_t c = card.c, C = ncards_, E = Q_EMBD, ff = card.ff, f0 = c * ff;
+  const uint32_t c = card.c, C = card.C, E = Q_EMBD, ff = card.ff, f0 = c * ff;
   const uint32_t q0 = c * card.nq, kv0 = c * card.nkv;
   auto dev16 = [&](const std::vector<uint16_t> &v) { return upload<uint16_t>(card, v.data(), v.size() * 2); };
   auto devf = [&](const std::vector<float> &v) { return upload<float>(card, v.data(), v.size() * 4); };
@@ -323,11 +323,11 @@ void Model::load_mtp(Card &card) {
 // with chain, one draft step (hidden from row mplan_->pad of the MTP's own residual R before it).
 void Model::record_mtp(Card &card, uint32_t W, bool chain) {
   MtpCard &M = *card.mtp;
-  auto list = std::make_unique<ze::List>(*rt_, card.c, ze::List::regular);
+  auto list = std::make_unique<ze::List>(*rt_, card.dev, ze::List::regular);
   ze::List &L = *list;
-  const uint32_t c = card.c, C = ncards_, E = Q_EMBD;
-  auto common = [&](const char *name) { return kernel(c, "common", name); };
-  auto q4 = [&](const char *name) { return kernel(c, "qwen4exp", name); };
+  const uint32_t c = card.c, C = card.C, E = Q_EMBD;
+  auto common = [&](const char *name) { return kernel(card.dev, "common", name); };
+  auto q4 = [&](const char *name) { return kernel(card.dev, "qwen4exp", name); };
   // The kernels read the plan from the card's copy, as the decode step's do.
   const StepPlan *pl = M.plan;
   const uint32_t *nrows = &M.plan->nrows;
@@ -398,13 +398,13 @@ void Model::record_mtp(Card &card, uint32_t W, bool chain) {
   {
     const uint32_t qk = quant_block_values(mtp_type_);
     uint32_t gbpr = E / qk, xs = (uint32_t)a8_bytes(E), per = Q_USED, K = E;
-    L.launch(kernel(c, mv_module(mtp_type_, 16), "moe_gate_up_g"),
+    L.launch(kernel(card.dev, mv_module(mtp_type_, 16), "moe_gate_up_g"),
              {M.cache, M.slot_bytes, card.groups, card.ngroups, card.ff, gbpr, M.up_off, card.xa8, K, xs, per, card.h,
               card.grids}, (card.ff + 3) / 4, W * Q_USED, 1, 64);
     L.launch(common("quantize_a8"), {card.h, card.ff, card.ff, W * Q_USED, card.ha8}, (card.ff / 32 * W * Q_USED + 3) / 4,
              1, 1, 64);
     uint32_t dbpr = card.ff / qk, stride = (uint32_t)a8_bytes(card.ff);
-    L.launch(kernel(c, mv_module(mtp_type_, 4), "moe_down_g"),
+    L.launch(kernel(card.dev, mv_module(mtp_type_, 4), "moe_down_g"),
              {M.cache, M.slot_bytes, card.groups, card.ngroups, E, dbpr, M.down_off, card.ha8, card.ff, stride, card.y,
               card.grids}, (E + 15) / 16, W * Q_USED, 1, 64);
   }
@@ -452,14 +452,15 @@ std::vector<std::vector<Candidate>> Model::run_mtp(const StepIn *rows, uint32_t 
     if (first) set_rope(rows[r].slot, rows[r].pos, false);
   }
   for (uint32_t i = 0; i < mevents_->size(); i++) ZE_CHECK(zeEventHostReset((*mevents_)[i]));
-  std::vector<ze::List *> lists;
-  for (auto &card : cards_) lists.push_back(chain ? card->mtp->chains.at(W).get() : card->mtp->lists.at(W).get());
-  for (uint32_t c = ncards_; c-- > 0;) lists[c]->execute();
-  for (uint32_t c = 0; c < ncards_; c++) lists[c]->synchronize();
+  std::vector<ze::List *> lists;  // the last group's, by rank
+  for (auto &card : cards_)
+    if (card->mtp) lists.push_back(chain ? card->mtp->chains.at(W).get() : card->mtp->lists.at(W).get());
+  for (size_t c = lists.size(); c-- > 0;) lists[c]->execute();
+  for (ze::List *list : lists) list->synchronize();
   std::vector<std::vector<Candidate>> out(n);
   for (uint32_t r = 0; r < n; r++) {
     auto &o = out[r];
-    for (uint32_t c = 0; c < ncards_; c++) {
+    for (uint32_t c = 0; c < width_; c++) {
       size_t base = ((size_t)c * STEP_MAX_ROWS + r) * opt_.candidates;
       for (uint32_t i = 0; i < mtop_n_[c * STEP_MAX_ROWS + r]; i++) o.push_back({(int32_t)mtop_idx_[base + i], mtop_val_[base + i]});
     }
@@ -481,7 +482,7 @@ std::vector<std::vector<Candidate>> Model::mtp_catchup_prompt(const StepIn *rows
   // The hidden inputs are the prompt path's final residuals of the last chunk's n rows before row end.
   if (n == 0 || n > STEP_MAX_ROWS || n > end) throw std::runtime_error("a prompt catch-up takes 1 to 8 rows");
   for (auto &card : cards_)
-    card->up->copy(card->R, card->pc->R + (size_t)(end - n) * Q_HC_DIM, (size_t)n * Q_HC_DIM * 4);
+    if (card->last()) card->up->copy(card->R, card->pc->R + (size_t)(end - n) * Q_HC_DIM, (size_t)n * Q_HC_DIM * 4);
   for (auto &card : cards_) card->up->synchronize();
   return run_mtp(rows, n, false, 0);
 }
@@ -506,6 +507,7 @@ std::vector<std::vector<Candidate>> Model::mtp_drafts(const StepIn *rows, uint32
 void Model::mtp_start(uint32_t slot, uint32_t first) {
   if (!mtp_on_) return;
   for (auto &card : cards_) {
+    if (!card->mtp) continue;
     card->up->copy(card->mtp->first + slot, &first, 4);
     card->up->synchronize();
   }

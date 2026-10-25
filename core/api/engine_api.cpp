@@ -976,6 +976,7 @@ engine_status engine_open(const engine_config *config, engine_info *info, engine
     if (config->mtp_dir) opt.mtp_dir = config->mtp_dir;
     if (config->vision_path) opt.vision_path = config->vision_path;
     opt.kv_pages = config->kv_pages;
+    if (config->groups) opt.groups = config->groups;
     opt.adapt_swaps = (config->flags & ENGINE_CONFIG_SWAPS) != 0;
     opt.share_kv = (config->flags & ENGINE_CONFIG_SHARE_KV) != 0;
     auto e = std::make_unique<engine_ctx>();
@@ -983,6 +984,7 @@ engine_status engine_open(const engine_config *config, engine_info *info, engine
     const auto &li = e->model->info();
     e->info.api_version = ENGINE_API_VERSION;
     e->info.cards = li.cards;
+    e->info.groups = li.groups;
     e->info.slots = opt.slots;
     e->info.max_ctx = opt.max_ctx;
     e->info.experts_per_layer = li.experts_per_layer;
@@ -1342,13 +1344,13 @@ uint32_t engine_abi_layout(engine_abi_row *table, uint32_t cap) {
       ROW(engine_config, flags), ROW(engine_config, reserve_bytes), ROW(engine_config, prompt_chunk),
       ROW(engine_config, checkpoints), ROW(engine_config, routing_profile), ROW(engine_config, mtp_dir),
       ROW(engine_config, draft_max), ROW(engine_config, draft_min_p), ROW(engine_config, vision_path),
-      ROW(engine_config, kv_pages), SIZE(engine_config),
+      ROW(engine_config, kv_pages), ROW(engine_config, groups), SIZE(engine_config),
       ROW(engine_info, api_version), ROW(engine_info, cards), ROW(engine_info, slots), ROW(engine_info, max_ctx),
       ROW(engine_info, experts_per_layer), ROW(engine_info, vocab), ROW(engine_info, device_bytes), ROW(engine_info, check_key),
       ROW(engine_info, arena_bytes), ROW(engine_info, load_seconds), ROW(engine_info, prompt_chunk),
       ROW(engine_info, checkpoints), ROW(engine_info, max_step_rows), ROW(engine_info, drafting),
       ROW(engine_info, image_tokens_max), ROW(engine_info, kv_pages), ROW(engine_info, pages_per_slot),
-      SIZE(engine_info),
+      ROW(engine_info, groups), SIZE(engine_info),
       ROW(engine_settings, temperature), ROW(engine_settings, top_k), ROW(engine_settings, top_p),
       ROW(engine_settings, max_tokens), ROW(engine_settings, seed), ROW(engine_settings, n_stop),
       ROW(engine_settings, stop), ROW(engine_settings, min_p), ROW(engine_settings, penalty_last_n),

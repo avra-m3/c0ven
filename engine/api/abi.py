@@ -1,4 +1,4 @@
-"""A hand-written mirror of `include/engine_api.h`, the C ABI, version 10 (ADR-0024, item 6).
+"""A hand-written mirror of `include/engine_api.h`, the C ABI, version 11 (ADR-0024, item 6).
 
 This file and the header must agree byte for byte. `layout()` lists every struct's size and every field's offset in
 the form the core's `engine_abi_layout` returns them, and tests/host/test_abi.py compares the two.
@@ -14,6 +14,7 @@ encoder's file to the config, its limit to the info, and `engine_admit_images`. 
 changes in each plan, a slot without a page for its next position stalls, and a checkpoint holds only the fixed state.
 Version 6 adds `engine_image.frames` for video (ADR-0034). Version 7 adds min-p and the penalties to
 `engine_settings`. Version 9 adds the counters: `engine_read_stats` and `engine_read_slot_stats` (ADR-0048).
+Version 11 adds `groups` to the config and the info: the cards in groups that run the layers in turn.
 """
 
 from __future__ import annotations
@@ -22,9 +23,11 @@ import ctypes
 from dataclasses import dataclass
 from enum import IntEnum
 
-ABI_VERSION = 10
+ABI_VERSION = 11
 
 MAX_STOP = 8
+MAX_CARDS = 2
+"""The cards the core opens by default (`engine_config.max_cards`)."""
 MAX_STEP_SLOTS = 8
 MAX_PROMPT_PIECES = 4
 NO_PAGE = 0xFFFFFFFF
@@ -95,6 +98,7 @@ class CConfig(ctypes.Structure):
         ("draft_min_p", ctypes.c_float),
         ("vision_path", ctypes.c_char_p),
         ("kv_pages", ctypes.c_uint32),
+        ("groups", ctypes.c_uint32),
     )
 
 
@@ -117,6 +121,7 @@ class CInfo(ctypes.Structure):
         ("kv_pages", ctypes.c_uint32),
         ("pages_per_slot", ctypes.c_uint32),
         ("check_key", ctypes.c_char * 128),
+        ("groups", ctypes.c_uint32),
     )
 
 

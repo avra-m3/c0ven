@@ -230,8 +230,8 @@ void Model::load_vision(bool first) {
                                  (void **)&V.q, (void **)&V.a, (void **)&V.o, (void **)&V.pix};
     if (!carve(act_bytes(vmax_tokens_, C), card->pc->reg, card->pc->reg_bytes, &at))
       throw std::runtime_error("the prompt regions no longer hold the largest image");
-    V.list = std::make_unique<ze::List>(*rt_, card->c, ze::List::immediate);
-    V.copy = std::make_unique<ze::List>(*rt_, card->c, ze::List::immediate, true);
+    V.list = std::make_unique<ze::List>(*rt_, card->dev, ze::List::immediate);
+    V.copy = std::make_unique<ze::List>(*rt_, card->dev, ze::List::immediate, true);
   }
   for (const auto &[name, t] : g.tensors()) g.release(t);
 }
@@ -247,7 +247,7 @@ void Model::vision_slots() {
       V.slot[0] = P.stage;
       V.slot[1] = P.stage + P.stage_slot;
     } else {
-      for (auto &s : V.slot) s = static_cast<uint8_t *>(rt_->alloc_device(card->c, vstage_bytes_));
+      for (auto &s : V.slot) s = static_cast<uint8_t *>(rt_->alloc_device(card->dev, vstage_bytes_));
     }
   }
 }

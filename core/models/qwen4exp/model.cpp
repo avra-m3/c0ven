@@ -52,10 +52,14 @@ uint32_t Model::ncards_of(const Card &card) { return card.C; }
 uint32_t Model::ev(uint32_t layer, uint32_t which) const { return layer * (2 * ncards_ + 2) + which; }
 uint32_t Model::ngram_ev() const { return Q_LAYERS * (2 * ncards_ + 2); }
 uint32_t Model::idx_ev(uint32_t attn, uint32_t c) const { return Q_LAYERS * (2 * ncards_ + 2) + 1 + attn * ncards_ + c; }
+uint32_t Model::handoff_ev(uint32_t dev) const { return Q_LAYERS * (2 * ncards_ + 2) + 1 + kAttn * ncards_ + dev; }
+
+Model::Card &Model::group_card(uint32_t g, uint32_t rank) const { return *cards_[g * width_ + rank]; }
+Model::Card &Model::home(uint32_t l) const { return group_card(l / (Q_LAYERS / ngroups_), 0); }
 
 template <class T>
 T *Model::upload(Card &card, const void *src, size_t bytes) {
-  auto *p = static_cast<T *>(rt_->alloc_device(card.c, bytes));
+  auto *p = static_cast<T *>(rt_->alloc_device(card.dev, bytes));
   if (src) {
     card.up->copy(p, src, bytes);
     card.up->synchronize();
@@ -117,6 +121,10 @@ Model::Model(const std::string &path, const Options &opt) : opt_(opt), gguf_(pat
   lib_ = std::make_unique<ze::Library>(*rt_);
   ncards_ = std::min(opt_.max_cards, rt_->ncards());
   if (ncards_ != 1 && ncards_ != 2) throw std::runtime_error("the engine runs on one or two cards");
+  ngroups_ = opt_.groups;
+  if (ngroups_ == 0 || ncards_ % ngroups_ || Q_LAYERS % ngroups_)
+    throw std::runtime_error("the groups divide neither the cards nor the layers");
+  width_ = ncards_ / ngroups_;
   // The copy engines read an anonymous arena through a userptr binding of each copy's source (ADR-0035, item 2), which
   // needs no shared system USM. Out of fault mode (ADR-0037) the cards report none: 0x0 here.
   for (uint32_t c = 0; c < ncards_ && opt_.anon_arena; c++)
@@ -130,7 +138,7 @@ Model::Model(const std::string &path, const Options &opt) : opt_(opt), gguf_(pat
   pool_ = std::make_unique<Pool>(opt_.cpu_threads > 1 ? opt_.cpu_threads - 1 : 0);
   cpu_ = std::make_unique<CpuExperts>(*pool_);
   ngram_ = std::make_unique<Ngram>(gguf_);
-  events_ = std::make_unique<ze::EventPool>(*rt_, Q_LAYERS * (2 * ncards_ + 2) + 1 + kAttn * ncards_);
+  events_ = std::make_unique<ze::EventPool>(*rt_, Q_LAYERS * (2 * ncards_ + 2) + 1 + kAttn * ncards_ + ncards_);
 
   plan_ = static_cast<StepPlan *>(rt_->alloc_host(sizeof(StepPlan)));
   std::memset(plan_, 0, sizeof(StepPlan));
@@ -167,7 +175,7 @@ Model::Model(const std::string &path, const Options &opt) : opt_(opt), gguf_(pat
   kv_margin_ = std::max<uint32_t>(2048, 2 * tmax_ / KV_PAGE_CELLS);  // two prompt chunks, or 8,192 positions
   if (tmax_) {
     if (opt_.prompt_chunk % 64) throw std::runtime_error("prompt_chunk must be a multiple of 64");
-    pevents_ = std::make_unique<ze::EventPool>(*rt_, 7 * Q_LAYERS * ncards_ + 1 + kAttn * ncards_ + ncards_);
+    pevents_ = std::make_unique<ze::EventPool>(*rt_, 7 * Q_LAYERS * ncards_ + 1 + kAttn * ncards_ + 2 * ncards_);
     pplan_ = static_cast<PromptPlan *>(rt_->alloc_host((1 + PROMPT_MAX_RUNS) * sizeof(PromptPlan)));
     std::memset(pplan_, 0, (1 + PROMPT_MAX_RUNS) * sizeof(PromptPlan));
     prows_ = static_cast<uint32_t *>(rt_->alloc_host(2 * 4));
@@ -209,11 +217,16 @@ void Model::load_cards(bool first) {
       m->reader_.reset();
     }
   } done{this};
-  for (uint32_t c = 0; c < ncards_; c++) {
+  const uint32_t per = Q_LAYERS / ngroups_;
+  for (uint32_t d = 0; d < ncards_; d++) {
     auto card = std::make_unique<Card>();
-    card->c = c;
-    card->C = ncards_;
-    card->up = std::make_unique<ze::List>(*rt_, c, ze::List::immediate);
+    card->dev = d;
+    card->g = d / width_;
+    card->c = d % width_;
+    card->C = width_;
+    card->l0 = card->g * per;
+    card->l1 = card->l0 + per;
+    card->up = std::make_unique<ze::List>(*rt_, d, ze::List::immediate);
     cards_.push_back(std::move(card));
   }
   for (auto &card : cards_) load_card(*card);
@@ -221,7 +234,8 @@ void Model::load_cards(bool first) {
     for (auto &card : cards_) load_prompt(*card);
   load_vision(first);
   if (mtp_on_)
-    for (auto &card : cards_) load_mtp(*card);
+    for (auto &card : cards_)
+      if (card->last()) load_mtp(*card);
   load_experts(first);
   std::fprintf(stderr, "engine: read %.2f GB of weights with O_DIRECT in %.2f s%s\n", reader_->bytes_read() / 1e9,
                std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(),
@@ -231,7 +245,7 @@ void Model::load_cards(bool first) {
   for (auto &card : cards_) {
     for (uint32_t W = 1; W <= STEP_MAX_ROWS; W *= 2) record(*card, W);
     record_commit(*card);
-    if (mtp_on_) {
+    if (mtp_on_ && card->last()) {
       for (uint32_t W = 1; W <= STEP_MAX_ROWS; W *= 2) record_mtp(*card, W, false);
       for (uint32_t W = 1; W <= STEP_MAX_ROWS; W *= 2) record_mtp(*card, W, true);
     }
@@ -259,6 +273,7 @@ void Model::load_cards(bool first) {
     reset_slot(0);
   }
   info_.cards = ncards_;
+  info_.groups = ngroups_;
   info_.experts_per_layer = nslots_cached_;
   if (share_) {
     uint32_t sum = 0;
@@ -401,7 +416,7 @@ const GgufTensor &Model::src(const std::string &name) {
 }
 
 void Model::load_card(Card &card) {
-  const uint32_t C = ncards_, c = card.c;
+  const uint32_t C = card.C, c = card.c;
   card.nkh = Q_GDN_KH / C;
   card.nvh = Q_GDN_VH / C;
   card.nch = 2 * card.nkh * Q_GDN_D + card.nvh * Q_GDN_D;
@@ -472,6 +487,10 @@ void Model::load_card(Card &card) {
     Layer &L = card.layers[l];
     L.attn = Q_IS_ATTN(l);
     L.idx = L.attn ? ai++ : gi++;
+    if (!card.holds(l)) {
+      if (share_ && L.attn) card.kv.resize(card.kv.size() + 4);  // the regions of a layer the card does not hold
+      continue;
+    }
     const char *hn[2][4] = {{"hc_attn_norm.weight", "hc_attn_down.weight", "hc_attn_up.weight", "hc_attn_inject.weight"},
                             {"hc_ffn_norm.weight", "hc_ffn_down.weight", "hc_ffn_up.weight", "hc_ffn_inject.weight"}};
     for (int i = 0; i < 2; i++) {
@@ -557,24 +576,28 @@ void Model::load_card(Card &card) {
     unstage();
   }
 
-  card.out_norm = f32("output_hc_norm.weight");
-  card.out_down = bf16("output_hc_down.weight");
-  card.out_up = hc_up_rows("output_hc_up.weight");
-  card.head = mat(card, src("output.weight"), {{card.vocab0, card.vocab_n}});
-  card.ple_k = bf16("blk.1.ple_key.weight");
-  card.ple_v = bf16("blk.1.ple_value.weight");
-  card.ple_gk = f32("blk.1.ple_norm_key.weight");
-  card.ple_gq = f32("blk.1.ple_norm_query.weight");
-  card.ple_gc = f32("blk.1.ple_norm_conv.weight");
-  card.ple_conv = f32("blk.1.ple_conv1d.weight");
+  if (card.last()) {
+    card.out_norm = f32("output_hc_norm.weight");
+    card.out_down = bf16("output_hc_down.weight");
+    card.out_up = hc_up_rows("output_hc_up.weight");
+    card.head = mat(card, src("output.weight"), {{card.vocab0, card.vocab_n}});
+  }
+  if (card.first()) {
+    card.ple_k = bf16("blk.1.ple_key.weight");
+    card.ple_v = bf16("blk.1.ple_value.weight");
+    card.ple_gk = f32("blk.1.ple_norm_key.weight");
+    card.ple_gq = f32("blk.1.ple_norm_query.weight");
+    card.ple_gc = f32("blk.1.ple_norm_conv.weight");
+    card.ple_conv = f32("blk.1.ple_conv1d.weight");
+    card.ple_stride = (uint64_t)Q_PLE_HIST * Q_HC_DIM;
+    card.ple_hist = upload<float>(card, nullptr, S * card.ple_stride * 4);
+  }
   {
     // Each slot's own run of pages while they fit in the pool; page 0 past it, until set_pages.
     std::vector<uint32_t> t((size_t)S * npp_);
     for (size_t i = 0; i < t.size(); i++) t[i] = i < kv_pages_ ? (uint32_t)i : 0;
     card.ptab = upload<uint32_t>(card, t.data(), t.size() * 4);
   }
-  card.ple_stride = (uint64_t)Q_PLE_HIST * Q_HC_DIM;
-  card.ple_hist = upload<float>(card, nullptr, S * card.ple_stride * 4);
   unstage();
 
   // The decode step's buffers, for STEP_MAX_ROWS rows.
@@ -629,27 +652,27 @@ void Model::load_card(Card &card) {
   card.pv = fbuf(Q_EMBD);
   card.gates = fbuf(Q_HC);
   card.N = fbuf(Q_HC_DIM);
-  card.logits = fbuf(card.vocab_n);
+  if (card.last()) card.logits = fbuf(card.vocab_n);
   card.xa8 = upload<uint8_t>(card, nullptr, W * a8_bytes(Q_EMBD));
   card.oa8 = upload<uint8_t>(card, nullptr, W * a8_bytes(std::max(card.nvh * Q_GDN_D, card.nq * Q_ATT_D)));
   card.ha8 = upload<uint8_t>(card, nullptr, W * Q_USED * a8_bytes(card.ff));
   card.sha8 = upload<uint8_t>(card, nullptr, W * a8_bytes(card.ff));
   card.yo = fbuf(Q_EMBD);
-  if (ncards_ > 1) card.xp = upload<float>(card, nullptr, (size_t)2 * ncards_ * STEP_MAX_ROWS * Q_EMBD * 4);
+  if (C > 1) card.xp = upload<float>(card, nullptr, (size_t)2 * C * STEP_MAX_ROWS * Q_EMBD * 4);
 }
 
-// Which experts the cards cache, and the arena of the others for the CPU. Each card holds half of every cached
-// expert: rows [f0, f0 + ff) of gate and up, the matching columns of down. Both cards cache the same experts. first:
-// choose them and fill the arena; otherwise the cards cache the experts the host's maps name, swaps included.
+// Which experts the cards cache, and the arena of the others for the CPU. Each card of a layer's group holds its
+// share of every cached expert: rows [f0, f0 + ff) of gate and up, the matching columns of down. The cards of a group
+// cache the same experts. first: choose them and fill the arena; otherwise the cards cache the experts the host's maps
+// name, swaps included.
 void Model::load_experts(bool first) {
-  // Bytes per slot, per layer.
-  std::vector<uint64_t> slot_bytes(Q_LAYERS);
-  uint64_t per_set = 0;
+  // Bytes per slot, per layer, and per group for one expert in each of its layers.
+  std::vector<uint64_t> slot_bytes(Q_LAYERS), per_set(ngroups_, 0);
   for (uint32_t l = 0; l < Q_LAYERS; l++) {
     const GgufTensor &g = gguf_.tensor(blk(l, "ffn_gate_exps.weight")), &d = gguf_.tensor(blk(l, "ffn_down_exps.weight"));
-    Card &c0 = *cards_[0];
-    uint64_t gb = runs_bytes(g.type, (uint64_t)c0.ff * (Q_EMBD / quant_block_values(g.type)));
-    uint64_t db = runs_bytes(d.type, (uint64_t)Q_EMBD * (c0.ff / quant_block_values(d.type)));
+    const uint32_t ff = home(l).ff;
+    uint64_t gb = runs_bytes(g.type, (uint64_t)ff * (Q_EMBD / quant_block_values(g.type)));
+    uint64_t db = runs_bytes(d.type, (uint64_t)Q_EMBD * (ff / quant_block_values(d.type)));
     for (auto &card : cards_) {
       Layer &L = card->layers[l];
       L.gu_type = g.type;
@@ -659,7 +682,7 @@ void Model::load_experts(bool first) {
       L.slot_bytes = L.down_off + align256(db);
     }
     slot_bytes[l] = cards_[0]->layers[l].slot_bytes;
-    per_set += slot_bytes[l];
+    per_set[home(l).g] += slot_bytes[l];
   }
   // The prompt path's staging holds two layers of the experts not cached, each card's share of them: its rows of gate
   // and up, and its region of down. The arena keeps down in one region per card, so a card stages only the blocks it
@@ -667,22 +690,30 @@ void Model::load_experts(bool first) {
   std::vector<uint64_t> stg_bytes(Q_LAYERS);
   for (uint32_t l = 0; l < Q_LAYERS; l++) {
     const GgufTensor &g = gguf_.tensor(blk(l, "ffn_gate_exps.weight")), &d = gguf_.tensor(blk(l, "ffn_down_exps.weight"));
-    uint64_t gh = align256((uint64_t)cards_[0]->ff * g.row_bytes());
-    stg_bytes[l] = 2 * gh + align256(d.bytes / Q_EXPERTS / ncards_);
+    uint64_t gh = align256((uint64_t)home(l).ff * g.row_bytes());
+    stg_bytes[l] = 2 * gh + align256(d.bytes / Q_EXPERTS / width_);
   }
-  auto staging = [&](uint64_t n) {
+  // A group's staging, for its own layers.
+  auto staging = [&](uint32_t g, uint64_t n) {
     if (tmax_ == 0) return (uint64_t)0;
     uint64_t mx = 0;
-    for (uint32_t l = 0; l < Q_LAYERS; l++) mx = std::max(mx, (Q_EXPERTS - n) * stg_bytes[l]);
+    for (uint32_t l = 0; l < Q_LAYERS; l++)
+      if (home(l).g == g) mx = std::max(mx, (Q_EXPERTS - n) * stg_bytes[l]);
     return 2 * mx;
   };
-  uint64_t budget = UINT64_MAX;
+  // Each group's room: the least any of its cards has.
+  std::vector<uint64_t> budget(ngroups_, UINT64_MAX);
   for (auto &card : cards_) {
-    uint64_t total = rt_->cards()[card->c].memory,
-             used = rt_->device_bytes(card->c) + 2 * Q_LAYERS * Q_EXPERTS * 4;
+    uint64_t total = rt_->cards()[card->dev].memory,
+             used = rt_->device_bytes(card->dev) + 2 * Q_LAYERS * Q_EXPERTS * 4;
     uint64_t free = total > used + opt_.reserve_bytes ? total - used - opt_.reserve_bytes : 0;
-    budget = std::min(budget, free);
+    budget[card->g] = std::min(budget[card->g], free);
   }
+  auto fits = [&](uint64_t n) {
+    for (uint32_t g = 0; g < ngroups_; g++)
+      if (n * per_set[g] + staging(g, n) > budget[g]) return false;
+    return true;
+  };
   uint64_t n = nslots_cached_;
   std::vector<uint64_t> profile;
   std::vector<uint32_t> count(Q_LAYERS);  // with sharing: each layer's cached experts
@@ -701,12 +732,13 @@ void Model::load_experts(bool first) {
     n = nslots_cached_;
     if (first && !opt_.routing_profile.empty()) profile = read_routing_profile(opt_.routing_profile);
   } else if (first) {
-    n = std::min<uint64_t>(Q_EXPERTS, budget / per_set);
-    while (n > 0 && n * per_set + staging(n) > budget) n--;
+    n = Q_EXPERTS;
+    for (uint32_t g = 0; g < ngroups_; g++) n = std::min<uint64_t>(n, budget[g] / per_set[g]);
+    while (n > 0 && !fits(n)) n--;
     if (opt_.experts_per_layer >= 0) n = std::min<uint64_t>(n, (uint64_t)opt_.experts_per_layer);
     nslots_cached_ = (uint32_t)n;
     if (!opt_.routing_profile.empty()) profile = read_routing_profile(opt_.routing_profile);
-  } else if (n * per_set + staging(n) > budget) {
+  } else if (!fits(n)) {
     throw std::runtime_error("the cards no longer have room for the experts they cached before the sleep");
   }
 
@@ -738,10 +770,11 @@ void Model::load_experts(bool first) {
     for (uint32_t i = 0; i < o.size(); i += kBatch)
       batches.push_back({l, i, std::min<uint32_t>(kBatch, (uint32_t)o.size() - i)});
     per_expert = std::max(per_expert, 2 * cap(hl.gate_bytes) + cap(hl.down_bytes));
-    for (auto &card : cards_) {
-      Layer &L = card->layers[l];
-      L.slot_map = upload<int32_t>(*card, hl.slot_of.data(), Q_EXPERTS * 4);
-      if (n && !share_) L.cache = upload<uint8_t>(*card, nullptr, n * L.slot_bytes);
+    for (uint32_t r = 0; r < width_; r++) {
+      Card &card = group_card(home(l).g, r);
+      Layer &L = card.layers[l];
+      L.slot_map = upload<int32_t>(card, hl.slot_of.data(), Q_EXPERTS * 4);
+      if (n && !share_) L.cache = upload<uint8_t>(card, nullptr, n * L.slot_bytes);
     }
   }
   struct Staged {
@@ -752,7 +785,7 @@ void Model::load_experts(bool first) {
   for (Staged &x : st) x.buf = aligned_buffer(kBatch * per_expert);
   uint64_t slot_max = 0;
   for (auto &L : cards_[0]->layers) slot_max = std::max(slot_max, L.slot_bytes);
-  std::vector<std::vector<uint8_t>> runs(ncards_, std::vector<uint8_t>(kBatch * slot_max));
+  std::vector<std::vector<uint8_t>> runs(width_, std::vector<uint8_t>(kBatch * slot_max));  // by rank
   auto read = [&](Staged &x, const Batch &B) {
     const GgufTensor *t[3] = {&gguf_.tensor(blk(B.l, "ffn_gate_exps.weight")),
                               &gguf_.tensor(blk(B.l, "ffn_up_exps.weight")),
@@ -773,9 +806,10 @@ void Model::load_experts(bool first) {
     const uint32_t cached = B.first < count[B.l] ? std::min<uint32_t>(B.count, count[B.l] - B.first) : 0;
     const uint32_t gt = hl.shape.gate_type, dt = hl.shape.down_type, dqk = quant_block_values(dt);
     const uint64_t gbpr = Q_EMBD / quant_block_values(gt), grb = hl.gate_row_bytes, drb = hl.down_bytes / Q_EMBD;
-    pool_->run((uint64_t)cached * ncards_ + (B.count - cached), [&](uint64_t j) {
-      if (j >= (uint64_t)cached * ncards_) {  // an arena expert: its three matrices into its piece
-        const uint32_t i = cached + (uint32_t)(j - (uint64_t)cached * ncards_), e = order[B.l][B.first + i];
+    const uint32_t grp = home(B.l).g;
+    pool_->run((uint64_t)cached * width_ + (B.count - cached), [&](uint64_t j) {
+      if (j >= (uint64_t)cached * width_) {  // an arena expert: its three matrices into its piece
+        const uint32_t i = cached + (uint32_t)(j - (uint64_t)cached * width_), e = order[B.l][B.first + i];
         uint8_t *p = hl.arena[e];
         std::memcpy(p, x.at[i].gate, hl.gate_bytes);
         std::memcpy(p + hl.gate_bytes, x.at[i].up, hl.gate_bytes);
@@ -783,7 +817,7 @@ void Model::load_experts(bool first) {
         return;
       }
       const uint32_t c = (uint32_t)(j / cached), i = (uint32_t)(j % cached);
-      const Card &card = *cards_[c];
+      const Card &card = group_card(grp, c);
       const Layer &L = card.layers[B.l];
       const uint32_t f0 = card.c * card.ff;
       uint8_t *slot = runs[c].data() + i * L.slot_bytes;
@@ -792,11 +826,12 @@ void Model::load_experts(bool first) {
       to_runs(dt, {{x.at[i].down, drb, 0, Q_EMBD, f0 / dqk, card.ff / dqk}}, slot + L.down_off);
     });
     if (!cached) return;
-    for (auto &card : cards_) {
-      const Layer &L = card->layers[B.l];
-      card->up->copy(L.cache + (uint64_t)B.first * L.slot_bytes, runs[card->c].data(), (uint64_t)cached * L.slot_bytes);
+    for (uint32_t r = 0; r < width_; r++) {
+      Card &card = group_card(grp, r);
+      const Layer &L = card.layers[B.l];
+      card.up->copy(L.cache + (uint64_t)B.first * L.slot_bytes, runs[r].data(), (uint64_t)cached * L.slot_bytes);
     }
-    for (auto &card : cards_) card->up->synchronize();
+    for (uint32_t r = 0; r < width_; r++) group_card(grp, r).up->synchronize();
   };
   std::thread reading;
   std::exception_ptr failed;
@@ -844,8 +879,8 @@ std::unique_ptr<Model::HostLayer> Model::host_layer(uint32_t l, uint64_t n, cons
   hl->gate_bytes = eg;
   hl->down_bytes = ed;
   hl->gate_row_bytes = g.row_bytes();
-  hl->down_parts = ncards_;
-  hl->stg_up_off = align256((uint64_t)cards_[0]->ff * g.row_bytes());
+  hl->down_parts = width_;
+  hl->stg_up_off = align256((uint64_t)home(l).ff * g.row_bytes());
   hl->stg_down_off = 2 * hl->stg_up_off;
   hl->stg_bytes = stg_bytes;
   hl->weights.resize(Q_EXPERTS);
@@ -878,12 +913,12 @@ void Model::matvec(ze::List &list, Card &card, const Mat &m, const uint8_t *act,
   if (m.rows <= kMvKsRows && lanes == 8) {
     // Few rows: K split over 4 sub-groups of 8 lanes per row (matvec_ks), so that the card has enough of them.
     const uint32_t ks = 4;
-    list.launch(kernel(card.c, mv_module(m.type, 8), "matvec_ks"),
+    list.launch(kernel(card.dev, mv_module(m.type, 8), "matvec_ks"),
                 {m.p, m.rows, m.bpr, act, m.K, stride, ntok, y, m.rows, card.grids, ks}, (m.rows + 1) / 2, 1, 1,
                 16 * ks, 1, 1, signal);
     return;
   }
-  auto k = kernel(card.c, mv_module(m.type, lanes), "matvec");
+  auto k = kernel(card.dev, mv_module(m.type, lanes), "matvec");
   uint32_t rows_per_wg = 4 * (16 / lanes);
   list.launch(k, {m.p, m.rows, m.bpr, act, m.K, stride, ntok, y, m.rows, card.grids},
               (m.rows + rows_per_wg - 1) / rows_per_wg, 1, 1, 64, 1, 1, signal);
@@ -895,11 +930,11 @@ void Model::matvec(ze::List &list, Card &card, const Mat &m, const uint8_t *act,
 void Model::record(Card &card, uint32_t W) {
   // Not in order: the launches between L.together(true) and L.together(false) read the same inputs and write their
   // own outputs, so they may run side by side; each other command waits for those before it.
-  auto list = std::make_unique<ze::List>(*rt_, card.c, ze::List::regular, false, false);
+  auto list = std::make_unique<ze::List>(*rt_, card.dev, ze::List::regular, false, false);
   ze::List &L = *list;
-  const uint32_t c = card.c, C = ncards_;
-  auto common = [&](const char *name) { return kernel(c, "common", name); };
-  auto q4 = [&](const char *name) { return kernel(c, "qwen4exp", name); };
+  const uint32_t c = card.c, C = card.C, dev = card.dev;
+  auto common = [&](const char *name) { return kernel(dev, "common", name); };
+  auto q4 = [&](const char *name) { return kernel(dev, "qwen4exp", name); };
   const float one = 1.0f, quarter = 0.25f;
   const uint32_t zero = 0, mode_silu = 1;
   // The kernels read the plan from the card's copy: a word in host memory makes each launch slower
@@ -912,7 +947,7 @@ void Model::record(Card &card, uint32_t W) {
     L.trace(card.trace[W], 8192);
   }
   L.copy(card.plan, plan_, sizeof(StepPlan));
-  L.timestamp(step_ts_ + 2 * c);
+  L.timestamp(step_ts_ + 2 * dev);
   // The BF16 products, on the XMX units with bf16 activations (xb: 8 rows of K), as the reference rounds a BF16
   // product's activation (docs/spec/MODEL_LAYER.md, section 6) and the prompt path's gemm_bf16 takes it. K split in 4,
   // or in 16 for a few rows.
@@ -958,11 +993,13 @@ void Model::record(Card &card, uint32_t W) {
   // The mixer's out product, this card's partial sums into ex1_; from 2 rows via card memory and one copy to host
   // (docs/measurements/MEASUREMENTS.md#2026-10-16-out-products-host-writes). With two cards, 2 rows or more exchange card to card
   // (ADR-0030, docs/measurements/MEASUREMENTS.md#2026-10-16-peer-exchange): a card's block of xp is copied to the same block of the
-  // other's, and the combine reads both in card order, so the sums match. k: 0 the mixer's exchange, 1 the MoE's.
+  // other's in the group, and the combine reads both in card order, so the sums match. k: 0 the mixer's exchange, 1
+  // the MoE's.
   const bool peer = C > 1 && W > 1;
   auto xp_block = [&](const Card &to, uint32_t k) { return to.xp + ((size_t)k * C + c) * STEP_MAX_ROWS * Q_EMBD; };
   auto send_peer = [&](uint32_t k, uint32_t layer, uint32_t base) {
-    L.copy(xp_block(*cards_[1 - c], k), xp_block(card, k), (size_t)W * Q_EMBD * 4, (*events_)[ev(layer, base + c)]);
+    L.copy(xp_block(group_card(card.g, 1 - c), k), xp_block(card, k), (size_t)W * Q_EMBD * 4,
+           (*events_)[ev(layer, base + c)]);
   };
   auto out_product = [&](const Mat &m, float *p1, uint32_t layer) {
     if (W == 1) {
@@ -978,9 +1015,13 @@ void Model::record(Card &card, uint32_t W) {
     L.copy(p1, card.yo, (size_t)W * Q_EMBD * 4, (*events_)[ev(layer, c)]);
   };
 
-  L.launch(q4("hc_init"), {embed_, plan, card.R}, Q_HC_DIM / 64, W, 1, 64);
+  // The first group starts from the embeddings; the others from the residuals the group before copies in.
+  if (card.first())
+    L.launch(q4("hc_init"), {embed_, plan, card.R}, Q_HC_DIM / 64, W, 1, 64);
+  else
+    L.wait({(*events_)[handoff_ev(dev)]});
   bool normed = false;  // the layer's first norm done by the exchange before it
-  for (uint32_t l = 0; l < Q_LAYERS; l++) {
+  for (uint32_t l = card.l0; l < card.l1; l++) {
     Layer &Ly = card.layers[l];
     if (l == 1) {  // the PLE module (MODEL_IO.md, 1.3), after the host has read the rows (ADR-0015)
       L.wait({(*events_)[ngram_ev()]});
@@ -1073,12 +1114,12 @@ void Model::record(Card &card, uint32_t W) {
       L.together(true);
       // moe.cl's also writes h as a8.
       if (gm.empty())
-        L.launch(kernel(c, mv_module(Ly.gu_type, 16), "moe_gate_up_g"),
+        L.launch(kernel(dev, mv_module(Ly.gu_type, 16), "moe_gate_up_g"),
                  {Ly.cache, Ly.slot_bytes, card.groups, card.ngroups, card.ff, gbpr, Ly.up_off, card.xa8, K, xs, per,
                   card.h, card.grids},
                  (card.ff + rpw - 1) / rpw, W * Q_USED, 1, lx);
       else
-        L.launch(kernel(c, gm, "moe_gate_up_g"),
+        L.launch(kernel(dev, gm, "moe_gate_up_g"),
                  {Ly.cache, Ly.slot_bytes, card.groups, card.ngroups, card.ff, gbpr, Ly.up_off, card.xa8, K, xs, per,
                   card.h, card.grids, card.ha8},
                  (card.ff + rpw - 1) / rpw, W * Q_USED, 1, lx);
@@ -1089,7 +1130,7 @@ void Model::record(Card &card, uint32_t W) {
       uint32_t dlx = dm.empty() ? 64 : kSgSize * MOE_WG_ROWS / MOE_DOWN_ROWS(Ly.down_type, W);
       uint32_t dbpr = card.ff / quant_block_values(Ly.down_type);
       uint32_t stride = (uint32_t)a8_bytes(card.ff);
-      L.launch(kernel(c, dm.empty() ? mv_module(Ly.down_type, 4) : dm, "moe_down_g"),
+      L.launch(kernel(dev, dm.empty() ? mv_module(Ly.down_type, 4) : dm, "moe_down_g"),
                {Ly.cache, Ly.slot_bytes, card.groups, card.ngroups, (uint32_t)Q_EMBD, dbpr, Ly.down_off, card.ha8, card.ff,
                 stride, card.y, card.grids},
                (Q_EMBD + drpw - 1) / drpw, W * Q_USED, 1, dlx);
@@ -1107,30 +1148,37 @@ void Model::record(Card &card, uint32_t W) {
       L.launch(q4("moe_combine"), {card.y, card.w, card.slots, card.s, card.rl, cpu, nmiss, plan, p2}, Q_EMBD / 64, W,
                1, 64, 1, 1, (*events_)[ev(l, C + c)]);
     }
-    // The next layer's first norm with this combine, but before layer 1, whose PLE module changes R first.
-    normed = l + 1 < Q_LAYERS && l + 1 != 1;
+    // The next layer's first norm with this combine, but before layer 1, whose PLE module changes R first, and not
+    // past the group's layers.
+    normed = l + 1 < card.l1 && l + 1 != 1;
     exchange(peer ? card.xp + (size_t)C * STEP_MAX_ROWS * Q_EMBD : ex2_ + l * ex_layer, l, C, card.inj[1] + Q_HC_LR,
              normed ? card.layers[l + 1].hc_norm[0] : nullptr);
   }
-  record_head(L, card, plan, W);
-  L.timestamp(step_ts_ + 2 * c + 1);
+  if (card.last()) {
+    record_head(L, card, plan, W);
+  } else {
+    Card &next = group_card(card.g + 1, c);
+    L.copy(next.R, card.R, (size_t)W * Q_HC_DIM * 4, (*events_)[handoff_ev(next.dev)]);
+  }
+  L.timestamp(step_ts_ + 2 * dev + 1);
   L.close();
   card.lists[W] = std::move(list);
 }
 
 // A window's commit (CommitPlan): the accepted rows' recurrent state, replayed from what the window kept.
 void Model::record_commit(Card &card) {
-  card.commit = std::make_unique<ze::List>(*rt_, card.c, ze::List::regular);
+  card.commit = std::make_unique<ze::List>(*rt_, card.dev, ze::List::regular);
   ze::List &L = *card.commit;
-  auto q4 = [&](const char *name) { return kernel(card.c, "qwen4exp", name); };
-  for (auto &Ly : card.layers) {
+  auto q4 = [&](const char *name) { return kernel(card.dev, "qwen4exp", name); };
+  for (uint32_t l = card.l0; l < card.l1; l++) {
+    const Layer &Ly = card.layers[l];
     if (Ly.attn) continue;
     L.launch(q4("gdn_conv_commit"), {Ly.wm, Ly.conv_state, Ly.conv_stride, card.nch, cplan_}, (card.nch + 63) / 64, 1, 1,
              64);
     L.launch(q4("gdn_commit"), {Ly.wu, card.nch, Ly.wgb, Ly.S, Ly.S_stride, card.nkh, card.nvh, cplan_}, card.nvh, 1, 1,
              4 * Q_GDN_D);
   }
-  L.launch(q4("ple_commit"), {card.N, card.ple_hist, card.ple_stride, cplan_}, Q_HC_DIM / 64, 1, 1, 64);
+  if (card.first()) L.launch(q4("ple_commit"), {card.N, card.ple_hist, card.ple_stride, cplan_}, Q_HC_DIM / 64, 1, 1, 64);
   L.close();
 }
 
@@ -1161,8 +1209,8 @@ void Model::wait_commit() {
 // row's 64 largest logits into the host's candidate buffers. plan gives the rows.
 void Model::record_head(ze::List &L, Card &card, const StepPlan *plan, uint32_t W) {
   const uint32_t c = card.c;
-  auto common = [&](const char *name) { return kernel(c, "common", name); };
-  auto q4 = [&](const char *name) { return kernel(c, "qwen4exp", name); };
+  auto common = [&](const char *name) { return kernel(card.dev, "common", name); };
+  auto q4 = [&](const char *name) { return kernel(card.dev, "qwen4exp", name); };
   const float one = 1.0f, quarter = 0.25f;
   const uint32_t zero = 0, mode_silu = 1, gs = Q_EMBD;
   uint16_t *no_bf16 = nullptr;
@@ -1192,12 +1240,13 @@ void Model::reset_slot(uint32_t slot) {
   blocks_[slot].clear();
   const uint32_t zero = 0;
   for (auto &card : cards_) {
-    for (auto &L : card->layers) {
+    for (uint32_t l = card->l0; l < card->l1; l++) {
+      Layer &L = card->layers[l];
       if (L.attn) continue;
       card->up->fill(L.conv_state + slot * L.conv_stride, &zero, 4, L.conv_stride * 4);
       card->up->fill(L.S + slot * L.S_stride, &zero, 4, L.S_stride * 4);
     }
-    card->up->fill(card->ple_hist + slot * card->ple_stride, &zero, 4, card->ple_stride * 4);
+    if (card->first()) card->up->fill(card->ple_hist + slot * card->ple_stride, &zero, 4, card->ple_stride * 4);
     card->up->synchronize();
   }
 }
@@ -1252,8 +1301,8 @@ std::vector<std::vector<Candidate>> Model::step(const StepIn *rows, uint32_t n, 
   std::vector<float> xs((size_t)n * Q_EMBD);
   const uint32_t step = plan_->step;
   for (uint32_t l = 0; l < Q_LAYERS; l++) {
-    // The layer's records (ADR-0011): spin until card 0 publishes each row's for this step; then all the rows'
-    // misses at once, each expert's weights read once.
+    // The layer's records (ADR-0011): spin until the first card of the layer's group publishes each row's for this
+    // step; then all the rows' misses at once, each expert's weights read once.
     jobs.clear();
     HostLayer &hl = *host_layers_[l];
     for (uint32_t r = 0; r < n; r++) {
@@ -1263,7 +1312,7 @@ std::vector<std::vector<Candidate>> Model::step(const StepIn *rows, uint32_t n, 
       for (uint32_t k = 0; seq.load(std::memory_order_acquire) != step; k++) {
         _mm_pause();
         if ((k & 0xffff) == 0 && std::chrono::steady_clock::now() - t0 > std::chrono::seconds(10))
-          throw std::runtime_error("card 0 did not publish layer " + std::to_string(l) + "'s experts");
+          throw std::runtime_error("the cards did not publish layer " + std::to_string(l) + "'s experts");
       }
       const uint32_t nm = J.nmiss;
       if (opt_.adapt_swaps) note_routing(l, J.all, Q_USED, prompt ? kPromptRouting : 1.0f);
@@ -1278,7 +1327,7 @@ std::vector<std::vector<Candidate>> Model::step(const StepIn *rows, uint32_t n, 
     std::atomic_ref<uint32_t>(ans_seq_[16 * l]).store(step, std::memory_order_release);
   }
   for (auto &card : cards_) card->lists.at(W)->synchronize();
-  if (*stuck_) throw std::runtime_error("card 0 gave up waiting for the CPU's experts");
+  if (*stuck_) throw std::runtime_error("a card gave up waiting for the CPU's experts");
   stats_.rows = n;
   for (uint32_t c = 0; c < ncards_ && c < 2; c++) {
     const ze::Card &zc = rt_->cards()[c];
@@ -1292,7 +1341,7 @@ std::vector<std::vector<Candidate>> Model::step(const StepIn *rows, uint32_t n, 
   std::vector<std::vector<Candidate>> out(n);
   for (uint32_t r = 0; r < n; r++) {
     auto &o = out[r];
-    for (uint32_t c = 0; c < ncards_; c++) {
+    for (uint32_t c = 0; c < width_; c++) {  // the last group's ranks
       size_t base = ((size_t)c * STEP_MAX_ROWS + r) * opt_.candidates;
       for (uint32_t i = 0; i < top_n_[c * STEP_MAX_ROWS + r]; i++) o.push_back({(int32_t)top_idx_[base + i], top_val_[base + i]});
     }

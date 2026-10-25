@@ -1,8 +1,9 @@
-// qwen4exp on one or two cards: every layer split between the cards (docs/DESIGN.md, section 5; ADR-0023), the
-// experts the cards do not cache computed by the CPU. Each card records its step once per window width, at load.
-// The cards exchange partial sums twice per layer (ADR-0030); card 0 hands each layer's misses to the CPU through
-// flags in host memory (ADR-0011). The host's work per step is the embedding, the n-gram rows, the misses and the
-// sampling.
+// qwen4exp on one or two cards, in groups (docs/DESIGN.md, section 5): each group holds a range of the layers, and
+// each card of a group a share of every one of them (ADR-0023); the experts the cards do not cache computed by the
+// CPU. Each card records its step once per window width, at load. The cards of a group exchange partial sums twice
+// per layer (ADR-0030); a group hands its residuals to the next. The first card of each group hands each of its
+// layers' misses to the CPU through flags in host memory (ADR-0011). The host's work per step is the embedding, the
+// n-gram rows, the misses and the sampling.
 #pragma once
 
 #include <array>
@@ -35,6 +36,9 @@ struct Options {
   uint32_t kv_pages = 0;                    // the KV cache's pool, in pages of 4 cells (layout.h); 0: every slot's
                                             // whole context
   uint32_t max_cards = 2;                   // 1 runs the whole model on card 0
+  // The cards in this many groups, the layers split evenly between them in order: 1, every card on every layer;
+  // the cards' count, each card a range of the layers whole. It divides the cards and the layers.
+  uint32_t groups = 1;
   uint64_t reserve_bytes = 512ull << 20;    // device memory left free on each card, beyond what the engine counts
   int32_t experts_per_layer = -1;           // experts cached per layer; -1: as many as fit
   unsigned cpu_threads = 16;                // the CPU's expert workers, with the host thread
@@ -72,6 +76,7 @@ struct Candidate {
 
 struct LoadInfo {
   uint32_t cards = 0;
+  uint32_t groups = 0;
   uint32_t experts_per_layer = 0;
   uint32_t vocab = 0;
   uint64_t device_bytes[2] = {0, 0};
@@ -113,7 +118,7 @@ struct StepStats {
   uint32_t misses = 0;          // routed experts the CPU computed
   uint32_t layers_missed = 0;   // layers with at least one miss
   uint64_t card_ns[2] = {};     // each card's time from its list's first command to its last, by its timestamps
-  uint64_t cpu_wait_ns = 0;     // card 0's waits for the CPU's answers, from its clock at its top rate
+  uint64_t cpu_wait_ns = 0;     // the cards' waits for the CPU's answers, from their clocks at their top rate
 };
 
 class Model {
@@ -295,7 +300,7 @@ class Model {
   std::unique_ptr<ze::List> prompt_copies(Card &card, const Staging &st, uint32_t &copies);
   // A short chunk's staging on card c, on its own thread: each layer's uncached experts in order (hottest first)
   // until the router's counts are in, then the rest it routes to.
-  void fetch_experts(uint32_t c, const std::vector<std::vector<uint32_t>> &order);
+  void fetch_experts(uint32_t dev, const std::vector<std::vector<uint32_t>> &order);
   ze::List &prompt_list(Card &card, uint32_t T, uint32_t runs);
   uint32_t pev(uint32_t kind, uint32_t layer, uint32_t c) const;
   Mat mat(Card &card, const GgufTensor &t, const std::vector<std::pair<uint64_t, uint64_t>> &rows,
@@ -306,6 +311,10 @@ class Model {
               ze_event_handle_t signal = nullptr);
   ze_kernel_handle_t kernel(uint32_t card, const std::string &module, const std::string &name);
   uint32_t ev(uint32_t layer, uint32_t which) const;
+  uint32_t handoff_ev(uint32_t dev) const;  // the group before has copied its residuals into card dev's
+  // The groups (Options::groups): the cards of group g in rank order, and the first card of layer l's group.
+  Card &group_card(uint32_t g, uint32_t rank) const;
+  Card &home(uint32_t l) const;
   void note_routing(uint32_t layer, const int32_t *ids, uint32_t n, float weight);
   struct SwapPlan {
     uint32_t l, in, out;  // out kNoExpert: in fills the empty slot `slot` (a refill, kv_share.cpp)
@@ -334,10 +343,12 @@ class Model {
     std::vector<uint32_t> victims; // the experts that leave the cards
   };
   uint8_t *kv_region(Card &card, uint32_t x, uint64_t unit, uint32_t div);
+  const Region &kv_home(uint32_t x) const;
   uint32_t kv_pages_of(uint32_t x, size_t blocks) const;
   size_t kv_blocks_for(uint32_t x, uint32_t pages) const;
   uint32_t cache_slots(uint32_t l, size_t blocks) const;
-  void share_cards(bool first, uint64_t budget, const std::vector<uint64_t> &stg_bytes, std::vector<uint32_t> &count);
+  void share_cards(bool first, const std::vector<uint64_t> &budget, const std::vector<uint64_t> &stg_bytes,
+                   std::vector<uint32_t> &count);
   void map_cache(Card &card, uint32_t l, size_t blocks);
   void grow_kv(uint32_t pages);
   void shrink_kv(uint32_t pages);
@@ -372,6 +383,7 @@ class Model {
   std::vector<std::unique_ptr<Card>> cards_;
   std::vector<std::unique_ptr<HostLayer>> host_layers_;
   uint32_t ncards_ = 1;
+  uint32_t ngroups_ = 1, width_ = 1;  // the groups, and the cards in each
   uint32_t npp_ = 0;       // pages per slot's row of the table: the context's, rounded up to a multiple of the cards
   uint32_t kv_pages_ = 0;  // pages in the pool
   uint32_t nslots_cached_ = 0;
@@ -403,17 +415,17 @@ class Model {
   std::unique_ptr<ze::EventPool> mevents_;
   float *embed_ = nullptr;   // the token's embedding row
   float *ngram_u_ = nullptr; // its n-gram rows
-  float *ex1_ = nullptr, *ex2_ = nullptr;  // [layer][card][2560] partial sums
-  MissJob *jobs_ = nullptr;      // [layer] card 0's record of the misses for the CPU (ADR-0011)
+  float *ex1_ = nullptr, *ex2_ = nullptr;  // [layer][card of its group][2560] partial sums
+  MissJob *jobs_ = nullptr;      // [layer] the record of its misses for the CPU (ADR-0011)
   uint32_t *ans_seq_ = nullptr;  // [layer], 64 bytes apart: the step the CPU answered last
-  uint32_t *stuck_ = nullptr;    // card 0 gave up waiting for an answer
+  uint32_t *stuck_ = nullptr;    // a card gave up waiting for an answer
   uint64_t *step_ts_ = nullptr;  // [card][2]: the global timestamps at its list's start and end
-  uint64_t *waited_ = nullptr;   // [layer]: card 0's wait for the CPU in cpu_wait, in its clock's cycles
+  uint64_t *waited_ = nullptr;   // [layer]: the wait for the CPU in cpu_wait, in its card's clock's cycles
   float *cpu_y_ = nullptr;   // [layer][2560] the CPU's sum for the misses
-  uint32_t *top_idx_ = nullptr;  // [card][candidates]
+  uint32_t *top_idx_ = nullptr;  // [card of the last group][candidates]
   float *top_val_ = nullptr;
   uint32_t *top_n_ = nullptr;
-  uint32_t *icand_ = nullptr;  // [attention layer][card][row][kIdxCand]: the indexer's candidates
+  uint32_t *icand_ = nullptr;  // [attention layer][card of its group][row][kIdxCand]: the indexer's candidates
   std::vector<float> use_;  // [layer][expert] decayed routing counts, with Options::adapt_swaps
   uint64_t swaps_ = 0;
   std::vector<SwapPlan> swap_next_;  // chosen by the last round, applied by the next
@@ -431,6 +443,7 @@ class Model {
   uint32_t kv_margin_ = 0;        // pages backed ahead of use
   std::vector<uint64_t> kv_unit_; // per KV region: bytes a page, or a local page (kv_div_ = the cards)
   std::vector<uint32_t> kv_div_;
+  std::vector<uint32_t> kv_g_;    // per KV region: the group whose cards hold it
   std::vector<Evict> evict_next_;
   uint32_t evict_to_ = 0;         // the pages evict_next_ backs
   uint32_t copy_count_ = 0;  // the copies of the prompt path's staging list

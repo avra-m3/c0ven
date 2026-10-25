@@ -36,6 +36,7 @@ import gguf
 
 import protocol
 from engine import layout
+from engine.api import abi
 from engine.api.interface import (
     IMAGE_PATCH_BYTES,
     Engine,
@@ -495,6 +496,11 @@ def main(argv: list[str] | None = None) -> int:
     vision = None if args.no_vision or not native or args.model is None else args.vision or vision_file(args.model)
     if vision is not None:
         config = dataclasses.replace(config, vision_path=str(vision))
+    try:
+        config = dataclasses.replace(config, groups=layout.open_groups(args.layout, abi.MAX_CARDS))
+    except ValueError as exc:
+        print(protocol.Error(None, f"layout: {exc}").encode(), flush=True)
+        return 1
     sched = SchedulerOptions(prompt_budget_ms=args.prompt_budget_ms, decode_share=args.decode_share)
     rule = cast("CheckpointRule", model.checkpoint_positions)
     step_model = cast("Callable[..., tuple[ModelSteps, ModelMemory, Terms]]", model.step_model)
@@ -511,7 +517,7 @@ def main(argv: list[str] | None = None) -> int:
                 memory=memory,
                 options=options,
                 rows=rows,
-                runs={(1, facts.cards)},
+                runs={(facts.groups, facts.cards // facts.groups)},  # the layout the core opened
             )
         except (ValueError, OSError) as exc:
             if args.layout != "auto":

@@ -166,12 +166,15 @@ int main(int argc, char **argv) {
   cfg.model_path = argv[1];
   cfg.max_ctx = 1024;
   cfg.slots = 2;
+  if (getenv("FLASH_GROUPS")) cfg.groups = (uint32_t)atoi(getenv("FLASH_GROUPS"));  /* the cards in groups */
   engine_info info;
   engine_ctx *e = NULL;
   engine_status st = engine_open(&cfg, &info, &e);
   CHECK(st == ENGINE_OK, "open: %s", engine_last_error(NULL));
   CHECK(info.api_version == ENGINE_API_VERSION && info.vocab == 248320, "info");
-  printf("open: %u card(s), %u experts per layer, %.1f s\n", info.cards, info.experts_per_layer, info.load_seconds);
+  printf("open: %u card(s) in %u group(s), %u experts per layer, %.1f s\n", info.cards, info.groups,
+         info.experts_per_layer, info.load_seconds);
+  CHECK(info.groups == (cfg.groups ? cfg.groups : 1), "groups: %u", info.groups);
   npp = info.pages_per_slot;
   CHECK(info.kv_pages == cfg.slots * npp && npp * 4 >= cfg.max_ctx, "pages: %u, %u a slot", info.kv_pages, npp);
 

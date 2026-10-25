@@ -59,6 +59,7 @@ int main(int argc, char **argv) {
   opt.slots = S;
   opt.max_ctx = 1024;
   opt.prompt_chunk = 0;
+  if (const char *g = std::getenv("FLASH_GROUPS")) opt.groups = (uint32_t)std::stoul(g);  // the cards in groups
   qwen4exp::Model model(path, opt);
   auto row = [&](uint32_t s, uint32_t i) {
     const auto &q = seqs[s];

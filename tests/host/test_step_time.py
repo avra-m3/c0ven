@@ -72,10 +72,14 @@ def test_two_cards_in_one_group_are_cheapest_for_one_request(rows: int):
 
 
 def test_four_rows_from_four_requests():
-    """The pipelining rule is unchecked, so this only prints the two layouts' times a token."""
+    """The core runs the groups in turn, so a token takes the step over its rows; pipelined, groups(2, 1) would take
+    half that. The pipelining rule is unchecked, so this also prints the two layouts' times a token."""
     for lay in layouts(2, STEPS, TERMS, memory=MEMORY, options=OPTIONS):
         s = step_time(TERMS, STEPS, lay, 4, requests=4)
-        print(f"{lay}: {s.step_ms:.2f} ms a step, {s.token_ms:.2f} ms a token")
+        p = step_time(TERMS, STEPS, lay, 4, requests=4, pipelined=True)
+        assert s.token_ms == pytest.approx(s.step_ms / 4)
+        assert p.token_ms == pytest.approx(s.step_ms / (4 * lay.groups))
+        print(f"{lay}: {s.step_ms:.2f} ms a step, {s.token_ms:.2f} ms a token, {p.token_ms:.2f} pipelined")
 
 
 def test_four_cards_need_downs_in_whole_blocks():

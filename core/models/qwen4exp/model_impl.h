@@ -93,7 +93,7 @@ inline void write_down(uint8_t *dst, const uint8_t *src, uint64_t rows, uint64_t
 
 }  // namespace detail
 
-// One layer's weights and state on one card.
+// One layer's weights and state on one card; empty on a card whose group does not hold the layer.
 struct Model::Layer {
   bool attn = false;
   uint32_t idx = 0;  // index among the layers of its kind
@@ -155,15 +155,21 @@ struct Model::MtpCard {
 };
 
 struct Model::Card {
-  uint32_t c = 0, C = 1;  // this card, and how many
+  uint32_t dev = 0;        // the device, its index in cards_
+  uint32_t c = 0, C = 1;   // its rank in its group, and the cards in the group
+  uint32_t g = 0;          // its group, which holds the layers [l0, l1)
+  uint32_t l0 = 0, l1 = Q_LAYERS;
+  bool holds(uint32_t l) const { return l >= l0 && l < l1; }
+  bool first() const { return l0 == 0; }         // its group starts from the embedding
+  bool last() const { return l1 == Q_LAYERS; }   // its group runs the head (and the draft layer)
   uint32_t nkh = 0, nvh = 0, nch = 0, nq = 0, nkv = 0, ff = 0;
   uint32_t vocab0 = 0, vocab_n = 0;
   std::vector<Layer> layers;
-  float *out_norm = nullptr;
+  float *out_norm = nullptr;  // the final mixer and the head: the last group's cards
   uint16_t *out_down = nullptr, *out_up = nullptr;
   Mat head;
   uint32_t *ptab = nullptr;  // the page table, [slot][pages_per_slot()] (layout.h)
-  uint16_t *ple_k = nullptr, *ple_v = nullptr;
+  uint16_t *ple_k = nullptr, *ple_v = nullptr;  // the PLE module: the first group's cards
   float *ple_gk = nullptr, *ple_gq = nullptr, *ple_gc = nullptr, *ple_conv = nullptr, *ple_hist = nullptr;
   uint64_t ple_stride = 0;
   uint8_t *grids = nullptr;
@@ -183,8 +189,8 @@ struct Model::Card {
   uint32_t *ngroups;
   uint8_t *xa8, *oa8, *ha8, *sha8;
   float *yo = nullptr;  // a window's out product (ssm_out, attn_output), before one copy takes it to ex1_
-  // A window's partial sums with two cards (ADR-0030): [exchange 0 mixer, 1 MoE][card][STEP_MAX_ROWS][Q_EMBD]. Each
-  // card writes its own block here and one copy places it in the other card's.
+  // A window's partial sums with two cards in a group (ADR-0030): [exchange 0 mixer, 1 MoE][card][STEP_MAX_ROWS]
+  // [Q_EMBD]. Each card writes its own block here and one copy places it in the other card's.
   float *xp = nullptr;
   StepPlan *plan = nullptr;  // the step plan, copied from host memory by the decode step's first command
   std::unique_ptr<ze::List> up;
@@ -211,7 +217,7 @@ struct Model::HostLayer {
   std::vector<uint8_t *> pieces;             // staging position -> its piece, for every expert the cards may leave out
   uint64_t gate_bytes = 0, down_bytes = 0;   // one expert's gate (or up) matrix and its down matrix in the file
   uint64_t gate_row_bytes = 0;
-  uint32_t down_parts = 1;                   // down in the arena as one region per card (write_down)
+  uint32_t down_parts = 1;                   // down in the arena as one region per card of a group (write_down)
   // An expert in the staging buffer of a card: its half of gate's rows, then of up's, then its region of down.
   uint64_t stg_up_off = 0, stg_down_off = 0, stg_bytes = 0;
 };
@@ -249,7 +255,8 @@ struct Model::PromptCard {
   uint16_t *ub = nullptr;
   float *pv = nullptr, *gates = nullptr;
   uint16_t *w16 = nullptr;  // a dense weight dequantised to fp16
-  uint32_t *prof = nullptr;  // [layer][expert] rows routed, with Options::profile_routing (card 0)
+  uint32_t *prof = nullptr;  // [layer][expert] rows routed, with Options::profile_routing (each group's first card,
+                             // its layers' rows)
   // The experts the cards do not cache, streamed in on the copy engine: two layers' worth, used in turn.
   uint8_t *stage = nullptr;
   uint64_t stage_slot = 0;

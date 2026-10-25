@@ -175,6 +175,7 @@ class MockEngine:
             host_pinned=0,
             timing_fd=-1,
             version="mock",
+            groups=config.groups,
         )
 
     def admit(self, slot: int, settings: SlotSettings, prompt: tuple[int, ...], images: tuple[Image, ...] = ()) -> None:

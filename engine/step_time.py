@@ -127,6 +127,8 @@ class StepTime:
     exchange_ms: float
     handoff_ms: float
     miss_ms: float
+    pipelined: bool = False
+    """Whether the groups pipeline rows from several requests; the core runs them in turn."""
 
     @property
     def step_ms(self) -> float:
@@ -134,8 +136,8 @@ class StepTime:
 
     @property
     def token_ms(self) -> float:
-        """The step's time a row; groups pipeline once rows come from at least as many requests as groups."""
-        if self.requests < self.layout.groups:
+        """The step's time a row; pipelined groups take rows from as many requests as groups at once."""
+        if not self.pipelined or self.requests < self.layout.groups:
             return self.step_ms / self.rows
         return self.step_ms / (self.rows * min(self.requests, self.layout.groups))
 
@@ -303,12 +305,20 @@ def calibrate(terms: Terms, model: ModelSteps) -> Terms:
 
 
 def step_time(
-    terms: Terms, model: ModelSteps, lay: Layout, rows: int, *, requests: int = 1, experts_cached: int | None = None
+    terms: Terms,
+    model: ModelSteps,
+    lay: Layout,
+    rows: int,
+    *,
+    requests: int = 1,
+    experts_cached: int | None = None,
+    pipelined: bool = False,
 ) -> StepTime:
     """The predicted time of one step of `rows` rows from `requests` requests on the layout, and its time a token.
 
     `terms` must be calibrated (`calibrate`). `experts_cached` replaces the layout's own count, to hold M at another
-    layout's value. Raises ValueError for requests outside 1..rows or uncalibrated terms.
+    layout's value. `pipelined`: the groups pipeline rows from several requests, which the core does not do yet.
+    Raises ValueError for requests outside 1..rows or uncalibrated terms.
 
         T_step = F(A) + sum over products of (bytes / width) / rate(width, A)
                  + exchanges * (width - 1) * t_x(A) + (groups - 1) * t_h + M(experts cached, A)
@@ -320,8 +330,9 @@ def step_time(
 
     Assumptions of the model, each to be checked by measurement:
 
-    - Pipelining rule: rows from fewer requests than groups run the groups in turn, so a token takes T_step / A; rows
-      from at least as many requests as groups pipeline across the groups, so a token takes T_step / (A * groups).
+    - Pipelining rule: with `pipelined`, rows from fewer requests than groups run the groups in turn, so a token takes
+      T_step / A; rows from at least as many requests as groups pipeline across the groups, so a token takes
+      T_step / (A * groups). The core runs the groups in turn whatever the requests: a token takes T_step / A.
     - Overlap rule: the CPU's work overlaps the cards', so the wait is less than its cost. M is the cost scaled by the
       measured wait over the cost at `cpu_wait_experts` cached and the same rows, linear between the measured rows.
     - F(A) = F(1) + (A - 1) * `fixed_per_row_ms`: everything else the cards do (router, norms, DeltaNet recurrence,
@@ -338,4 +349,5 @@ def step_time(
         raise ValueError("the terms are not calibrated")
     cached = lay.experts_cached if experts_cached is None else experts_cached
     fixed = terms.fixed_ms + (rows - 1) * terms.fixed_per_row_ms
-    return _step(terms, model, lay, rows, requests=requests, experts_cached=cached, fixed_ms=fixed)
+    s = _step(terms, model, lay, rows, requests=requests, experts_cached=cached, fixed_ms=fixed)
+    return replace(s, pipelined=pipelined)

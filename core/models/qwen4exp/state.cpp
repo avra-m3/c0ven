@@ -12,15 +12,17 @@ namespace engine::qwen4exp {
 
 using namespace detail;
 
-// Calls f(device pointer, bytes) for each region of the slot's fixed state on a card, in a fixed order.
+// Calls f(device pointer, bytes) for each region of the slot's fixed state on a card, in a fixed order: its layers',
+// then the PLE history on the first group's cards.
 template <class F>
 static void for_regions(Model::Card &card, uint32_t slot, F &&f) {
-  for (auto &L : card.layers) {
+  for (uint32_t l = card.l0; l < card.l1; l++) {
+    auto &L = card.layers[l];
     if (L.attn) continue;
     f(reinterpret_cast<uint8_t *>(L.conv_state + slot * L.conv_stride), L.conv_stride * 4);
     f(reinterpret_cast<uint8_t *>(L.S + slot * L.S_stride), L.S_stride * 4);
   }
-  f(reinterpret_cast<uint8_t *>(card.ple_hist + slot * card.ple_stride), card.ple_stride * 4);
+  if (card.first()) f(reinterpret_cast<uint8_t *>(card.ple_hist + slot * card.ple_stride), card.ple_stride * 4);
 }
 
 uint64_t Model::slot_state_bytes() {
@@ -77,7 +79,8 @@ void Model::copy_cells(uint32_t from, uint32_t to, uint32_t cells) {
   for (auto &card : cards_) {
     const uint32_t C = card->C;
     const uint64_t kvb = (uint64_t)card->nkv * KV_HEAD_BYTES;
-    for (auto &L : card->layers) {
+    for (uint32_t l = card->l0; l < card->l1; l++) {
+      auto &L = card->layers[l];
       if (!L.attn) continue;
       card->up->copy(L.kc + kv_cell(to, 0) * kvb, L.kc + kv_cell(from, 0) * kvb, cells * kvb);
       card->up->copy(L.vc + kv_cell(to, 0) * kvb, L.vc + kv_cell(from, 0) * kvb, cells * kvb);

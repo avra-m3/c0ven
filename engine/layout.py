@@ -2,9 +2,10 @@
 (DESIGN.md, section 5).
 
 `--layout` names a layout or asks for `auto`, which costs every layout the constraints allow at the rows a step had
-in the engine's last life, and takes the cheapest the core runs. The core runs one group of every card today, so
-`auto` takes it and the costs are logged; a layout the core does not run is refused. Every `STEP_RING` steps the
-engine process logs the predicted step against the measured one at each row count, M from the steps' own misses.
+in the engine's last life, and takes the cheapest the core runs. The core runs the layout it was opened with
+(`open_groups`): `auto` opens one group of every card, so `auto` takes it and the costs are logged; a named layout
+opens its own groups, and the chooser checks it against the constraints. Every `STEP_RING` steps the engine process
+logs the predicted step against the measured one at each row count, M from the steps' own misses.
 """
 
 from __future__ import annotations
@@ -50,6 +51,13 @@ def parse(spec: str, cards: int) -> tuple[int, int] | None:
             if m is None:
                 raise ValueError(f"--layout {spec!r}: give {LAYOUTS}")
             return int(m.group("g")), int(m.group("w"))
+
+
+def open_groups(spec: str, cards: int) -> int:
+    """The groups to open the core with for `--layout` on `cards` cards: the named layout's, and one for auto.
+    Raises ValueError for a spec that does not parse."""
+    named = parse(spec, cards)
+    return 1 if named is None else named[0]
 
 
 def histogram(steps: Iterable[StepRecord]) -> dict[int, int]:

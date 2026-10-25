@@ -151,6 +151,8 @@ class OpenConfig:
     """The draft (MTP) layer's tensors, one file each (MODEL_FILES.md, "The MTP layer"); empty: no drafting."""
     vision_path: str = ""
     """The image encoder's file (the mmproj GGUF, spec/MODEL_VISION.md); empty: no images."""
+    groups: int = 1
+    """The cards in groups that run the layers in turn (DESIGN.md, section 5); 1: one group of every card."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,6 +175,8 @@ class EngineFacts:
     """The most tokens an image may have; 0: no images."""
     check_key: str = ""
     """What a load check's result holds for: the cards, the driver and the kernels; empty when there is no check."""
+    groups: int = 1
+    """The groups the cards run in: `OpenConfig.groups` as opened."""
 
 
 CHECK_WIDTHS = (1, 2, 4, 8)
