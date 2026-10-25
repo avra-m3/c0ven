@@ -1,0 +1,171 @@
+"""qwen4exp's products and measured terms for the step-time model (engine/step_time.py).
+
+The products come from the tensor table, their bytes from each tensor's shape and its quant type's block size; how
+each splits is split.py's rule. The terms are the measured ones, calibrated on the committed IQ3_S table.
+"""
+
+from __future__ import annotations
+
+import math
+import re
+from functools import cache
+
+import gguf
+
+from engine.api.interface import SplitKind
+from engine.models.qwen4exp import numbers
+from engine.models.qwen4exp.split import split_of
+from engine.models.qwen4exp.tensors import FileTensor, LayerKind, TensorTable, from_tsv
+from engine.step_time import Class, ModelSteps, Product, Terms, calibrate
+
+_GATE_UP_AS = {"IQ4_XS": "IQ3_S"}
+"""Expert types with no measured rate, and the measured type each is costed as."""
+
+_ROLE = {
+    "attn_qkv": "attn_qkv",
+    "attn_q": "attn_qkv",
+    "attn_k": "attn_qkv",
+    "attn_v": "attn_qkv",
+    "attn_gate": "attn_gate",
+    "attn_output": "attn_output",
+    "ssm_out": "ssm_out",
+    "ffn_gate_shexp": "ffn_gate_shexp",
+    "ffn_up_shexp": "ffn_gate_shexp",
+    "ffn_down_shexp": "ffn_down_shexp",
+}
+"""The dense products a step's time counts, each with the measured product of its role. The router, the norms, the
+hyper-connections and the indexer are in F."""
+
+_MEASURED_DENSE = {
+    "attn_qkv": ("Q6_K", (2560, 10240)),
+    "ssm_out": ("Q6_K", (6144, 2560)),
+    "attn_output": ("Q4_K", (6144, 2560)),
+    "attn_gate": ("Q4_K", (2560, 6144)),
+    "ffn_gate_shexp": ("Q4_K", (2560, 640)),
+    "ffn_down_shexp": ("IQ4_NL", (640, 2560)),
+}
+"""The type and shape, in ggml's order, of the tensor each dense rate was measured on."""
+
+_BLK = re.compile(r"^blk\.\d+\.(?P<name>.+)\.weight$")
+
+
+def _block(t: FileTensor) -> tuple[int, int]:
+    """(values, bytes) of one quant block of the tensor's type."""
+    return gguf.GGML_QUANT_SIZES[gguf.GGMLQuantizationType(t.ggml_type)]
+
+
+def _nbytes(t: FileTensor) -> int:
+    values, size = _block(t)
+    n = math.prod(t.shape) // values * size
+    if n != t.nbytes:
+        raise ValueError(f"{t.name}: {t.nbytes:,} B in the table, {n:,} from its shape and type")
+    return n
+
+
+def _bits(type_name: str) -> float:
+    values, size = gguf.GGML_QUANT_SIZES[gguf.GGMLQuantizationType[type_name]]
+    return 8 * size / values
+
+
+def _dense_kernel(role: str, t: FileTensor) -> str:
+    """The nearest measured product: of those measured on its shape, the one nearest its bits per weight; with none
+    of its shape, its role's."""
+    same = [p for p, (_, shape) in _MEASURED_DENSE.items() if shape == t.shape]
+    if not same:
+        return _ROLE[role]
+    return min(same, key=lambda p: abs(_bits(_MEASURED_DENSE[p][0]) - _bits(t.type_name)))
+
+
+def model_steps(table: TensorTable) -> ModelSteps:
+    """The products of each layer and the head. Raises ValueError for a table whose bytes do not match its shapes
+    or whose gate and up experts differ in type."""
+    names = table.by_name()
+    per_token = numbers.EXPERTS_A_TOKEN
+    experts = numbers.EXPERTS_PER_LAYER
+    layers: list[tuple[Product, ...]] = []
+    for n in range(numbers.LAYERS):
+        gate, up, down = (names[f"blk.{n}.ffn_{p}_exps.weight"] for p in ("gate", "up", "down"))
+        if gate.type_name != up.type_name:
+            raise ValueError(f"layer {n}: gate {gate.type_name}, up {up.type_name}")
+        gu = _GATE_UP_AS.get(gate.type_name, gate.type_name)
+        products = [
+            Product(f"gate_up {gu}", Class.GATE_UP, per_token * (_nbytes(gate) + _nbytes(up)) // experts, True, 0, 1),
+            Product(
+                f"down {down.type_name}",
+                Class.DOWN,
+                per_token * _nbytes(down) // experts,
+                True,
+                down.shape[0],
+                _block(down)[0],
+            ),
+        ]
+        for t in table.tensors:
+            m = _BLK.match(t.name)
+            if t.layer == n and m and m.group("name") in _ROLE:
+                kernel = _dense_kernel(m.group("name"), t)
+                cols = t.shape[0] if split_of(t.name) is SplitKind.COLUMNS else 0
+                products.append(Product(kernel, Class.DENSE, _nbytes(t), False, cols, _block(t)[0]))
+        layers.append(tuple(products))
+    head = names["output.weight"]
+    attention = sum(k is LayerKind.ATTENTION for k in table.layer_kinds())
+    return ModelSteps(
+        layers=tuple(layers),
+        head=(Product("output", Class.HEAD, _nbytes(head), False, 0, _block(head)[0]),),
+        # Two reduces a layer, and a third for the indexer in each attention layer (DESIGN.md, section 5).
+        exchanges=2 * numbers.LAYERS + attention,
+        experts=experts,
+        experts_a_token=per_token,
+        kv_heads=numbers.KV_HEADS,
+    )
+
+
+# Each value's row in docs/measurements/MEASUREMENTS.md: the rates #2026-10-25-slice-width-kernels; the hit-rate
+# curve #2026-10-25-hit-rate-against-experts-cached; the miss cost #2026-10-16-cpu-answer-per-layer; the peer
+# writes the middle of #2026-10-16-peer-exchange's ranges; the steps, the CPU's wait and F's growth a row
+# #2026-10-19-four-rows-a-step. The hand-off is an estimate from #2026-10-12-card-to-card.
+MEASURED = Terms(
+    widths=(1, 2, 4, 8),
+    rates={
+        "gate_up IQ3_S": {1: (255, 253, 180, 101), 2: (260, 225, 229, 162), 4: (294, 275, 240, 200)},
+        "gate_up IQ3_XXS": {1: (261, 247, 175, 96), 2: (266, 239, 239, 168), 4: (300, 283, 251, 208)},
+        "gate_up IQ2_S": {1: (198, 207, 153, 92), 2: (215, 188, 195, 145), 4: (252, 233, 202, 183)},
+        "down IQ4_NL": {1: (277, 217, 164, None), 2: (291, 237, 168, None), 4: (293, 233, 167, None)},
+        "down Q2_0": {1: (259, 228, None, None), 2: (274, 209, None, None), 4: (224, 182, None, None)},
+        "attn_qkv": {1: (408, 387, 351, 293)},
+        "ssm_out": {1: (354, 354, 307, 228)},
+        "attn_output": {1: (259, 230, 182, 142)},
+        "attn_gate": {1: (221, 171, 186, 113)},
+        "ffn_gate_shexp": {1: (96, 82, 49, 25)},
+        "ffn_down_shexp": {1: (148, 101, 71, None)},
+        "output": {1: (446, 444, 440, 429)},
+    },
+    reference="gate_up IQ3_S",
+    exchange_us={1: 2.9, 4: 5.1},
+    handoff_us=17.5,
+    hit_rate=(
+        (78, 0.496),
+        (128, 0.648),
+        (200, 0.798),
+        (248, 0.867),
+        (307, 0.926),
+        (317, 0.934),
+        (369, 0.966),
+        (400, 0.979),
+        (460, 0.995),
+        (481, 0.998),
+        (512, 1.0),
+    ),
+    miss_layer_us=22.5,
+    miss_expert_us=61.0,
+    cpu_wait_ms={1: 0.24, 4: 5.70},
+    cpu_wait_experts=317,
+    step_ms=15.50,
+    fixed_per_row_ms=0.61,
+)
+"""The terms as measured, before calibration."""
+
+
+@cache
+def measured_terms() -> Terms:
+    """MEASURED with F(1) calibrated on the IQ3_S file, the file the step was measured on."""
+    return calibrate(MEASURED, model_steps(from_tsv()))

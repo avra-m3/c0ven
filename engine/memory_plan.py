@@ -121,9 +121,14 @@ def reserve_per_sequence(m: ModelMemory, context: int) -> int:
     )
 
 
-def plan(m: ModelMemory, o: PlanOptions) -> MemoryPlan:
+def plan(m: ModelMemory, o: PlanOptions, cards: int = 2) -> MemoryPlan:
+    """The plan for the options. `cards` is how many cards each cached expert is split over: each card holds its
+    share, rounded up to a byte. The model's other per-card figures are taken as given. Raises PlanError when the
+    options do not fit."""
     if o.slots < 1:
         raise PlanError("at least one slot")
+    if cards < 1:
+        raise PlanError("at least one card")
     if not 0 < o.context <= m.max_context:
         raise PlanError(f"context {o.context} outside 1..{m.max_context}")
     fixed = m.weights_per_card + m.draft_per_card + o.working_per_card
@@ -132,8 +137,8 @@ def plan(m: ModelMemory, o: PlanOptions) -> MemoryPlan:
     free = o.usable_vram - fixed - reserve
     if free < 0:
         raise PlanError(f"the cards are {-free:,} B short before any expert")
-    half = -(-m.expert_bytes // 2)
-    cached = min(m.experts, free // half)
+    share = -(-m.expert_bytes // cards)
+    cached = min(m.experts, free // share)
     arena = (m.experts - cached) * m.expert_bytes
     streamed = o.slots * (m.kv_cell_host * o.context + m.draft_kv_host)
     pages_per_slot = -(-o.context // PAGE_CELLS)

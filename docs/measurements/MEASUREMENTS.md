@@ -166,6 +166,39 @@ reordered layout run 3.2-8.8 times faster than in the file's layout
 | `gdn_conv`, `gdn_recur` | DeltaNet norm and gates moved in; two launches a layer fewer; same bits | 0.98 → 0.78 ms | 18.04 → 17.85 ms a token | <a id="2026-10-15-gdn-fusion"></a>[2026-10-15](#2026-10-15-gdn-fusion) |
 | kernels that make a8 activations | write them directly; `quantize_a8` and five launches a layer gone | 0.69 ms a card removed, 0.15 ms added elsewhere | 19.35 → 19.11 ms a token, ranges overlapping | <a id="2026-10-15-a8-fusion"></a>[2026-10-15](#2026-10-15-a8-fusion) |
 
+### Decode kernels at a card's share of a layer
+
+GB/s each kernel reads with a card's slice of a layer at 640, 320, 160 and 80 rows of the experts' gate and up (or
+columns of their down), as one, two, four and eight cards a layer would hold, and the dense products split in the
+same shares. Real IQ3_S weights on one card at 2,400 MHz, 128 experts cached, each row with its own 10 experts: the
+median of five processes of 100 launches, within 2.5% across them. A column split that cuts a quant block has no
+value.
+
+| Kernel | Rows | 640 | 320 | 160 | 80 | Measured |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| IQ3_S gate and up | 1 | 255 | 253 | 180 | 101 | <a id="2026-10-25-slice-width-kernels"></a>[2026-10-25](#2026-10-25-slice-width-kernels) |
+|  | 2 | 260 | 225 | 229 | 162 | [2026-10-25](#2026-10-25-slice-width-kernels) |
+|  | 4 | 294 | 275 | 240 | 200 | [2026-10-25](#2026-10-25-slice-width-kernels) |
+| IQ3_XXS gate and up | 1 | 261 | 247 | 175 | 96 | [2026-10-25](#2026-10-25-slice-width-kernels) |
+|  | 2 | 266 | 239 | 239 | 168 | [2026-10-25](#2026-10-25-slice-width-kernels) |
+|  | 4 | 300 | 283 | 251 | 208 | [2026-10-25](#2026-10-25-slice-width-kernels) |
+| IQ2_S gate and up | 1 | 198 | 207 | 153 | 92 | [2026-10-25](#2026-10-25-slice-width-kernels) |
+|  | 2 | 215 | 188 | 195 | 145 | [2026-10-25](#2026-10-25-slice-width-kernels) |
+|  | 4 | 252 | 233 | 202 | 183 | [2026-10-25](#2026-10-25-slice-width-kernels) |
+| IQ4_NL down | 1 | 277 | 217 | 164 | not whole blocks | [2026-10-25](#2026-10-25-slice-width-kernels) |
+|  | 2 | 291 | 237 | 168 | not whole blocks | [2026-10-25](#2026-10-25-slice-width-kernels) |
+|  | 4 | 293 | 233 | 167 | not whole blocks | [2026-10-25](#2026-10-25-slice-width-kernels) |
+| Q2_0 down | 1 | 259 | 228 | not whole blocks | not whole blocks | [2026-10-25](#2026-10-25-slice-width-kernels) |
+|  | 2 | 274 | 209 | not whole blocks | not whole blocks | [2026-10-25](#2026-10-25-slice-width-kernels) |
+|  | 4 | 224 | 182 | not whole blocks | not whole blocks | [2026-10-25](#2026-10-25-slice-width-kernels) |
+| `attn_qkv`, Q6_K, by rows | 1 | 408 | 387 | 351 | 293 | [2026-10-25](#2026-10-25-slice-width-kernels) |
+| `ssm_out`, Q6_K, by columns | 1 | 354 | 354 | 307 | 228 | [2026-10-25](#2026-10-25-slice-width-kernels) |
+| `attn_output`, Q4_K, by columns | 1 | 259 | 230 | 182 | 142 | [2026-10-25](#2026-10-25-slice-width-kernels) |
+| `attn_gate`, Q4_K, by rows | 1 | 221 | 171 | 186 | 113 | [2026-10-25](#2026-10-25-slice-width-kernels) |
+| `ffn_gate_shexp`, Q4_K, by rows | 1 | 96 | 82 | 49 | 25 (a launch costs about 4.6 µs whatever it reads) | [2026-10-25](#2026-10-25-slice-width-kernels) |
+| `ffn_down_shexp`, IQ4_NL, by columns | 1 | 148 | 101 | 71 | not whole blocks | [2026-10-25](#2026-10-25-slice-width-kernels) |
+| `output`, Q6_K, by rows | 1 | 446 | 444 | 440 | 429 | [2026-10-25](#2026-10-25-slice-width-kernels) |
+
 ### Prompt kernels (chunks of up to 4,352 rows)
 
 "Chunk" is each card's time in that kernel for one chunk.
@@ -276,7 +309,7 @@ reordered layout run 3.2-8.8 times faster than in the file's layout
 | Exchanges written into the card's memory and copied into the other card's, from two rows | decode 0.9-2.0% faster: long-4k 72.19 → 72.88 tokens/s, long-256k 69.55 → 70.98 ([ADR-0030](../adr/0030-exchanges-into-the-other-card.md)) | [2026-10-16](#2026-10-16-peer-exchange-decode) |
 | KV cache read through a page table kept by Python ([ADR-0033](../adr/0033-paged-kv-kept-by-python.md)) | no measurable cost: doc-32k 18.48 → 18.62 ms a step; the table's reads add about 11 µs to a step | <a id="2026-10-17-paged-kv"></a>[2026-10-17](#2026-10-17-paged-kv) |
 | Arena in anonymous memory, against the driver's arena | 16.58 and 16.56 → 16.54 and 16.61 ms a step; the driver's host buffers 9.07 → 0.06 GB | <a id="2026-10-17-anon-arena"></a>[2026-10-17](#2026-10-17-anon-arena) |
-| A decode step of 1, 2 and 4 requests' rows, 317 experts cached a layer, no swaps | 15.50, 19.25 and 25.46 ms; CPU misses 36.5, 71.4 and 141.7 a step. Of the 4-row step's 14.35 ms more (traced): 5.47 ms waiting for the CPU's misses, 4.22 ms in the cached experts' kernels, 1.23 ms in `gdn_recur`, 0.60 ms in the router | <a id="2026-10-19-four-rows-a-step"></a>[2026-10-19](#2026-10-19-four-rows-a-step) |
+| A decode step of 1, 2 and 4 requests' rows, 317 experts cached a layer, no swaps | 15.50, 19.25 and 25.46 ms; CPU misses 36.5, 71.4 and 141.7 a step. Waiting for the CPU's misses, traced: 0.24 ms at 1 row, 5.70 at 4. Of the 4-row step's 14.35 ms more (traced): 5.47 ms waiting for the CPU's misses, 4.22 ms in the cached experts' kernels, 1.23 ms in `gdn_recur`, 0.60 ms in the router | <a id="2026-10-19-four-rows-a-step"></a>[2026-10-19](#2026-10-19-four-rows-a-step) |
 | Draft rounds for several writing requests in one window, up to 2 drafts each | four 1,536-token answers 146.0 → 170.0 tokens/s while all write; shared4 130.1 → 152.0; duo 91.8 → 116.9; staggered's two writers 37.9 → 48.4 each; one request 81.6 → 81.5, lower in 5 of 7 pairs | <a id="2026-10-19-draft-rounds-several-writers"></a>[2026-10-19](#2026-10-19-draft-rounds-several-writers) |
 | Drafts from a lone slot's own tokens when worth more than the draft layer's ([ADR-0041](../adr/0041-drafts-from-the-slots-own-tokens.md)); one slot's windows 16 ms at 1 row, 29 at 4, 64 at 8 | eleven prompts, 5 runs against 6 of main's in alternating order: decode +3.24% (each run +2.3% to +3.5%, main's -0.9% to +0.2%); edit-py +21.0%, doc-32k +9.5%, edit-cpp +6.1%, doc-4k-qa +4.0%, the others -2.4% to +0.7%. Lookup rounds 572-745 of about 3,100, all of 3 drafts. Taking every longer lookup without the comparison: doc-4k-summary -15% | <a id="2026-10-20-lookup-drafts-against-main"></a>[2026-10-20](#2026-10-20-lookup-drafts-against-main), <a id="2026-10-19-lookup-drafts"></a>[2026-10-19](#2026-10-19-lookup-drafts) |
 | The KV pool's free pages lending their memory to the expert cache ([ADR-0045](../adr/0045-the-kv-pool-and-the-expert-cache-share-each-cards-memory.md)), 4 slots and a 524,288-token pool | experts cached a layer 248 → 331 at load, 321 with four 17,580-token prompts in; one request 73.2 → 84.9 tokens/s (gpqa-1) and 83.4 → 93.1 (gpqa-4); four together 119.8 → 150.8; four sent together, the last first token 2.705 → 1.885 s; a 247-351-token prompt alone, first token 0.681 → 0.484 s; 3,395-7,570-token prompts 1,502 → 1,670 tokens/s; four 17,580-token prompts sent together, the last first token 50.2 → 44.2 s; a 179,969-token prompt 1,660 → 1,713 tokens/s (one run each). Each change of the split blocked the engine 14.3-31.7 ms for 58-144 experts (12.4-19.9 ms per 64), 5 a run; giving the pages of four ended requests back, 34.8 ms (one load). Different tokens: the CPU computes other experts | [2026-10-20](#2026-10-20-kv-pool-and-expert-cache-share) |
@@ -360,6 +393,7 @@ own docs and source, 246,571 tokens. The quant's value is given first, then its 
 | --- | --- | --- |
 | Routed experts served by the cards, 24 a layer of 17,581 | 89.6% from a static cache, hottest first; 95.9% with swaps | <a id="2026-10-12-expert-hit-rates"></a>[2026-10-12](#2026-10-12-expert-hit-rates) |
 | Layers with no miss at 3 tokens | 26.9%; 46.1% with swaps | [2026-10-12](#2026-10-12-expert-hit-rates) |
+| Routed experts a static cache serves, filled hottest first from the routing profile and scored on it, by experts cached a layer | 78: 49.6%; 128: 64.8%; 200: 79.8%; 248: 86.7%; 307: 92.6%; 317: 93.4%; 369: 96.6%; 400: 97.9%; 460: 99.5%; 481: 99.8%; 512: 100%. At 317 it gives 31.7 misses and 23.0 layers with a miss a one-row step, where the engine has 36.5 and 22.2 | <a id="2026-10-25-hit-rate-against-experts-cached"></a>[2026-10-25](#2026-10-25-hit-rate-against-experts-cached) |
 | Four requests sent within 0.1 ms | Without a wait the engine planned before reading all four in 10 of 51 runs, and the late ones reached their first token 0.55-1.78 s later. With up to 2 ms of wait after a GEN to an idle engine, 0 of 24. | <a id="2026-10-17-requests-sent-together"></a>[2026-10-17](#2026-10-17-requests-sent-together) |
 | Adaptive swaps shared out among the slots that wrote (a round's 64 over their count) | chats4 94.7 → 100.9 tokens/s while all write; staggered's two writers 37.9 → 39.1; four 1,536-token answers 145.9 → 146.8; one request 81.8 → 81.8 | <a id="2026-10-19-swaps-several-writers"></a>[2026-10-19](#2026-10-19-swaps-several-writers) |
 

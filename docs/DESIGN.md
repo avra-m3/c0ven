@@ -321,6 +321,29 @@ answer, the step plan, the token ids. What those cost is time spent waiting for 
 No card is kept busy to hold its clock up. In decode both cards stay at 2,400 MHz in 99.74-100% of samples
 ([the record](measurements/MEASUREMENTS.md#2026-10-16-gpu-clock-in-decode)).
 
+### The step-time model
+
+`engine/step_time.py` predicts the time of one decode step on other ways of laying the layers over the cards, before
+any of them is built. Nothing calls it yet. A layout is `groups(g, w)`: `g` groups of `w` cards, each group holding
+48 / `g` layers and each card of a group 1 / `w` of each of them. The split above is `groups(1, 2)`; `groups(2, 1)`
+would give each card half the layers whole. The model rejects a layout whose groups do not divide the layers, whose
+column split would cut a quant block, whose slice width has no measured bandwidth, or whose memory plan does not fit.
+
+| Term | What it counts |
+| --- | --- |
+| F | Everything the model does not count by product: the router, the norms, the DeltaNet recurrence, the gaps between launches, the host's work. It is what remains of the measured one-row step, and grows by a fixed amount a row |
+| Weight reads | Each product's bytes, shared over the cards of its group, at its kernel's bandwidth for that slice width and row count. Summed apart for the routed experts' gate and up, their down, the dense products and the vocabulary head |
+| Exchanges | The reduces of each layer, `w` - 1 peer writes each; none at `w` = 1 |
+| Hand-offs | `g` - 1 a step, from each group to the next |
+| M | The wait for the CPU's misses: their cost at the hit rate for the experts a group caches, scaled by how much of it the measured steps hid behind the cards' work |
+
+`engine/models/qwen4exp/steps.py` fills it: the products from the tensor table, the bandwidths from
+[the slice-width rows](measurements/MEASUREMENTS.md#2026-10-25-slice-width-kernels), the hit rate from
+[the hit-rate row](measurements/MEASUREMENTS.md#2026-10-25-hit-rate-against-experts-cached), the misses' cost from
+[the CPU's answer](measurements/MEASUREMENTS.md#2026-10-16-cpu-answer-per-layer), and the steps and the CPU's wait F and M are calibrated on
+from [the four-rows row](measurements/MEASUREMENTS.md#2026-10-19-four-rows-a-step). The model's assumptions, among them that groups pipeline
+rows from different requests, are in `step_time`'s docstring.
+
 ## 6. Memory
 
 | Where | What it holds |

@@ -10,6 +10,10 @@ ARCH = "qwen4exp"
 
 LAYERS = 48
 EXPERTS_PER_LAYER = 512
+EXPERTS_A_TOKEN = 10
+"""Routed experts a token uses in each layer (spec/MODEL_LAYER.md, section 4.2)."""
+KV_HEADS = 2
+"""Attention's key and value heads (spec/MODEL_LAYER.md, "The numbers")."""
 CONTEXT = 262_144
 VOCAB = 248_320
 
