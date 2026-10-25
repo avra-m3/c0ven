@@ -346,6 +346,9 @@ takes the lowest free page first, and each plan tells the core how many pages at
 Their blocks cache experts until the pages below them are needed: the core then takes blocks from the layers whose
 cached experts are used least, and gives them back to the cache in the swap rounds as pages free. The cards always
 keep room for the whole pool, so the cache holds at least about as many experts as a whole pool would leave it.
+A change waits on the engine thread only for the copies of the experts that stay and the new maps; the blocks then
+move on a thread beside the next steps, since no list reads them
+([ADR-0048](adr/0048-the-kv-splits-blocks-move-beside-the-steps.md)).
 
 A swap copies the expert leaving the cards into the arena place of the one coming in. Every staging slot of the
 prompt path keeps its arena piece, so its copy list, recorded once at load, stays valid

@@ -46,7 +46,7 @@ uint32_t Model::swap_round(uint32_t max_swaps) {
   bool chosen = false;
   if (share_) {
     if (kv_own_ < std::min(kv_pages_, kv_want_ + kv_margin_)) {
-      plan_evict(std::min(kv_pages_, kv_want_ + 2 * kv_margin_));
+      plan_evict(std::min(kv_pages_, kv_want_ + 2 * kv_margin_), true);
       chosen = true;
     } else {
       if (kv_own_ > kv_want_ + 4 * kv_margin_) shrink_kv(kv_want_ + 2 * kv_margin_);
@@ -107,6 +107,7 @@ uint32_t Model::apply_round() {
       while (cache_slots(l, b) <= (uint32_t)top[l]) b++;
       for (auto &card : cards_) map_cache(*card, l, b);
     }
+    if (!vm_ops_.empty()) run_vm(false);
     for (size_t i = 0; i < applied * ncards_; i++) {
       const SwapPlan &w = swap_next_[i / ncards_];
       Card &card = *cards_[i % ncards_];
@@ -165,7 +166,7 @@ uint32_t Model::apply_round() {
   }
   swap_next_.clear();
   swaps_ += swapped;
-  if (!evict_next_.empty()) apply_evict();
+  if (!evict_next_.empty()) apply_evict(std::chrono::steady_clock::now(), true);
   install_copies();
   return applied;
 }
