@@ -1,5 +1,6 @@
 /* The logo's colours (docs/images/logo.svg). If the logo's colours change, change these in the same pull request
-   (ADR-0047). */
+   (ADR-0047). The logo carries the green. The site uses it for links and the current page, and greys for the
+   rest. */
 :root > * {
   --md-primary-fg-color: #1f3b34;
   --md-primary-fg-color--light: #2f786a;
@@ -7,15 +8,159 @@
   --md-accent-fg-color: #b07a12;
   --md-typeset-a-color: #2f786a;
 }
+/* The dark scheme's greys. The theme mixes 15% of the hue into each; these mix 4%. */
 [data-md-color-scheme="slate"] {
   --md-hue: 162;
   --md-accent-fg-color: #f5b83d;
   --md-typeset-a-color: #44ae8e;
+  --md-default-fg-color: hsla(var(--md-hue), 4%, 90%, 0.82);
+  --md-default-fg-color--light: hsla(var(--md-hue), 4%, 90%, 0.56);
+  --md-default-fg-color--lighter: hsla(var(--md-hue), 4%, 90%, 0.32);
+  --md-default-fg-color--lightest: hsla(var(--md-hue), 4%, 90%, 0.12);
+  --md-default-bg-color: hsla(var(--md-hue), 4%, 11%, 1);
+  --md-default-bg-color--light: hsla(var(--md-hue), 4%, 11%, 0.54);
+  --md-default-bg-color--lighter: hsla(var(--md-hue), 4%, 11%, 0.26);
+  --md-default-bg-color--lightest: hsla(var(--md-hue), 4%, 11%, 0.07);
+  --md-code-fg-color: hsla(var(--md-hue), 4%, 86%, 0.82);
+  --md-code-bg-color: hsla(var(--md-hue), 4%, 15%, 1);
+  --md-code-bg-color--light: hsla(var(--md-hue), 4%, 15%, 0.9);
+  --md-code-bg-color--lighter: hsla(var(--md-hue), 4%, 15%, 0.54);
+  --md-typeset-table-color: hsla(var(--md-hue), 4%, 95%, 0.12);
+  --md-typeset-table-color--light: hsla(var(--md-hue), 4%, 95%, 0.035);
+  --md-footer-bg-color: hsla(var(--md-hue), 4%, 8%, 1);
+  --md-footer-bg-color--dark: hsla(var(--md-hue), 4%, 6%, 1);
 }
+
+/* The header has the page's background and a thin line under it. */
 .md-header {
-  border-bottom: 4px solid #f5b83d;
+  --md-primary-fg-color: var(--md-default-bg-color);
+  --md-primary-bg-color: var(--md-default-fg-color);
+  --md-primary-bg-color--light: var(--md-default-fg-color--light);
+  border-bottom: 1px solid var(--md-default-fg-color--lightest);
 }
+.md-header,
+.md-header--shadow {
+  box-shadow: none;
+}
+/* The theme draws the search button and its shortcut in black at 26% over the header. */
+@media screen and (min-width: 45em) {
+  .md-search__button {
+    color: var(--md-default-fg-color--light);
+    background-color: var(--md-default-fg-color--lightest);
+  }
+  .md-search__button:focus,
+  .md-search__button:hover {
+    color: var(--md-default-fg-color);
+    background-color: var(--md-default-fg-color--lightest);
+  }
+}
+.md-search__button::after {
+  background: var(--md-default-bg-color);
+}
+.md-header__topic:first-child {
+  font-weight: 600;
+}
+/* On narrow screens the theme colours the menu's title and the repository link like the header. */
+.md-nav--primary .md-nav__title[for="__drawer"] {
+  background-color: var(--md-default-bg-color);
+  color: var(--md-default-fg-color);
+}
+.md-nav__source {
+  background-color: var(--md-code-bg-color);
+  color: var(--md-default-fg-color);
+}
+
+/* Headings in the text's colour. The theme draws h1 and h2 at weight 300, in grey. */
+.md-typeset h1,
+.md-typeset h2 {
+  color: var(--md-default-fg-color);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.md-typeset h2 {
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid var(--md-default-fg-color--lightest);
+}
+.md-typeset h3 {
+  font-weight: 600;
+}
+
 /* The README has the logo instead of a heading. Hide the title the theme adds above it. */
 .md-typeset h1:has(+ p[align="center"] img[alt="C0ven"]) {
   display: none;
+}
+/* The hero (docs/overrides/main.html) shows the logo, so the README's logo is hidden. The paragraph under it is
+   a size larger. */
+.md-typeset p[align="center"]:has(img[alt="C0ven"]) {
+  display: none;
+}
+.md-typeset p[align="center"]:has(img[alt="C0ven"]) + p {
+  font-size: 1.15em;
+  line-height: 1.6;
+}
+
+/* The home page's hero: the logo on its own near-black (#070B0A), over a grid the size of its pixels. */
+.c0-hero {
+  background-color: #070b0a;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+  background-size: 16px 16px;
+  background-position: center top;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.78);
+}
+.c0-hero__inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 3.5rem 0.8rem 3rem;
+  text-align: center;
+}
+@media screen and (max-width: 44.9375em) {
+  .c0-hero__inner {
+    padding: 2.2rem 0.8rem 2rem;
+  }
+}
+.c0-hero__logo {
+  width: min(30rem, 100%);
+  image-rendering: pixelated;
+}
+.c0-hero__description {
+  max-width: 34rem;
+  margin: 1.6rem 0 0;
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+.c0-hero__links {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.6rem;
+  margin-top: 1.8rem;
+}
+.c0-hero__link {
+  padding: 0.5rem 1.1rem;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 0.2rem;
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 0.75rem;
+  font-weight: 600;
+  transition: border-color 0.15s, background-color 0.15s;
+}
+.c0-hero__link:hover,
+.c0-hero__link:focus-visible {
+  border-color: rgba(255, 255, 255, 0.6);
+  color: #fff;
+}
+.c0-hero__link--primary {
+  border-color: #f5b83d;
+  background-color: #f5b83d;
+  color: #070b0a;
+}
+.c0-hero__link--primary:hover,
+.c0-hero__link--primary:focus-visible {
+  border-color: #ffe08a;
+  background-color: #ffe08a;
+  color: #070b0a;
 }

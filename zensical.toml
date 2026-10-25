@@ -14,6 +14,7 @@ exclude_docs = """
 !/README.md
 !/AGENTS.md
 !/docs/
+/docs/overrides/
 """
 site_dir = "_site"
 extra_css = ["docs/stylesheets/logo-colours.css"]
@@ -21,8 +22,9 @@ extra_css = ["docs/stylesheets/logo-colours.css"]
 strict = true
 
 [project.theme]
-# Colour the header with the primary colour, the logo's green.
 variant = "classic"
+# The home page's hero.
+custom_dir = "docs/overrides"
 logo = "docs/images/logo-mark.svg"
 favicon = "docs/images/logo-mark.svg"
 features = [
@@ -33,6 +35,8 @@ features = [
     "navigation.top",
     "search.highlight",
 ]
+font.text = "Inter"
+font.code = "JetBrains Mono"
 
 [[project.theme.palette]]
 media = "(prefers-color-scheme: light)"
