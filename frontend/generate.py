@@ -85,6 +85,15 @@ class End:
     """From the request's admission to its first token, as the engine timed it; 0 when it sent no time."""
     decode_ms: float = 0.0
     """From the first token to the last."""
+    queue_ms: float = 0.0
+    """From the request's GEN to its admission."""
+    steps: int = 0
+    """The DONE line's counters: the decode steps and rounds that gave its tokens, the drafts verified and accepted
+    for it, and of those the ones from its own tokens."""
+    drafts: int = 0
+    accepted: int = 0
+    lookup_drafts: int = 0
+    lookup_accepted: int = 0
 
     def speeds(self) -> dict[str, float]:
         """Prompt and decode speeds in tokens a second, and the time in seconds, under TabbyAPI's `usage` names,
@@ -227,7 +236,7 @@ async def stream(model: Model, engine: Engine, request: Request, prompt: Prompt)
                                 return
                         else:
                             yield piece
-                case protocol.Done(finish=finish, reused=reused, prompt_ms=prompt_ms, decode_ms=decode_ms):
+                case protocol.Done(finish=finish, reused=reused, prompt_ms=prompt_ms, decode_ms=decode_ms) as done:
                     cached = reused or cached
                     try:
                         tail = pieces(detok.flush()) + list(parser.finish())
@@ -253,7 +262,20 @@ async def stream(model: Model, engine: Engine, request: Request, prompt: Prompt)
                     }[finish]
                     if why is Finish.STOP and parser.calls:
                         why = Finish.TOOL_CALLS
-                    yield End(why, len(prompt.ids), generated, cached, prompt_ms=prompt_ms, decode_ms=decode_ms)
+                    yield End(
+                        why,
+                        len(prompt.ids),
+                        generated,
+                        cached,
+                        prompt_ms=prompt_ms,
+                        decode_ms=decode_ms,
+                        queue_ms=done.queue_ms,
+                        steps=done.steps,
+                        drafts=done.drafts,
+                        accepted=done.accepted,
+                        lookup_drafts=done.lookup_drafts,
+                        lookup_accepted=done.lookup_accepted,
+                    )
                     return
                 case protocol.Error(message=message):
                     yield End(Finish.ERROR, len(prompt.ids), generated, cached, error=message)

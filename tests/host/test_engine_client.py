@@ -42,6 +42,26 @@ def test_generate_two_at_once():
     asyncio.run(main())
 
 
+def test_stats_answer_without_starting_the_engine():
+    async def main() -> None:
+        client = EngineClient(ARGV)
+        assert await client.stats() == {}, "no child runs, and none is started for it"
+        assert not client.alive
+        events = await run(client, (1, 2, 3), 4)
+        done = events[-1]
+        assert isinstance(done, protocol.Done)
+        assert done.steps == done.generated - 1 == 3
+        assert done.queue_ms >= 0
+        stats = await client.stats()
+        assert int(stats["plans"]) > 0
+        assert int(stats["steps"]) >= 3
+        assert stats["waiting"] == "0"
+        assert float(stats["decode_ms"]) > 0
+        await client.close()
+
+    asyncio.run(main())
+
+
 def test_leaving_early_stops_the_request():
     async def main() -> None:
         client = EngineClient(ARGV)

@@ -1,7 +1,7 @@
 """The native engine: the C++ core, loaded with ctypes (ADR-0022, item 4), behind the engine interface.
 
 Two parts. `CtypesCore` is the header's calls, one method each, raising `EngineError` on a failed status.
-`NativeEngine` adapts version 7 of the header to `interface.Engine`, which the scheduler was written against
+`NativeEngine` adapts version 9 of the header to `interface.Engine`, which the scheduler was written against
 (DESIGN.md, section 3). Where the two differ, the adapter bridges them as ADR-0027 lists, item by item:
 
 - The core runs one step per plan and decodes only the slots a plan names; the interface's core keeps decoding
@@ -43,6 +43,7 @@ from engine.api.interface import (
     WINDOW_ROWS,
     EngineError,
     EngineFacts,
+    EngineStats,
     ErrorCode,
     Event,
     EventKind,
@@ -52,6 +53,7 @@ from engine.api.interface import (
     PageChange,
     PageOp,
     SlotSettings,
+    SlotStats,
     StepPlan,
     TimingRecords,
     TimingStage,
@@ -114,6 +116,8 @@ def load_library(path: Path | None = None) -> ctypes.CDLL:
         "engine_restore": ([_ctx, _u32, _u32], ctypes.c_int),
         "engine_drop": ([_ctx, _u32], ctypes.c_int),
         "engine_read_timing": ([_ctx, ctypes.POINTER(abi.CTiming), _u32, _p_u32], ctypes.c_int),
+        "engine_read_stats": ([_ctx, ctypes.POINTER(abi.CStats)], ctypes.c_int),
+        "engine_read_slot_stats": ([_ctx, _u32, ctypes.POINTER(abi.CSlotStats)], ctypes.c_int),
         "engine_sleep": ([_ctx], ctypes.c_int),
         "engine_wake": ([_ctx, ctypes.POINTER(abi.CInfo)], ctypes.c_int),
         "engine_last_error": ([_ctx], ctypes.c_char_p),
@@ -152,6 +156,11 @@ class Core(Protocol):
     def restore(self, slot: int, checkpoint_id: int) -> None: ...
     def drop(self, checkpoint_id: int) -> None: ...
     def read_timing(self, cap: int) -> list[abi.CTiming]: ...
+    def read_stats(self) -> abi.CStats: ...
+    def slot_stats(self, slot: int) -> abi.CSlotStats:
+        """Raises EngineError for a slot not admitted."""
+        ...
+
     def sleep(self) -> None: ...
     def wake(self) -> abi.CInfo: ...
     def last_error(self) -> str: ...
@@ -233,6 +242,16 @@ class CtypesCore:
         cap = min(cap, len(self._timing))
         self._check(self._lib.engine_read_timing(self._ctx, self._timing, cap, ctypes.byref(n)), "read_timing")
         return [abi.CTiming.from_buffer_copy(self._timing[i]) for i in range(n.value)]
+
+    def read_stats(self) -> abi.CStats:
+        out = abi.CStats()
+        self._check(self._lib.engine_read_stats(self._ctx, ctypes.byref(out)), "read_stats")
+        return out
+
+    def slot_stats(self, slot: int) -> abi.CSlotStats:
+        out = abi.CSlotStats()
+        self._check(self._lib.engine_read_slot_stats(self._ctx, slot, ctypes.byref(out)), "slot_stats")
+        return out
 
     def sleep(self) -> None:
         self._check(self._lib.engine_sleep(self._ctx), "sleep")
@@ -491,6 +510,21 @@ class NativeEngine:
             start, duration, plan, rows = self._timing.popleft()
             out[i] = (start, duration, plan, TimingStage.STEP, 0, rows, 0)
         return out
+
+    def stats(self) -> EngineStats:
+        if self._info is None:
+            return EngineStats()
+        c = self._core.read_stats()
+        return EngineStats(**{name: int(getattr(c, name)) for name in abi.STATS_FIELDS})
+
+    def slot_stats(self, slot: int) -> SlotStats:
+        if self._info is None or self._asleep or slot not in self._slots:
+            return SlotStats()
+        try:
+            c = self._core.slot_stats(slot)
+        except EngineError:
+            return SlotStats()
+        return SlotStats(**{name: int(getattr(c, name)) for name in abi.SLOT_STATS_FIELDS})
 
     def close(self) -> None:
         if self._info is not None:

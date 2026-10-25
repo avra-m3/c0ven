@@ -391,6 +391,26 @@ def test_status_endpoints(client: TestClient):
     assert metrics["engine"] == {"backend": "fake"}
 
 
+def test_metrics_carry_the_engines_counters_and_each_requests(client: TestClient, engine: FakeEngine):
+    body = chat(client)
+    metrics = client.get("/metrics").json()
+    generated = body["usage"]["completion_tokens"]
+    assert metrics["totals"]["steps"] == generated, "the fake engine's DONE line counts a step per token"
+    assert (metrics["totals"]["drafts"], metrics["totals"]["accepted"]) == (2, 1)
+    assert metrics["totals"]["queue_seconds"] == 0.001
+    (recent,) = metrics["recent"]
+    assert (recent["queue_ms"], recent["steps"], recent["drafts"], recent["accepted"]) == (0.5, generated, 2, 1)
+    assert metrics["core"] == {"plans": 4, "steps": 3, "step_ns": 30_000_000}, "the STATS line's values, as numbers"
+    assert metrics["derived"] == {
+        "step_ms": 10.0,
+        "step_tokens_per_s": 0.0,
+        "layers_missed_per_step": 0.0,
+        "undrafted_share": 0.0,
+    }
+    engine.counts = {}
+    assert client.get("/metrics").json()["core"] == {}, "an engine not running has no counters"
+
+
 def test_without_max_tokens_a_request_may_fill_the_context(client: TestClient, engine: FakeEngine):
     chat(client)
     assert engine.max_news == [engine.max_context - len(engine.prompts[0])]

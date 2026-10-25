@@ -68,6 +68,7 @@ struct Slot {
   engine::Lookup lookup;        // the slot's own tokens, for drafts from earlier runs of them
   engine::DraftOdds odds;
   bool lookup_round = false;    // drafts holds the lookup's drafts
+  engine_slot_stats stats{};
 };
 
 // A prompt piece of at most this many tokens is read as decode windows of forced rows: a prompt chunk stages every
@@ -140,6 +141,8 @@ struct engine_ctx {
   bool prompt_ended = false;  // the plan being run read some slot's last prompt token
   uint32_t writers = 0;  // the slots the plan being run decoded
   engine::WindowTimes window_times;  // one slot's decode steps and rounds, by their rows
+  engine_stats stats{};  // the counters (include/engine_api.h); the model's are copied in at each plan's end
+  uint64_t t_open = 0;
   bool stop = false;
   bool asleep = false;
   uint64_t checkpoint_bytes = 0;
@@ -164,6 +167,7 @@ struct engine_ctx {
     Slot &sl = slots[s];
     if (sl.stalled) return;
     sl.stalled = true;
+    stats.stalls++;
     emit({ENGINE_EVENT_STALLED, s, kNoToken, pos});
   }
 
@@ -326,6 +330,39 @@ struct engine_ctx {
     return std::min(most, spare / n + (i < spare % n ? 1u : 0u));
   }
 
+  // A draft round's window of n rows that took ns, and a slot's run in it: k drafts verified, a accepted, from the
+  // lookup or the draft layer. Under mu.
+  void count_round(size_t n, uint64_t ns, const engine::qwen4exp::StepStats &ss) {
+    stats.rounds++;
+    stats.round_rows += n;
+    stats.round_ns += ns;
+    stats.round_misses += ss.misses;
+    stats.round_layers_missed += ss.layers_missed;
+    round_ns = ns;
+  }
+  void count_run(Slot &sl, bool lookup, uint32_t k, uint32_t a) {
+    sl.stats.steps++;
+    sl.stats.rounds++;
+    sl.stats.drafts += k;
+    sl.stats.accepted += a;
+    if (lookup) {
+      sl.stats.lookup_rounds++;
+      sl.stats.lookup_drafts += k;
+      sl.stats.lookup_accepted += a;
+      stats.lookup_runs++;
+      stats.lookup_drafts += k;
+      stats.lookup_accepted += a;
+      stats.lookup_ns += round_ns;
+    } else {
+      stats.layer_runs++;
+      stats.layer_drafts += k;
+      stats.layer_accepted += a;
+      stats.layer_ns += round_ns;
+    }
+    round_ns = 0;  // a round of several slots counts its time once, to the layer
+  }
+  uint64_t round_ns = 0;  // the round being counted
+
   // Whether a slot still has prompt to read. Under mu.
   bool reading() const {
     for (const Slot &sl : slots)
@@ -392,7 +429,11 @@ struct engine_ctx {
                                    one ? (uint32_t)first.next.size() : 0);
     {
       std::lock_guard<std::mutex> lk(mu);
-      record({ENGINE_TIMING_PROMPT, plan, n, 0, t0, now_ns()});
+      const uint64_t t1 = now_ns();
+      record({ENGINE_TIMING_PROMPT, plan, n, 0, t0, t1});
+      stats.prompt_chunks++;
+      stats.prompt_rows += n;
+      stats.prompt_ns += t1 - t0;
     }
     for (uint32_t r = 0, end = 0; r < pieces.size(); r++) {
       end += pieces[r].n;
@@ -494,7 +535,11 @@ struct engine_ctx {
       if (mtp && mr.back().token != kNoToken) model->mtp_catchup(mr.data(), w);
     }
     std::lock_guard<std::mutex> lk(mu);
-    record({ENGINE_TIMING_PROMPT, plan, n, 0, t0, now_ns()});
+    const uint64_t t1 = now_ns();
+    record({ENGINE_TIMING_PROMPT, plan, n, 0, t0, t1});
+    stats.window_pieces++;
+    stats.window_rows += n;
+    stats.window_ns += t1 - t0;
     Slot &sl = slots[s];
     if (!sl.used) return;  // released while it ran
     sl.tokens.insert(sl.tokens.end(), toks.begin(), toks.end());
@@ -515,6 +560,7 @@ struct engine_ctx {
   void decode(uint32_t plan, const engine_step_plan &p) {
     std::vector<StepIn> rows;
     std::vector<uint32_t> who;
+    bool all_writing = true;  // no row reads a prompt token
     {
       std::lock_guard<std::mutex> lk(mu);
       for (uint32_t i = 0; i < p.nslots && i < ENGINE_MAX_STEP_SLOTS; i++) {
@@ -532,6 +578,7 @@ struct engine_ctx {
           continue;
         }
         int32_t tok = sl.fed < sl.prompt.size() ? sl.prompt[sl.fed] : sl.next;
+        all_writing = all_writing && sl.fed >= sl.prompt.size();
         uint32_t pos = sl.fed;
         rows.push_back({s, pos, tok, pos >= 1 ? sl.tokens[pos - 1] : kNoToken, pos >= 2 ? sl.tokens[pos - 2] : kNoToken});
         who.push_back(s);
@@ -579,8 +626,15 @@ struct engine_ctx {
     {
       std::lock_guard<std::mutex> lk(mu);
       const uint64_t t1 = now_ns();
-      record({ENGINE_TIMING_DECODE, plan, (uint32_t)rows.size(), model->last_stats().misses, t0, t1});
+      const engine::qwen4exp::StepStats &ss = model->last_stats();
+      record({ENGINE_TIMING_DECODE, plan, (uint32_t)rows.size(), ss.misses, t0, t1});
       if (rows.size() == 1) window_times.add(1, (t1 - t0) * 1e-6);
+      stats.steps++;
+      stats.step_rows += rows.size();
+      stats.step_ns += t1 - t0;
+      stats.step_misses += ss.misses;
+      stats.step_layers_missed += ss.layers_missed;
+      if (all_writing && model->drafting()) stats.undrafted_steps++;
       for (size_t i = 0; i < rows.size(); i++) {
         uint32_t s = who[i];
         Slot &sl = slots[s];
@@ -593,6 +647,7 @@ struct engine_ctx {
           continue;
         }
         if (sl.fed == sl.prompt.size()) emit({ENGINE_EVENT_PROMPT, s, kNoToken, sl.fed});
+        if (sl.fed > sl.prompt.size()) sl.stats.steps++;  // the row was one of its own tokens
         produce(s, out[i]);
         sl.drafts.clear();
         mr.push_back({s, rows[i].pos, sl.next, kNoToken, kNoToken});
@@ -671,10 +726,13 @@ struct engine_ctx {
     {
       std::lock_guard<std::mutex> lk(mu);
       const uint64_t t1 = now_ns();
-      record({ENGINE_TIMING_ROUND, plan, (uint32_t)rows.size(), model->last_stats().misses, t0, t1});
+      const engine::qwen4exp::StepStats &ss = model->last_stats();
+      record({ENGINE_TIMING_ROUND, plan, (uint32_t)rows.size(), ss.misses, t0, t1});
       window_times.add((uint32_t)rows.size(), (t1 - t0) * 1e-6);
       Slot &sl = slots[s];
       if (!sl.used) return;
+      count_round(rows.size(), t1 - t0, ss);
+      count_run(sl, sl.lookup_round, k, a);
       if (sl.lookup_round)
         sl.odds.lookup_round(a, k);
       else if (k)
@@ -751,11 +809,15 @@ struct engine_ctx {
     std::vector<bool> live(ns, false);
     {
       std::lock_guard<std::mutex> lk(mu);
-      record({ENGINE_TIMING_ROUND, plan, n, model->last_stats().misses, t0, now_ns()});
+      const uint64_t t1 = now_ns();
+      const engine::qwen4exp::StepStats &ss = model->last_stats();
+      record({ENGINE_TIMING_ROUND, plan, n, ss.misses, t0, t1});
+      count_round(n, t1 - t0, ss);
       for (uint32_t i = 0; i < ns; i++) {
         const uint32_t s = row0[i].slot, p = row0[i].pos, a = acc[i];
         Slot &sl = slots[s];
         if (!sl.used) continue;
+        count_run(sl, false, k[i], a);
         for (uint32_t j = 0; j <= a; j++) sl.tokens.push_back(rows[start[i] + j].token);
         sl.fed = p + a + 1;
         bool done = false;
@@ -808,6 +870,7 @@ struct engine_ctx {
         prompt_ended = false;
         writers = 0;
       }
+      const uint64_t t_plan = now_ns();
       try {
         model->kv_need(kv_in_use(plan, pages));
         apply_pages(pages);
@@ -818,10 +881,27 @@ struct engine_ctx {
         // (docs/measurements/MEASUREMENTS.md#2026-10-16-drafting-and-swaps). While several slots write, the round's swaps are
         // shared out: the cache follows several requests' routing at once.
         const uint32_t every = writers > 1 ? 16 : 8;
-        if (swaps && (prompt_ended || seq % every == 0) && !prompt_reading())
-          model->swap_round(64 / std::max<uint32_t>(1, writers));
+        uint64_t swapped = 0, swap_ns = 0;
+        if (swaps && (prompt_ended || seq % every == 0) && !prompt_reading()) {
+          const uint64_t t0 = now_ns();
+          swapped = model->swap_round(64 / std::max<uint32_t>(1, writers));
+          swap_ns = now_ns() - t0;
+        }
         model->kv_ahead();
+        const engine::qwen4exp::NgramStats ng = model->ngram_stats();
         std::lock_guard<std::mutex> lk(mu);
+        stats.plans++;
+        stats.busy_ns += now_ns() - t_plan;
+        if (swap_ns) {
+          stats.swap_rounds++;
+          stats.swaps += swapped;
+          stats.swap_ns += swap_ns;
+        }
+        stats.ngram_rows = ng.rows;
+        stats.ngram_hits = ng.hits;
+        stats.ngram_reads = ng.reads;
+        stats.experts_cached = model->experts_cached();
+        stats.experts_floor = model->experts_floor();
         emit({ENGINE_EVENT_STEP, 0, kNoToken, ++plans_done});
       } catch (const std::exception &ex) {
         std::lock_guard<std::mutex> lk(mu);
@@ -911,6 +991,9 @@ engine_status engine_open(const engine_config *config, engine_info *info, engine
     if (config->draft_max) e->draft_max = std::min<uint32_t>(config->draft_max, ENGINE_MAX_STEP_SLOTS - 1);
     if (config->draft_min_p > 0) e->draft_min_p = config->draft_min_p;
     e->swaps = opt.adapt_swaps;
+    e->t_open = now_ns();
+    e->stats.experts_cached = e->model->experts_cached();
+    e->stats.experts_floor = e->model->experts_floor();
     // The checkpoints, each a slot's fixed state, in pinned host memory: allocated now, never on the token path
     // (docs/DESIGN.md, section 6).
     uint32_t nck = config->checkpoints ? config->checkpoints : 2;
@@ -1086,6 +1169,7 @@ engine_status engine_checkpoint(engine_ctx *e, uint32_t slot, uint32_t id) {
   ck.tokens.assign(sl.tokens.begin(), sl.tokens.begin() + sl.fed);
   ck.images = images_before(sl.images, sl.fed);
   ck.full = true;
+  e->stats.checkpoints_taken++;
   return ENGINE_OK;
 }
 
@@ -1111,6 +1195,7 @@ engine_status engine_restore(engine_ctx *e, uint32_t slot, uint32_t id) {
   }
   sl.tokens = ck.tokens;
   sl.fed = (uint32_t)ck.tokens.size();
+  e->stats.restores++;
   return ENGINE_OK;
 }
 
@@ -1133,6 +1218,22 @@ engine_status engine_read_timing(engine_ctx *e, engine_timing *buf, uint32_t cap
     e->timing.pop_front();
   }
   *n = k;
+  return ENGINE_OK;
+}
+
+engine_status engine_read_stats(engine_ctx *e, engine_stats *out) {
+  if (!e || !out) return ENGINE_BAD_ARGUMENT;
+  std::lock_guard<std::mutex> lk(e->mu);
+  *out = e->stats;
+  out->up_ns = now_ns() - e->t_open;
+  return ENGINE_OK;
+}
+
+engine_status engine_read_slot_stats(engine_ctx *e, uint32_t slot, engine_slot_stats *out) {
+  if (!e || !out) return ENGINE_BAD_ARGUMENT;
+  std::lock_guard<std::mutex> lk(e->mu);
+  if (slot >= e->slots.size() || !e->slots[slot].used) return ENGINE_BAD_ARGUMENT;
+  *out = e->slots[slot].stats;
   return ENGINE_OK;
 }
 
@@ -1231,6 +1332,22 @@ uint32_t engine_abi_layout(engine_abi_row *table, uint32_t cap) {
       ROW(engine_timing, start_ns), ROW(engine_timing, end_ns), SIZE(engine_timing),
       ROW(engine_image, first), ROW(engine_image, grid_h), ROW(engine_image, grid_w), ROW(engine_image, frames),
       ROW(engine_image, pixels), SIZE(engine_image),
+      ROW(engine_stats, up_ns), ROW(engine_stats, plans), ROW(engine_stats, busy_ns), ROW(engine_stats, prompt_chunks),
+      ROW(engine_stats, prompt_rows), ROW(engine_stats, prompt_ns), ROW(engine_stats, window_pieces),
+      ROW(engine_stats, window_rows), ROW(engine_stats, window_ns), ROW(engine_stats, steps), ROW(engine_stats, step_rows),
+      ROW(engine_stats, step_ns), ROW(engine_stats, step_misses), ROW(engine_stats, step_layers_missed),
+      ROW(engine_stats, undrafted_steps), ROW(engine_stats, rounds), ROW(engine_stats, round_rows),
+      ROW(engine_stats, round_ns), ROW(engine_stats, round_misses), ROW(engine_stats, round_layers_missed),
+      ROW(engine_stats, layer_runs), ROW(engine_stats, layer_drafts), ROW(engine_stats, layer_accepted),
+      ROW(engine_stats, layer_ns), ROW(engine_stats, lookup_runs), ROW(engine_stats, lookup_drafts),
+      ROW(engine_stats, lookup_accepted), ROW(engine_stats, lookup_ns), ROW(engine_stats, swap_rounds),
+      ROW(engine_stats, swaps), ROW(engine_stats, swap_ns), ROW(engine_stats, stalls),
+      ROW(engine_stats, checkpoints_taken), ROW(engine_stats, restores), ROW(engine_stats, ngram_rows),
+      ROW(engine_stats, ngram_hits), ROW(engine_stats, ngram_reads), ROW(engine_stats, experts_cached),
+      ROW(engine_stats, experts_floor), SIZE(engine_stats),
+      ROW(engine_slot_stats, steps), ROW(engine_slot_stats, rounds), ROW(engine_slot_stats, drafts),
+      ROW(engine_slot_stats, accepted), ROW(engine_slot_stats, lookup_rounds), ROW(engine_slot_stats, lookup_drafts),
+      ROW(engine_slot_stats, lookup_accepted), SIZE(engine_slot_stats),
       ROW(engine_abi_row, name), ROW(engine_abi_row, offset), ROW(engine_abi_row, size), SIZE(engine_abi_row),
   };
 #undef ROW

@@ -297,6 +297,20 @@ int main(int argc, char **argv) {
   engine_timing tr[256];
   uint32_t nt = 0;
   CHECK(engine_read_timing(e, tr, 256, &nt) == ENGINE_OK && nt > 0, "timing records");
+  engine_stats cs;
+  CHECK(engine_read_stats(e, &cs) == ENGINE_OK, "stats");
+  CHECK(cs.plans > 0 && cs.steps > 0 && cs.step_rows >= cs.steps && cs.busy_ns > 0, "stats: %llu plans, %llu steps",
+        (unsigned long long)cs.plans, (unsigned long long)cs.steps);
+  CHECK(cs.prompt_chunks > 0 && cs.window_pieces > 0 && cs.prompt_rows + cs.window_rows >= nl,
+        "stats: %llu chunks of %llu rows, %llu windowed pieces of %llu rows", (unsigned long long)cs.prompt_chunks,
+        (unsigned long long)cs.prompt_rows, (unsigned long long)cs.window_pieces, (unsigned long long)cs.window_rows);
+  CHECK(cs.restores > 0 && cs.checkpoints_taken > 0, "stats: checkpoints");
+  CHECK(cs.rounds == 0 && cs.undrafted_steps == 0, "stats: rounds without drafting");
+  CHECK(cs.experts_cached == info.experts_per_layer && cs.experts_floor <= cs.experts_cached,
+        "stats: %llu experts cached (floor %llu), info says %u", (unsigned long long)cs.experts_cached,
+        (unsigned long long)cs.experts_floor, info.experts_per_layer);
+  engine_slot_stats sst;
+  CHECK(engine_read_slot_stats(e, info.slots, &sst) == ENGINE_BAD_ARGUMENT, "slot stats of a slot out of range");
   for (uint32_t i = 0; i < nt; i++) CHECK(tr[i].end_ns >= tr[i].start_ns && tr[i].rows > 0, "timing record %u", i);
   printf("%u timing records\n", nt);
 
@@ -342,9 +356,9 @@ int main(int argc, char **argv) {
   s.penalty_present = 0.0f;
   printf("a presence penalty: 32 tokens, none among the 64 before it\n");
 
-  engine_abi_row rows[128];
-  uint32_t nr = engine_abi_layout(rows, 128);
-  CHECK(nr > 0 && nr <= 128, "layout rows");
+  engine_abi_row rows[256];
+  uint32_t nr = engine_abi_layout(rows, 256);
+  CHECK(nr > 0 && nr <= 256, "layout rows");
   engine_close(e);
 
   /* With drafting, exactly the tokens of plain decoding: drafts change how many tokens a step gives, never which.
@@ -374,6 +388,19 @@ int main(int argc, char **argv) {
     CHECK(n == 32, "drafting: %d tokens", n);
     for (int i = 0; i < 32; i++)
       CHECK(out[i] == plain[i], "drafting, token %d: %d, with two slots %d", i, out[i], plain[i]);
+    CHECK(engine_read_slot_stats(e, 0, &sst) == ENGINE_OK, "slot stats");
+    CHECK(sst.rounds > 0 && sst.rounds <= sst.steps && sst.accepted <= sst.drafts && sst.steps + sst.accepted + 1 >= 32,
+          "slot stats: %llu steps, %llu rounds, %llu of %llu drafts accepted", (unsigned long long)sst.steps,
+          (unsigned long long)sst.rounds, (unsigned long long)sst.accepted, (unsigned long long)sst.drafts);
+    CHECK(sst.lookup_accepted <= sst.lookup_drafts && sst.lookup_drafts <= sst.drafts, "slot stats: lookup");
+    CHECK(engine_read_stats(e, &cs) == ENGINE_OK, "stats");
+    CHECK(cs.rounds > 0 && cs.layer_runs + cs.lookup_runs >= cs.rounds && cs.round_ns > 0, "stats: %llu rounds",
+          (unsigned long long)cs.rounds);
+    CHECK(cs.layer_accepted <= cs.layer_drafts && cs.lookup_accepted <= cs.lookup_drafts, "stats: accepted");
+    CHECK(cs.layer_ns + cs.lookup_ns == cs.round_ns, "stats: the rounds' time by source");
+    printf("drafting: %llu rounds, %llu of %llu layer drafts and %llu of %llu lookup drafts accepted\n",
+           (unsigned long long)cs.rounds, (unsigned long long)cs.layer_accepted, (unsigned long long)cs.layer_drafts,
+           (unsigned long long)cs.lookup_accepted, (unsigned long long)cs.lookup_drafts);
     CHECK(engine_release(e, 0) == ENGINE_OK, "release");
     /* With penalties, each window row and draft counts the rows and drafts before it: the same tokens again. */
     s.penalty_last_n = 64;
