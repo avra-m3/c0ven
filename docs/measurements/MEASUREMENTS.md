@@ -239,6 +239,11 @@ reordered layout run 3.2-8.8 times faster than in the file's layout
 | VRAM held while asleep | 0.31-0.32 GiB a card | [2026-10-17](#2026-10-17-sleep-and-wake) |
 | Page cache growth during a load | at most 0.79 GiB | [2026-10-17](#2026-10-17-sleep-and-wake) |
 | Host memory swapped out | 0-50 MiB by a wake; 2.7-790 MiB by a start, most when the host stalled on compaction | [2026-10-17](#2026-10-17-sleep-and-wake) |
+| The expert arena resident while serving and asleep (3 slots, 262,144 context, 589,824-token pool) | 16,642 MiB at load, 335.6 experts a layer cached; 22,080 MiB after two 255,028-token prompts at once took the cache to 283.5, and all of it held asleep and after the wake. It follows the deepest eviction since the start: the same two prompts again grew it 138 MiB | <a id="2026-10-25-arena-resident-and-tail-drop"></a>[2026-10-25](#2026-10-25-arena-resident-and-tail-drop) |
+| Arena positions left stale (filled by an eviction, their expert back on the cards) | at least 1.36 GB of 5.12 GB filled, after refills to 297.3 experts a layer; at least 0.55 GB of 4.78 GB after 3.6 h of serving; at most the 96.6 free positions a layer, 9.49 GB | [2026-10-25](#2026-10-25-arena-resident-and-tail-drop) |
+| Dropping arena pieces (`munlock` and `MADV_DONTNEED` a piece, rounded in to 4 KiB) | 19 ms for 3.05 GB, 31 ms for 5.11 GB. Pieces dropped together free all but their partial end pages; a piece dropped between kept ones frees little: 113 of 2,900 MiB, the rest charged as partly mapped huge pages until the kernel splits them | [2026-10-25](#2026-10-25-arena-resident-and-tail-drop) |
+| Reading the arena's coldest 31 or 52 experts a layer back from the file with `O_DIRECT`, 8 threads | 3.05 GB in 0.59-1.06 s, 5.11 GB in 0.98-1.61 s (2.9-5.2 GB/s), no compaction stall. After a drop they fault back in small pages under either advice; `MADV_COLLAPSE` adds 0.70-0.78 s and 1.12-1.23 s | [2026-10-25](#2026-10-25-arena-resident-and-tail-drop) |
+| One expert read from the file on a miss (its three matrices, `O_DIRECT`) | 0.52-1.22 ms (median 0.79) with the three read at once; 1.17-2.67 ms (median 1.63) one after another | [2026-10-25](#2026-10-25-arena-resident-and-tail-drop) |
 
 ### Prompts
 
