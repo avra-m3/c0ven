@@ -456,6 +456,12 @@ void Model::kv_ahead() {
   if (!evict_next_.empty()) start_round();  // the eviction only: no swaps chosen with it
 }
 
+uint32_t Model::experts_cached() const {
+  uint64_t sum = 0;
+  for (auto &hl : host_layers_) sum += Q_EXPERTS - (uint32_t)hl->uncached.size();
+  return (uint32_t)(sum / Q_LAYERS);
+}
+
 // The queued maps in order, after the last batch: now, or beside the steps on their own thread. Pages leaving the
 // pool are not backed from now; pages joining it once the batch ends.
 void Model::run_vm(bool beside) {

@@ -2,7 +2,8 @@
 
 The front end starts it as its child. One thread reads commands, one writes events, so the loop never blocks on
 I/O (vLLM's engine core does the same). The loop admits, plans and polls through the scheduler. On `SLEEP` it
-drains the scheduler and gives the cards back; on `WAKE` it loads them again with a new scheduler (ADR-0032).
+drains the scheduler and gives the cards back; on `WAKE` it loads them again with a new scheduler (ADR-0032). `STATS`
+is answered from the counters the core and the scheduler keep, awake or asleep.
 
     python -m engine --model /models/<file>-00001-of-00002.gguf --slots 4 --context 262144
     python -m engine --backend mock --arch <arch> --slots 4 --context 32768
@@ -301,6 +302,8 @@ def serve(
                     case protocol.Stop(rid=rid):
                         for e in scheduler.cancel(rid):
                             events.put(e)
+                    case protocol.Stats():
+                        events.put(protocol.StatsReport(scheduler.report()))
                     case protocol.Sleep(drain_ms=drain_ms) if state is State.AWAKE:
                         state, sleep_t0, cancelled, wake_after = State.DRAINING, time.monotonic(), False, False
                         deadline = sleep_t0 + drain_ms / 1e3

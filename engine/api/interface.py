@@ -313,6 +313,78 @@ the clocks up."""
 type TimingRecords = npt.NDArray[np.void]
 
 
+@dataclass(frozen=True, slots=True)
+class EngineStats:
+    """The engine's counters since open, `engine_stats` field for field (DESIGN.md, section 7): sums over everything
+    the engine ran, times in nanoseconds. A reader differences two snapshots. The mock fills what it has."""
+
+    up_ns: int = 0
+    plans: int = 0
+    busy_ns: int = 0
+    prompt_chunks: int = 0
+    prompt_rows: int = 0
+    prompt_ns: int = 0
+    window_pieces: int = 0
+    window_rows: int = 0
+    window_ns: int = 0
+    steps: int = 0
+    """Decode steps that verified no drafts."""
+    step_rows: int = 0
+    step_ns: int = 0
+    step_misses: int = 0
+    """Experts the CPU computed in them."""
+    step_layers_missed: int = 0
+    undrafted_steps: int = 0
+    """Of the steps, with drafting on, those whose rows were all writing: no slot had a draft to verify."""
+    rounds: int = 0
+    """Draft rounds: windows verifying drafts, of one slot or several."""
+    round_rows: int = 0
+    round_ns: int = 0
+    round_misses: int = 0
+    round_layers_missed: int = 0
+    layer_runs: int = 0
+    """A slot's run in a round with the draft layer's drafts; `layer_drafts` verified, `layer_accepted` accepted."""
+    layer_drafts: int = 0
+    layer_accepted: int = 0
+    layer_ns: int = 0
+    """The rounds' time by the source of a lone slot's drafts; a round of several slots counts to the layer."""
+    lookup_runs: int = 0
+    """The same for drafts from the slot's own tokens (ADR-0041)."""
+    lookup_drafts: int = 0
+    lookup_accepted: int = 0
+    lookup_ns: int = 0
+    swap_rounds: int = 0
+    swaps: int = 0
+    swap_ns: int = 0
+    stalls: int = 0
+    checkpoints_taken: int = 0
+    restores: int = 0
+    ngram_rows: int = 0
+    """The n-gram table's rows asked for, those its cache served, and those read from the SSD (ADR-0015)."""
+    ngram_hits: int = 0
+    ngram_reads: int = 0
+    experts_cached: int = 0
+    """Per layer at the last plan's end, the mean over the layers; `experts_floor` the fewest the load keeps room
+    for, whatever the KV pool holds (ADR-0045)."""
+    experts_floor: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class SlotStats:
+    """One slot's decode counters since admit, `engine_slot_stats` field for field: its own tokens, not its prompt."""
+
+    steps: int = 0
+    """Decode steps and rounds that fed it one of its own tokens."""
+    rounds: int = 0
+    """Of them, draft rounds; `drafts` verified for it, `accepted` accepted."""
+    drafts: int = 0
+    accepted: int = 0
+    lookup_rounds: int = 0
+    """Of the rounds, those with drafts from its own tokens."""
+    lookup_drafts: int = 0
+    lookup_accepted: int = 0
+
+
 class TimingStage(IntEnum):
     """What a timing record measures: its `stage` field."""
 
@@ -341,6 +413,14 @@ class Engine(Protocol):
     def restore(self, slot: int, checkpoint_id: int) -> None: ...
     def drop(self, checkpoint_id: int) -> None: ...
     def read_timing(self, max_records: int = 4096) -> TimingRecords: ...
+    def stats(self) -> EngineStats:
+        """The counters since open, awake or asleep."""
+        ...
+
+    def slot_stats(self, slot: int) -> SlotStats:
+        """An admitted slot's counters; zeros for one that is not."""
+        ...
+
     def sleep(self) -> None:
         """Gives the cards back: frees every allocation on them and the checkpoints, and keeps the arena
         (ADR-0032). No slot may be admitted. Until `wake`, only `close` may follow."""

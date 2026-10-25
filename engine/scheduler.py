@@ -18,6 +18,7 @@ The core keeps decoding between plans, so a plan is built only when something ch
 
 from __future__ import annotations
 
+import dataclasses
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -153,6 +154,20 @@ class Scheduler:
     @property
     def idle(self) -> bool:
         return not self.by_rid
+
+    def report(self) -> dict[str, str]:
+        """The STATS line: the engine's counters, field for field, then the scheduler's: the requests waiting for a
+        slot, reading their prompts and writing, and the cost model's parts in milliseconds."""
+        out = {k: str(v) for k, v in dataclasses.asdict(self.engine.stats()).items()}
+        phases = [r.phase for r in self.by_slot.values()]
+        out["waiting"] = str(len(self.waiting))
+        out["reading"] = str(phases.count(Phase.PREFILL))
+        out["writing"] = str(phases.count(Phase.DECODE))
+        out["decode_ms"] = f"{self.cost.decode_ms.value:.3f}"
+        out["chunk_ms"] = f"{self.cost.chunk_ms:.3f}"
+        out["row_ms"] = f"{self.cost.row_ms:.4f}"
+        out["owed_ms"] = f"{self.owed_ms:.3f}"
+        return out
 
     # Commands.
 
@@ -431,6 +446,7 @@ class Scheduler:
                 out.append(protocol.Progress(r.rid, event.a, len(r.prompt), (now - r.t_admit) * 1e3))
             case EventKind.FINISHED:
                 first = r.t_first if r.t_first is not None else now
+                st = self.engine.slot_stats(r.slot)  # before the release empties the slot
                 out.append(
                     protocol.Done(
                         r.rid,
@@ -440,6 +456,12 @@ class Scheduler:
                         (now - first) * 1e3,
                         _FINISH[FinishReason(event.a)],
                         r.reused,
+                        (r.t_admit - r.arrived) * 1e3,
+                        st.steps,
+                        st.drafts,
+                        st.accepted,
+                        st.lookup_drafts,
+                        st.lookup_accepted,
                     )
                 )
                 self._retire(r)

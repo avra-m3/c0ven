@@ -10,6 +10,7 @@ Front end to engine:
     IMG <rid> <first> <grid_h> <grid_w> <frames> <path>
     GEN <rid> <max_new> [key=value ...] <id,id,...>
     STOP <rid>
+    STATS
     SLEEP [<drain_ms>]
     WAKE
     QUIT
@@ -26,10 +27,17 @@ Engine to front end:
     RESUME <rid> <reused>
     PP <rid> <reached> <prompt> <ms>
     T <rid> <id>[,<id>...]
-    DONE <rid> <generated> <prompt> <prompt_ms> <decode_ms> <finish> <reused>
+    DONE <rid> <generated> <prompt> <prompt_ms> <decode_ms> <finish> <reused> [key=value ...]
+    STATS key=value ...
     ERR <rid|-> <message>
 
 `ERR -` is about the engine, not one request, and the engine exits after it.
+
+`DONE`'s pairs are the request's counters: `queue_ms` from its GEN to its admission, `steps` the decode steps and
+draft rounds that fed it one of its own tokens, `drafts` and `accepted` the drafts verified and accepted for it,
+and `lookup_drafts` and `lookup_accepted` the part of those from its own tokens (ADR-0041). `STATS` asks for the
+engine's counters since it started, and is answered with a `STATS` line: the core's (`engine_stats` in
+`include/engine_api.h`, field for field) and the scheduler's (DESIGN.md, section 7). It is answered awake or asleep.
 
 `SLEEP` gives the cards back (ADR-0032). The engine refuses its queued requests and every later `GEN` with
 `ERR <rid>`, lets the running ones go on for up to `drain_ms` (default 0), ends the rest with finish `cancel`, frees
@@ -218,6 +226,14 @@ class Stop:
 
 
 @dataclass(frozen=True, slots=True)
+class Stats:
+    """Asks for the engine's counters: answered with a StatsReport."""
+
+    def encode(self) -> str:
+        return "STATS"
+
+
+@dataclass(frozen=True, slots=True)
 class Sleep:
     drain_ms: int = 0
 
@@ -237,7 +253,7 @@ class Quit:
         return "QUIT"
 
 
-type Command = Img | Gen | Stop | Sleep | Wake | Quit
+type Command = Img | Gen | Stop | Stats | Sleep | Wake | Quit
 
 
 def parse_command(line: str) -> Command:
@@ -258,6 +274,8 @@ def parse_command(line: str) -> Command:
             )
         case ["STOP", rid]:
             return Stop(_int(rid, "rid"))
+        case ["STATS"]:
+            return Stats()
         case ["SLEEP"]:
             return Sleep()
         case ["SLEEP", drain_ms]:
@@ -345,12 +363,57 @@ class Done:
     decode_ms: float
     finish: Finish
     reused: int = 0
+    queue_ms: float = 0.0
+    """From the GEN to the request's admission into a slot."""
+    steps: int = 0
+    """Decode steps and draft rounds that fed the request one of its own tokens."""
+    drafts: int = 0
+    """Drafts verified for it, and accepted; of them, those from its own tokens (ADR-0041)."""
+    accepted: int = 0
+    lookup_drafts: int = 0
+    lookup_accepted: int = 0
+
+    COUNTERS: ClassVar[tuple[str, ...]] = (
+        "queue_ms",
+        "steps",
+        "drafts",
+        "accepted",
+        "lookup_drafts",
+        "lookup_accepted",
+    )
+    """The key=value pairs, in order."""
 
     def encode(self) -> str:
+        pairs = " ".join(f"{k}={_number(round(getattr(self, k), 3))}" for k in self.COUNTERS)
         return (
             f"DONE {self.rid} {self.generated} {self.prompt} {self.prompt_ms:.3f} {self.decode_ms:.3f} "
-            f"{self.finish} {self.reused}"
+            f"{self.finish} {self.reused} {pairs}"
         )
+
+    @classmethod
+    def counters(cls, pairs: list[str]) -> dict[str, int | float]:
+        """A DONE line's pairs as the fields they set; a key not known is skipped, as GEN's are."""
+        out: dict[str, int | float] = {}
+        for pair in pairs:
+            key, sep, value = pair.partition("=")
+            if not sep:
+                raise ProtocolError(f"DONE pair without '=': {pair!r}")
+            if key in cls.COUNTERS:
+                out[key] = _float(value, key) if key == "queue_ms" else _int(value, key)
+        return out
+
+
+@dataclass(frozen=True, slots=True)
+class StatsReport:
+    """The engine's counters since it started, as key=value pairs (the answer to Stats)."""
+
+    counts: dict[str, str]
+
+    def encode(self) -> str:
+        for key, value in self.counts.items():
+            if not key or any(c.isspace() or c == "=" for c in key) or any(c.isspace() for c in value):
+                raise ProtocolError(f"STATS pair has a space or '=' in the wrong place: {key!r}={value!r}")
+        return " ".join(["STATS", *(f"{k}={v}" for k, v in self.counts.items())])
 
 
 @dataclass(frozen=True, slots=True)
@@ -364,7 +427,7 @@ class Error:
         return f"ERR {'-' if self.rid is None else self.rid} {_one_line(self.message)}"
 
 
-type Event = Info | Ready | Asleep | Resume | Progress | Tokens | Done | Error
+type Event = Info | Ready | Asleep | Resume | Progress | Tokens | Done | StatsReport | Error
 
 
 def parse_event(line: str) -> Event:
@@ -373,13 +436,9 @@ def parse_event(line: str) -> Event:
         raise ProtocolError("empty line")
     match parts:
         case ["INFO", *pairs]:
-            facts: dict[str, str] = {}
-            for pair in pairs:
-                key, sep, value = pair.partition("=")
-                if not sep:
-                    raise ProtocolError(f"INFO pair without '=': {pair!r}")
-                facts[key] = value
-            return Info(facts)
+            return Info(_pairs(pairs, "INFO"))
+        case ["STATS", *pairs]:
+            return StatsReport(_pairs(pairs, "STATS"))
         case ["READY", max_context, slots]:
             return Ready(_int(max_context, "max_context"), _int(slots, "slots"))
         case ["ASLEEP", ms]:
@@ -390,11 +449,12 @@ def parse_event(line: str) -> Event:
             return Progress(_int(rid, "rid"), _int(reached, "reached"), _int(prompt, "prompt"), _float(ms, "ms"))
         case ["T", rid, ids]:
             return Tokens(_int(rid, "rid"), _ids(ids))
-        case ["DONE", rid, generated, prompt, prompt_ms, decode_ms, finish, *rest] if len(rest) <= 1:
+        case ["DONE", rid, generated, prompt, prompt_ms, decode_ms, finish, *rest]:
             try:
                 why = Finish(finish)
             except ValueError:
                 raise ProtocolError(f"bad finish: {finish!r}") from None
+            reused = _int(rest[0], "reused") if rest and "=" not in rest[0] else 0
             return Done(
                 _int(rid, "rid"),
                 _int(generated, "generated"),
@@ -402,12 +462,23 @@ def parse_event(line: str) -> Event:
                 _float(prompt_ms, "prompt_ms"),
                 _float(decode_ms, "decode_ms"),
                 why,
-                _int(rest[0], "reused") if rest else 0,
+                reused,
+                **Done.counters(rest[1:] if rest and "=" not in rest[0] else rest),  # pyright: ignore[reportArgumentType]
             )
         case ["ERR", rid, *words]:
             return Error(None if rid == "-" else _int(rid, "rid"), " ".join(words))
         case _:
             raise ProtocolError(f"unknown event: {line[:60]!r}")
+
+
+def _pairs(pairs: list[str], line: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for pair in pairs:
+        key, sep, value = pair.partition("=")
+        if not sep:
+            raise ProtocolError(f"{line} pair without '=': {pair!r}")
+        out[key] = value
+    return out
 
 
 def tokens(text: str) -> int:

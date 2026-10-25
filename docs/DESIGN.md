@@ -171,7 +171,7 @@ sequenceDiagram
 
 ## 3. The C ABI between Python and C++
 
-[`include/engine_api.h`](../include/engine_api.h), version 7, is the one boundary between the Python side and the
+[`include/engine_api.h`](../include/engine_api.h), version 9, is the one boundary between the Python side and the
 core ([ADR-0022](adr/0022-two-processes-python-and-cpp.md)). Python loads the core with `ctypes`
 (`engine/api/native.py`). `engine/api/abi.py` mirrors the header by hand, and a test checks every size and offset
 against the built library.
@@ -371,13 +371,29 @@ The core keeps its last 4,096 timing records, one for each prompt piece, decode 
 and the experts the CPU computed. `engine_read_timing` takes them out. The core stores only these small binary
 records. Python adds them up and formats them.
 
+The core also keeps counters since open, `engine_stats` in [`include/engine_api.h`](../include/engine_api.h): plans
+and the engine thread's time in them; prompt chunks and windowed pieces with their rows and time; decode steps that
+verified no drafts, with their rows, time, the experts the CPU computed and the layers that missed; draft rounds the
+same, and each slot's run in a round by the source of its drafts, the draft layer or the slot's own tokens, with the
+drafts verified and accepted and the rounds' time; swap rounds, the experts they swapped and their time; stalls,
+checkpoints and restores; the n-gram table's rows, cache hits and SSD reads; and the experts cached per layer at the
+last plan's end, beside the fewest the load keeps room for (ADR-0045). Each counter is one addition where the timing record is already written, so the step pays nothing
+that a measurement could see. `engine_read_stats` copies them out, awake or asleep; `engine_read_slot_stats` gives one
+admitted slot's: its steps, rounds, drafts and the accepted ones, and the part from its own tokens
+([ADR-0049](adr/0049-counters-in-the-core-read-by-a-snapshot-call.md)).
+
+The engine process answers `STATS` with the core's counters and the scheduler's (the requests waiting, reading and
+writing, and the cost model's parts), and each request's `DONE` line carries its wait for a slot, its steps and its
+drafts. `/metrics` reports both, and the ratios read from the counters (`frontend/metrics.py`): a step's and a
+round's time, misses per decode row, tokens per second of card time in plain steps and in rounds by draft source,
+drafts accepted per run, the engine thread's busy share and the swap rounds' part of it.
+
 The scheduler's cost model (`engine/timing.py`) keeps a moving average of a decode step's time. It fits a prompt
 chunk's time as a fixed part, the staging of the layers' uncached experts, and a part per row, and sizes prompt pieces
 by them ([ADR-0017](adr/0017-scheduling-several-requests.md)). Every piece pays the fixed part, so a prompt of up to
 1,024 rows is read whole, and a longer one in pieces of at most 1,024 rows, each holding the writers about as long as
 a short prompt does ([ADR-0044](adr/0044-a-short-prompt-is-read-whole.md)). The protocol's
-`PP` and `DONE` lines carry each request's prompt and decode times, and `/metrics` reports the engine's facts and the
-front end's counters.
+`PP` and `DONE` lines carry each request's prompt and decode times.
 
 `Options::trace` in the core times every kernel of a prompt chunk's or a decode step's lists, for tests and tools.
 
