@@ -1,5 +1,9 @@
 <p align="center"><img src="docs/images/logo.svg" alt="C0ven" width="520"></p>
 
+<p align="center"><a href="https://avra-m3.github.io/c0ven/docs/showcase/coven-hollow.html"><img src="docs/showcase/coven-hollow-loop.webp" alt="Coven Hollow: witches, cottages and a cauldron in a woodland clearing at dusk, seen from a camera circling the hollow" width="800"></a></p>
+
+*Coven Hollow, a scene a coding agent wrote in one HTML file. [See it live](https://avra-m3.github.io/c0ven/docs/showcase/coven-hollow.html), or [how to make this](https://avra-m3.github.io/c0ven/docs/showcase/coven-hollow/#how-to-make-this).*
+
 A fast inference engine for one architecture, [Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next), on two
 Intel Arc Pro B60 cards. It is built for one user running a few threads on one machine, and it is fast for that case.
 
@@ -304,6 +308,7 @@ For users:
 
 - This README: running the server, its options, its API and its limits.
 - [Guides](docs/guides/index.md): how to do one thing, step by step.
+- [Showcase](docs/showcase/index.md): things coding agents have made, and how to make them.
 - [MODEL_FILES.md](docs/MODEL_FILES.md): the model files: where to get them and how to lay them out for the engine.
 - [CHOOSING_A_MODEL.md](docs/CHOOSING_A_MODEL.md): which of the four model files to pick, for your hardware and the
   speed and accuracy you want.

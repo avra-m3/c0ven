@@ -27,6 +27,7 @@ adds plugins that can do what `tools/docs_links.py` does.
    in `docs/` is on the site.
 3. `docs/guides/` holds the how-to guides and tutorials. The rest of `docs/` is explanation and reference.
    [docs/guides/index.md](../guides/index.md) says how to write a guide and how to see the site locally.
+   `docs/showcase/` holds things coding agents have made, each page with the steps to make it.
 4. `zensical.toml` turns on only the Markdown extensions that give the same result as GitHub, and makes heading
    anchors the way GitHub does.
 5. The site does not hold the code. `tools/docs_links.py`, a Python-Markdown extension, changes each link to a
