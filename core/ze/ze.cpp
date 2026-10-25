@@ -49,6 +49,14 @@ Runtime::Runtime(uint32_t min_cards) {
       c.name = p.name;
       c.max_alloc = p.maxMemAllocSize;
       c.timer_hz = p.timerResolution;  // cycles per second, with the 1.2 properties
+      c.clock_mhz = p.coreClockRate;
+      for (uint8_t b : p.uuid.id) {
+        char hex[3];
+        std::snprintf(hex, sizeof hex, "%02x", b);
+        c.uuid += hex;
+      }
+      ze_driver_properties_t dp = {ZE_STRUCTURE_TYPE_DRIVER_PROPERTIES};
+      if (zeDriverGetProperties(drv, &dp) == ZE_RESULT_SUCCESS) c.driver_version = dp.driverVersion;
       c.timestamp_mask = p.timestampValidBits >= 64 ? ~0ull : ((1ull << p.timestampValidBits) - 1);
       uint32_t nm = 0;
       ZE_CHECK(zeDeviceGetMemoryProperties(dev, &nm, nullptr));

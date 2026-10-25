@@ -24,6 +24,7 @@ from engine.api.interface import (
     NO_SLOT,
     PAGE_CELLS,
     PROMPT_RUNS,
+    STEP_RING,
     TIMING_DTYPE,
     WINDOW_ROWS,
     EngineError,
@@ -34,11 +35,13 @@ from engine.api.interface import (
     EventKind,
     FinishReason,
     Image,
+    LoadCheck,
     OpenConfig,
     PageOp,
     SlotSettings,
     SlotStats,
     StepPlan,
+    StepRecord,
     TimingRecords,
 )
 
@@ -121,6 +124,7 @@ class MockEngine:
         self._queue: deque[StepPlan | _Op] = deque()
         self._events: deque[Event] = deque()
         self._timing: list[tuple[int, int, int, int]] = []
+        self._steps: deque[StepRecord] = deque(maxlen=STEP_RING)
         self._stats = EngineStats()
         self._t0 = time.monotonic_ns()
         self._step = 0
@@ -235,6 +239,12 @@ class MockEngine:
     def slot_stats(self, slot: int) -> SlotStats:
         s = self._slots.get(slot)
         return SlotStats() if s is None else SlotStats(steps=s.steps)
+
+    def steps(self) -> list[StepRecord]:
+        return list(self._steps)
+
+    def load_check(self) -> LoadCheck | None:
+        return None
 
     def read_timing(self, max_records: int = 4096) -> TimingRecords:
         rows = self._timing[:max_records]
@@ -428,6 +438,8 @@ class MockEngine:
             step_ns=st.step_ns + (int(self._step_ms * 1e6) if decoded else 0),
         )
         self._timing.append((time.monotonic_ns(), t_ns, self._step, rows))
+        if decoded:
+            self._steps.append(StepRecord("decode", self._step, decoded, t_ns))
         self._emit(EventKind.STEP_DONE, NO_SLOT, decoded, rows, t_ns, c=chunks)
 
     def _run_span(self, slot: int, first: int, count: int, last: bool) -> int:

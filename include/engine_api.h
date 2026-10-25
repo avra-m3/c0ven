@@ -20,7 +20,7 @@ extern "C" {
 #define ENGINE_API
 #endif
 
-#define ENGINE_API_VERSION 9
+#define ENGINE_API_VERSION 10
 
 typedef enum {
   ENGINE_OK = 0,
@@ -81,6 +81,8 @@ typedef struct {
   uint32_t image_tokens_max;   /* the most tokens an image may have; 0: no images */
   uint32_t kv_pages;           /* the KV cache's pages */
   uint32_t pages_per_slot;     /* logical pages a slot can map: the context's, rounded up to a multiple of the cards */
+  char check_key[128];         /* what a load check's result holds for (engine_run_check): the cards' ids, the driver's
+                                  version and a hash of the kernels' files */
 } engine_info;
 
 /* A request's sampling and stopping, copied once by admit. The core samples in llama.cpp's order: penalties, top-k,
@@ -181,6 +183,11 @@ typedef struct {
   uint32_t misses;             /* experts the CPU computed (decode) */
   uint64_t start_ns;           /* steady clock */
   uint64_t end_ns;
+  /* Decode and rounds only; 0 for a prompt piece. */
+  uint32_t layers_missed;      /* layers with at least one miss */
+  uint32_t swaps;              /* experts the swap rounds since the last step put in the cache */
+  uint64_t card_ns[2];         /* each card's time from its step's first command to its last, by its timestamps */
+  uint64_t cpu_wait_ns;        /* card 0's waits for the CPU's answers, by its clock at its top rate */
 } engine_timing;
 
 /* The engine's counters since open (docs/DESIGN.md, section 7): sums over everything the engine thread ran. A reader
@@ -237,6 +244,24 @@ typedef struct {
   uint64_t lookup_drafts;
   uint64_t lookup_accepted;
 } engine_slot_stats;
+
+/* The load check (docs/DESIGN.md, section 7): the decode kernels timed on card 0 at each card's share of a layer the
+ * cards allow, as the step-time model takes them; a reduce's peer write and a hand-off between cards 0 and 1. GB/s
+ * by width (1, 2, 4 and 8 cards a group) and rows (1, 2 and 4); 0 where not timed. */
+#define ENGINE_CHECK_WIDTHS 4
+#define ENGINE_CHECK_ROWS 3
+typedef struct {
+  uint32_t gate_up_type;       /* the ggml types timed: the experts' gate and up, their down, and attn_qkv */
+  uint32_t down_type;
+  uint32_t dense_type;
+  uint32_t pad;
+  double gate_up_gbs[ENGINE_CHECK_WIDTHS][ENGINE_CHECK_ROWS];
+  double down_gbs[ENGINE_CHECK_WIDTHS][ENGINE_CHECK_ROWS];
+  double dense_gbs[ENGINE_CHECK_WIDTHS];  /* one row */
+  double exchange_us[ENGINE_CHECK_ROWS];  /* one peer write of a reduce's rows; 0 on one card */
+  double handoff_us;           /* 0 on one card */
+  double seconds;              /* the check's time */
+} engine_check;
 
 /* Loads the model and allocates everything. Blocks until ready. */
 ENGINE_API engine_status engine_open(const engine_config *config, engine_info *info, engine_ctx **out);
@@ -295,6 +320,10 @@ ENGINE_API engine_status engine_read_timing(engine_ctx *e, engine_timing *buf, u
 
 /* Copies the counters into *out. Awake or asleep. */
 ENGINE_API engine_status engine_read_stats(engine_ctx *e, engine_stats *out);
+
+/* Runs the load check, about a second, once the queued plans have run; it uses up to 200 MB of card 0's memory, and
+ * frees it. ENGINE_ERROR asleep. */
+ENGINE_API engine_status engine_run_check(engine_ctx *e, engine_check *out);
 
 /* Copies an admitted slot's counters into *out; ENGINE_BAD_ARGUMENT for a slot not admitted. */
 ENGINE_API engine_status engine_read_slot_stats(engine_ctx *e, uint32_t slot, engine_slot_stats *out);

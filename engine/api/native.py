@@ -1,7 +1,7 @@
 """The native engine: the C++ core, loaded with ctypes (ADR-0022, item 4), behind the engine interface.
 
 Two parts. `CtypesCore` is the header's calls, one method each, raising `EngineError` on a failed status.
-`NativeEngine` adapts version 9 of the header to `interface.Engine`, which the scheduler was written against
+`NativeEngine` adapts version 10 of the header to `interface.Engine`, which the scheduler was written against
 (DESIGN.md, section 3). Where the two differ, the adapter bridges them as ADR-0027 lists, item by item:
 
 - The core runs one step per plan and decodes only the slots a plan names; the interface's core keeps decoding
@@ -34,11 +34,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
+import gguf
 import numpy as np
 
 from engine.api import abi
 from engine.api.interface import (
+    CHECK_ROWS,
+    CHECK_WIDTHS,
     NO_SLOT,
+    STEP_RING,
     TIMING_DTYPE,
     WINDOW_ROWS,
     EngineError,
@@ -49,12 +53,14 @@ from engine.api.interface import (
     EventKind,
     FinishReason,
     Image,
+    LoadCheck,
     OpenConfig,
     PageChange,
     PageOp,
     SlotSettings,
     SlotStats,
     StepPlan,
+    StepRecord,
     TimingRecords,
     TimingStage,
 )
@@ -118,6 +124,7 @@ def load_library(path: Path | None = None) -> ctypes.CDLL:
         "engine_read_timing": ([_ctx, ctypes.POINTER(abi.CTiming), _u32, _p_u32], ctypes.c_int),
         "engine_read_stats": ([_ctx, ctypes.POINTER(abi.CStats)], ctypes.c_int),
         "engine_read_slot_stats": ([_ctx, _u32, ctypes.POINTER(abi.CSlotStats)], ctypes.c_int),
+        "engine_run_check": ([_ctx, ctypes.POINTER(abi.CCheck)], ctypes.c_int),
         "engine_sleep": ([_ctx], ctypes.c_int),
         "engine_wake": ([_ctx, ctypes.POINTER(abi.CInfo)], ctypes.c_int),
         "engine_last_error": ([_ctx], ctypes.c_char_p),
@@ -161,6 +168,7 @@ class Core(Protocol):
         """Raises EngineError for a slot not admitted."""
         ...
 
+    def run_check(self) -> abi.CCheck: ...
     def sleep(self) -> None: ...
     def wake(self) -> abi.CInfo: ...
     def last_error(self) -> str: ...
@@ -253,6 +261,11 @@ class CtypesCore:
         self._check(self._lib.engine_read_slot_stats(self._ctx, slot, ctypes.byref(out)), "slot_stats")
         return out
 
+    def run_check(self) -> abi.CCheck:
+        out = abi.CCheck()
+        self._check(self._lib.engine_run_check(self._ctx, ctypes.byref(out)), "run_check")
+        return out
+
     def sleep(self) -> None:
         self._check(self._lib.engine_sleep(self._ctx), "sleep")
 
@@ -286,6 +299,8 @@ class _Queued:
 
 TIMING_KEPT = 1 << 16
 
+_STEP_KINDS = {abi.CTimingKind.DECODE: "decode", abi.CTimingKind.ROUND: "round"}
+
 
 class NativeEngine:
     def __init__(self, path: Path | None = None, *, core: Core | None = None, pipeline: int = 2) -> None:
@@ -310,6 +325,7 @@ class NativeEngine:
         self._plan_ns: dict[int, int] = {}
         self._plan_chunks: dict[int, int] = {}
         self._timing: deque[tuple[int, int, int, int]] = deque(maxlen=TIMING_KEPT)
+        self._steps: deque[StepRecord] = deque(maxlen=STEP_RING)
 
     @property
     def info(self) -> abi.CInfo:
@@ -379,6 +395,7 @@ class NativeEngine:
             timing_fd=-1,
             version=f"core-abi{info.api_version}",
             image_tokens_max=int(info.image_tokens_max),
+            check_key=info.check_key.decode(),
         )
 
     def sleep(self) -> None:
@@ -511,6 +528,34 @@ class NativeEngine:
             out[i] = (start, duration, plan, TimingStage.STEP, 0, rows, 0)
         return out
 
+    def steps(self) -> list[StepRecord]:
+        self._collect_timing()
+        return list(self._steps)
+
+    def load_check(self) -> LoadCheck | None:
+        _ = self.info
+        c = self._core.run_check()
+
+        def table(t: ctypes.Array[ctypes.Array[ctypes.c_double]]) -> dict[int, dict[int, float]]:
+            out: dict[int, dict[int, float]] = {}
+            for i, w in enumerate(CHECK_WIDTHS):
+                rows = {r: float(t[i][j]) for j, r in enumerate(CHECK_ROWS) if t[i][j] > 0}
+                if rows:
+                    out[w] = rows
+            return out
+
+        return LoadCheck(
+            gate_up_type=gguf.GGMLQuantizationType(c.gate_up_type).name,
+            down_type=gguf.GGMLQuantizationType(c.down_type).name,
+            dense_type=gguf.GGMLQuantizationType(c.dense_type).name,
+            gate_up_gbs=table(c.gate_up_gbs),
+            down_gbs=table(c.down_gbs),
+            dense_gbs={w: float(c.dense_gbs[i]) for i, w in enumerate(CHECK_WIDTHS) if c.dense_gbs[i] > 0},
+            exchange_us={r: float(c.exchange_us[j]) for j, r in enumerate(CHECK_ROWS) if c.exchange_us[j] > 0},
+            handoff_us=float(c.handoff_us) if c.handoff_us > 0 else None,
+            seconds=float(c.seconds),
+        )
+
     def stats(self) -> EngineStats:
         if self._info is None:
             return EngineStats()
@@ -594,6 +639,21 @@ class NativeEngine:
             if rows > WINDOW_ROWS:
                 self._plan_chunks[t.plan] = self._plan_chunks.get(t.plan, 0) + 1
             self._timing.append((int(t.start_ns), duration, int(t.plan), rows))
+            if t.kind in _STEP_KINDS:
+                self._steps.append(
+                    StepRecord(
+                        _STEP_KINDS[t.kind],
+                        int(t.plan),
+                        int(t.rows),
+                        duration,
+                        int(t.misses),
+                        int(t.layers_missed),
+                        int(t.swaps),
+                        int(t.card_ns[0]),
+                        int(t.card_ns[1]),
+                        int(t.cpu_wait_ns),
+                    )
+                )
 
     def _collect(self, *, pump: bool = True) -> None:
         events = self._core.poll(1024)

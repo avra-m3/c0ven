@@ -1,8 +1,9 @@
 """The step-time model: how long one decode step takes on a layout of the cards, for a load of rows, before it runs.
 
 A layout puts the cards in groups. Each group holds a share of the layers, and each card of a group a slice of each
-of those layers. The model costs a layout from the model's products, the memory plan and measured terms. Nothing calls
-it yet. The model supplies its products as a `ModelSteps` and its terms as a `Terms` (models/<arch>/steps.py).
+of those layers. The model costs a layout from the model's products, the memory plan and measured terms; the layout
+chooser (layout.py) calls it at load. The model supplies its products as a `ModelSteps` and its terms as a `Terms`
+(models/<arch>/steps.py).
 """
 
 from __future__ import annotations
@@ -189,18 +190,30 @@ def _miss_cost_ms(terms: Terms, model: ModelSteps, experts_cached: int, rows: in
     h = hit_rate(terms, experts_cached)
     layers = len(model.layers)
     slots = model.experts_a_token * rows
-    layers_missed = layers * (1 - h**slots)
-    misses = layers * slots * (1 - h)
+    return _count_cost_ms(terms, layers * (1 - h**slots), layers * slots * (1 - h))
+
+
+def _count_cost_ms(terms: Terms, layers_missed: float, misses: float) -> float:
     return (layers_missed * terms.miss_layer_us + misses * terms.miss_expert_us) / 1000
 
 
-def miss_wait_ms(terms: Terms, model: ModelSteps, experts_cached: int, rows: int) -> float:
-    """M: the CPU's cost for the misses, scaled by the overlap rule (`step_time`)."""
+def _overlap(terms: Terms, model: ModelSteps, rows: int) -> float:
+    """The overlap rule's share of the CPU's cost that the cards wait for, at `rows`."""
     points = [
         (r, wait / _miss_cost_ms(terms, model, terms.cpu_wait_experts, r))
         for r, wait in sorted(terms.cpu_wait_ms.items())
     ]
-    return _miss_cost_ms(terms, model, experts_cached, rows) * _linear(points, rows)
+    return _linear(points, rows)
+
+
+def miss_wait_ms(terms: Terms, model: ModelSteps, experts_cached: int, rows: int) -> float:
+    """M: the CPU's cost for the misses, scaled by the overlap rule (`step_time`)."""
+    return _miss_cost_ms(terms, model, experts_cached, rows) * _overlap(terms, model, rows)
+
+
+def counted_miss_wait_ms(terms: Terms, model: ModelSteps, rows: int, layers_missed: float, misses: float) -> float:
+    """M for misses counted in steps that ran, in place of the hit-rate curve's, scaled by the overlap rule."""
+    return _count_cost_ms(terms, layers_missed, misses) * _overlap(terms, model, rows)
 
 
 def _check_columns(where: str, products: Sequence[Product], width: int) -> None:

@@ -92,6 +92,8 @@ COPY core core
 COPY tools tools
 COPY engine engine
 COPY frontend frontend
+# The tensor table of the file the step-time model's terms were measured on (engine/models/qwen4exp/steps.py).
+COPY docs/model docs/model
 RUN cmake -S /opt/c0ven -B /opt/c0ven/build -G Ninja \
  && ninja -C /opt/c0ven/build \
  && UV_NO_CACHE=1 uv sync --locked --no-dev

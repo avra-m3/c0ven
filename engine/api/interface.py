@@ -17,7 +17,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Protocol
+from typing import Protocol, cast
 
 import numpy as np
 import numpy.typing as npt
@@ -171,6 +171,72 @@ class EngineFacts:
     version: str
     image_tokens_max: int = 0
     """The most tokens an image may have; 0: no images."""
+    check_key: str = ""
+    """What a load check's result holds for: the cards, the driver and the kernels; empty when there is no check."""
+
+
+CHECK_WIDTHS = (1, 2, 4, 8)
+CHECK_ROWS = (1, 2, 4)
+
+
+@dataclass(frozen=True, slots=True)
+class LoadCheck:
+    """The load check's timings (`engine_check`, DESIGN.md, section 7): the decode kernels' GB/s on card 0 by width
+    (cards a group) and rows, at the widths and rows it timed; a reduce's peer write by rows and a hand-off, between
+    cards 0 and 1."""
+
+    gate_up_type: str
+    """The experts' gate and up type timed, a ggml type name; `down_type` and `dense_type` the same."""
+    down_type: str
+    dense_type: str
+    gate_up_gbs: dict[int, dict[int, float]]
+    """Width -> rows -> GB/s."""
+    down_gbs: dict[int, dict[int, float]]
+    dense_gbs: dict[int, float]
+    """Width -> GB/s at one row."""
+    exchange_us: dict[int, float]
+    """Rows -> one peer write; empty on one card."""
+    handoff_us: float | None
+    seconds: float
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "gate_up_type": self.gate_up_type,
+            "down_type": self.down_type,
+            "dense_type": self.dense_type,
+            "gate_up_gbs": self.gate_up_gbs,
+            "down_gbs": self.down_gbs,
+            "dense_gbs": self.dense_gbs,
+            "exchange_us": self.exchange_us,
+            "handoff_us": self.handoff_us,
+            "seconds": self.seconds,
+        }
+
+    @staticmethod
+    def from_json(d: dict[str, object]) -> LoadCheck:
+        """The inverse of `to_json` after a JSON round trip, which makes the keys strings. Raises ValueError, KeyError
+        or TypeError for anything else."""
+
+        def items(x: object) -> list[tuple[int, object]]:
+            if not isinstance(x, dict):
+                raise TypeError(f"not a mapping: {x!r}")
+            return [(int(str(k)), v) for k, v in cast("dict[object, object]", x).items()]
+
+        def by(x: object) -> dict[int, float]:
+            return {k: float(str(v)) for k, v in items(x)}
+
+        handoff = d["handoff_us"]
+        return LoadCheck(
+            str(d["gate_up_type"]),
+            str(d["down_type"]),
+            str(d["dense_type"]),
+            {k: by(v) for k, v in items(d["gate_up_gbs"])},
+            {k: by(v) for k, v in items(d["down_gbs"])},
+            by(d["dense_gbs"]),
+            by(d["exchange_us"]),
+            None if handoff is None else float(str(handoff)),
+            float(str(d["seconds"])),
+        )
 
 
 IMAGE_PATCH_BYTES = 768
@@ -385,6 +451,33 @@ class SlotStats:
     lookup_accepted: int = 0
 
 
+STEP_RING = 256
+"""The decode steps and draft rounds an engine keeps, the last ones (DESIGN.md, section 7)."""
+
+
+@dataclass(frozen=True, slots=True)
+class StepRecord:
+    """One decode step or draft round as the core ran it: its timing record (`engine_timing`), times in nanoseconds.
+    The mock fills `kind`, `plan`, `rows` and `ns`."""
+
+    kind: str
+    """"decode", or "round" for a draft round."""
+    plan: int
+    rows: int
+    ns: int
+    """The engine thread's time in the step, from its start to its results."""
+    misses: int = 0
+    """Routed experts the CPU computed."""
+    layers_missed: int = 0
+    swaps: int = 0
+    """Experts the swap rounds since the last step put in the cache."""
+    card0_ns: int = 0
+    """Card 0's time from its step's first command to its last."""
+    card1_ns: int = 0
+    cpu_wait_ns: int = 0
+    """Card 0's time waiting for the CPU's answers."""
+
+
 class TimingStage(IntEnum):
     """What a timing record measures: its `stage` field."""
 
@@ -413,6 +506,15 @@ class Engine(Protocol):
     def restore(self, slot: int, checkpoint_id: int) -> None: ...
     def drop(self, checkpoint_id: int) -> None: ...
     def read_timing(self, max_records: int = 4096) -> TimingRecords: ...
+    def steps(self) -> list[StepRecord]:
+        """The last `STEP_RING` decode steps and draft rounds since open, oldest first, awake or asleep."""
+        ...
+
+    def load_check(self) -> LoadCheck | None:
+        """Runs the load check, about a second on the cards, after the queued plans; None for an engine without
+        cards. Awake only."""
+        ...
+
     def stats(self) -> EngineStats:
         """The counters since open, awake or asleep."""
         ...

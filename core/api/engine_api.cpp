@@ -142,6 +142,7 @@ struct engine_ctx {
   uint32_t writers = 0;  // the slots the plan being run decoded
   engine::WindowTimes window_times;  // one slot's decode steps and rounds, by their rows
   engine_stats stats{};  // the counters (include/engine_api.h); the model's are copied in at each plan's end
+  uint64_t swaps_since_step = 0;  // experts swapped in since the last step's timing record
   uint64_t t_open = 0;
   bool stop = false;
   bool asleep = false;
@@ -157,6 +158,13 @@ struct engine_ctx {
   void record(engine_timing t) {
     if (timing.size() == kTimingRing) timing.pop_front();
     timing.push_back(t);
+  }
+  // A decode step's or round's record, with the swaps made since the last one. Under mu.
+  void record_step(uint32_t kind, uint32_t plan, uint32_t rows, const engine::qwen4exp::StepStats &ss, uint64_t t0,
+                   uint64_t t1) {
+    record({kind, plan, rows, ss.misses, t0, t1, ss.layers_missed, (uint32_t)swaps_since_step,
+            {ss.card_ns[0], ss.card_ns[1]}, ss.cpu_wait_ns});
+    swaps_since_step = 0;
   }
 
   // The positions slot s has pages for. Under mu.
@@ -627,7 +635,7 @@ struct engine_ctx {
       std::lock_guard<std::mutex> lk(mu);
       const uint64_t t1 = now_ns();
       const engine::qwen4exp::StepStats &ss = model->last_stats();
-      record({ENGINE_TIMING_DECODE, plan, (uint32_t)rows.size(), ss.misses, t0, t1});
+      record_step(ENGINE_TIMING_DECODE, plan, (uint32_t)rows.size(), ss, t0, t1);
       if (rows.size() == 1) window_times.add(1, (t1 - t0) * 1e-6);
       stats.steps++;
       stats.step_rows += rows.size();
@@ -727,7 +735,7 @@ struct engine_ctx {
       std::lock_guard<std::mutex> lk(mu);
       const uint64_t t1 = now_ns();
       const engine::qwen4exp::StepStats &ss = model->last_stats();
-      record({ENGINE_TIMING_ROUND, plan, (uint32_t)rows.size(), ss.misses, t0, t1});
+      record_step(ENGINE_TIMING_ROUND, plan, (uint32_t)rows.size(), ss, t0, t1);
       window_times.add((uint32_t)rows.size(), (t1 - t0) * 1e-6);
       Slot &sl = slots[s];
       if (!sl.used) return;
@@ -811,7 +819,7 @@ struct engine_ctx {
       std::lock_guard<std::mutex> lk(mu);
       const uint64_t t1 = now_ns();
       const engine::qwen4exp::StepStats &ss = model->last_stats();
-      record({ENGINE_TIMING_ROUND, plan, n, ss.misses, t0, t1});
+      record_step(ENGINE_TIMING_ROUND, plan, n, ss, t0, t1);
       count_round(n, t1 - t0, ss);
       for (uint32_t i = 0; i < ns; i++) {
         const uint32_t s = row0[i].slot, p = row0[i].pos, a = acc[i];
@@ -895,6 +903,7 @@ struct engine_ctx {
         if (swap_ns) {
           stats.swap_rounds++;
           stats.swaps += swapped;
+          swaps_since_step += swapped;
           stats.swap_ns += swap_ns;
         }
         stats.ngram_rows = ng.rows;
@@ -988,6 +997,7 @@ engine_status engine_open(const engine_config *config, engine_info *info, engine
     e->info.image_tokens_max = e->model->image_tokens_max();
     e->info.kv_pages = e->model->kv_pages();
     e->info.pages_per_slot = e->model->pages_per_slot();
+    std::snprintf(e->info.check_key, sizeof e->info.check_key, "%s", e->model->check_key().c_str());
     if (config->draft_max) e->draft_max = std::min<uint32_t>(config->draft_max, ENGINE_MAX_STEP_SLOTS - 1);
     if (config->draft_min_p > 0) e->draft_min_p = config->draft_min_p;
     e->swaps = opt.adapt_swaps;
@@ -1237,6 +1247,30 @@ engine_status engine_read_slot_stats(engine_ctx *e, uint32_t slot, engine_slot_s
   return ENGINE_OK;
 }
 
+engine_status engine_run_check(engine_ctx *e, engine_check *out) {
+  if (!e || !out) return ENGINE_BAD_ARGUMENT;
+  std::unique_lock<std::mutex> lk(e->mu);
+  if (e->sleeping()) return ENGINE_ERROR;
+  e->drain(lk);
+  try {
+    const engine::qwen4exp::CheckResult r = e->model->check();
+    *out = {};
+    out->gate_up_type = r.gate_up_type;
+    out->down_type = r.down_type;
+    out->dense_type = r.dense_type;
+    std::memcpy(out->gate_up_gbs, r.gate_up_gbs, sizeof out->gate_up_gbs);
+    std::memcpy(out->down_gbs, r.down_gbs, sizeof out->down_gbs);
+    std::memcpy(out->dense_gbs, r.dense_gbs, sizeof out->dense_gbs);
+    std::memcpy(out->exchange_us, r.exchange_us, sizeof out->exchange_us);
+    out->handoff_us = r.handoff_us;
+    out->seconds = r.seconds;
+  } catch (const std::exception &ex) {
+    e->error = ex.what();
+    return ENGINE_ERROR;
+  }
+  return ENGINE_OK;
+}
+
 engine_status engine_sleep(engine_ctx *e) {
   if (!e) return ENGINE_BAD_ARGUMENT;
   std::unique_lock<std::mutex> lk(e->mu);
@@ -1310,7 +1344,7 @@ uint32_t engine_abi_layout(engine_abi_row *table, uint32_t cap) {
       ROW(engine_config, draft_max), ROW(engine_config, draft_min_p), ROW(engine_config, vision_path),
       ROW(engine_config, kv_pages), SIZE(engine_config),
       ROW(engine_info, api_version), ROW(engine_info, cards), ROW(engine_info, slots), ROW(engine_info, max_ctx),
-      ROW(engine_info, experts_per_layer), ROW(engine_info, vocab), ROW(engine_info, device_bytes),
+      ROW(engine_info, experts_per_layer), ROW(engine_info, vocab), ROW(engine_info, device_bytes), ROW(engine_info, check_key),
       ROW(engine_info, arena_bytes), ROW(engine_info, load_seconds), ROW(engine_info, prompt_chunk),
       ROW(engine_info, checkpoints), ROW(engine_info, max_step_rows), ROW(engine_info, drafting),
       ROW(engine_info, image_tokens_max), ROW(engine_info, kv_pages), ROW(engine_info, pages_per_slot),
@@ -1329,7 +1363,8 @@ uint32_t engine_abi_layout(engine_abi_row *table, uint32_t cap) {
       ROW(engine_event, kind), ROW(engine_event, slot), ROW(engine_event, token), ROW(engine_event, value),
       SIZE(engine_event),
       ROW(engine_timing, kind), ROW(engine_timing, plan), ROW(engine_timing, rows), ROW(engine_timing, misses),
-      ROW(engine_timing, start_ns), ROW(engine_timing, end_ns), SIZE(engine_timing),
+      ROW(engine_timing, start_ns), ROW(engine_timing, end_ns), ROW(engine_timing, layers_missed),
+      ROW(engine_timing, swaps), ROW(engine_timing, card_ns), ROW(engine_timing, cpu_wait_ns), SIZE(engine_timing),
       ROW(engine_image, first), ROW(engine_image, grid_h), ROW(engine_image, grid_w), ROW(engine_image, frames),
       ROW(engine_image, pixels), SIZE(engine_image),
       ROW(engine_stats, up_ns), ROW(engine_stats, plans), ROW(engine_stats, busy_ns), ROW(engine_stats, prompt_chunks),
@@ -1348,6 +1383,10 @@ uint32_t engine_abi_layout(engine_abi_row *table, uint32_t cap) {
       ROW(engine_slot_stats, steps), ROW(engine_slot_stats, rounds), ROW(engine_slot_stats, drafts),
       ROW(engine_slot_stats, accepted), ROW(engine_slot_stats, lookup_rounds), ROW(engine_slot_stats, lookup_drafts),
       ROW(engine_slot_stats, lookup_accepted), SIZE(engine_slot_stats),
+      ROW(engine_check, gate_up_type), ROW(engine_check, down_type), ROW(engine_check, dense_type),
+      ROW(engine_check, pad), ROW(engine_check, gate_up_gbs), ROW(engine_check, down_gbs),
+      ROW(engine_check, dense_gbs), ROW(engine_check, exchange_us), ROW(engine_check, handoff_us),
+      ROW(engine_check, seconds), SIZE(engine_check),
       ROW(engine_abi_row, name), ROW(engine_abi_row, offset), ROW(engine_abi_row, size), SIZE(engine_abi_row),
   };
 #undef ROW

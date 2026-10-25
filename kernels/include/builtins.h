@@ -11,6 +11,11 @@
 // Signed 4 x int8 dot product (DP4A).
 static inline int dot4(uint a, uint b) { return dot_4x8packed_ss_int(a, b); }
 
+// The card's clock in cycles of its core clock (cl_khr_kernel_clock). The headers do not declare it; IGC's library
+// has it (docs/measurements/MEASUREMENTS.md#2026-10-25-kernel-clock).
+ulong __attribute__((overloadable)) clock_read_device(void);
+static inline ulong card_clock(void) { return clock_read_device(); }
+
 static inline float sg_sum(float x) { return sub_group_reduce_add(x); }
 static inline float sg_max(float x) { return sub_group_reduce_max(x); }
 static inline float sg_xor(float x, uint m) { return sub_group_shuffle_xor(x, m); }

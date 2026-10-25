@@ -3,18 +3,27 @@
 from __future__ import annotations
 
 import io
+import json
 import subprocess
 import sys
 import time
 from collections.abc import Iterator
+from dataclasses import replace
+from pathlib import Path
 from typing import TextIO, cast
 
 import protocol
-from engine.api.interface import StepPlan
+from engine import layout
+from engine.api.interface import EngineFacts, LoadCheck, OpenConfig, StepPlan
 from engine.api.mock import MockEngine
-from engine.process import serve
+from engine.layout import StepLog
+from engine.memory_plan import PlanOptions
+from engine.models.qwen4exp.memory import model_memory
+from engine.models.qwen4exp.steps import checked_terms, measured_terms, model_steps
+from engine.models.qwen4exp.tensors import from_tsv
+from engine.process import Chooser, serve
 from engine.scheduler import SchedulerOptions, every_16k
-from tests.helpers import open_config
+from tests.helpers import load_check, open_config
 
 
 def run_engine(lines: list[str], *args: str) -> list[protocol.Event]:
@@ -191,6 +200,33 @@ def test_stats_are_answered_awake_and_asleep():
     assert e.quit() == 0
 
 
+def test_steps_are_answered_and_written_at_sleep_and_exit(tmp_path: Path):
+    e = Pipe("--context", "1024", "--state-dir", str(tmp_path))
+    e.until(protocol.Ready)
+    e.send(protocol.Steps())
+    first = e.until(protocol.StepsReport)[-1]
+    assert first == protocol.StepsReport(())
+    e.send(protocol.Gen(1, 3, (1, 2, 3)))
+    e.until(protocol.Done)
+    e.send(protocol.Steps())
+    report = e.until(protocol.StepsReport)[-1]
+    assert isinstance(report, protocol.StepsReport)
+    assert len(report.steps) >= 2
+    assert {s["kind"] for s in report.steps} == {"decode"}
+    assert all(int(s["rows"]) == 1 and int(s["ns"]) > 0 for s in report.steps)
+    e.send(protocol.Sleep())
+    e.until(protocol.Asleep)
+    saved = json.loads((tmp_path / "steps.json").read_text())["steps"]
+    assert [str(s["plan"]) for s in saved] == [s["plan"] for s in report.steps]
+    e.send(protocol.Wake())
+    e.until(protocol.Ready)
+    e.send(protocol.Gen(2, 3, (1, 2, 3)))
+    e.until(protocol.Done)
+    assert e.quit() == 0
+    after = json.loads((tmp_path / "steps.json").read_text())["steps"]
+    assert len(after) > len(saved), "the steps since open, across the sleep"
+
+
 def test_the_load_facts_are_in_the_info_line():
     e = Pipe()
     info = e.until(protocol.Ready)[0]
@@ -217,6 +253,69 @@ def lines_apart(lines: list[str], apart_s: float, quit_after_s: float) -> Iterat
         yield line + "\n"
     time.sleep(quit_after_s)
     yield protocol.Quit().encode() + "\n"
+
+
+class Checked(MockEngine):
+    """A mock with two cards and a load check, counting the checks it runs."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.checks = 0
+
+    def open(self, config: OpenConfig) -> EngineFacts:
+        return replace(super().open(config), cards=2, check_key="cards+driver+kernels")
+
+    def load_check(self) -> LoadCheck | None:
+        self.checks += 1
+        return load_check(gate_up={2: {1: 240.0}}, handoff=18.0)
+
+
+def chooser(spec: str) -> Chooser:
+    def choose(facts: EngineFacts, check: LoadCheck | None) -> StepLog | None:
+        terms = measured_terms() if check is None else checked_terms(check)
+        steps, memory = model_steps(from_tsv()), model_memory(from_tsv())
+        c = layout.choose(spec, facts.cards, steps, terms, memory=memory, options=PlanOptions(), rows={}, runs={(1, 2)})
+        return StepLog(terms, steps, c.layout)
+
+    return choose
+
+
+def serve_checked(engine: MockEngine, state_dir: Path, spec: str = "auto") -> tuple[int, list[protocol.Event]]:
+    out = io.StringIO()
+    stdin = cast("TextIO", iter([protocol.Quit().encode() + "\n"]))
+    status = serve(
+        engine,
+        open_config(),
+        rule=every_16k,
+        options=SchedulerOptions(),
+        stdin=stdin,
+        stdout=out,
+        state_dir=state_dir,
+        choose=chooser(spec),
+    )
+    return status, [protocol.parse_event(line) for line in out.getvalue().splitlines()]
+
+
+def test_the_load_check_is_run_once_for_the_same_cards_and_the_layout_is_in_the_info(tmp_path: Path):
+    engine = Checked()
+    status, events = serve_checked(engine, tmp_path)
+    assert status == 0
+    info = events[0]
+    assert isinstance(info, protocol.Info)
+    assert info.facts["layout"] == "groups:1x2"
+    saved = json.loads((tmp_path / "load-check.json").read_text())
+    assert saved["key"] == "cards+driver+kernels"
+    assert LoadCheck.from_json(saved["check"]) == engine.load_check()
+    again = Checked()
+    assert serve_checked(again, tmp_path)[0] == 0
+    assert again.checks == 0, "the state directory's check holds for the same cards, driver and kernels"
+
+
+def test_a_layout_the_core_does_not_run_fails_the_load(tmp_path: Path):
+    status, events = serve_checked(Checked(), tmp_path, "layers")
+    assert status == 1
+    assert isinstance(events[-1], protocol.Error)
+    assert "does not run" in events[-1].message
 
 
 def test_requests_sent_together_read_their_prompts_in_one_plan():

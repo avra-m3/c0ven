@@ -391,6 +391,10 @@ def test_status_endpoints(client: TestClient):
     assert metrics["engine"] == {"backend": "fake"}
 
 
+def test_stats_carry_the_engines_last_steps(client: TestClient):
+    assert client.get("/stats").json() == {"steps": [{"kind": "decode", "plan": 7, "rows": 1, "ns": 15_500_000}]}
+
+
 def test_metrics_carry_the_engines_counters_and_each_requests(client: TestClient, engine: FakeEngine):
     body = chat(client)
     metrics = client.get("/metrics").json()

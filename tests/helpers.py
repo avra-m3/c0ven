@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from tokenizers import Tokenizer, pre_tokenizers
 
 import protocol
-from engine.api.interface import EngineFacts, OpenConfig
+from engine.api.interface import EngineFacts, LoadCheck, OpenConfig
 from frontend.engine_client import EngineUnavailable
 from frontend.images import PromptImage
 from frontend.model import Model
@@ -144,6 +144,9 @@ class FakeEngine:
     async def stats(self) -> dict[str, str]:
         return dict(self.counts)
 
+    async def steps(self) -> list[dict[str, str]]:
+        return [{"kind": "decode", "plan": "7", "rows": "1", "ns": "15500000"}]
+
     async def generate(
         self,
         prompt: Sequence[int],
@@ -174,3 +177,14 @@ class FakeEngine:
         finally:
             if not done:
                 self.stopped_early += 1
+
+
+def load_check(
+    gate_up: dict[int, dict[int, float]] | None = None,
+    down: dict[int, dict[int, float]] | None = None,
+    dense: dict[int, float] | None = None,
+    exchange: dict[int, float] | None = None,
+    handoff: float | None = None,
+) -> LoadCheck:
+    """A load check of the IQ3_S file's kernels with these timings and nothing else."""
+    return LoadCheck("IQ3_S", "IQ4_NL", "Q6_K", gate_up or {}, down or {}, dense or {}, exchange or {}, handoff, 1.0)

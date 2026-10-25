@@ -94,6 +94,7 @@ same 28.4 GB/s as a kernel. While a prompt runs, each card stages its experts fr
 | Two products fused into one launch, against the two launched together | 1.4-2.4 µs saved a pair | [2026-10-16](#2026-10-16-decode-launches-together) |
 | Recording a copy list of about 35,000 copies | 45 ms; 8 ms of wait when recorded on a thread of its own | <a id="2026-10-16-swaps-and-prompts"></a>[2026-10-16](#2026-10-16-swaps-and-prompts) |
 | Recording every list the engine uses, at load | 0.19 s | <a id="2026-10-16-load-phases"></a>[2026-10-16](#2026-10-16-load-phases) |
+| Global timestamps written by a recorded list of 600 small launches (`zeCommandListAppendWriteGlobalTimestamp`) | 2: 1.7-1.8 µs more a run (410.7 → 412.4-412.5 µs, medians of 120); 96: 84.8-84.9 µs more | <a id="2026-10-25-kernel-clock"></a>[2026-10-25](#2026-10-25-kernel-clock) |
 
 ### Signals between the CPU and a card
 
@@ -126,6 +127,7 @@ same 28.4 GB/s as a kernel. While a prompt runs, each card stages its experts fr
 | Work needed to leave idle | about 50 ms | [2026-10-11](#2026-10-11-kernel-spike) |
 | During decode, read by Sysman every 1.17 ms | 2,400 MHz, the top of the range, in 99.74-100% of samples, with no throttle reason | <a id="2026-10-16-gpu-clock-in-decode"></a>[2026-10-16](#2026-10-16-gpu-clock-in-decode) |
 | Waiting between decode plans | down to 2,250 MHz for at most about 2 ms | [2026-10-16](#2026-10-16-gpu-clock-in-decode) |
+| A kernel's `clock_read_device` (cl_khr_kernel_clock; IGC has it, its headers do not declare it), against the global timestamps | 2,399.4-2,399.8 ticks a µs over spans of 22-883 ms at the top clock: it counts the core clock's cycles. 1,303.5 over 41 µs and 2,300.9 over 461 ms while the clock rose from idle | [2026-10-25](#2026-10-25-kernel-clock) |
 
 ### What the driver reports
 

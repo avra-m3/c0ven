@@ -97,9 +97,23 @@ struct Image {
   const uint8_t *pixels = nullptr;
 };
 
+// The load check's timings (check.cpp), as the step-time model's terms take them: GB/s by width (1, 2, 4 and 8 cards
+// a group) and rows (1, 2 and 4); 0 where not timed. exchange_us and handoff_us are 0 on one card.
+struct CheckResult {
+  uint32_t gate_up_type = 0, down_type = 0, dense_type = 0;  // the ggml types timed
+  double gate_up_gbs[4][3] = {}, down_gbs[4][3] = {};
+  double dense_gbs[4] = {};    // one row
+  double exchange_us[3] = {};  // a reduce's peer write of 1, 2 and 4 rows
+  double handoff_us = 0;
+  double seconds = 0;
+};
+
 struct StepStats {
+  uint32_t rows = 0;
   uint32_t misses = 0;          // routed experts the CPU computed
   uint32_t layers_missed = 0;   // layers with at least one miss
+  uint64_t card_ns[2] = {};     // each card's time from its list's first command to its last, by its timestamps
+  uint64_t cpu_wait_ns = 0;     // card 0's waits for the CPU's answers, from its clock at its top rate
 };
 
 class Model {
@@ -219,6 +233,10 @@ class Model {
   uint64_t swaps() const { return swaps_; }
 
   const LoadInfo &info() const { return info_; }
+  // The load check (check.cpp): about a second on the cards and up to 200 MB of card 0's memory. Between steps.
+  CheckResult check();
+  // What a check's result holds for: the cards, the driver and the kernels' files.
+  std::string check_key() const;
   const StepStats &last_stats() const { return stats_; }
   // Experts cached per layer now, the mean over the layers as LoadInfo counts it: with Options::share_kv the cache
   // gives blocks to the KV pool and takes them back. Between steps, on the engine thread. experts_floor is the
@@ -389,6 +407,8 @@ class Model {
   MissJob *jobs_ = nullptr;      // [layer] card 0's record of the misses for the CPU (ADR-0011)
   uint32_t *ans_seq_ = nullptr;  // [layer], 64 bytes apart: the step the CPU answered last
   uint32_t *stuck_ = nullptr;    // card 0 gave up waiting for an answer
+  uint64_t *step_ts_ = nullptr;  // [card][2]: the global timestamps at its list's start and end
+  uint64_t *waited_ = nullptr;   // [layer]: card 0's wait for the CPU in cpu_wait, in its clock's cycles
   float *cpu_y_ = nullptr;   // [layer][2560] the CPU's sum for the misses
   uint32_t *top_idx_ = nullptr;  // [card][candidates]
   float *top_val_ = nullptr;

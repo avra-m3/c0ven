@@ -3,7 +3,12 @@
 The front end starts it as its child. One thread reads commands, one writes events, so the loop never blocks on
 I/O (vLLM's engine core does the same). The loop admits, plans and polls through the scheduler. On `SLEEP` it
 drains the scheduler and gives the cards back; on `WAKE` it loads them again with a new scheduler (ADR-0032). `STATS`
-is answered from the counters the core and the scheduler keep, awake or asleep.
+is answered from the counters the core and the scheduler keep, and `STEPS` from the engine's last steps, awake or
+asleep. With `--state-dir`, the last steps are written there at each sleep and at exit.
+
+At open the engine runs the load check, or takes it from the state directory when it was run there on the same cards,
+driver and kernels, and chooses the layout (engine/layout.py). Every 256 steps it logs the predicted step against
+the measured one.
 
     python -m engine --model /models/<file>-00001-of-00002.gguf --slots 4 --context 262144
     python -m engine --backend mock --arch <arch> --slots 4 --context 32768
@@ -14,6 +19,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import importlib
+import json
 import logging
 import os
 import queue
@@ -29,9 +35,21 @@ from typing import TextIO, cast
 import gguf
 
 import protocol
-from engine.api.interface import IMAGE_PATCH_BYTES, Engine, EngineError, EngineFacts, Image, OpenConfig
-from engine.memory_plan import MemoryPlan, PlanError, PlanOptions
+from engine import layout
+from engine.api.interface import (
+    IMAGE_PATCH_BYTES,
+    Engine,
+    EngineError,
+    EngineFacts,
+    Image,
+    LoadCheck,
+    OpenConfig,
+    StepRecord,
+)
+from engine.layout import LAYOUTS, StepLog, read_histogram
+from engine.memory_plan import MemoryPlan, ModelMemory, PlanError, PlanOptions
 from engine.scheduler import CheckpointRule, Scheduler, SchedulerOptions
+from engine.step_time import ModelSteps, Terms
 
 log = logging.getLogger("engine")
 
@@ -40,6 +58,15 @@ BACKENDS = ("native", "mock", "reference")
 GATHER_S = 0.002
 """After a GEN reaches an idle engine, the loop waits this long for the next command before it plans, so requests
 sent together read their prompts in one plan."""
+
+STEPS_FILE = "steps.json"
+"""In the state directory: the engine's last steps when it last slept or exited (DESIGN.md, section 7)."""
+
+CHECK_FILE = "load-check.json"
+"""In the state directory: the last load check and the cards, driver and kernels it holds for."""
+
+LOG_EVERY_S = 1.0
+"""How often the loop gives the step log the engine's last steps."""
 
 VMSTAT_KEYS = ("pswpout", "compact_stall")
 """What a load is checked by: pages the host swapped out, and the times an allocation stalled to compact memory
@@ -57,6 +84,59 @@ def vmstat(path: Path = Path("/proc/vmstat")) -> dict[str, int]:
         if key in VMSTAT_KEYS:
             out[key] = int(value)
     return out
+
+
+def step_fields(step: StepRecord) -> dict[str, str]:
+    return {key: str(value) for key, value in dataclasses.asdict(step).items()}
+
+
+def write_steps(state_dir: Path, engine: Engine) -> None:
+    """The engine's last steps as JSON in the state directory, the file replaced whole. A failure is logged only."""
+    try:
+        steps = [dataclasses.asdict(s) for s in engine.steps()]
+        state_dir.mkdir(parents=True, exist_ok=True)
+        part = state_dir / f"{STEPS_FILE}.part"
+        part.write_text(json.dumps({"steps": steps}))
+        part.replace(state_dir / STEPS_FILE)
+    except (EngineError, OSError) as exc:
+        log.warning("the steps were not written to %s: %s", state_dir, exc)
+
+
+def load_check(engine: Engine, facts: EngineFacts, state_dir: Path | None) -> LoadCheck | None:
+    """The load check for these cards, driver and kernels: the state directory's, when it holds one for them;
+    otherwise run now, and written there. None when the engine has no check or it fails, which is logged."""
+    if not facts.check_key:
+        return None
+    path = state_dir / CHECK_FILE if state_dir is not None else None
+    if path is not None:
+        try:
+            saved = json.loads(path.read_text())
+            if saved["key"] == facts.check_key:
+                return LoadCheck.from_json(saved["check"])
+        except OSError, ValueError, KeyError, TypeError:
+            pass
+    try:
+        check = engine.load_check()
+    except EngineError as exc:
+        log.warning("the load check failed: %s", exc)
+        return None
+    if check is None:
+        return None
+    log.info("load check in %.2f s: %s", check.seconds, json.dumps(check.to_json()))
+    if path is not None:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            part = path.with_suffix(".part")
+            part.write_text(json.dumps({"key": facts.check_key, "check": check.to_json()}))
+            part.replace(path)
+        except OSError as exc:
+            log.warning("the load check was not written to %s: %s", path, exc)
+    return check
+
+
+type Chooser = Callable[[EngineFacts, LoadCheck | None], StepLog | None]
+"""The layout for the opened engine and its step log; None when it cannot be costed. Raises for a layout asked for
+that cannot run."""
 
 
 class Load:
@@ -135,6 +215,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="the KV pool the slots share, in tokens (512k = 524,288), at least --context; default: slots x context",
     )
     p.add_argument("--table-cache", type=Path, help="a directory that keeps the model's tensor table between starts")
+    p.add_argument(
+        "--state-dir", type=Path, help="a directory the engine keeps its last steps and load check in, between starts"
+    )
+    p.add_argument("--layout", default="auto", help=f"how the cards share the model: {LAYOUTS}")
     p.add_argument(
         "--swapout-limit-mib",
         type=float,
@@ -215,13 +299,15 @@ def serve(
     stdout: TextIO,
     info: Callable[[], dict[str, str]] = dict,
     swapout_limit_mib: float | None = None,
+    state_dir: Path | None = None,
+    choose: Chooser | None = None,
 ) -> int:
     events: queue.Queue[protocol.Event | None] = queue.Queue()
     commands: queue.Queue[protocol.Command] = queue.Queue()
     writer = threading.Thread(target=_writer, args=(stdout, events), name="protocol-writer", daemon=True)
     writer.start()
 
-    def loaded(facts: EngineFacts, load: Load) -> str | None:
+    def loaded(facts: EngineFacts, load: Load, steplog: StepLog | None = None) -> str | None:
         """INFO and READY for a load; or, past the swap-out limit, the reason to fail."""
         measured = load.facts()
         pages = int(measured.get("pswpout", "0"))
@@ -238,6 +324,7 @@ def serve(
             "pid": str(os.getpid()),
             "timing_fd": str(facts.timing_fd),
             "image_tokens_max": str(facts.image_tokens_max),
+            **({"layout": f"groups:{steplog.layout.groups}x{steplog.layout.width}"} if steplog is not None else {}),
             **measured,
             **info(),
         }
@@ -253,12 +340,21 @@ def serve(
         events.put(None)
         writer.join()
         return 1
-    if (failure := loaded(facts, load)) is not None:
+    # The load check and the layout are part of the load: READY comes after them.
+    steplog: StepLog | None = None
+    failure = None
+    if choose is not None and facts.cards > 0:
+        try:
+            steplog = choose(facts, load_check(engine, facts, state_dir))
+        except (ValueError, OSError) as exc:  # LayoutError included; OSError: no tensor table
+            failure = f"layout: {exc}"
+    if failure is not None or (failure := loaded(facts, load, steplog)) is not None:
         engine.close()
         events.put(protocol.Error(None, failure))
         events.put(None)
         writer.join()
         return 1
+    next_log = time.monotonic() + LOG_EVERY_S
     reader = threading.Thread(target=_reader, args=(stdin, commands), name="protocol-reader", daemon=True)
     reader.start()
     scheduler = Scheduler(engine, facts, options, rule)
@@ -304,6 +400,8 @@ def serve(
                             events.put(e)
                     case protocol.Stats():
                         events.put(protocol.StatsReport(scheduler.report()))
+                    case protocol.Steps():
+                        events.put(protocol.StepsReport(tuple(step_fields(s) for s in engine.steps())))
                     case protocol.Sleep(drain_ms=drain_ms) if state is State.AWAKE:
                         state, sleep_t0, cancelled, wake_after = State.DRAINING, time.monotonic(), False, False
                         deadline = sleep_t0 + drain_ms / 1e3
@@ -337,24 +435,32 @@ def serve(
                             events.put(e)
                 if scheduler.idle:
                     engine.sleep()
+                    if state_dir is not None:
+                        write_steps(state_dir, engine)
                     state = State.ASLEEP
                     events.put(protocol.Asleep((time.monotonic() - sleep_t0) * 1e3))
                     wake_now = wake_after
             if wake_now:
                 load = Load()
                 facts = engine.wake()
-                if (failure := loaded(facts, load)) is not None:
+                if (failure := loaded(facts, load, steplog)) is not None:
                     raise RuntimeError(failure)
                 scheduler = Scheduler(engine, facts, options, rule)
                 state = State.AWAKE
             if not scheduler.idle:
                 for e in scheduler.tick(0.002):
                     events.put(e)
+            if steplog is not None and state is State.AWAKE and time.monotonic() >= next_log:
+                next_log = time.monotonic() + LOG_EVERY_S
+                for line in steplog.feed(engine.steps()):
+                    log.info("%s", line)
     except Exception as exc:  # every failure ends the process with ERR -, so the front end restarts it
         log.exception("engine failed")
         events.put(protocol.Error(None, str(exc)))
         status = 1
     finally:
+        if state_dir is not None:
+            write_steps(state_dir, engine)
         try:
             engine.close()
         except EngineError:
@@ -391,6 +497,30 @@ def main(argv: list[str] | None = None) -> int:
         config = dataclasses.replace(config, vision_path=str(vision))
     sched = SchedulerOptions(prompt_budget_ms=args.prompt_budget_ms, decode_share=args.decode_share)
     rule = cast("CheckpointRule", model.checkpoint_positions)
+    step_model = cast("Callable[..., tuple[ModelSteps, ModelMemory, Terms]]", model.step_model)
+
+    def choose(facts: EngineFacts, check: LoadCheck | None) -> StepLog | None:
+        rows = read_histogram(args.state_dir / STEPS_FILE) if args.state_dir is not None else {}
+        try:
+            steps, memory, terms = step_model(args.model if native else None, check, args.table_cache)
+            c = layout.choose(
+                args.layout,
+                facts.cards,
+                steps,
+                terms,
+                memory=memory,
+                options=options,
+                rows=rows,
+                runs={(1, facts.cards)},
+            )
+        except (ValueError, OSError) as exc:
+            if args.layout != "auto":
+                raise
+            log.warning("no layout was costed: %s", exc)
+            return None
+        log.info("%s", c.line())
+        return StepLog(terms, steps, c.layout, experts_cached=facts.experts_cached)
+
     return serve(
         make_engine(args.backend, args.realtime),
         config,
@@ -400,4 +530,6 @@ def main(argv: list[str] | None = None) -> int:
         stdout=sys.stdout,
         info=lambda: {"backend": args.backend, "arch": arch, "experts_planned": str(plan.experts_cached)},
         swapout_limit_mib=args.swapout_limit_mib,
+        state_dir=args.state_dir,
+        choose=choose,
     )

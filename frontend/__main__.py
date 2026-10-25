@@ -59,6 +59,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=0,
         help="what a request without max_tokens may write, in tokens (32k = 32,768); default: the rest of the context",
     )
+    p.add_argument("--state-dir", type=Path, help="where the engine keeps its last steps between starts")
     p.add_argument("--engine-arg", action="append", default=[], help="passed to the engine as is (repeatable)")
     p.add_argument("--start", choices=("awake", "asleep"), default="awake", help="asleep: load at the first wake")
     p.add_argument(
@@ -93,6 +94,7 @@ def engine_argv(args: argparse.Namespace, arch: str = "", table_cache: Path | No
         "--context",
         str(args.context),
         *(["--kv-tokens", str(args.kv_tokens)] if args.kv_tokens else []),
+        *(["--state-dir", str(args.state_dir)] if args.state_dir else []),
         "--log-level",
         args.log_level,
     ]

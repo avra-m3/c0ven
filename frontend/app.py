@@ -10,6 +10,7 @@
 | `GET /props` | chat template, context, generation defaults, model path |
 | `GET /slots` | the engine's slots and how many are busy |
 | `GET /metrics` | the engine's facts (INFO) and counters (STATS), the front end's counters, and their ratios |
+| `GET /stats` | the engine's last decode steps and draft rounds (STEPS), oldest first |
 
 With an `Admin`, the routes of `frontend/admin.py` too. While the engine sleeps, every request is refused with 503
 before it reaches the engine, so none wakes it (ADR-0032).
@@ -61,6 +62,10 @@ class ServedEngine(Engine, Protocol):
 
     async def stats(self) -> dict[str, str]:
         """The engine's STATS line; empty when it is not running."""
+        ...
+
+    async def steps(self) -> list[dict[str, str]]:
+        """The engine's STEPS line; empty when it is not running."""
         ...
 
     @property
@@ -360,6 +365,10 @@ def create_app(
             }
         )
 
+    async def stats(_: Request) -> Response:
+        steps = await engine.steps()
+        return JSONResponse({"steps": [{k: v if k == "kind" else int(v) for k, v in s.items()} for s in steps]})
+
     @asynccontextmanager
     async def lifespan(_: Starlette) -> AsyncGenerator[None]:
         await engine.start()
@@ -377,6 +386,7 @@ def create_app(
         Route("/props", props),
         Route("/slots", slots),
         Route("/metrics", metrics),
+        Route("/stats", stats),
     ]
     if admin is not None:
         routes += admin_routes.routes(engine, admin)[0]

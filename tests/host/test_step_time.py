@@ -12,7 +12,16 @@ from engine.memory_plan import PlanError, PlanOptions, plan
 from engine.models.qwen4exp.memory import model_memory
 from engine.models.qwen4exp.steps import measured_terms, model_steps
 from engine.models.qwen4exp.tensors import FileTensor, TensorTable, from_tsv
-from engine.step_time import Layout, LayoutError, layout, layouts, step_time
+from engine.step_time import (
+    Layout,
+    LayoutError,
+    counted_miss_wait_ms,
+    hit_rate,
+    layout,
+    layouts,
+    miss_wait_ms,
+    step_time,
+)
 
 TABLE = from_tsv()
 STEPS = model_steps(TABLE)
@@ -142,3 +151,12 @@ def test_four_cards_hold_a_quarter_of_each_expert():
     quarter = -(-MEMORY.expert_bytes // 4)
     assert p.experts_cached == min(MEMORY.experts, p.free_per_card // quarter)
     assert p.experts_cached > plan(MEMORY, OPTIONS).experts_cached
+
+
+@pytest.mark.parametrize("rows", [1, 2, 4])
+def test_misses_counted_at_the_curves_rate_cost_the_curves_m(rows: int):
+    h = hit_rate(TERMS, TERMS.cpu_wait_experts)
+    layers, slots = len(STEPS.layers), STEPS.experts_a_token * rows
+    counted = counted_miss_wait_ms(TERMS, STEPS, rows, layers * (1 - h**slots), layers * slots * (1 - h))
+    assert counted == pytest.approx(miss_wait_ms(TERMS, STEPS, TERMS.cpu_wait_experts, rows))
+    assert counted_miss_wait_ms(TERMS, STEPS, rows, 0, 0) == 0

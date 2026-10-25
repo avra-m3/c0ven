@@ -6,6 +6,8 @@ table, so a wrong table gives wrong tokens; a slot past its pages stalls."""
 
 from __future__ import annotations
 
+import ctypes
+import json
 from collections import deque
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
@@ -14,7 +16,17 @@ import pytest
 
 import protocol
 from engine.api import abi
-from engine.api.interface import EngineError, ErrorCode, EventKind, Image, OpenConfig, SlotSettings
+from engine.api.interface import (
+    STEP_RING,
+    EngineError,
+    ErrorCode,
+    EventKind,
+    Image,
+    LoadCheck,
+    OpenConfig,
+    SlotSettings,
+    StepRecord,
+)
 from engine.api.native import NativeEngine
 from engine.scheduler import CheckpointRule, Scheduler, SchedulerOptions, every_16k
 from tests.helpers import open_config
@@ -229,7 +241,10 @@ class FakeCore:
             s.steps += 1
             self._produce(slot, s)
         if rows:
-            self.timing.append(abi.CTiming(abi.CTimingKind.DECODE, self.seq, rows, 0, 0, 10_000_000))
+            card_ns = (ctypes.c_uint64 * 2)(9_000_000, 8_000_000)
+            self.timing.append(
+                abi.CTiming(abi.CTimingKind.DECODE, self.seq, rows, 3, 0, 10_000_000, 2, 5, card_ns, 240_000)
+            )
             self.decode_steps += 1
             self.decode_rows += rows
         self._emit(abi.CEventKind.STEP, 0, -1, self.seq)
@@ -279,6 +294,14 @@ class FakeCore:
         if s is None:
             raise EngineError(ErrorCode.INVALID_ARGUMENT, "slot_stats: the slot is not admitted")
         return abi.CSlotStats(steps=s.steps)
+
+    def run_check(self) -> abi.CCheck:
+        c = abi.CCheck(gate_up_type=21, down_type=20, dense_type=14, seconds=1.25, handoff_us=17.0)
+        c.gate_up_gbs[0][0], c.gate_up_gbs[1][0], c.gate_up_gbs[1][2] = 250.0, 245.0, 270.0
+        c.down_gbs[1][0] = 210.0
+        c.dense_gbs[0], c.dense_gbs[1] = 400.0, 380.0
+        c.exchange_us[0], c.exchange_us[2] = 3.0, 5.0
+        return c
 
     def sleep(self) -> None:
         assert not self.slots, "asleep with a slot admitted"
@@ -520,6 +543,38 @@ def test_the_engines_stats_are_the_cores():
     assert stats.steps == run.core.decode_steps >= 2
     assert stats.up_ns == 1_000_000_000
     assert run.engine.slot_stats(7).steps == 0, "zeros for a slot not admitted"
+
+
+def test_the_engine_keeps_the_last_steps():
+    run = make()
+    assert run.engine.steps() == []
+    run.add(1, prompt_of(40), 3)
+    run.until_idle()
+    steps = run.engine.steps()
+    assert len(steps) == run.core.decode_steps >= 2, "the decode steps, not the prompt pieces"
+    assert steps[-1] == StepRecord("decode", run.core.seq, 1, 10_000_000, 3, 2, 5, 9_000_000, 8_000_000, 240_000)
+    for _ in range(STEP_RING):
+        run.add(1, prompt_of(40), 2)
+        run.until_idle()
+    assert len(run.engine.steps()) == STEP_RING
+
+
+def test_the_load_check_is_the_cores_with_what_was_not_timed_left_out():
+    run = make()
+    check = run.engine.load_check()
+    assert check is not None
+    assert check == LoadCheck(
+        gate_up_type="IQ3_S",
+        down_type="IQ4_NL",
+        dense_type="Q6_K",
+        gate_up_gbs={1: {1: 250.0}, 2: {1: 245.0, 4: 270.0}},
+        down_gbs={2: {1: 210.0}},
+        dense_gbs={1: 400.0, 2: 380.0},
+        exchange_us={1: 3.0, 4: 5.0},
+        handoff_us=17.0,
+        seconds=1.25,
+    )
+    assert LoadCheck.from_json(json.loads(json.dumps(check.to_json()))) == check
 
 
 def test_a_full_plan_queue_is_waited_out():

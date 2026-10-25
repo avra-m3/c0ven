@@ -1,4 +1,4 @@
-"""A hand-written mirror of `include/engine_api.h`, the C ABI, version 9 (ADR-0024, item 6).
+"""A hand-written mirror of `include/engine_api.h`, the C ABI, version 10 (ADR-0024, item 6).
 
 This file and the header must agree byte for byte. `layout()` lists every struct's size and every field's offset in
 the form the core's `engine_abi_layout` returns them, and tests/host/test_abi.py compares the two.
@@ -22,7 +22,7 @@ import ctypes
 from dataclasses import dataclass
 from enum import IntEnum
 
-ABI_VERSION = 9
+ABI_VERSION = 10
 
 MAX_STOP = 8
 MAX_STEP_SLOTS = 8
@@ -116,6 +116,28 @@ class CInfo(ctypes.Structure):
         ("image_tokens_max", ctypes.c_uint32),
         ("kv_pages", ctypes.c_uint32),
         ("pages_per_slot", ctypes.c_uint32),
+        ("check_key", ctypes.c_char * 128),
+    )
+
+
+CHECK_WIDTHS = 4
+CHECK_ROWS = 3
+
+
+class CCheck(ctypes.Structure):
+    """`engine_check`: GB/s by width (1, 2, 4, 8) and rows (1, 2, 4), 0 where not timed."""
+
+    _fields_ = (
+        ("gate_up_type", ctypes.c_uint32),
+        ("down_type", ctypes.c_uint32),
+        ("dense_type", ctypes.c_uint32),
+        ("pad", ctypes.c_uint32),
+        ("gate_up_gbs", (ctypes.c_double * CHECK_ROWS) * CHECK_WIDTHS),
+        ("down_gbs", (ctypes.c_double * CHECK_ROWS) * CHECK_WIDTHS),
+        ("dense_gbs", ctypes.c_double * CHECK_WIDTHS),
+        ("exchange_us", ctypes.c_double * CHECK_ROWS),
+        ("handoff_us", ctypes.c_double),
+        ("seconds", ctypes.c_double),
     )
 
 
@@ -184,6 +206,10 @@ class CTiming(ctypes.Structure):
         ("misses", ctypes.c_uint32),
         ("start_ns", ctypes.c_uint64),
         ("end_ns", ctypes.c_uint64),
+        ("layers_missed", ctypes.c_uint32),
+        ("swaps", ctypes.c_uint32),
+        ("card_ns", ctypes.c_uint64 * 2),
+        ("cpu_wait_ns", ctypes.c_uint64),
     )
 
 
@@ -281,6 +307,7 @@ STRUCTS: dict[str, type[ctypes.Structure]] = {
     "engine_image": CImage,
     "engine_stats": CStats,
     "engine_slot_stats": CSlotStats,
+    "engine_check": CCheck,
     "engine_abi_row": CAbiRow,
 }
 

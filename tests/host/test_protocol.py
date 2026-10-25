@@ -19,6 +19,8 @@ from protocol import (
     Sleep,
     Stats,
     StatsReport,
+    Steps,
+    StepsReport,
     Stop,
     Tokens,
     Wake,
@@ -35,6 +37,7 @@ from protocol import (
         Gen(2, 5, (1, 2), Settings(penalty_repeat=1.1, penalty_last_n=64, min_p=0.05)),
         Stop(9),
         Stats(),
+        Steps(),
         Sleep(),
         Sleep(30000),
         Wake(),
@@ -59,6 +62,10 @@ def test_commands_round_trip(command: protocol.Command):
         Done(4, 1, 2, 0.0, 0.0, Finish.CANCEL, 12),
         Done(5, 40, 66, 9.5, 104.25, Finish.STOP, 0, 12.125, 20, 30, 19, 7, 6),
         StatsReport({"plans": "12", "decode_ms": "11.250"}),
+        StepsReport(()),
+        StepsReport(
+            ({"kind": "decode", "rows": "1", "ns": "15500000"}, {"kind": "round", "rows": "4", "ns": "25460000"})
+        ),
         Error(5, "the prompt is too long"),
         Error(None, "device lost"),
     ],
@@ -130,12 +137,33 @@ def test_bad_commands(line: str):
         "READY 1",
         "PP 1 2 3",
         "STATS x",
+        "STEPS kind,rows decode",
+        "STEPS kind,rows decode,1,2",
         "WAT",
     ],
 )
 def test_bad_events(line: str):
     with pytest.raises(ProtocolError):
         parse_event(line)
+
+
+def test_steps_line_matches_the_documented_form():
+    line = StepsReport(({"kind": "decode", "ns": "1"}, {"kind": "round", "ns": "2"})).encode()
+    assert line == "STEPS kind,ns decode,1 round,2"
+
+
+@pytest.mark.parametrize(
+    "steps",
+    [
+        ({"kind": "decode"}, {"rows": "1"}),
+        ({"kind": "a,b"},),
+        ({"kind": ""},),
+        ({"a b": "1"},),
+    ],
+)
+def test_steps_refuse_what_does_not_parse_back(steps: tuple[dict[str, str], ...]):
+    with pytest.raises(ProtocolError):
+        StepsReport(steps).encode()
 
 
 def test_info_refuses_spaces():

@@ -26,11 +26,14 @@ struct Card {
   ze_device_handle_t device = nullptr;
   std::string name;
   std::string pci;                 // bus address, "0000:03:00.0"
+  std::string uuid;                // the device's UUID, in hex
+  uint32_t driver_version = 0;     // the driver's driverVersion
   uint64_t memory = 0;             // device-local memory, bytes
   uint64_t max_alloc = 0;          // maxMemAllocSize
   uint32_t compute_ordinal = 0;    // command queue group with compute
   uint32_t copy_ordinal = UINT32_MAX;  // a copy-only group, if the card has one
   uint64_t timer_hz = 0;          // the global timestamp's ticks per second
+  uint32_t clock_mhz = 0;         // coreClockRate: the top of the card's clock, which clock_read_device counts
   uint64_t timestamp_mask = 0;    // its valid bits
   uint32_t shared_system = 0;     // sharedSystemAllocCapabilities: how the card reaches the host's own memory
 };

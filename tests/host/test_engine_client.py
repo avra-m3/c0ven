@@ -57,7 +57,11 @@ def test_stats_answer_without_starting_the_engine():
         assert int(stats["steps"]) >= 3
         assert stats["waiting"] == "0"
         assert float(stats["decode_ms"]) > 0
+        steps = await client.steps()
+        assert len(steps) >= 3
+        assert steps[-1]["kind"] == "decode"
         await client.close()
+        assert await client.steps() == []
 
     asyncio.run(main())
 

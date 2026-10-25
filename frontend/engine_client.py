@@ -75,6 +75,8 @@ class EngineClient:
         self._stats: asyncio.Queue[protocol.StatsReport] = asyncio.Queue()
         self._stats_lock = asyncio.Lock()
         """One STATS question at a time, so each answer is its own."""
+        self._steps: asyncio.Queue[protocol.StepsReport] = asyncio.Queue()
+        self._steps_lock = asyncio.Lock()
         self._process: asyncio.subprocess.Process | None = None
         self._reader: asyncio.Task[None] | None = None
         self._queues: dict[int, asyncio.Queue[protocol.Event]] = {}
@@ -261,6 +263,8 @@ class EngineClient:
                     break
                 if isinstance(event, protocol.StatsReport):
                     self._stats.put_nowait(event)
+                elif isinstance(event, protocol.StepsReport):
+                    self._steps.put_nowait(event)
                 elif isinstance(event, (protocol.Info, protocol.Ready, protocol.Asleep)):
                     self._control.put_nowait(event)
                 elif isinstance(rid, int) and (q := self._queues.get(rid)) is not None:
@@ -286,6 +290,21 @@ class EngineClient:
                     return (await self._stats.get()).counts
             except EngineUnavailable, ConnectionError, TimeoutError:
                 return {}
+
+    async def steps(self) -> list[dict[str, str]]:
+        """The engine's last decode steps and draft rounds (STEPS), oldest first. Empty when no child runs, or none
+        answers within 5 s. Never starts the engine."""
+        if not self.alive:
+            return []
+        async with self._steps_lock:
+            while not self._steps.empty():
+                self._steps.get_nowait()
+            try:
+                await self._send(protocol.Steps().encode())
+                async with asyncio.timeout(5):
+                    return list((await self._steps.get()).steps)
+            except EngineUnavailable, ConnectionError, TimeoutError:
+                return []
 
     async def _send(self, line: str) -> None:
         process = self._process

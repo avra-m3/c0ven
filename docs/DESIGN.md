@@ -171,7 +171,7 @@ sequenceDiagram
 
 ## 3. The C ABI between Python and C++
 
-[`include/engine_api.h`](../include/engine_api.h), version 9, is the one boundary between the Python side and the
+[`include/engine_api.h`](../include/engine_api.h), version 10, is the one boundary between the Python side and the
 core ([ADR-0022](adr/0022-two-processes-python-and-cpp.md)). Python loads the core with `ctypes`
 (`engine/api/native.py`). `engine/api/abi.py` mirrors the header by hand, and a test checks every size and offset
 against the built library.
@@ -324,7 +324,7 @@ No card is kept busy to hold its clock up. In decode both cards stay at 2,400 MH
 ### The step-time model
 
 `engine/step_time.py` predicts the time of one decode step on other ways of laying the layers over the cards, before
-any of them is built. Nothing calls it yet. A layout is `groups(g, w)`: `g` groups of `w` cards, each group holding
+any of them is built. A layout is `groups(g, w)`: `g` groups of `w` cards, each group holding
 48 / `g` layers and each card of a group 1 / `w` of each of them. The split above is `groups(1, 2)`; `groups(2, 1)`
 would give each card half the layers whole. The model rejects a layout whose groups do not divide the layers, whose
 column split would cut a quant block, whose slice width has no measured bandwidth, or whose memory plan does not fit.
@@ -343,6 +343,16 @@ column split would cut a quant block, whose slice width has no measured bandwidt
 [the CPU's answer](measurements/MEASUREMENTS.md#2026-10-16-cpu-answer-per-layer), and the steps and the CPU's wait F and M are calibrated on
 from [the four-rows row](measurements/MEASUREMENTS.md#2026-10-19-four-rows-a-step). The model's assumptions, among them that groups pipeline
 rows from different requests, are in `step_time`'s docstring.
+
+At open the engine process times the kernels on the cards it has (the load check, section 7) and puts those rates
+in place of the recorded ones at the widths it timed: each recorded rate of the experts' gate and up, their down, or
+the dense products and head is scaled by how the check's kernel of that group compares with its recorded rate. Then
+`engine/layout.py` chooses the layout: `--layout auto` (the default) costs every layout the constraints allow at the
+rows a step had in the engine's last life (one row when there is none) and takes the cheapest the core runs;
+`tensor`, `layers` or `groups:<g>x<w>` name one, and the load fails if the core does not run it. The core runs
+`groups(1, n)` only, so on two cards `auto` takes `groups(1, 2)` and the layout costs only reach the log. The `INFO`
+line names the layout. Every 256 steps the engine process logs, at each row count, the predicted step and CPU wait
+beside the measured medians.
 
 ## 6. Memory
 
@@ -388,8 +398,14 @@ weights in RAM, so a wake reads only the cards' part of the model again
 ## 7. Timing and debugging
 
 The core keeps its last 4,096 timing records, one for each prompt piece, decode step or draft round, with its rows
-and the experts the CPU computed. `engine_read_timing` takes them out. The core stores only these small binary
-records. Python adds them up and formats them.
+and the experts the CPU computed. A decode step's or round's record also has the layers with a miss, the experts the
+swap rounds put in the cache since the last step, each card's time from its step's first command to its last (two
+global timestamps a card a step), and card 0's time waiting for the CPU's answers, which `cpu_wait` counts with the
+card's clock (`clock_read_device`) and the core converts at the card's top clock rate. `engine_read_timing` takes
+them out. The core stores only these small binary records. Python adds them up and formats them, and keeps the last
+256 steps and rounds (`Engine.steps`). The time the cards wait for each other's partial sums is not in the records:
+timing each of a step's 96 peer writes would cost 85 µs a step
+([record](measurements/MEASUREMENTS.md#2026-10-25-kernel-clock)); the load check times one.
 
 The core also keeps counters since open, `engine_stats` in [`include/engine_api.h`](../include/engine_api.h): plans
 and the engine thread's time in them; prompt chunks and windowed pieces with their rows and time; decode steps that
@@ -406,7 +422,19 @@ The engine process answers `STATS` with the core's counters and the scheduler's 
 writing, and the cost model's parts), and each request's `DONE` line carries its wait for a slot, its steps and its
 drafts. `/metrics` reports both, and the ratios read from the counters (`frontend/metrics.py`): a step's and a
 round's time, misses per decode row, tokens per second of card time in plain steps and in rounds by draft source,
-drafts accepted per run, the engine thread's busy share and the swap rounds' part of it.
+drafts accepted per run, the engine thread's busy share and the swap rounds' part of it. The engine process answers
+`STEPS` with the last 256 steps' records, and `/stats` reports them. With `--state-dir` the engine process writes
+them to `steps.json` there at each sleep and at exit, for the next life's layout.
+
+The load check (`engine_run_check`) times the decode kernels on card 0 at each card's share of a layer the cards
+allow: `moe_gate_up_g` and `moe_down_g` at 1, 2 and 4 rows on 64 experts of the file's first IQ3_S gate-and-up layer
+and first IQ4_NL down layer, and `matvec` on `attn_qkv`'s row slice at one row, 20 timed launches each after 20
+untimed; a reduce's peer write from card 0 to card 1 at 1, 2 and 4 rows; and a hand-off, a row to card 1 and back
+timed on card 0's clock, less card 1's copy on card 1's, halved; the cards wait for each other on events without
+timestamps, as the decode step's lists do, since a timestamp event that the other card waits on loses the device. It
+takes about a second and up to 200 MB of card 0's memory, which it frees. The engine process runs it at open, before
+`READY`, unless the state directory's `load-check.json` holds one for the same cards' ids, driver version and kernel
+files (`engine_info.check_key`).
 
 The scheduler's cost model (`engine/timing.py`) keeps a moving average of a decode step's time. It fits a prompt
 chunk's time as a fixed part, the staging of the layers' uncached experts, and a part per row, and sizes prompt pieces

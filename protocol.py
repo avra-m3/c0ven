@@ -11,6 +11,7 @@ Front end to engine:
     GEN <rid> <max_new> [key=value ...] <id,id,...>
     STOP <rid>
     STATS
+    STEPS
     SLEEP [<drain_ms>]
     WAKE
     QUIT
@@ -29,6 +30,7 @@ Engine to front end:
     T <rid> <id>[,<id>...]
     DONE <rid> <generated> <prompt> <prompt_ms> <decode_ms> <finish> <reused> [key=value ...]
     STATS key=value ...
+    STEPS [<key>,<key>,... <value>,<value>,... ...]
     ERR <rid|-> <message>
 
 `ERR -` is about the engine, not one request, and the engine exits after it.
@@ -38,6 +40,8 @@ draft rounds that fed it one of its own tokens, `drafts` and `accepted` the draf
 and `lookup_drafts` and `lookup_accepted` the part of those from its own tokens (ADR-0041). `STATS` asks for the
 engine's counters since it started, and is answered with a `STATS` line: the core's (`engine_stats` in
 `include/engine_api.h`, field for field) and the scheduler's (DESIGN.md, section 7). It is answered awake or asleep.
+`STEPS` asks for the last decode steps and draft rounds, and is answered with a `STEPS` line: the field names once,
+then one group of values a step, oldest first; no groups when there are none.
 
 `SLEEP` gives the cards back (ADR-0032). The engine refuses its queued requests and every later `GEN` with
 `ERR <rid>`, lets the running ones go on for up to `drain_ms` (default 0), ends the rest with finish `cancel`, frees
@@ -234,6 +238,14 @@ class Stats:
 
 
 @dataclass(frozen=True, slots=True)
+class Steps:
+    """Asks for the last decode steps and draft rounds: answered with a StepsReport."""
+
+    def encode(self) -> str:
+        return "STEPS"
+
+
+@dataclass(frozen=True, slots=True)
 class Sleep:
     drain_ms: int = 0
 
@@ -253,7 +265,7 @@ class Quit:
         return "QUIT"
 
 
-type Command = Img | Gen | Stop | Stats | Sleep | Wake | Quit
+type Command = Img | Gen | Stop | Stats | Steps | Sleep | Wake | Quit
 
 
 def parse_command(line: str) -> Command:
@@ -276,6 +288,8 @@ def parse_command(line: str) -> Command:
             return Stop(_int(rid, "rid"))
         case ["STATS"]:
             return Stats()
+        case ["STEPS"]:
+            return Steps()
         case ["SLEEP"]:
             return Sleep()
         case ["SLEEP", drain_ms]:
@@ -417,6 +431,30 @@ class StatsReport:
 
 
 @dataclass(frozen=True, slots=True)
+class StepsReport:
+    """The last decode steps and draft rounds (the answer to Steps): each its fields by name, the same names in each."""
+
+    steps: tuple[dict[str, str], ...]
+
+    def encode(self) -> str:
+        if not self.steps:
+            return "STEPS"
+        keys = tuple(self.steps[0])
+        for key in keys:
+            if not key or any(c.isspace() or c in ",=" for c in key):
+                raise ProtocolError(f"STEPS key has a space, ',' or '=': {key!r}")
+        groups: list[str] = []
+        for step in self.steps:
+            if tuple(step) != keys:
+                raise ProtocolError(f"STEPS steps have different fields: {tuple(step)} and {keys}")
+            for value in step.values():
+                if not value or any(c.isspace() or c == "," for c in value):
+                    raise ProtocolError(f"STEPS value is empty or has a space or ',': {value!r}")
+            groups.append(",".join(step.values()))
+        return " ".join(["STEPS", ",".join(keys), *groups])
+
+
+@dataclass(frozen=True, slots=True)
 class Error:
     """`rid` None is an error of the engine itself; the engine exits after sending it."""
 
@@ -427,7 +465,7 @@ class Error:
         return f"ERR {'-' if self.rid is None else self.rid} {_one_line(self.message)}"
 
 
-type Event = Info | Ready | Asleep | Resume | Progress | Tokens | Done | StatsReport | Error
+type Event = Info | Ready | Asleep | Resume | Progress | Tokens | Done | StatsReport | StepsReport | Error
 
 
 def parse_event(line: str) -> Event:
@@ -439,6 +477,17 @@ def parse_event(line: str) -> Event:
             return Info(_pairs(pairs, "INFO"))
         case ["STATS", *pairs]:
             return StatsReport(_pairs(pairs, "STATS"))
+        case ["STEPS"]:
+            return StepsReport(())
+        case ["STEPS", keys, *groups]:
+            names = keys.split(",")
+            steps: list[dict[str, str]] = []
+            for group in groups:
+                values = group.split(",")
+                if len(values) != len(names):
+                    raise ProtocolError(f"STEPS group has {len(values)} values for {len(names)} fields")
+                steps.append(dict(zip(names, values, strict=True)))
+            return StepsReport(tuple(steps))
         case ["READY", max_context, slots]:
             return Ready(_int(max_context, "max_context"), _int(slots, "slots"))
         case ["ASLEEP", ms]:

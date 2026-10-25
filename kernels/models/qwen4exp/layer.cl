@@ -853,17 +853,25 @@ REQD_SG __kernel void router(__global const float *rl, __global const int *slot_
 // Waits for the CPU's answer to a layer's MissJobs (card 0): returns at once when no row had a miss (the skip); else
 // spins on the answer's flag with a system-scope acquire fence before each volatile load, the only form that always
 // sees the CPU's store (docs/measurements/MEASUREMENTS.md#2026-10-11-doorbell). Bounded: gives up after 2^30 polls and sets *stuck.
-// One work-item.
+// *waited gets the wait in cycles of the card's clock, 0 for the skip. One work-item.
 __kernel void cpu_wait(__global const uint *nmiss, __global const uint *ans_seq, __global const StepPlan *plan,
-                       __global uint *stuck) {
+                       __global uint *stuck, __global ulong *waited) {
   uint any = 0;
   for (uint r = 0; r < plan->nrows; r++) any += nmiss[r];
-  if (any == 0) return;
+  if (any == 0) {
+    *waited = 0;
+    return;
+  }
   const uint want = plan->step;
+  const ulong t0 = card_clock();
   for (uint i = 0; i < (1u << 30); i++) {
     atomic_work_item_fence(CLK_GLOBAL_MEM_FENCE, memory_order_acquire, memory_scope_all_svm_devices);
-    if (*(volatile __global const uint *)ans_seq == want) return;
+    if (*(volatile __global const uint *)ans_seq == want) {
+      *waited = card_clock() - t0;
+      return;
+    }
   }
+  *waited = card_clock() - t0;
   *stuck = 1;
 }
 

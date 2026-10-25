@@ -144,6 +144,9 @@ Model::Model(const std::string &path, const Options &opt) : opt_(opt), gguf_(pat
   std::memset(ans_seq_, 0, (size_t)Q_LAYERS * 64);
   stuck_ = static_cast<uint32_t *>(rt_->alloc_host(64));
   *stuck_ = 0;
+  step_ts_ = static_cast<uint64_t *>(rt_->alloc_host((size_t)ncards_ * 2 * 8));
+  waited_ = static_cast<uint64_t *>(rt_->alloc_host((size_t)Q_LAYERS * 8));
+  std::memset(waited_, 0, (size_t)Q_LAYERS * 8);
   cpu_y_ = static_cast<float *>(rt_->alloc_host((size_t)Q_LAYERS * STEP_MAX_ROWS * Q_EMBD * 4));
   icand_ = static_cast<uint32_t *>(rt_->alloc_host((size_t)kAttn * ncards_ * STEP_MAX_ROWS * kIdxCand * 4));
   top_idx_ = static_cast<uint32_t *>(rt_->alloc_host((size_t)ncards_ * STEP_MAX_ROWS * opt_.candidates * 4));
@@ -909,6 +912,7 @@ void Model::record(Card &card, uint32_t W) {
     L.trace(card.trace[W], 8192);
   }
   L.copy(card.plan, plan_, sizeof(StepPlan));
+  L.timestamp(step_ts_ + 2 * c);
   // The BF16 products, on the XMX units with bf16 activations (xb: 8 rows of K), as the reference rounds a BF16
   // product's activation (docs/spec/MODEL_LAYER.md, section 6) and the prompt path's gemm_bf16 takes it. K split in 4,
   // or in 16 for a few rows.
@@ -1092,7 +1096,7 @@ void Model::record(Card &card, uint32_t W) {
     } else {
       matvec(L, card, Ly.sh_down, card.sha8, card.s, W);
     }
-    if (c == 0) L.launch(q4("cpu_wait"), {nmiss, ans_seq_ + 16 * l, plan, stuck_}, 1, 1, 1, 1);
+    if (c == 0) L.launch(q4("cpu_wait"), {nmiss, ans_seq_ + 16 * l, plan, stuck_, waited_ + l}, 1, 1, 1, 1);
     float *p2 = ex2_ + l * ex_layer + (size_t)c * STEP_MAX_ROWS * Q_EMBD;
     const float *cpu = c == 0 ? cpu_y_ + (size_t)l * STEP_MAX_ROWS * Q_EMBD : nullptr;
     if (peer) {
@@ -1109,6 +1113,7 @@ void Model::record(Card &card, uint32_t W) {
              normed ? card.layers[l + 1].hc_norm[0] : nullptr);
   }
   record_head(L, card, plan, W);
+  L.timestamp(step_ts_ + 2 * c + 1);
   L.close();
   card.lists[W] = std::move(list);
 }
@@ -1274,6 +1279,15 @@ std::vector<std::vector<Candidate>> Model::step(const StepIn *rows, uint32_t n, 
   }
   for (auto &card : cards_) card->lists.at(W)->synchronize();
   if (*stuck_) throw std::runtime_error("card 0 gave up waiting for the CPU's experts");
+  stats_.rows = n;
+  for (uint32_t c = 0; c < ncards_ && c < 2; c++) {
+    const ze::Card &zc = rt_->cards()[c];
+    uint64_t ticks = (step_ts_[2 * c + 1] - step_ts_[2 * c]) & zc.timestamp_mask;
+    stats_.card_ns[c] = (uint64_t)((double)ticks * 1e9 / (double)zc.timer_hz);
+  }
+  uint64_t cycles = 0;
+  for (uint32_t l = 0; l < Q_LAYERS; l++) cycles += waited_[l];
+  stats_.cpu_wait_ns = cycles * 1000 / std::max(1u, rt_->cards()[0].clock_mhz);
 
   std::vector<std::vector<Candidate>> out(n);
   for (uint32_t r = 0; r < n; r++) {

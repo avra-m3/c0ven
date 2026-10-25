@@ -1,22 +1,24 @@
 """qwen4exp's products and measured terms for the step-time model (engine/step_time.py).
 
 The products come from the tensor table, their bytes from each tensor's shape and its quant type's block size; how
-each splits is split.py's rule. The terms are the measured ones, calibrated on the committed IQ3_S table.
+each splits is split.py's rule. The terms are the measured ones, with the load check's timings where there is one,
+calibrated on the committed IQ3_S table.
 """
 
 from __future__ import annotations
 
 import math
 import re
+from dataclasses import replace
 from functools import cache
 
 import gguf
 
-from engine.api.interface import SplitKind
+from engine.api.interface import LoadCheck, SplitKind
 from engine.models.qwen4exp import numbers
 from engine.models.qwen4exp.split import split_of
 from engine.models.qwen4exp.tensors import FileTensor, LayerKind, TensorTable, from_tsv
-from engine.step_time import Class, ModelSteps, Product, Terms, calibrate
+from engine.step_time import Class, ModelSteps, Product, Rates, Terms, calibrate
 
 _GATE_UP_AS = {"IQ4_XS": "IQ3_S"}
 """Expert types with no measured rate, and the measured type each is costed as."""
@@ -172,3 +174,59 @@ MEASURED = Terms(
 def measured_terms() -> Terms:
     """MEASURED with F(1) calibrated on the IQ3_S file, the file the step was measured on."""
     return calibrate(MEASURED, model_steps(from_tsv()))
+
+
+def _group(kernel: str) -> str:
+    """The load check's kernel a rate follows: the experts' gate and up, their down, or matvec for the rest."""
+    return kernel.split(" ", maxsplit=1)[0] if kernel.startswith(("gate_up ", "down ")) else "dense"
+
+
+def with_check(terms: Terms, check: LoadCheck) -> Terms:
+    """The terms with the load check's timings. At each width and row count the check timed, every rate of a group
+    (gate and up, down, the dense products and the head) is scaled by how the group's timed kernel compares with its
+    own rate here; a row count it did not time takes the one-row change. Widths it did not time keep their rates. A
+    timed kernel with no rate here enters as timed, and scales nothing else. The check's peer writes and hand-off
+    replace these."""
+    timed: dict[str, tuple[str, dict[int, dict[int, float]]]] = {
+        "gate_up": (f"gate_up {check.gate_up_type}", check.gate_up_gbs),
+        "down": (f"down {check.down_type}", check.down_gbs),
+        "dense": ("attn_qkv", {w: {1: v} for w, v in check.dense_gbs.items()}),
+    }
+    n = len(terms.widths)
+    rates = {k: {r: list(v) for r, v in by.items()} for k, by in terms.rates.items()}
+    for group, (key, measured) in timed.items():
+        own = terms.rates.get(key)
+        if own is None:
+            rows = sorted({r for by in measured.values() for r in by})
+            rates[key] = {r: [measured.get(w, {}).get(r) for w in terms.widths] for r in rows}
+            continue
+        change: dict[tuple[int, int], float] = {}
+        for w, by in measured.items():
+            if w not in terms.widths:
+                continue
+            i = terms.widths.index(w)
+            for r, gbs in by.items():
+                was = own.get(r, (None,) * n)[i]
+                if was:
+                    change[i, r] = gbs / was
+        for k, by in rates.items():
+            if _group(k) != group:
+                continue
+            for r, values in by.items():
+                for i, v in enumerate(values):
+                    f = change.get((i, r), change.get((i, 1)))
+                    if v is not None and f is not None:
+                        values[i] = v * f
+    out: dict[str, Rates] = {k: {r: tuple(v) for r, v in by.items()} for k, by in rates.items()}
+    return replace(
+        terms,
+        rates=out,
+        exchange_us=check.exchange_us or terms.exchange_us,
+        handoff_us=terms.handoff_us if check.handoff_us is None else check.handoff_us,
+        fixed_ms=None,
+    )
+
+
+def checked_terms(check: LoadCheck) -> Terms:
+    """MEASURED with the check's timings, F(1) calibrated as `measured_terms` calibrates it."""
+    return calibrate(with_check(MEASURED, check), model_steps(from_tsv()))
