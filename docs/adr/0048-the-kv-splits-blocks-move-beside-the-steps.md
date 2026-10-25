@@ -38,6 +38,10 @@ a card at 55-84 µs each, beside steps that run 1-2.5% slower then,
 thread before. The copies left on the engine thread are at most 144 of about 1 MB a card (*estimate*: under 1 ms at
 197 GB/s). The gain is in latency: a first token or a writer's step that falls on a change no longer waits for it.
 
+Measured over 7 loads an arm at full context and full load: a change blocks the engine 1.0-3.6 ms instead of
+14.5-37.8 ms, and no prompt or decode rate changed beyond the spread of the loads
+([MEASUREMENTS.md](../measurements/MEASUREMENTS.md#2026-10-25-kv-moves-beside-the-steps)).
+
 ## Options not chosen
 
 - Vacating the blocks a round ahead, the experts that stay copied with that round's swaps: it saves only the copies'
