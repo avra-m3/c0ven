@@ -27,7 +27,7 @@ inline constexpr uint32_t kIdxScoreRows = 8;  // prompt.cl's IDX_SCORE_ROWS
 inline constexpr uint32_t kHcSplitRows = 2048;
 // The largest prompt chunk whose uncached experts are fetched as its router picks them (prompt.cpp, fetch_experts)
 // instead of all staged by the recorded copy list.
-inline constexpr uint32_t kFetchRows = 1024;
+inline constexpr uint32_t kFetchRows = 512;
 inline constexpr uint32_t kAttSplits = (Q_IDX_CELLS + 63) / 64;  // attn_split's ATT_SPLITS
 inline constexpr uint32_t kIdxCand = 2 * (Q_IDX_BLOCKS + 1) + 2;  // words per row of the indexer's candidates
 inline constexpr uint32_t kMvKsRows = 512;  // dense products of up to this many rows split K (matvec_ks)
