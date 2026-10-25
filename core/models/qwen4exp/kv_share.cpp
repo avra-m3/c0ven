@@ -2,12 +2,15 @@
 // each layer's cache are ranges of addresses that never move, backed by 2 MB blocks of device memory that do. The
 // caller takes the lowest free page first; the blocks of the pages above those in use serve the cache. A page that
 // needs its block takes one from the layers whose cached experts are used least; a freed block refills the cache
-// with the most used left out, in the swap rounds. The cards always keep room for the whole pool.
+// with the most used left out, in the swap rounds. The cards always keep room for the whole pool. The blocks are
+// moved on a thread beside the steps once no list can read them: a cache block after the maps no longer name its
+// slots, a page's block while the page is above those in use.
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <stdexcept>
+#include <string>
 
 #include "model_impl.h"
 
@@ -131,29 +134,31 @@ void Model::share_cards(bool first, uint64_t budget, const std::vector<uint64_t>
     }
   }
   grow_kv(kv_own_);
+  run_vm(false);
   for (uint32_t l = 0; l < Q_LAYERS; l++) {
     const uint32_t s = cache_slots(l, dyn[l]);
     count[l] = first ? s : std::min(count[l], s);
   }
 }
 
-// Layer l's cache on a card at `blocks` blocks past its fixed part: blocks from the spare ones, or back to them.
+// Layer l's cache on a card at `blocks` blocks past its fixed part: blocks from the spare ones, or back to them. The
+// maps are queued (run_vm).
 void Model::map_cache(Card &card, uint32_t l, size_t blocks) {
   Region &r = card.cache[l];
   while (r.blocks.size() < blocks) {
     if (card.spare.empty()) throw std::logic_error("map_cache: no spare block");
     r.blocks.push_back(card.spare.back());
     card.spare.pop_back();
-    rt_->vm_map(r.va + r.fixed + (r.blocks.size() - 1) * blk_, blk_, r.blocks.back());
+    vm_ops_.push_back({r.va + r.fixed + (r.blocks.size() - 1) * blk_, r.blocks.back()});
   }
   while (r.blocks.size() > blocks) {
-    rt_->vm_unmap(r.va + r.fixed + (r.blocks.size() - 1) * blk_, blk_);
+    vm_ops_.push_back({r.va + r.fixed + (r.blocks.size() - 1) * blk_, nullptr});
     card.spare.push_back(r.blocks.back());
     r.blocks.pop_back();
   }
 }
 
-// The pages [0, pages) backed on every card, from the spare blocks.
+// The pages [0, pages) backed on every card, from the spare blocks; the maps queued (run_vm).
 void Model::grow_kv(uint32_t pages) {
   pages = std::min(pages, kv_pages_);
   for (auto &card : cards_)
@@ -163,7 +168,7 @@ void Model::grow_kv(uint32_t pages) {
         if (card->spare.empty()) throw std::logic_error("grow_kv: no spare block");
         r.blocks.push_back(card->spare.back());
         card->spare.pop_back();
-        rt_->vm_map(r.va + r.fixed + (r.blocks.size() - 1) * blk_, blk_, r.blocks.back());
+        vm_ops_.push_back({r.va + r.fixed + (r.blocks.size() - 1) * blk_, r.blocks.back()});
       }
     }
   kv_own_ = kv_pages_;
@@ -171,7 +176,8 @@ void Model::grow_kv(uint32_t pages) {
     kv_own_ = std::min(kv_own_, kv_pages_of(x, cards_[0]->kv[x].blocks.size()));
 }
 
-// The blocks of the pages from `pages` up back to the spare ones: the caller has nothing in them.
+// The blocks of the pages from `pages` up back to the spare ones: the caller has nothing in them, so no list reads
+// them, and the unmaps run beside the steps.
 void Model::shrink_kv(uint32_t pages) {
   const auto t0 = std::chrono::steady_clock::now();
   pages = std::min(pages, kv_pages_);
@@ -179,7 +185,7 @@ void Model::shrink_kv(uint32_t pages) {
     for (uint32_t x = 0; x < card->kv.size(); x++) {
       Region &r = card->kv[x];
       while (r.blocks.size() > kv_blocks_for(x, pages)) {
-        rt_->vm_unmap(r.va + r.fixed + (r.blocks.size() - 1) * blk_, blk_);
+        vm_ops_.push_back({r.va + r.fixed + (r.blocks.size() - 1) * blk_, nullptr});
         card->spare.push_back(r.blocks.back());
         r.blocks.pop_back();
       }
@@ -187,13 +193,15 @@ void Model::shrink_kv(uint32_t pages) {
   kv_own_ = kv_pages_;
   for (uint32_t x = 0; x < cards_[0]->kv.size(); x++)
     kv_own_ = std::min(kv_own_, kv_pages_of(x, cards_[0]->kv[x].blocks.size()));
+  run_vm(true);
   log_share("the KV gave memory back", t0);
 }
 
 // The blocks to back the pages [0, pages): the spare ones, then each next block from the layer whose experts it
 // would put out are the coldest, by the routing counts. The victims' pieces are filled before the blocks move
-// (start_round, or kv_need at once); apply_evict moves them. With enough spare blocks, the pool grows now.
-void Model::plan_evict(uint32_t pages) {
+// (start_round, or kv_need at once); apply_evict moves them. With enough spare blocks, the pool grows now; beside:
+// its maps beside the steps.
+void Model::plan_evict(uint32_t pages, bool beside) {
   pages = std::min(pages, kv_pages_);
   size_t need = 0;
   for (uint32_t x = 0; x < cards_[0]->kv.size(); x++) {
@@ -202,6 +210,7 @@ void Model::plan_evict(uint32_t pages) {
   }
   if (need <= cards_[0]->spare.size()) {
     grow_kv(pages);
+    run_vm(beside);
     return;
   }
   size_t want = need - cards_[0]->spare.size();
@@ -264,11 +273,14 @@ void Model::fill_evict(Pool &pool) {
 }
 
 // The planned eviction, its pieces filled: the experts in the slots a layer gives up move into the slots below that
-// its victims or nothing hold, the victims join the staging, the blocks go to the pool.
-void Model::apply_evict(std::chrono::steady_clock::time_point t0) {
+// its victims or nothing hold, the victims join the staging, the blocks go to the pool. The copies and the maps are
+// waited for once; then no list reads the blocks given up, and beside: they move beside the steps.
+void Model::apply_evict(std::chrono::steady_clock::time_point t0, bool beside) {
+  std::vector<size_t> keep;  // each eviction's layer's blocks after it
   for (const Evict &ev : evict_next_) {
     HostLayer &hl = *host_layers_[ev.l];
     const size_t blocks = cards_[0]->cache[ev.l].blocks.size();
+    keep.push_back(blocks - ev.take);
     const uint32_t old = cache_slots(ev.l, blocks), now = cache_slots(ev.l, blocks - ev.take);
     std::vector<int32_t> at(old, -1);
     for (uint32_t e = 0; e < Q_EXPERTS; e++)
@@ -281,12 +293,12 @@ void Model::apply_evict(std::chrono::steady_clock::time_point t0) {
     std::vector<std::pair<uint32_t, uint32_t>> moves;  // slot from, slot to
     for (uint32_t s = now, h = 0; s < old; s++)
       if (at[s] >= 0 && !victim[at[s]]) moves.push_back({s, holes.at(h++)});
+    // The up list runs in order: each layer's maps are copied after its experts.
     for (auto &card : cards_) {
       Layer &L = card->layers[ev.l];
       for (auto [from, to] : moves)
         card->up->copy(L.cache + (uint64_t)to * L.slot_bytes, L.cache + (uint64_t)from * L.slot_bytes, L.slot_bytes);
     }
-    for (auto &card : cards_) card->up->synchronize();
     for (auto [from, to] : moves) hl.slot_of[at[from]] = (int32_t)to;
     for (uint32_t k = 0; k < ev.victims.size(); k++) {
       const uint32_t e = ev.victims[k], pos = ev.first + k;
@@ -303,14 +315,14 @@ void Model::apply_evict(std::chrono::steady_clock::time_point t0) {
       if (card->pc && !card->pc->stage_map.empty())
         card->up->copy(card->pc->stage_map[ev.l], hl.stage_of.data(), Q_EXPERTS * 4);
     }
-    for (auto &card : cards_) {
-      card->up->synchronize();
-      map_cache(*card, ev.l, blocks - ev.take);
-    }
   }
+  for (auto &card : cards_) card->up->synchronize();
+  for (size_t i = 0; i < evict_next_.size(); i++)
+    for (auto &card : cards_) map_cache(*card, evict_next_[i].l, keep[i]);
   if (!evict_next_.empty()) copies_dirty_ = true;
   evict_next_.clear();
   grow_kv(evict_to_);
+  run_vm(beside);
   log_share("the cache gave memory to the KV", t0);
 }
 
@@ -417,24 +429,30 @@ void Model::install_copies() {
 void Model::kv_need(uint32_t in_use) {
   if (!share_) return;
   kv_want_ = std::min(in_use, kv_pages_);
-  if (kv_want_ <= kv_own_) return;
+  reap_remap();
+  if (kv_want_ <= kv_mapped_) return;
+  finish_remap();
+  if (kv_want_ <= kv_mapped_) return;
   if (swap_bg_.joinable()) swap_bg_.join();
   apply_round();
-  if (kv_want_ <= kv_own_) return;
+  finish_remap();
+  if (kv_want_ <= kv_mapped_) return;
   const auto t0 = std::chrono::steady_clock::now();
-  plan_evict(std::min(kv_pages_, kv_want_ + kv_margin_));
+  plan_evict(std::min(kv_pages_, kv_want_ + kv_margin_), false);
   if (!evict_next_.empty()) {
     fill_evict(*pool_);
-    apply_evict(t0);
+    apply_evict(t0, false);
   }
-  if (kv_want_ > kv_own_) throw std::logic_error("kv_need: the pages are not backed");
+  if (kv_want_ > kv_mapped_) throw std::logic_error("kv_need: the pages are not backed");
 }
 
 void Model::kv_ahead() {
-  if (!share_ || !evict_next_.empty() || kv_own_ >= std::min(kv_pages_, kv_want_ + kv_margin_)) return;
+  if (!share_) return;
+  reap_remap();
+  if (!evict_next_.empty() || kv_own_ >= std::min(kv_pages_, kv_want_ + kv_margin_)) return;
   if (swap_bg_.joinable()) swap_bg_.join();
   if (!swap_next_.empty()) apply_round();
-  plan_evict(std::min(kv_pages_, kv_want_ + 2 * kv_margin_));
+  plan_evict(std::min(kv_pages_, kv_want_ + 2 * kv_margin_), true);
   if (!evict_next_.empty()) start_round();  // the eviction only: no swaps chosen with it
 }
 
@@ -442,6 +460,57 @@ uint32_t Model::experts_cached() const {
   uint64_t sum = 0;
   for (auto &hl : host_layers_) sum += Q_EXPERTS - (uint32_t)hl->uncached.size();
   return (uint32_t)(sum / Q_LAYERS);
+}
+
+// The queued maps in order, after the last batch: now, or beside the steps on their own thread. Pages leaving the
+// pool are not backed from now; pages joining it once the batch ends.
+void Model::run_vm(bool beside) {
+  finish_remap();
+  kv_mapped_ = std::min(kv_mapped_, kv_own_);
+  if (vm_ops_.empty()) {
+    kv_mapped_ = kv_own_;
+    return;
+  }
+  std::vector<VmOp> ops = std::move(vm_ops_);
+  vm_ops_.clear();
+  auto run = [this](const std::vector<VmOp> &v) {
+    for (const VmOp &op : v)
+      if (op.block) rt_->vm_map(op.va, blk_, op.block);
+      else rt_->vm_unmap(op.va, blk_);
+  };
+  if (!beside) {
+    run(ops);
+    kv_mapped_ = kv_own_;
+    return;
+  }
+  remap_to_ = kv_own_;
+  remap_end_ = false;
+  remap_bg_ = std::thread([this, run, ops = std::move(ops)] {
+    const auto t0 = std::chrono::steady_clock::now();
+    try {
+      run(ops);
+      std::fprintf(stderr, "engine: %zu blocks mapped or unmapped beside the steps in %.1f ms\n", ops.size(),
+                   std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+    } catch (const std::exception &ex) {
+      remap_err_ = ex.what();
+    }
+    remap_end_ = true;
+  });
+}
+
+void Model::finish_remap() {
+  if (!remap_bg_.joinable()) return;
+  remap_bg_.join();
+  kv_mapped_ = remap_to_;
+  if (!remap_err_.empty()) {
+    std::string err = std::move(remap_err_);
+    remap_err_.clear();
+    throw std::runtime_error("moving the KV split's blocks: " + err);
+  }
+}
+
+void Model::reap_remap() {
+  if (remap_bg_.joinable() && remap_end_) finish_remap();
 }
 
 // A change of the split, on stderr: t0, when given, the time it took from.

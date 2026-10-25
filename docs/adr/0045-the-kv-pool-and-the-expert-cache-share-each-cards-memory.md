@@ -1,6 +1,7 @@
 # ADR-0045: the KV pool and the expert cache share each card's memory
 
-**Status:** draft, 2026-10-20; not accepted.
+**Status:** draft, 2026-10-20; not accepted. Item 5's last clause superseded by
+[ADR-0048](0048-the-kv-splits-blocks-move-beside-the-steps.md), 2026-10-24.
 **Revisit when:** the cards' memory is managed by another layer than Level Zero's virtual memory, the pool's pages stop
 being taken lowest first, or checkpoints should give their memory to the cache before the pool needs it.
 
