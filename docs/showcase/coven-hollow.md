@@ -10,10 +10,11 @@ to look around and click to cast a spark.
 
 ## The slow tour
 
-<video controls loop muted preload="none" src="coven-hollow-tour.webm"></video>
+![Coven Hollow, one slow tour: the camera skims the pond, rises over the roofs and passes behind the cottages](coven-hollow-tour.webp)
 
 The same scene, taken slowly: one 64 s circuit that dips low over the pond, rises over the roofs and passes behind
-the cottages. [coven-hollow-tour.webm](coven-hollow-tour.webm) is 960x540 at 25 fps.
+the cottages. The README shows this one. [coven-hollow-tour.webm](coven-hollow-tour.webm) is the same tour as a
+video, 960x540 at 25 fps.
 
 ## How to make this
 
@@ -76,7 +77,11 @@ factor of 2; the page caps its pixel ratio at 1.8, so frames came out at 1728x97
 warm up and saved the next 480. Pillow scaled them to 800x450 with a Lanczos filter and saved them as a lossy
 WebP. WebP frame delays are whole milliseconds, so they run 17, 17, 16 ms in turn: 60 fps, 8,000 ms a loop.
 
+The tour was recorded the same way with `?pump&tour` at 25 fps: one tour to warm up, then 1,600 frames of 40 ms,
+scaled to 800x450.
+
 Use WebP, not GIF. A GIF frame holds at most 256 colours, which bands the sky and the glow, and its delays are
 whole hundredths of a second, so it cannot play at 60 fps. GitHub and the browsers show an animated WebP wherever
-they show a GIF. A long camera move changes nearly every pixel of every frame, which neither format stores well;
-record those as video, as the tour is.
+they show a GIF. A long camera move changes nearly every pixel of every frame, which neither format stores well:
+the tour costs 27.5 MB as a WebP and 22.7 MB as a WebM. GitHub does not play a video from the repository in a README,
+so the README shows the WebP.

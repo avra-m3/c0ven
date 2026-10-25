@@ -1,6 +1,8 @@
 <p align="center"><img src="docs/images/logo.svg" alt="C0ven" width="520"></p>
 
-<p align="center"><a href="https://avra-m3.github.io/c0ven/docs/showcase/coven-hollow.html"><img src="docs/showcase/coven-hollow-loop.webp" alt="Coven Hollow: witches, cottages and a cauldron in a woodland clearing at dusk, seen from a camera circling the hollow" width="800"></a></p>
+<p align="center"><a href="https://github.com/avra-m3/c0ven/actions/workflows/ci.yml?query=branch%3Amain"><img src="https://github.com/avra-m3/c0ven/actions/workflows/ci.yml/badge.svg?branch=main" alt="ci"></a></p>
+
+<p align="center"><a href="https://avra-m3.github.io/c0ven/docs/showcase/coven-hollow.html"><img src="docs/showcase/coven-hollow-tour.webp" alt="Coven Hollow: witches, cottages and a cauldron in a woodland clearing at dusk, seen from a camera on a slow tour of the hollow" width="800"></a></p>
 
 *Coven Hollow, a scene a coding agent wrote in one HTML file. [See it live](https://avra-m3.github.io/c0ven/docs/showcase/coven-hollow.html), or [how to make this](https://avra-m3.github.io/c0ven/docs/showcase/coven-hollow/#how-to-make-this).*
 
