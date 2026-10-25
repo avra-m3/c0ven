@@ -4,7 +4,7 @@
 `--layout` names a layout or asks for `auto`, which costs every layout the constraints allow at the rows a step had
 in the engine's last life, and takes the cheapest the core runs. The core runs one group of every card today, so
 `auto` takes it and the costs are logged; a layout the core does not run is refused. Every `STEP_RING` steps the
-engine process logs the predicted step against the measured one at each row count.
+engine process logs the predicted step against the measured one at each row count, M from the steps' own misses.
 """
 
 from __future__ import annotations

@@ -352,7 +352,9 @@ rows a step had in the engine's last life (one row when there is none) and takes
 `tensor`, `layers` or `groups:<g>x<w>` name one, and the load fails if the core does not run it. The core runs
 `groups(1, n)` only, so on two cards `auto` takes `groups(1, 2)` and the layout costs only reach the log. The `INFO`
 line names the layout. Every 256 steps the engine process logs, at each row count, the predicted step and CPU wait
-beside the measured medians.
+beside the measured medians. The prediction takes M from each step's own misses, not the hit-rate curve's: the text
+decides how often a row misses, and with the curve's M most four-row steps were off by more than 15%
+([record](measurements/MEASUREMENTS.md#2026-10-25-step-metrics)).
 
 ## 6. Memory
 
@@ -431,10 +433,11 @@ allow: `moe_gate_up_g` and `moe_down_g` at 1, 2 and 4 rows on 64 experts of the 
 and first IQ4_NL down layer, and `matvec` on `attn_qkv`'s row slice at one row, 20 timed launches each after 20
 untimed; a reduce's peer write from card 0 to card 1 at 1, 2 and 4 rows; and a hand-off, a row to card 1 and back
 timed on card 0's clock, less card 1's copy on card 1's, halved; the cards wait for each other on events without
-timestamps, as the decode step's lists do, since a timestamp event that the other card waits on loses the device. It
-takes about a second and up to 200 MB of card 0's memory, which it frees. The engine process runs it at open, before
-`READY`, unless the state directory's `load-check.json` holds one for the same cards' ids, driver version and kernel
-files (`engine_info.check_key`).
+timestamps, as the decode step's lists do, since a timestamp event that the other card waits on loses the device.
+It takes about a second and up to 200 MB of card 0's memory, which it frees
+([record](measurements/MEASUREMENTS.md#2026-10-25-step-metrics)). The engine process runs it at open, before `READY`,
+unless the state directory's `load-check.json` holds one for the same cards' ids, driver version and kernel files
+(`engine_info.check_key`).
 
 The scheduler's cost model (`engine/timing.py`) keeps a moving average of a decode step's time. It fits a prompt
 chunk's time as a fixed part, the staging of the layers' uncached experts, and a part per row, and sizes prompt pieces

@@ -118,6 +118,8 @@ same 28.4 GB/s as a kernel. While a prompt runs, each card stages its experts fr
 | A flag in the other card's memory in place of the event, 96 exchanges | 0.20 ms saved at one row, 0.16 ms at two; 0.05 ms lost at four | <a id="2026-10-16-peer-exchange-decode"></a>[2026-10-16](#2026-10-16-peer-exchange-decode) |
 | Kernel stores into the other card's memory | 22.2-22.5 GB/s with stores of 64 bytes or more; 1.9 GB/s with one fp16 a work-item | <a id="2026-10-15-prompt-exchange-stores"></a>[2026-10-15](#2026-10-15-prompt-exchange-stores) |
 | Sending a 4,352-row chunk's mixed activations to the other card | 0.61 ms with 128-byte block stores; 11.7 ms with 2-byte stores | <a id="2026-10-17-hc-split"></a>[2026-10-17](#2026-10-17-hc-split) |
+| A copy of 1, 2 and 4 rows of 2,560 floats into the other card, by the copy's own timestamps (the load check) | 0.83, 1.04 and 1.77 µs | <a id="2026-10-25-step-metrics"></a>[2026-10-25](#2026-10-25-step-metrics) |
+| A row to the other card and back, each card waiting on an event without timestamps, less the other card's copy, halved (the load check's hand-off) | 2.24-2.63 µs (median 2.55). A timestamp event that the other card waits on loses the device | [2026-10-25](#2026-10-25-step-metrics) |
 
 ### The clock
 
@@ -174,7 +176,8 @@ GB/s each kernel reads with a card's slice of a layer at 640, 320, 160 and 80 ro
 columns of their down), as one, two, four and eight cards a layer would hold, and the dense products split in the
 same shares. Real IQ3_S weights on one card at 2,400 MHz, 128 experts cached, each row with its own 10 experts: the
 median of five processes of 100 launches, within 2.5% across them. A column split that cuts a quant block has no
-value.
+value. The load check's rows are its own: in the loaded engine on two cards, 64 experts, zero activations, the
+median of 20 launches, the median of six loads (within 1.2% across them).
 
 | Kernel | Rows | 640 | 320 | 160 | 80 | Measured |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
@@ -200,6 +203,13 @@ value.
 | `ffn_gate_shexp`, Q4_K, by rows | 1 | 96 | 82 | 49 | 25 (a launch costs about 4.6 µs whatever it reads) | [2026-10-25](#2026-10-25-slice-width-kernels) |
 | `ffn_down_shexp`, IQ4_NL, by columns | 1 | 148 | 101 | 71 | not whole blocks | [2026-10-25](#2026-10-25-slice-width-kernels) |
 | `output`, Q6_K, by rows | 1 | 446 | 444 | 440 | 429 | [2026-10-25](#2026-10-25-slice-width-kernels) |
+| IQ3_S gate and up, the load check | 1 | 228 | 261 | | | [2026-10-25](#2026-10-25-step-metrics) |
+|  | 2 | 248 | 210 | | | [2026-10-25](#2026-10-25-step-metrics) |
+|  | 4 | 289 | 273 | | | [2026-10-25](#2026-10-25-step-metrics) |
+| IQ4_NL down, the load check | 1 | 256 | 227 | | | [2026-10-25](#2026-10-25-step-metrics) |
+|  | 2 | 274 | 243 | | | [2026-10-25](#2026-10-25-step-metrics) |
+|  | 4 | 291 | 243 | | | [2026-10-25](#2026-10-25-step-metrics) |
+| `attn_qkv`, the load check | 1 | 410 | 390 | | | [2026-10-25](#2026-10-25-step-metrics) |
 
 ### Prompt kernels (chunks of up to 4,352 rows)
 
@@ -273,6 +283,7 @@ value.
 | VRAM held while asleep | 0.31-0.32 GiB a card | [2026-10-17](#2026-10-17-sleep-and-wake) |
 | Page cache growth during a load | at most 0.79 GiB | [2026-10-17](#2026-10-17-sleep-and-wake) |
 | Host memory swapped out | 0-50 MiB by a wake; 2.7-790 MiB by a start, most when the host stalled on compaction | [2026-10-17](#2026-10-17-sleep-and-wake) |
+| The load check at open, two cards ([DESIGN.md](../DESIGN.md), section 7) | 1.03-1.04 s, before `READY`; none when `load-check.json` holds one for the cards, driver and kernels. The layout chooser after it: 0.05 s | [2026-10-25](#2026-10-25-step-metrics) |
 
 ### Prompts
 
@@ -316,6 +327,8 @@ value.
 | Drafts from a lone slot's own tokens when worth more than the draft layer's ([ADR-0041](../adr/0041-drafts-from-the-slots-own-tokens.md)); one slot's windows 16 ms at 1 row, 29 at 4, 64 at 8 | eleven prompts, 5 runs against 6 of main's in alternating order: decode +3.24% (each run +2.3% to +3.5%, main's -0.9% to +0.2%); edit-py +21.0%, doc-32k +9.5%, edit-cpp +6.1%, doc-4k-qa +4.0%, the others -2.4% to +0.7%. Lookup rounds 572-745 of about 3,100, all of 3 drafts. Taking every longer lookup without the comparison: doc-4k-summary -15% | <a id="2026-10-20-lookup-drafts-against-main"></a>[2026-10-20](#2026-10-20-lookup-drafts-against-main), <a id="2026-10-19-lookup-drafts"></a>[2026-10-19](#2026-10-19-lookup-drafts) |
 | The KV pool's free pages lending their memory to the expert cache ([ADR-0045](../adr/0045-the-kv-pool-and-the-expert-cache-share-each-cards-memory.md)), 4 slots and a 524,288-token pool | experts cached a layer 248 → 331 at load, 321 with four 17,580-token prompts in; one request 73.2 → 84.9 tokens/s (gpqa-1) and 83.4 → 93.1 (gpqa-4); four together 119.8 → 150.8; four sent together, the last first token 2.705 → 1.885 s; a 247-351-token prompt alone, first token 0.681 → 0.484 s; 3,395-7,570-token prompts 1,502 → 1,670 tokens/s; four 17,580-token prompts sent together, the last first token 50.2 → 44.2 s; a 179,969-token prompt 1,660 → 1,713 tokens/s (one run each). Each change of the split blocked the engine 14.3-31.7 ms for 58-144 experts (12.4-19.9 ms per 64), 5 a run; giving the pages of four ended requests back, 34.8 ms (one load). Different tokens: the CPU computes other experts | [2026-10-20](#2026-10-20-kv-pool-and-expert-cache-share) |
 | The engine's counters (`engine_stats`, the `STATS` line, the `DONE` counters; [ADR-0048](../adr/0048-counters-in-the-core-read-by-a-snapshot-call.md)) | three ABBA rounds, 6 fresh servers an arm, 4 slots at 262,144: prompt rates within 0.3% (1,853 → 1,856, 1,747 → 1,750, 1,597 → 1,595 tokens/s); decode medians 0.995-1.043 of main's on seven of eight prompts, long-gen 0.905 in the series and 1.10 alone; four writers 93.9 → 93.3 tokens/s; each run's geometric mean of decode rates 0.975-0.993 (main) and 0.977-1.011. The counters: 331 experts a layer at load, 328 at the end (the floor the load keeps room for, 246, is reported beside it); 66 misses a row; a plain step 20.2 ms, a round 35.0 ms; 67 tokens a second of card time in plain steps, 112 in rounds with the draft layer's drafts, 126 with the slot's own; the engine thread busy 99.3%, swap rounds 1.3% of it | <a id="2026-10-25-counters-abba"></a>[2026-10-25](#2026-10-25-counters-abba) |
+| The step records (each card's span, the CPU wait, swaps; ABI 10), the load check and the layout chooser at load | three ABBA rounds, 6 fresh servers an arm, 4 slots at 262,144: each run's geometric mean of decode rates 0.962-1.002 (base) and 0.966-1.007; four writers 96.14 → 96.35 tokens/s; prompt rates within 1%; same `greedy_test` tokens (1,042 of 1,063) | [2026-10-25](#2026-10-25-step-metrics) |
+| The step-time model against the steps it predicts, groups(1, 2), M from each step's misses | 256-step lines of at least 20 steps: one row median -1.1% (10 of 12 within 15%), four rows -8.9% (15 of 16); with the hit-rate curve's M, 10 of 12 and 6 of 16. Outside 15%: steps whose CPU wait was 6.5-16.4 ms against 0.4-9.3 ms for their misses; the steps less their CPU wait -8.4% to 0.0% | [2026-10-25](#2026-10-25-step-metrics) |
 
 ### Against llama.cpp
 
