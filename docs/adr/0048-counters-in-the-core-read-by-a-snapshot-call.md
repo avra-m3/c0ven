@@ -38,6 +38,17 @@
 4. `/metrics` reports the `STATS` line's values as numbers, the request counters in its totals and recent requests,
    and the ratios read from the counters in `frontend/metrics.py`. The core counts; Python divides.
 
+## Why
+
+- Three ABBA rounds of the branch against its base, six fresh servers an arm at 4 slots and a 262,144-token context,
+  found no cost: prompt rates within 0.3%, decode medians 0.995-1.043 of the base's on seven of eight prompts (the
+  eighth, long-gen, 0.905 in the series and 1.10 alone), four writers together 93.9 against 93.3 tokens/s
+  ([the record](../measurements/MEASUREMENTS.md#2026-10-25-counters-abba)).
+- The same record reads the counters: with the KV pool lending to the cache the cards hold 246 experts a layer in
+  use of 331 at load, a decode row misses 66 experts, the engine thread is busy 99.3% of the time, and rounds with
+  drafts give 112-126 tokens a second of card time against 67 for plain steps. On one card the pool leaves 19 experts
+  a layer and a row misses 243. None of this was visible before.
+
 ## Options not chosen
 
 - Draining the timing records in the engine process and summing them: a read on the engine's lock at every poll,
