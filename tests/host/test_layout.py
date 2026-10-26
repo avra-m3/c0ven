@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-import dataclasses
-import json
 from dataclasses import replace
-from pathlib import Path
 
 import pytest
 
 from engine.api.interface import StepRecord
-from engine.layout import StepLog, choose, histogram, parse, read_histogram
+from engine.layout import REQUESTS, StepLog, choose, parse
 from engine.memory_plan import PlanOptions
 from engine.models.qwen4exp.memory import model_memory
 from engine.models.qwen4exp.steps import MEASURED, checked_terms, measured_terms, model_steps, with_check
@@ -39,22 +36,27 @@ def test_a_layout_that_does_not_parse(spec: str):
         parse(spec, 2)
 
 
-@pytest.mark.parametrize("rows", [{}, {1: 10}, {4: 10}, {1: 5, 2: 3, 4: 1}])
-def test_auto_takes_the_layout_the_core_runs_and_costs_them_all(rows: dict[int, int]):
-    c = choose("auto", 2, STEPS, TERMS, memory=MEMORY, options=OPTIONS, rows=rows, runs=TENSOR)
+def test_auto_takes_the_layout_the_core_runs_and_costs_them_all():
+    c = choose("auto", 2, STEPS, TERMS, memory=MEMORY, options=OPTIONS, runs=TENSOR)
     assert str(c.layout) == "groups(1, 2)"
     assert set(c.costs) == {"groups(1, 2)", "groups(2, 1)"}
-    assert c.rows == (rows or {1: 1})
+    assert all(len(v) == len(REQUESTS) for v in c.costs.values())
     print(c.line())
+    assert "a token at 1, 2, 4, 8 requests: groups(1, 2) " in c.line()
+
+
+def test_auto_takes_the_cheapest_for_one_request_of_those_the_core_runs():
+    c = choose("auto", 2, STEPS, TERMS, memory=MEMORY, options=OPTIONS, runs={(1, 2), (2, 1)})
+    assert str(c.layout) == "groups(1, 2)"
 
 
 def test_a_layout_the_core_does_not_run_is_refused():
     with pytest.raises(LayoutError, match="does not run"):
-        choose("layers", 2, STEPS, TERMS, memory=MEMORY, options=OPTIONS, rows={}, runs=TENSOR)
+        choose("layers", 2, STEPS, TERMS, memory=MEMORY, options=OPTIONS, runs=TENSOR)
     with pytest.raises(LayoutError, match="does not use"):
-        choose("groups:3x1", 2, STEPS, TERMS, memory=MEMORY, options=OPTIONS, rows={}, runs=TENSOR)
+        choose("groups:3x1", 2, STEPS, TERMS, memory=MEMORY, options=OPTIONS, runs=TENSOR)
     with pytest.raises(LayoutError, match="core runs"):
-        choose("auto", 2, STEPS, TERMS, memory=MEMORY, options=OPTIONS, rows={}, runs={(4, 4)})
+        choose("auto", 2, STEPS, TERMS, memory=MEMORY, options=OPTIONS, runs={(4, 4)})
 
 
 def at(kernel: str, rows: int, i: int) -> float:
@@ -75,16 +77,6 @@ def record(plan: int, rows: int, ms: float, misses: int = 0, layers_missed: int 
         card0_ns=int((ms - 1) * 1e6),
         cpu_wait_ns=200_000,
     )
-
-
-def test_the_histogram_is_read_from_the_steps_file(tmp_path: Path):
-    steps = [record(i, 1 + i % 2, 15.0) for i in range(5)]
-    path = tmp_path / "steps.json"
-    path.write_text(json.dumps({"steps": [dataclasses.asdict(s) for s in steps]}))
-    assert read_histogram(path) == histogram(steps) == {1: 3, 2: 2}
-    assert read_histogram(tmp_path / "none.json") == {}
-    path.write_text("{")
-    assert read_histogram(path) == {}
 
 
 def test_the_step_log_sets_each_row_counts_steps_against_the_prediction():

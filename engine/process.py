@@ -46,7 +46,7 @@ from engine.api.interface import (
     OpenConfig,
     StepRecord,
 )
-from engine.layout import LAYOUTS, StepLog, read_histogram
+from engine.layout import LAYOUTS, StepLog
 from engine.memory_plan import MemoryPlan, ModelMemory, PlanError, PlanOptions
 from engine.scheduler import CheckpointRule, Scheduler, SchedulerOptions
 from engine.step_time import ModelSteps, Terms
@@ -500,7 +500,6 @@ def main(argv: list[str] | None = None) -> int:
     step_model = cast("Callable[..., tuple[ModelSteps, ModelMemory, Terms]]", model.step_model)
 
     def choose(facts: EngineFacts, check: LoadCheck | None) -> StepLog | None:
-        rows = read_histogram(args.state_dir / STEPS_FILE) if args.state_dir is not None else {}
         try:
             steps, memory, terms = step_model(args.model if native else None, check, args.table_cache)
             c = layout.choose(
@@ -510,7 +509,6 @@ def main(argv: list[str] | None = None) -> int:
                 terms,
                 memory=memory,
                 options=options,
-                rows=rows,
                 runs={(1, facts.cards)},
             )
         except (ValueError, OSError) as exc:

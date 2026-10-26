@@ -1,21 +1,19 @@
 """The layout the cards run, chosen at load by the step-time model, and its prediction set against the steps it ran
 (DESIGN.md, section 5).
 
-`--layout` names a layout or asks for `auto`, which costs every layout the constraints allow at the rows a step had
-in the engine's last life, and takes the cheapest the core runs. The core runs one group of every card today, so
-`auto` takes it and the costs are logged; a layout the core does not run is refused. Every `STEP_RING` steps the
-engine process logs the predicted step against the measured one at each row count, M from the steps' own misses.
+`--layout` names a layout or asks for `auto`, which takes the layout the core runs with the least time a token for
+one request. Every layout the constraints allow is costed at `REQUESTS` requests writing, a multi-group layout with
+its groups pipelined, and the costs are logged: they show where pipelining would beat one group. The core runs one
+group of every card today, so `auto` takes it; a layout the core does not run is refused. Every `STEP_RING` steps
+the engine process logs the predicted step against the measured one at each row count, M from the steps' own misses.
 """
 
 from __future__ import annotations
 
-import json
 import re
 import statistics
-from collections import Counter
-from collections.abc import Collection, Iterable, Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
-from pathlib import Path
 
 from engine.api.interface import STEP_RING, StepRecord
 from engine.memory_plan import ModelMemory, PlanOptions
@@ -28,9 +26,13 @@ from engine.step_time import (
     layout,
     layouts,
     step_time,
+    token_time,
 )
 
 LAYOUTS = "auto, tensor, layers or groups:<g>x<w>"
+
+REQUESTS = (1, 2, 4, 8)
+"""The requests writing at which the layouts are costed: one, and up to a step's most rows."""
 
 _GROUPS = re.compile(r"^groups:(?P<g>\d+)x(?P<w>\d+)$")
 
@@ -52,34 +54,17 @@ def parse(spec: str, cards: int) -> tuple[int, int] | None:
             return int(m.group("g")), int(m.group("w"))
 
 
-def histogram(steps: Iterable[StepRecord]) -> dict[int, int]:
-    """Steps by their rows."""
-    return dict(sorted(Counter(s.rows for s in steps).items()))
-
-
-def read_histogram(path: Path) -> dict[int, int]:
-    """The rows of the steps a steps file holds (the engine process's `steps.json`); empty when there is none or it
-    does not parse."""
-    try:
-        steps = json.loads(path.read_text())["steps"]
-        return histogram(StepRecord(**s) for s in steps)
-    except OSError, ValueError, KeyError, TypeError:
-        return {}
-
-
 @dataclass(frozen=True, slots=True)
 class Choice:
     layout: Layout
-    rows: Mapping[int, int]
-    """The histogram the layouts were costed at: steps by rows."""
-    costs: Mapping[str, float]
-    """Each allowed layout's time a token over the histogram, ms."""
+    costs: Mapping[str, tuple[float, ...]]
+    """Each allowed layout's time a token at each of `REQUESTS`, ms."""
 
     def line(self) -> str:
-        rows = ", ".join(f"{n} of {r}" for r, n in self.rows.items())
-        costs = ", ".join(f"{k} {v:.2f} ms" for k, v in self.costs.items())
+        costs = "; ".join(f"{k} {', '.join(f'{v:.2f}' for v in vs)} ms" for k, vs in self.costs.items())
         cached = self.layout.experts_cached
-        return f"layout {self.layout}, {cached} experts cached a layer; a token: {costs}; steps: {rows}"
+        at = ", ".join(str(r) for r in REQUESTS)
+        return f"layout {self.layout}, {cached} experts cached a layer; a token at {at} requests: {costs}"
 
 
 def choose(
@@ -90,17 +75,14 @@ def choose(
     *,
     memory: ModelMemory,
     options: PlanOptions,
-    rows: Mapping[int, int],
     runs: Collection[tuple[int, int]],
 ) -> Choice:
-    """The layout `spec` asks for, costed over `rows` (one row when empty). `runs`: the (groups, width) the core
-    runs. Raises LayoutError for a named layout that breaks a constraint or that the core does not run, and when no
-    layout the core runs is allowed; ValueError for a spec that does not parse."""
-    hist = dict(rows) or {1: 1}
-    total = sum(hist.values())
+    """The layout `spec` asks for. `runs`: the (groups, width) the core runs. Raises LayoutError for a named layout
+    that breaks a constraint or that the core does not run, and when no layout the core runs is allowed; ValueError
+    for a spec that does not parse."""
 
-    def cost(lay: Layout) -> float:
-        return sum(n * step_time(terms, model, lay, r).token_ms for r, n in hist.items()) / total
+    def cost(lay: Layout) -> tuple[float, ...]:
+        return tuple(token_time(terms, model, lay, r) for r in REQUESTS)
 
     allowed = layouts(cards, model, terms, memory=memory, options=options)
     costs = {str(lay): cost(lay) for lay in allowed}
@@ -109,11 +91,11 @@ def choose(
         candidates = [lay for lay in allowed if (lay.groups, lay.width) in runs]
         if not candidates:
             raise LayoutError(f"no layout the core runs is allowed on {cards} cards")
-        return Choice(min(candidates, key=cost), hist, costs)
+        return Choice(min(candidates, key=lambda lay: costs[str(lay)][0]), costs)
     lay = layout(*named, cards, model, terms, memory=memory, options=options)
     if named not in runs:
         raise LayoutError(f"the core does not run {lay} yet")
-    return Choice(lay, hist, costs or {str(lay): cost(lay)})
+    return Choice(lay, costs or {str(lay): cost(lay)})
 
 
 class StepLog:

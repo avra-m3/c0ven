@@ -274,7 +274,7 @@ def chooser(spec: str) -> Chooser:
     def choose(facts: EngineFacts, check: LoadCheck | None) -> StepLog | None:
         terms = measured_terms() if check is None else checked_terms(check)
         steps, memory = model_steps(from_tsv()), model_memory(from_tsv())
-        c = layout.choose(spec, facts.cards, steps, terms, memory=memory, options=PlanOptions(), rows={}, runs={(1, 2)})
+        c = layout.choose(spec, facts.cards, steps, terms, memory=memory, options=PlanOptions(), runs={(1, 2)})
         return StepLog(terms, steps, c.layout)
 
     return choose

@@ -21,6 +21,7 @@ from engine.step_time import (
     layouts,
     miss_wait_ms,
     step_time,
+    token_time,
 )
 
 TABLE = from_tsv()
@@ -63,19 +64,38 @@ def test_the_measured_steps(rows: int, measured: float):
     assert s.step_ms == pytest.approx(measured, rel=0.15)
 
 
-@pytest.mark.parametrize("rows", [1, 2, 3, 4])
-def test_two_cards_in_one_group_are_cheapest_for_one_request(rows: int):
+@pytest.mark.parametrize("requests", [1, 2, 3, 4])
+def test_two_cards_in_one_group_are_cheapest_for_up_to_four_requests(requests: int):
     two = layouts(2, STEPS, TERMS, memory=MEMORY, options=OPTIONS)
     assert [str(lay) for lay in two] == ["groups(1, 2)", "groups(2, 1)"]
-    times = {str(lay): step_time(TERMS, STEPS, lay, rows).token_ms for lay in two}
+    times = {str(lay): token_time(TERMS, STEPS, lay, requests) for lay in two}
+    print(times)
     assert min(times, key=times.__getitem__) == "groups(1, 2)"
 
 
-def test_four_rows_from_four_requests():
-    """The pipelining rule is unchecked, so this only prints the two layouts' times a token."""
-    for lay in layouts(2, STEPS, TERMS, memory=MEMORY, options=OPTIONS):
-        s = step_time(TERMS, STEPS, lay, 4, requests=4)
-        print(f"{lay}: {s.step_ms:.2f} ms a step, {s.token_ms:.2f} ms a token")
+def test_two_groups_pipelined_are_cheaper_at_eight_requests():
+    """Where the model puts the break-even on two cards; the pipelining rule itself is not measured yet."""
+    one, two = layouts(2, STEPS, TERMS, memory=MEMORY, options=OPTIONS)
+    for r in (1, 2, 4, 6, 8):
+        print(
+            f"{r} requests: {one} {token_time(TERMS, STEPS, one, r):.2f}, {two} {token_time(TERMS, STEPS, two, r):.2f}"
+        )
+    assert token_time(TERMS, STEPS, two, 8) < token_time(TERMS, STEPS, one, 8)
+
+
+def test_one_group_pipelines_nothing():
+    for r in (1, 2, 4):
+        assert token_time(TERMS, STEPS, TODAY, r) == pytest.approx(step_time(TERMS, STEPS, TODAY, r).step_ms / r)
+
+
+@pytest.mark.parametrize(("rows", "measured"), [(1, 9.59), (2, 12.16), (4, 16.99)])
+def test_the_first_groups_part(rows: int, measured: float):
+    """groups(2, 1) run in turn: card 0's span, the first 24 layers
+    (docs/measurements/MEASUREMENTS.md#2026-10-26-groups-in-turn)."""
+    lay = layout(2, 1, 2, STEPS, TERMS, memory=MEMORY, options=OPTIONS)
+    s = step_time(TERMS, STEPS, lay, rows, experts_cached=362)
+    assert sum(s.stage_ms) == pytest.approx(s.step_ms)
+    assert s.stage_ms[0] == pytest.approx(measured, rel=0.05)
 
 
 def test_four_cards_need_downs_in_whole_blocks():
@@ -134,10 +154,11 @@ def test_a_width_with_no_rates():
         layout(1, 3, 3, STEPS, TERMS, memory=MEMORY, options=OPTIONS)
 
 
-@pytest.mark.parametrize("requests", [0, 3])
-def test_requests_outside_the_rows(requests: int):
+def test_no_rows_and_no_requests():
+    with pytest.raises(ValueError, match="rows"):
+        step_time(TERMS, STEPS, TODAY, 0)
     with pytest.raises(ValueError, match="requests"):
-        step_time(TERMS, STEPS, TODAY, 2, requests=requests)
+        token_time(TERMS, STEPS, TODAY, 0)
 
 
 @pytest.mark.parametrize(("slots", "context"), [(1, 32_768), (4, 32_768), (1, 262_144), (4, 262_144)])

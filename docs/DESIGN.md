@@ -341,17 +341,24 @@ column split would cut a quant block, whose slice width has no measured bandwidt
 [the slice-width rows](measurements/MEASUREMENTS.md#2026-10-25-slice-width-kernels), the hit rate from
 [the hit-rate row](measurements/MEASUREMENTS.md#2026-10-25-hit-rate-against-experts-cached), the misses' cost from
 [the CPU's answer](measurements/MEASUREMENTS.md#2026-10-16-cpu-answer-per-layer), and the steps and the CPU's wait F and M are calibrated on
-from [the four-rows row](measurements/MEASUREMENTS.md#2026-10-19-four-rows-a-step). The model's assumptions, among them that groups pipeline
-rows from different requests, are in `step_time`'s docstring.
+from [the four-rows row](measurements/MEASUREMENTS.md#2026-10-19-four-rows-a-step). The model's assumptions are in `step_time`'s
+and `token_time`'s docstrings.
+
+Each group's part of a step is the reads of its own layers (the last group's with the head), its share of F, of
+the exchanges and of M by its layers, and a hand-off after every group but the last. `token_time` gives a token's
+time with a number of requests writing. With one group it is the step over its rows. With several, the requests
+divide among as many steps, one a group at a time; the slowest group's part sets the pace. So pipelining wins where
+the wider split's saving in weight reads is less than what each group keeps whole, F above all: it does not shrink
+with the width. Whether the CPU answers both groups' misses as fast at once is not measured yet.
 
 At open the engine process times the kernels on the cards it has (the load check, section 7) and puts those rates
 in place of the recorded ones at the widths it timed: each recorded rate of the experts' gate and up, their down, or
 the dense products and head is scaled by how the check's kernel of that group compares with its recorded rate. Then
-`engine/layout.py` chooses the layout: `--layout auto` (the default) costs every layout the constraints allow at the
-rows a step had in the engine's last life (one row when there is none) and takes the cheapest the core runs;
-`tensor`, `layers` or `groups:<g>x<w>` name one, and the load fails if the core does not run it. The core runs
-`groups(1, n)` only, so on two cards `auto` takes `groups(1, 2)` and the layout costs only reach the log. The `INFO`
-line names the layout. Every 256 steps the engine process logs, at each row count, the predicted step and CPU wait
+`engine/layout.py` chooses the layout: `--layout auto` (the default) takes the layout the core runs with the least
+time a token for one request; `tensor`, `layers` or `groups:<g>x<w>` name one, and the load fails if the core does
+not run it. The `INFO` line names the layout and gives every allowed layout's time a token at 1, 2, 4 and 8
+requests, the groups pipelined. The core runs `groups(1, n)` only, so on two cards `auto` takes `groups(1, 2)` and
+the other costs only reach the log. Every 256 steps the engine process logs, at each row count, the predicted step and CPU wait
 beside the measured medians. The prediction takes M from each step's own misses, not the hit-rate curve's: the text
 decides how often a row misses, and with the curve's M most four-row steps were off by more than 15%
 ([record](measurements/MEASUREMENTS.md#2026-10-25-step-metrics)).

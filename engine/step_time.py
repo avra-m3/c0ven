@@ -118,7 +118,6 @@ class StepTime:
 
     layout: Layout
     rows: int
-    requests: int
     experts_cached: int
     fixed_ms: float
     bytes: Mapping[Class, int]
@@ -127,28 +126,24 @@ class StepTime:
     exchange_ms: float
     handoff_ms: float
     miss_ms: float
+    stage_ms: tuple[float, ...]
+    """Each group's part of the step, the first group's first; the parts add up to `step_ms`."""
 
     @property
     def step_ms(self) -> float:
         return self.fixed_ms + sum(self.transfer_ms.values()) + self.exchange_ms + self.handoff_ms + self.miss_ms
 
-    @property
-    def token_ms(self) -> float:
-        """The step's time a row; groups pipeline once rows come from at least as many requests as groups."""
-        if self.requests < self.layout.groups:
-            return self.step_ms / self.rows
-        return self.step_ms / (self.rows * min(self.requests, self.layout.groups))
-
     def lines(self) -> list[str]:
         rows = f"{self.rows} row{'s' if self.rows > 1 else ''}"
-        out = [f"{self.layout}, {rows} from {self.requests}, {self.experts_cached} experts cached a layer"]
+        out = [f"{self.layout}, {rows}, {self.experts_cached} experts cached a layer"]
         out.append(f"  F                {self.fixed_ms:7.3f} ms")
         for c in Class:
             out.append(f"  {c.value:<16} {self.transfer_ms[c]:7.3f} ms  {self.bytes[c] / 1e9:.3f} GB")
         out.append(f"  exchanges        {self.exchange_ms:7.3f} ms")
         out.append(f"  hand-offs        {self.handoff_ms:7.3f} ms")
         out.append(f"  CPU miss wait    {self.miss_ms:7.3f} ms")
-        out.append(f"  step             {self.step_ms:7.3f} ms, {self.token_ms:.3f} ms a token")
+        parts = ", ".join(f"{t:.3f}" for t in self.stage_ms)
+        out.append(f"  step             {self.step_ms:7.3f} ms; the groups' parts {parts} ms")
         return out
 
 
@@ -264,33 +259,39 @@ def layouts(cards: int, model: ModelSteps, terms: Terms, *, memory: ModelMemory,
     return found
 
 
-def _step(
-    terms: Terms, model: ModelSteps, lay: Layout, rows: int, *, requests: int, experts_cached: int, fixed_ms: float
-) -> StepTime:
-    if not 1 <= requests <= rows:
-        raise ValueError(f"{rows} rows from {requests} requests")
-    w = lay.width
+def _step(terms: Terms, model: ModelSteps, lay: Layout, rows: int, *, experts_cached: int, fixed_ms: float) -> StepTime:
+    if rows < 1:
+        raise ValueError(f"a step of {rows} rows")
+    w, g, n = lay.width, lay.groups, len(model.layers)
     nbytes = dict.fromkeys(Class, 0)
     ms = dict.fromkeys(Class, 0.0)
-    for p in [p for layer in model.layers for p in layer] + list(model.head):
+    reads = [0.0] * g  # each group's weight reads, ms
+    placed = [(i * g // n, p) for i, layer in enumerate(model.layers) for p in layer] + [(g - 1, p) for p in model.head]
+    for group, p in placed:
         b = p.nbytes * (rows if p.per_row else 1)
         gbs = rate(terms, p.kernel, w, rows)
         if gbs is None:
             raise LayoutError(f"{p.kernel} has no rate at {w} cards a group")
+        t = b / w / (gbs * 1e9) * 1e3
         nbytes[p.kind] += b
-        ms[p.kind] += b / w / (gbs * 1e9) * 1e3
-    exchange_us = _linear(sorted(terms.exchange_us.items()), rows)
+        ms[p.kind] += t
+        reads[group] += t
+    exchange_ms = model.exchanges * (w - 1) * _linear(sorted(terms.exchange_us.items()), rows) / 1000
+    miss_ms = miss_wait_ms(terms, model, experts_cached, rows)
+    handoff_ms = terms.handoff_us / 1000
+    # F, the reduces and M by each group's share of the layers; a hand-off after every group but the last.
+    shared = (fixed_ms + exchange_ms + miss_ms) / g
     return StepTime(
         layout=lay,
         rows=rows,
-        requests=requests,
         experts_cached=experts_cached,
         fixed_ms=fixed_ms,
         bytes=nbytes,
         transfer_ms=ms,
-        exchange_ms=model.exchanges * (w - 1) * exchange_us / 1000,
-        handoff_ms=(lay.groups - 1) * terms.handoff_us / 1000,
-        miss_ms=miss_wait_ms(terms, model, experts_cached, rows),
+        exchange_ms=exchange_ms,
+        handoff_ms=(g - 1) * handoff_ms,
+        miss_ms=miss_ms,
+        stage_ms=tuple(shared + reads[i] + (handoff_ms if i < g - 1 else 0.0) for i in range(g)),
     )
 
 
@@ -298,17 +299,17 @@ def calibrate(terms: Terms, model: ModelSteps) -> Terms:
     """The terms with F(1) set: the measured one-row step less the model's other terms for two cards in one group,
     one row from one request, `terms.cpu_wait_experts` cached. A calibration, not a measurement."""
     today = Layout(1, 2, terms.cpu_wait_experts, attention_by_heads=True)
-    rest = _step(terms, model, today, 1, requests=1, experts_cached=terms.cpu_wait_experts, fixed_ms=0.0).step_ms
+    rest = _step(terms, model, today, 1, experts_cached=terms.cpu_wait_experts, fixed_ms=0.0).step_ms
     return replace(terms, fixed_ms=terms.step_ms - rest)
 
 
 def step_time(
-    terms: Terms, model: ModelSteps, lay: Layout, rows: int, *, requests: int = 1, experts_cached: int | None = None
+    terms: Terms, model: ModelSteps, lay: Layout, rows: int, *, experts_cached: int | None = None
 ) -> StepTime:
-    """The predicted time of one step of `rows` rows from `requests` requests on the layout, and its time a token.
+    """The predicted time of one step of `rows` rows on the layout, the groups in turn, and each group's part of it.
 
     `terms` must be calibrated (`calibrate`). `experts_cached` replaces the layout's own count, to hold M at another
-    layout's value. Raises ValueError for requests outside 1..rows or uncalibrated terms.
+    layout's value. Raises ValueError for no rows or uncalibrated terms.
 
         T_step = F(A) + sum over products of (bytes / width) / rate(width, A)
                  + exchanges * (width - 1) * t_x(A) + (groups - 1) * t_h + M(experts cached, A)
@@ -316,12 +317,13 @@ def step_time(
     A is the rows. Each group runs its layers in turn, so the products and the reduces of all layers add up; each
     reduce is width - 1 peer writes, none at width 1. M is the CPU's cost for the misses: a cost per layer with a miss
     and per missed expert, with layers missed = layers * (1 - h^(experts a token * A)) and misses = layers * experts a
-    token * A * (1 - h), h from the hit-rate curve at the experts cached.
+    token * A * (1 - h), h from the hit-rate curve at the experts cached. A group's part is the reads of its layers
+    (the last group's with the head), its share of F, of the reduces and of M by its layers, and a hand-off unless it
+    is the last.
 
     Assumptions of the model, each to be checked by measurement:
 
-    - Pipelining rule: rows from fewer requests than groups run the groups in turn, so a token takes T_step / A; rows
-      from at least as many requests as groups pipeline across the groups, so a token takes T_step / (A * groups).
+    - Parts rule: F, the reduces and M divide among the groups by their layers.
     - Overlap rule: the CPU's work overlaps the cards', so the wait is less than its cost. M is the cost scaled by the
       measured wait over the cost at `cpu_wait_experts` cached and the same rows, linear between the measured rows.
     - F(A) = F(1) + (A - 1) * `fixed_per_row_ms`: everything else the cards do (router, norms, DeltaNet recurrence,
@@ -338,4 +340,27 @@ def step_time(
         raise ValueError("the terms are not calibrated")
     cached = lay.experts_cached if experts_cached is None else experts_cached
     fixed = terms.fixed_ms + (rows - 1) * terms.fixed_per_row_ms
-    return _step(terms, model, lay, rows, requests=requests, experts_cached=cached, fixed_ms=fixed)
+    return _step(terms, model, lay, rows, experts_cached=cached, fixed_ms=fixed)
+
+
+def token_time(
+    terms: Terms, model: ModelSteps, lay: Layout, requests: int, *, experts_cached: int | None = None
+) -> float:
+    """A token's predicted time, ms, with `requests` requests writing one row each a step.
+
+    With fewer requests than groups the groups run one step in turn: a token takes T_step(requests) / requests. With
+    at least as many, the requests divide among as many steps as groups, of A = ceil(requests / groups) rows each,
+    and the steps pipeline: each group runs its part of one step while the next group runs its part of another. The
+    slowest group's part sets the pace, so a token takes max over groups of part(A) / (requests / groups). One group
+    gives T_step(requests) / requests either way.
+
+    Pipelining rule, to be checked by measurement: the CPU answers each group's misses as fast as when the groups run
+    in turn, and the host's work for the steps in flight costs no more than for one.
+    """
+    if requests < 1:
+        raise ValueError(f"{requests} requests")
+    if requests < lay.groups:
+        return step_time(terms, model, lay, requests, experts_cached=experts_cached).step_ms / requests
+    rows = -(-requests // lay.groups)
+    parts = step_time(terms, model, lay, rows, experts_cached=experts_cached).stage_ms
+    return max(parts) * lay.groups / requests
