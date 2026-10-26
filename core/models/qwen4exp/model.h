@@ -6,6 +6,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <map>
@@ -341,9 +342,19 @@ class Model {
   void map_cache(Card &card, uint32_t l, size_t blocks);
   void grow_kv(uint32_t pages);
   void shrink_kv(uint32_t pages);
-  void plan_evict(uint32_t pages);
+  void plan_evict(uint32_t pages, bool beside);
   void fill_evict(Pool &pool);
-  void apply_evict(std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now());
+  void apply_evict(std::chrono::steady_clock::time_point t0, bool beside);
+  // The blocks' maps and unmaps that map_cache, grow_kv and shrink_kv queued: made now, or on a thread beside the
+  // next steps when no list reads the memory they touch. finish_remap waits for that thread; reap_remap only if
+  // it is done.
+  struct VmOp {
+    uint8_t *va;
+    ze_physical_mem_handle_t block;  // null: unmap the block at va
+  };
+  void run_vm(bool beside);
+  void finish_remap();
+  void reap_remap();
   void plan_refills(uint32_t max);
   struct PieceMove {
     uint8_t *to;
@@ -426,13 +437,19 @@ class Model {
   // layer a's K, V, raw keys and pooled keys, and Card::cache per layer.
   bool share_ = false;
   uint64_t blk_ = 0;              // a block's bytes
-  uint32_t kv_own_ = 0;           // pages [0, kv_own_) backed on every card
+  uint32_t kv_own_ = 0;           // pages [0, kv_own_) backed on every card once the queued maps are made
+  uint32_t kv_mapped_ = 0;        // pages [0, kv_mapped_) backed on every card now
   uint32_t kv_want_ = 0;          // the pages the last plan had in use
   uint32_t kv_margin_ = 0;        // pages backed ahead of use
   std::vector<uint64_t> kv_unit_; // per KV region: bytes a page, or a local page (kv_div_ = the cards)
   std::vector<uint32_t> kv_div_;
   std::vector<Evict> evict_next_;
   uint32_t evict_to_ = 0;         // the pages evict_next_ backs
+  std::vector<VmOp> vm_ops_;      // queued, in order
+  std::thread remap_bg_;          // making a batch of them beside the steps
+  std::atomic<bool> remap_end_{false};
+  std::string remap_err_;
+  uint32_t remap_to_ = 0;         // kv_own_ when the batch began: kv_mapped_ once it ends
   uint32_t copy_count_ = 0;  // the copies of the prompt path's staging list
   std::vector<std::unique_ptr<ze::List>> next_copies_;  // a card each: recorded behind a round, for the staging after it
   uint32_t next_copy_count_ = 0;

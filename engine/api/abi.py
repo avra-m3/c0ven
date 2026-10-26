@@ -13,7 +13,7 @@ encoder's file to the config, its limit to the info, and `engine_admit_images`. 
 `engine_sleep` and `engine_wake`. Version 5 pages the KV cache (ADR-0033): Python keeps the page table and sends its
 changes in each plan, a slot without a page for its next position stalls, and a checkpoint holds only the fixed state.
 Version 6 adds `engine_image.frames` for video (ADR-0034). Version 7 adds min-p and the penalties to
-`engine_settings`. Version 9 adds the counters: `engine_read_stats` and `engine_read_slot_stats` (ADR-0048).
+`engine_settings`. Version 9 adds the counters: `engine_read_stats` and `engine_read_slot_stats` (ADR-0049).
 """
 
 from __future__ import annotations

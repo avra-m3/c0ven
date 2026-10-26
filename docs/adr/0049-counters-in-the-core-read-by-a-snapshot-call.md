@@ -1,4 +1,4 @@
-# ADR-0048: the core counts what it runs, and a snapshot call reads the counters
+# ADR-0049: the core counts what it runs, and a snapshot call reads the counters
 
 **Status:** draft, 2026-10-25; not accepted.
 **Revisit when:** a counter costs a measurable share of a step, or a reader needs a counter per layer or per expert.

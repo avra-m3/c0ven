@@ -291,6 +291,7 @@ void Model::sleep() {
   wait_commit();
   if (swap_bg_.joinable()) swap_bg_.join();
   settle_moves();
+  finish_remap();
   // A swap round's choice not yet applied: its pieces go back to the spares; its halves were for these cards.
   for (const SwapPlan &w : swap_next_) {
     const HostLayer &hl = *host_layers_[w.l];
@@ -389,6 +390,7 @@ Model::~Model() {
   wait_commit();
   if (swap_bg_.joinable()) swap_bg_.join();
   if (move_bg_.joinable()) move_bg_.join();
+  if (remap_bg_.joinable()) remap_bg_.join();
   for (const AnonPiece &a : anon_pieces_) munmap(a.map, a.map_bytes);
 }
 
