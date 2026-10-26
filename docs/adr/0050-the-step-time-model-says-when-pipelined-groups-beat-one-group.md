@@ -30,8 +30,8 @@
 
 ## Why
 
-On two cards the model puts the break-even between 4 and 6 requests writing, and the probe between 6 and 8: within
-15% of each other at every point, with 6 requests inside the model's error. Both make one group faster at 4
+On two cards the model puts the break-even between 4 and 6 requests writing, and the probe at 6, where the two
+layouts' runs overlap. The model is within 15% of the probe at every point. Both make one group faster at 4
 requests, by 9% in the model and 14% in the probe. One request on two groups takes about a third longer than on one
 group, whatever the pipelining, and the deployed engine serves 4 requests at once. Code to pipeline the groups would
 not be chosen here.
