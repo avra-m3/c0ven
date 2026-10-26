@@ -42,5 +42,7 @@ cards.
 ## Consequences
 
 - On two cards `--layout layers` (or `groups:2x1`) runs, and the step log sets its prediction against its steps.
+  Its one-row step is about a third longer than the tensor split's, and the model predicts it within 4%
+  ([measured](../measurements/MEASUREMENTS.md#2026-10-26-groups-in-turn)).
 - `auto` keeps the tensor split, and logs the other layouts' costs.
 - Pipelining across the groups is a later change; until then `step_time`'s `pipelined` stays false.
