@@ -364,9 +364,16 @@ int main(int argc, char **argv) {
   /* With drafting, exactly the tokens of plain decoding: drafts change how many tokens a step gives, never which.
    * The draft layer's memory leaves fewer experts cached, so the CPU rounds others and token 19 may flip: only the
    * first 16 are checked against llama.cpp's. Two slots draft in one window, and give the same tokens; batch_test
-   * checks that a window's rows are those of plain steps. */
-  if (getenv("FLASH_MTP_DIR") || access("/models/mtp/mtp-manifest.json", R_OK) == 0) {
-    cfg.mtp_dir = getenv("FLASH_MTP_DIR") ? getenv("FLASH_MTP_DIR") : "/models/mtp";
+   * checks that a window's rows are those of plain steps. Each drafter found: the MTP layer, then DFlash 2. */
+  const char *drafters[2] = {
+      getenv("FLASH_MTP_DIR") ? getenv("FLASH_MTP_DIR")
+      : access("/models/mtp/mtp-manifest.json", R_OK) == 0 ? "/models/mtp" : NULL,
+      getenv("FLASH_DFLASH_DIR") ? getenv("FLASH_DFLASH_DIR")
+      : access("/models/dflash/dflash-manifest.json", R_OK) == 0 ? "/models/dflash" : NULL};
+  for (int dk = 0; dk < 2; dk++) {
+    if (!drafters[dk]) continue;
+    printf("drafter: %s\n", drafters[dk]);
+    cfg.mtp_dir = drafters[dk];
     CHECK(engine_open(&cfg, &info, &e) == ENGINE_OK, "open with drafting: %s", engine_last_error(NULL));
     CHECK(info.drafting == 1, "drafting not on");
     s.max_tokens = 32;

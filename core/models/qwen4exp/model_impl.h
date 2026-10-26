@@ -34,6 +34,9 @@ inline constexpr uint32_t kMvKsRows = 512;  // dense products of up to this many
 // A prompt token's weight in the swap counts against a written token's 1: there are many, and decode is what the
 // cache serves.
 inline constexpr float kPromptRouting = 0.05f;
+// The main layers whose outputs DFlash 2 reads, in the order of its features (zero-based; the model's
+// target_layer_ids).
+inline constexpr uint32_t kDfTargetLayers[DF_LAYERS] = {5, 15, 25, 35, 45};
 
 inline uint64_t a8_bytes(uint64_t K) { return K + K / 8; }
 inline uint64_t align256(uint64_t x) { return (x + 255) & ~255ull; }
@@ -154,6 +157,33 @@ struct Model::MtpCard {
   std::map<uint32_t, std::unique_ptr<ze::List>> chains; // one draft step from the draft before, per width
 };
 
+// The DFlash 2 drafter on one card (dflash.cpp): BF16 weights, this card's query and KV heads and MLP rows; fc, the
+// norms and the convolutions whole.
+struct Model::DfCard {
+  uint32_t nq = 0, nkv = 0, ff = 0;
+  uint16_t *fc = nullptr;
+  float *hnorm = nullptr, *norm = nullptr;
+  struct Layer {
+    float *in_norm = nullptr, *post_norm = nullptr, *qn = nullptr, *kn = nullptr;
+    uint16_t *q = nullptr, *k = nullptr, *v = nullptr, *o = nullptr, *gate = nullptr, *up = nullptr,
+             *down = nullptr;
+    float *abase = nullptr, *mbase = nullptr;  // the convolutions' fixed taps, [set][tap][Q_EMBD]
+    uint16_t *akp = nullptr, *mkp = nullptr;   // their dynamic taps' projections, DF_KP rows
+    float *rk = nullptr, *rv = nullptr;        // the ring: [slot][DF_RING][nkv][DF_D], a cell at position % DF_RING
+  };
+  Layer layers[DF_LAYERS];
+  // The decode step's features of its rows, bf16 [STEP_MAX_ROWS][DF_FEAT] (Model::record writes them).
+  uint16_t *feat = nullptr;
+  // Buffers, STEP_MAX_ROWS rows; the bf16 ones are read whole by mv_xmx_bf16.
+  float *ctx = nullptr, *h = nullptr, *x = nullptr, *xc = nullptr, *dyn = nullptr, *q = nullptr, *k = nullptr,
+        *v = nullptr, *part = nullptr, *o = nullptr, *g = nullptr, *u = nullptr, *hn = nullptr;
+  uint16_t *ctxb = nullptr, *xb = nullptr, *xcb = nullptr, *ob = nullptr, *gub = nullptr;
+  DraftPlan *cplan = nullptr, *bplan = nullptr;  // copied from host memory by each list's first command
+  std::map<uint32_t, std::unique_ptr<ze::List>> ctx_lists, block_lists;  // per width
+  std::map<uint32_t, uint64_t *> trace;                                    // the block lists' kernel times
+  uint32_t last = 0;                                                       // the last block pass's width
+};
+
 struct Model::Card {
   uint32_t c = 0, C = 1;  // this card, and how many
   uint32_t nkh = 0, nvh = 0, nch = 0, nq = 0, nkv = 0, ff = 0;
@@ -194,6 +224,7 @@ struct Model::Card {
   float *Sw = nullptr;                                  // a window's DeltaNet state past its first row
   std::unique_ptr<PromptCard> pc;
   std::unique_ptr<MtpCard> mtp;  // the draft layer (mtp.cpp)
+  std::unique_ptr<DfCard> df;    // the DFlash 2 drafter (dflash.cpp)
   std::unique_ptr<VisionCard> vc;  // the image encoder (vision.cpp)
   // With Options::share_kv (kv_share.cpp): the KV pool's buffers and the layers' caches as regions, and the blocks
   // mapped in none.

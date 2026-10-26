@@ -42,7 +42,7 @@ struct Options {
   uint32_t candidates = 64;                 // logits returned per step, the largest
   uint32_t prompt_chunk = 4352;             // tokens per prompt pass at most, a multiple of 64; 0: one token per
                                             // step
-  bool trace = false;                       // the lists time every kernel (prompt_trace, step_trace)
+  bool trace = false;                       // the lists time every kernel (prompt_trace, step_trace, df_trace)
   bool profile_routing = false;             // the prompt path counts each expert's rows (routing_counts)
   bool adapt_swaps = false;                 // count the routing, for swap_round (swap.cpp)
   // The pages of the KV pool not in use lend their memory to the expert cache (kv_share.cpp); needs adapt_swaps.
@@ -144,7 +144,7 @@ class Model {
   // main model's final residual of the last step's row r; returns each row's draft candidates (for i + 2).
   // mtp_draft: one more draft for such a row, the hidden input the draft layer's own residual of row src_row of its
   // last pass (whose cell was i - 1).
-  bool drafting() const { return mtp_on_; }
+  bool drafting() const { return mtp_on_ || df_on_; }
   std::vector<std::vector<Candidate>> mtp_catchup(const StepIn *rows, uint32_t n);
   std::vector<Candidate> mtp_draft(uint32_t slot, uint32_t pos, int32_t token, uint32_t src_row);
   // mtp_drafts: mtp_draft for rows of distinct sequences in one pass, row r's input row src_rows[r] of the last pass.
@@ -154,6 +154,28 @@ class Model {
   // never computed).
   std::vector<std::vector<Candidate>> mtp_catchup_prompt(const StepIn *rows, uint32_t n, uint32_t end);
   void mtp_start(uint32_t slot, uint32_t first);
+
+  // The DFlash 2 drafter (dflash.cpp), in place of the draft layer when Options::mtp_dir holds its files. A pass takes
+  // context rows first: row r = (slot, position), with the features of the last decode step's row r, into the slot's
+  // ring. Then each block: n rows from position pos of a slot (its token there, then mask tokens) that attend to the
+  // slot's ring from the position draft_start set. Returns each block's candidates for positions pos + 1 .. pos + n - 1.
+  // Blocks of distinct slots, at most STEP_MAX_ROWS rows in all; a pass may have no context rows or no blocks.
+  struct DraftBlock {
+    uint32_t slot, pos;
+    int32_t token;
+    uint32_t n;
+  };
+  bool dflash() const { return df_on_; }
+  std::vector<std::vector<std::vector<Candidate>>> df_pass(const StepIn *ctx, uint32_t nctx, const DraftBlock *blocks,
+                                                           uint32_t nblocks);
+  // df_pass's context rows only, from the n rows before row end of the last prompt chunk (a run's last rows).
+  void df_context_prompt(const StepIn *rows, uint32_t n, uint32_t end);
+  // The slot's first position the drafter reads (earlier ones were never computed): mtp_start, or DFlash 2's.
+  void draft_start(uint32_t slot, uint32_t first);
+  // For tests: card 0's features of the last decode step's row r (DF_FEAT bf16 values), and the last block pass's
+  // final normed rows (STEP_MAX_ROWS x Q_EMBD).
+  std::vector<uint16_t> df_features(uint32_t row);
+  std::vector<float> df_hidden();
 
   // n prompt tokens of a sequence, from position pos0, in one pass (prompt.cpp); p1 and p2 are the two tokens
   // before pos0 (kNoToken when absent). n is at most prompt_chunk(). Returns the last token's largest logits. next:
@@ -177,6 +199,7 @@ class Model {
   // With Options::trace: the last prompt chunk's (or decode step's) time on a card per kernel, largest first.
   std::vector<TraceRow> prompt_trace(uint32_t card) const;
   std::vector<TraceRow> step_trace(uint32_t card) const;
+  std::vector<TraceRow> df_trace(uint32_t card) const;  // the last DFlash 2 block pass
   // With Options::profile_routing: rows routed to each expert, [layer][expert], by the prompts read so far.
   std::vector<uint32_t> routing_counts() const;
 
@@ -242,6 +265,7 @@ class Model {
   struct Layer;
   struct HostLayer;
   struct MtpCard;
+  struct DfCard;
   struct PromptCard;
   struct VisionCard;
 
@@ -264,6 +288,9 @@ class Model {
   void load_mtp(Card &card);
   void record_mtp(Card &card, uint32_t width, bool chain);
   std::vector<std::vector<Candidate>> run_mtp(const StepIn *rows, uint32_t n, bool chain, uint32_t src_rows);
+  bool init_dflash();  // DFlash 2's host buffers, when Options::mtp_dir holds its files
+  void load_dflash(Card &card);
+  void record_df(Card &card, uint32_t width, bool block);
   void load_prompt(Card &card);
   // The image encoder: first, its host side (the weights' stages, pixels, encoding); always, each card's side.
   void load_vision(bool first);
@@ -394,6 +421,16 @@ class Model {
   uint32_t *mtop_idx_ = nullptr, *mtop_n_ = nullptr;
   float *mtop_val_ = nullptr;
   std::unique_ptr<ze::EventPool> mevents_;
+  // DFlash 2's plans, block embeddings, exchange events and candidates (dflash.cpp).
+  bool df_on_ = false;
+  DraftPlan *dfcplan_ = nullptr, *dfbplan_ = nullptr;
+  float *dfembed_ = nullptr;
+  float *dfex_ = nullptr;  // the exchanges' partial sums, [2 DF_LAYERS][card][STEP_MAX_ROWS][Q_EMBD]
+  uint32_t *dtop_idx_ = nullptr, *dtop_n_ = nullptr;
+  float *dtop_val_ = nullptr;
+  std::unique_ptr<ze::EventPool> devents_;
+  uint16_t *pfeat_ = nullptr;      // [run][STEP_MAX_ROWS][DF_FEAT]: each prompt run's last rows' features
+  std::vector<uint32_t> dffirst_;  // [slot] the first position its ring holds
   float *embed_ = nullptr;   // the token's embedding row
   float *ngram_u_ = nullptr; // its n-gram rows
   float *ex1_ = nullptr, *ex2_ = nullptr;  // [layer][card][2560] partial sums

@@ -144,7 +144,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--draft-dir",
         type=Path,
-        help="the draft (MTP) layer's tensors; default: mtp/ beside the model file, when it holds mtp-manifest.json",
+        help="the drafter's tensors, DFlash 2's or the MTP layer's; default: dflash/ beside the model file when it"
+        " holds dflash-manifest.json, else mtp/ when it holds mtp-manifest.json",
     )
     p.add_argument("--no-draft", action="store_true", help="decode without the draft layer")
     p.add_argument(

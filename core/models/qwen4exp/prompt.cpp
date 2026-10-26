@@ -518,6 +518,15 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
     L.launch(q4("p_moe_combine"), {P.yg, P.inv, P.w, P.s, P.rl, pp, P.part, peer_part(1)}, Q_EMBD / 128, T, 1, 64, 1,
              1, sent(1));
     exchange(l, 1, P.inj[1], l >= 1 && l + 1 < Q_LAYERS ? card.layers[l + 1].hc_norm[0] : nullptr);
+    // DFlash 2 reads each run's last rows of the layer's output (dflash.cpp), from the card that holds them.
+    for (uint32_t k = 0; df_on_ && k < DF_LAYERS; k++) {
+      if (l != kDfTargetLayers[k]) continue;
+      const uint32_t f0 = split || c == 0 ? r0 : 0, f1 = split || c == 0 ? r1 : 0;
+      for (uint32_t r = 0; r < runs; r++)
+        L.launch(kernel(c, "qwen4exp_dflash", "p_df_feat"),
+                 {P.R, run(r), k, f0, f1, pfeat_ + (size_t)r * STEP_MAX_ROWS * DF_FEAT}, Q_EMBD / 64, STEP_MAX_ROWS,
+                 1, 64);
+    }
   }
   if (split) {  // each run's rows the head and the draft layer read, on both cards
     for (uint32_t r = 0; r < runs; r++)

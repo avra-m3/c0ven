@@ -41,6 +41,22 @@
 #define Q_PLE_DIL 3                 // the PLE conv's dilation (the n-gram size)
 #define Q_PLE_HIST (Q_PLE_DIL * (Q_GDN_CONV - 1))  // 9 positions of history
 
+// The DFlash 2 drafter (docs/MODEL_FILES.md, "The DFlash 2 drafter"): Qwen3-shaped layers that read the main
+// model's hidden states at five layers. Its norms take no +1.
+#define DF_LAYERS 5
+#define DF_FEAT (DF_LAYERS * Q_EMBD)  // 12,800: the five layers' means of the streams, one after another
+#define DF_H 32                       // query heads
+#define DF_KV 8                       // KV heads; query head h reads KV head h / 4
+#define DF_D 128
+#define DF_FF 7680
+#define DF_GROUP 16                   // channels sharing a convolution's dynamic weight
+#define DF_KP 640                     // a convolution's dynamic weights: 2 sets x 2 taps x 160 groups
+#define DF_WINDOW 2048                // a row attends to positions less than this far before it
+#define DF_RING 2112                  // K and V cells per slot: the window and a pass's rows past it
+#define DF_ROPE_BASE 10000.0f
+#define DF_EPS 1e-6f
+#define DF_MASK 248077                // the token of a block's rows after its first
+
 // The decode step's doorbell with the CPU (ADR-0011): the reader does a system-scope acquire fence, then a volatile
 // load. Card 0 writes one record per layer in host memory, its step last; the CPU computes the misses and answers by
 // its own flag. A layer with no miss is skipped by both.

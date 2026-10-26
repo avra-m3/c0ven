@@ -504,7 +504,7 @@ the next step starts ([ADR-0027](adr/0027-the-c-abi-as-the-core-was-optimised.md
 When the decoding slots all write, a step is a draft round
 ([ADR-0029](adr/0029-the-engine-process-drafts-and-swaps.md)). For each slot, the token sampled last and its drafts run
 as one window, and the windows of all slots run in one step. The slots share the step's 8 rows: a lone slot takes up to
-3 drafts, and each of several up to 2, fewer as there are more of them. Each slot's window is accepted and committed on
+7 drafts with DFlash 2 and 3 with the MTP layer, and each of several up to 2, fewer as there are more of them. Each slot's window is accepted and committed on
 its own. A step of several slots runs no drafts while any slot has prompt left to read, or when it gives one of them its
 second token ([the record](measurements/MEASUREMENTS.md#2026-10-19-draft-rounds-several-writers)). A draft is accepted while it
 equals what the main model samples at its place, and the main model samples one more token after the accepted ones. The
@@ -518,8 +518,17 @@ than the draft layer's, by how often each source's drafts were accepted for the 
 core's own windows of each width (`core/api/lookup.cpp`,
 [ADR-0041](adr/0041-drafts-from-the-slots-own-tokens.md)).
 
-The draft layer is the model's MTP layer, split across the cards as an attention layer is. All its 512 experts sit on
-the cards, so a draft never waits for the CPU (`core/models/qwen4exp/mtp.cpp`).
+The drafter is DFlash 2 when its files are present ([MODEL_FILES.md](MODEL_FILES.md#the-dflash-2-drafter)), else the
+model's MTP layer. DFlash 2 is five dense layers, split across the cards by heads and MLP rows, with two exchanges a
+layer. It reads the main model's hidden states after layers 5, 15, 25, 35 and 45, which each decode step and prompt
+chunk keep for their rows. A pass first adds the last step's rows to each slot's context: their hidden states become
+each layer's keys and values, in a ring of the slot's last 2,112 positions. Then each drafting slot's block, its token
+sampled last followed by mask tokens, attends to the ring and to itself, and the main model's head gives each row's
+candidates: one pass gives all of a slot's drafts. After a prompt the context is the prompt's last 8 rows
+(`core/models/qwen4exp/dflash.cpp`, [ADR-0050](adr/0050-dflash-2-drafts.md)).
+
+The MTP layer is split across the cards as an attention layer is. All its 512 experts sit on the cards, so a draft
+never waits for the CPU, and each further draft is one more pass (`core/models/qwen4exp/mtp.cpp`).
 
 ### Swaps
 
@@ -586,6 +595,7 @@ So the front end and the Python side stay light on RAM during decode, and the n-
 | Checkpoint | A copy of a slot's fixed state at a known position, so a later request that starts the same way skips reading that part |
 | n-gram rows | The rows of the model's n-gram embedding that a token needs, from a 28.8 GB table on the SSD |
 | Draft layer | The model's MTP layer, which proposes tokens that the main model then checks |
+| DFlash 2 | A separate small model that proposes a block of tokens in one pass, from the main model's hidden states |
 | Swap | Replacing a cached expert with one the requests use more |
 | Control plane, data plane | Code comments' names for the engine process's Python side and its C++ core |
 
