@@ -74,13 +74,35 @@ def test_two_cards_in_one_group_are_cheapest_for_up_to_four_requests(requests: i
 
 
 def test_two_groups_pipelined_are_cheaper_at_eight_requests():
-    """Where the model puts the break-even on two cards; the pipelining rule itself is not measured yet."""
+    """Where the model puts the break-even on two cards."""
     one, two = layouts(2, STEPS, TERMS, memory=MEMORY, options=OPTIONS)
     for r in (1, 2, 4, 6, 8):
         print(
             f"{r} requests: {one} {token_time(TERMS, STEPS, one, r):.2f}, {two} {token_time(TERMS, STEPS, two, r):.2f}"
         )
     assert token_time(TERMS, STEPS, two, 8) < token_time(TERMS, STEPS, one, 8)
+
+
+@pytest.mark.parametrize(
+    ("requests", "one_group", "in_turn", "pipelined"),
+    [(2, 9.75, 13.26, 10.85), (4, 6.08, 8.69, 6.94), (6, 5.50, 8.36, 5.94), (8, 4.69, 6.95, 4.51)],
+)
+def test_a_token_against_the_pipelining_probe(requests: int, one_group: float, in_turn: float, pipelined: float):
+    """Median ms a token over greedy decode of `requests` sequences: groups(1, 2) with 415 experts cached a layer,
+    and groups(2, 1) with 403, its steps in turn and pipelined
+    (docs/measurements/MEASUREMENTS.md#2026-10-26-pipelined-groups)."""
+    one, two = Layout(1, 2, 415, attention_by_heads=True), Layout(2, 1, 403, attention_by_heads=True)
+    assert token_time(TERMS, STEPS, one, requests) == pytest.approx(one_group, rel=0.15)
+    assert step_time(TERMS, STEPS, two, requests).step_ms / requests == pytest.approx(in_turn, rel=0.15)
+    assert token_time(TERMS, STEPS, two, requests) == pytest.approx(pipelined, rel=0.15)
+
+
+def test_a_step_costs_the_cards_its_lists_rows():
+    """Six rows run the list of eight; the CPU computes the six rows' misses only."""
+    six, eight = step_time(TERMS, STEPS, TODAY, 6), step_time(TERMS, STEPS, TODAY, 8)
+    assert six.transfer_ms == eight.transfer_ms
+    assert six.fixed_ms == eight.fixed_ms
+    assert six.miss_ms < eight.miss_ms
 
 
 def test_one_group_pipelines_nothing():

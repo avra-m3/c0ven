@@ -342,14 +342,16 @@ column split would cut a quant block, whose slice width has no measured bandwidt
 [the hit-rate row](measurements/MEASUREMENTS.md#2026-10-25-hit-rate-against-experts-cached), the misses' cost from
 [the CPU's answer](measurements/MEASUREMENTS.md#2026-10-16-cpu-answer-per-layer), and the steps and the CPU's wait F and M are calibrated on
 from [the four-rows row](measurements/MEASUREMENTS.md#2026-10-19-four-rows-a-step). The model's assumptions are in `step_time`'s
-and `token_time`'s docstrings.
+and `token_time`'s docstrings. A step runs the smallest list of at least its rows (1, 2, 4 or 8 rows), whose kernels
+run that many, so it costs the cards what a step of that many rows does; M alone counts the step's own rows.
 
 Each group's part of a step is the reads of its own layers (the last group's with the head), its share of F, of
 the exchanges and of M by its layers, and a hand-off after every group but the last. `token_time` gives a token's
 time with a number of requests writing. With one group it is the step over its rows. With several, the requests
 divide among as many steps, one a group at a time; the slowest group's part sets the pace. So pipelining wins where
 the wider split's saving in weight reads is less than what each group keeps whole, F above all: it does not shrink
-with the width. Whether the CPU answers both groups' misses as fast at once is not measured yet.
+with the width. A probe that pipelines two groups of one card matched `token_time` within 15% at 2 to 8 requests,
+the CPU answering both groups' misses at once ([measured](measurements/MEASUREMENTS.md#2026-10-26-pipelined-groups)).
 
 At open the engine process times the kernels on the cards it has (the load check, section 7) and puts those rates
 in place of the recorded ones at the widths it timed: each recorded rate of the experts' gate and up, their down, or

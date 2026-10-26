@@ -121,6 +121,7 @@ def model_steps(table: TensorTable) -> ModelSteps:
         experts=experts,
         experts_a_token=per_token,
         kv_heads=numbers.KV_HEADS,
+        list_rows=(1, 2, 4, 8),  # Model::record's widths
     )
 
 

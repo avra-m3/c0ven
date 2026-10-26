@@ -1,8 +1,7 @@
 # ADR-0050: the step-time model says when pipelined groups beat one group; the core keeps one group
 
 **Status:** draft, 2026-10-26.
-**Revisit when:** the pipelining rule is measured, or a machine serves more requests at once than the model's
-break-even, or has more than two cards.
+**Revisit when:** a machine serves more requests at once than the model's break-even, or has more than two cards.
 
 ## Context
 
@@ -12,6 +11,8 @@ break-even, or has more than two cards.
 - `engine/step_time.py` costs a layout `groups(g, w)` from the model's products and measured terms
   ([DESIGN.md](../DESIGN.md#the-step-time-model)). Its steps match the measured ones within 15% for one group and
   for two groups run in turn ([measured](../measurements/MEASUREMENTS.md#2026-10-26-groups-in-turn)).
+- A probe that pipelines two groups of one card measured a token's time at 2 to 8 requests on both layouts
+  ([measured](../measurements/MEASUREMENTS.md#2026-10-26-pipelined-groups)).
 - Much of a step does not shrink with the width: F, the router, the norms, the DeltaNet recurrence and the
   hyper-connections, runs whole on every card of a group.
 
@@ -21,15 +22,21 @@ break-even, or has more than two cards.
    its share of F, the reduces and M by its layers, and a hand-off unless it is last.
 2. `token_time` gives a token's time with a number of requests writing. With several groups and at least as many
    requests, the slowest group's part sets the pace. This is the formula for when pipelined groups beat one group.
-3. At load the engine process logs every allowed layout's time a token at 1, 2, 4 and 8 requests. `auto` takes the
+3. A step costs the cards what a step of its list's rows costs: the core records lists for 1, 2, 4 and 8 rows, and
+   a step runs the smallest of at least its rows.
+4. At load the engine process logs every allowed layout's time a token at 1, 2, 4 and 8 requests. `auto` takes the
    layout the core runs with the least time for one request.
-4. The core runs one group of every card. It does not pipeline groups.
+5. The core runs one group of every card. It does not pipeline groups.
 
 ## Why
 
-On two cards the model puts the break-even between 4 and 6 requests writing: one group is cheaper up to 4, two
-pipelined groups at 6 and 8. One request on two groups takes about a third longer than on one group, whatever the
-pipelining, and the deployed engine serves 4 requests at once. Code to pipeline the groups would not be chosen here.
+On two cards the model puts the break-even between 4 and 6 requests writing, and the probe between 6 and 8: within
+15% of each other at every point, with 6 requests inside the model's error. Both make one group faster at 4
+requests, by 9% in the model and 14% in the probe. One request on two groups takes about a third longer than on one
+group, whatever the pipelining, and the deployed engine serves 4 requests at once. Code to pipeline the groups would
+not be chosen here.
+
+Without decision 3, steps of 3 or 6 rows came out 16-19% cheaper than measured: a 6-row step runs the 8-row list.
 
 ## Options not chosen
 
@@ -41,5 +48,5 @@ pipelining, and the deployed engine serves 4 requests at once. Code to pipeline 
 ## Consequences
 
 - The pipelining rule assumes the CPU answers both groups' misses as fast as one's, and the host's work for two
-  steps in flight costs no more than for one. A probe that runs both groups at once measures it.
+  steps in flight costs no more than for one. The probe, one host thread serving both groups, holds it within 15%.
 - Groups in the core wait for a machine where the model puts the break-even inside the load it serves.
