@@ -36,7 +36,8 @@ requests, by 9% in the model and 14% in the probe. One request on two groups tak
 group, whatever the pipelining, and the deployed engine serves 4 requests at once. Code to pipeline the groups would
 not be chosen here.
 
-Without decision 3, steps of 3 or 6 rows came out 16-19% cheaper than measured: a 6-row step runs the 8-row list.
+Without decision 3, the model's times at 6 requests were 8-16% below the measured ones: a 6-row step runs the 8-row
+list, and a pipelined set of 3 rows the 4-row list.
 
 ## Options not chosen
 
