@@ -121,6 +121,68 @@ def test_checkpoints_are_evicted_least_recently_used_kept_last():
     assert cps.victim() is third
 
 
+def _conversation(s: SeqState, system: int, turns: int, turn: int, first: int) -> tuple[int, ...]:
+    """A conversation of `turns` requests, each `turn` tokens longer, checkpointed where its last turn starts and at
+    the end of its system prompt (kept), as qwen4exp's rule does. Returns its last prompt."""
+    hist = list(range(first, first + system))
+    for t in range(turns):
+        hist += range(first + system + t * turn, first + system + (t + 1) * turn)
+        prompt = tuple(hist)
+        a = s.plan_admission(prompt, 0)
+        assert a is not None
+        seq = s.admit(a, prompt, 0)
+        s.grow(seq.slot, len(prompt))
+        s.take_changes(len(prompt))
+        s.submitted()
+        for position, kept in ((system, True), (len(prompt) - turn, False)):
+            if seq.start < position < len(prompt):
+                ck = s.checkpoint(seq.slot, position, kept)
+                if ck is not None:
+                    ck.ready = True
+        s.release(seq.slot)
+    return tuple(hist)
+
+
+def test_checkpoints_stay_spread_back_from_the_end():
+    s = SeqState(slots=1, pages=1024, checkpoints=8)
+    last = _conversation(s, system=96, turns=200, turn=10, first=0)
+    back = sorted(len(last) - len(c.tokens) for c in s.checkpoints)
+    assert back[0] == 10, "the turn before is kept"
+    assert back[-1] == len(last) - 96, "the system prompt is kept"
+    assert back[-2] < (len(last) - 96) / 2, "the others thin out towards the start"
+    for edit in (60, 420):
+        edited = last[: len(last) - edit] + (-1,) * edit
+        ck = s.checkpoints.longest_prefix(edited)
+        assert ck is not None
+        assert len(edited) - len(ck.tokens) < 2 * edit, f"an edit {edit} back reads less than twice that again"
+
+
+def test_a_paused_conversations_newest_checkpoint_outlives_another_ones_older_ones():
+    s = SeqState(slots=1, pages=1024, checkpoints=4)
+    paused = _conversation(s, system=8, turns=3, turn=10, first=0)
+    _conversation(s, system=8, turns=6, turn=10, first=10_000)
+    ck = s.checkpoints.longest_prefix((*paused, 1))
+    assert ck is not None
+    assert len(ck.tokens) == len(paused) - 10, "it resumes where its last turn started"
+
+
+def test_parents_follow_adds_and_removes():
+    pool = PagePool(8)
+    cps = CheckpointPool(8, pool)
+    a, _ = cps.add((1, 2), (), False)
+    c, _ = cps.add((1, 2, 3, 4), (), False)
+    other, _ = cps.add((1, 9), (), False)
+    assert (a.parent, c.parent, other.parent) == (None, a, None)
+    b, _ = cps.add((1, 2, 3), (), False)
+    assert (b.parent, c.parent) == (a, b), "a checkpoint between two becomes the longer one's parent"
+    cps.remove(b.id)
+    assert c.parent is a
+    a.ready = c.ready = other.ready = True
+    assert cps.spread_victim() is a
+    cps.remove(c.id)
+    assert cps.spread_victim() is cps.victim(), "with none extended, least recently used"
+
+
 def test_longest_prefix_is_strict_and_ready():
     pool = PagePool(8)
     cps = CheckpointPool(4, pool)
