@@ -158,6 +158,7 @@ reordered layout run 3.2-8.8 times faster than in the file's layout
 | hyper-connections' down product | K split of 8 in place of 16 | 19.1 → 18.1 µs at one row | 18.07 → 18.03 ms a token; greedy agreement moved to 1,041 of 1,063 | <a id="2026-10-15-hc-down-split"></a>[2026-10-15](#2026-10-15-hc-down-split) |
 | BF16 products | XMX units with bf16 activations | router's product 12.1 → 9.0 µs; PLE key product 169 → 123 µs | five products 1.41 → 1.11 ms; 19.13 → 18.82 ms a token; misses 25.01 → 25.12 a token from the rounding | <a id="2026-10-15-bf16-products-xmx"></a>[2026-10-15](#2026-10-15-bf16-products-xmx) |
 | BF16 products | plan copied to each card in place of read from host memory | each launch 1.8-2.9 µs over a streaming read of its bytes; K split over work-groups 0.5-1.9 µs slower | 19.00 → 18.62 ms; decode 1.8-2.3% faster | [2026-10-16](#2026-10-16-bf16-products-occupancy) |
+| every kernel module | built with `-cl-fp32-correctly-rounded-divide-sqrt` ([ADR-0051](../adr/0051-kernels-round-divides-and-sqrt-correctly.md)) | of 16.8 million inputs, `x / 127` 4.7% and `sqrt(x)` 8.2% off the correctly rounded value, and of a million Q8_0 blocks 4.3% off ggml's bytes, against none | 15.62 → 15.69 ms a token; prompt of doc-4k-qa 2,967 → 2,957 tokens/s; greedy agreement 843 → 847 of 861 (843 → 844 with prompts read in chunks of 512) | <a id="2026-10-27-divide-sqrt-rounding"></a>[2026-10-27](#2026-10-27-divide-sqrt-rounding) |
 | out products (`ssm_out`, `attn_output`) | partial sums written in the card's memory and copied out, in place of written to host memory a float at a time | Q6_K at two rows 24.8 → 21.4 µs, four rows 35.6 → 26.3 µs; one row unchanged (19.9 against 20.0) | decode at long-4k 69.79 → 71.06 tokens/s | <a id="2026-10-16-out-products-host-writes"></a>[2026-10-16](#2026-10-16-out-products-host-writes) |
 | `router_group` | router and expert grouping in one launch | 0.822 → 0.688 ms | 19.17 → 19.07 ms a token, ranges overlapping | <a id="2026-10-15-router-group"></a>[2026-10-15](#2026-10-15-router-group) |
 | `router_group` | threshold top 10 and the job written by a work split | one row 14.6 → 5.3 µs | 0.685 → 0.421 ms; 17.88 → 17.67 ms a token | <a id="2026-10-15-router-top10"></a>[2026-10-15](#2026-10-15-router-top10) |
@@ -218,7 +219,7 @@ reordered layout run 3.2-8.8 times faster than in the file's layout
 | --- | --- | --- |
 | Decode of doc-4k-qa | 17.255 ms a token | [2026-10-15](#2026-10-15-sub-bytes-words) |
 | Prompt of doc-4k-qa (4,159 tokens) | 2,135 tokens/s | [2026-10-15](#2026-10-15-prompt-router) |
-| `greedy_test` against llama.cpp, prompts of up to 512 tokens | 1,046 of 1,063 positions agree | [2026-10-15](#2026-10-15-matvec-k-split) |
+| `greedy_test` against llama.cpp, prompts of up to 512 tokens | 847 of 861 positions agree | [2026-10-27](#2026-10-27-divide-sqrt-rounding) |
 
 ### Start, load, sleep and wake
 
