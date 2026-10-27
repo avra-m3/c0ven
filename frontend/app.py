@@ -13,6 +13,9 @@
 
 With an `Admin`, the routes of `frontend/admin.py` too. While the engine sleeps, every request is refused with 503
 before it reaches the engine, so none wakes it (ADR-0032).
+
+With `metrics_log_s`, the `frontend.metrics` logger writes each request's record, and the `/metrics` counters at that
+interval and at shutdown, as one JSON object a line, so a log store keeps them past a restart.
 """
 
 from __future__ import annotations
@@ -42,6 +45,7 @@ from frontend.model import Model
 from frontend.output import Piece
 
 log = logging.getLogger("frontend")
+metrics_log = logging.getLogger("frontend.metrics")
 
 type JSONObject = dict[str, Any]
 type Handler = Callable[[Request], Coroutine[Any, Any, Response]]
@@ -92,7 +96,8 @@ class Counters:
     queue_seconds: float = 0.0
     recent: list[JSONObject] = field(default_factory=lambda: [])
 
-    def record(self, end: generate.End, api: str, seconds: float) -> None:
+    def record(self, end: generate.End, api: str, seconds: float) -> JSONObject:
+        """Adds end to the totals and keeps its record among the recent ones; returns the record."""
         self.requests += 1
         self.prompt_tokens += end.prompt_tokens
         self.completion_tokens += end.completion_tokens
@@ -103,25 +108,38 @@ class Counters:
         self.queue_seconds += end.queue_ms / 1e3
         if end.error is not None:
             self.errors += 1
-        self.recent.append(
-            {
-                "api": api,
-                "finish": str(end.finish),
-                "prompt_tokens": end.prompt_tokens,
-                "completion_tokens": end.completion_tokens,
-                "cached_tokens": end.cached_tokens,
-                "seconds": round(seconds, 3),
-                "queue_ms": round(end.queue_ms, 3),
-                "prompt_ms": round(end.prompt_ms, 3),
-                "decode_ms": round(end.decode_ms, 3),
-                "steps": end.steps,
-                "drafts": end.drafts,
-                "accepted": end.accepted,
-                "lookup_drafts": end.lookup_drafts,
-                "lookup_accepted": end.lookup_accepted,
-            }
-        )
+        entry: JSONObject = {
+            "api": api,
+            "finish": str(end.finish),
+            "prompt_tokens": end.prompt_tokens,
+            "completion_tokens": end.completion_tokens,
+            "cached_tokens": end.cached_tokens,
+            "seconds": round(seconds, 3),
+            "queue_ms": round(end.queue_ms, 3),
+            "prompt_ms": round(end.prompt_ms, 3),
+            "decode_ms": round(end.decode_ms, 3),
+            "steps": end.steps,
+            "drafts": end.drafts,
+            "accepted": end.accepted,
+            "lookup_drafts": end.lookup_drafts,
+            "lookup_accepted": end.lookup_accepted,
+        }
+        self.recent.append(entry)
         del self.recent[:-12]
+        return entry
+
+    def totals(self) -> JSONObject:
+        return {
+            "requests": self.requests,
+            "errors": self.errors,
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+            "cached_tokens": self.cached_tokens,
+            "steps": self.steps,
+            "drafts": self.drafts,
+            "accepted": self.accepted,
+            "queue_seconds": round(self.queue_seconds, 3),
+        }
 
 
 def error(status: int, message: str, kind: str = "invalid_request_error") -> JSONResponse:
@@ -209,10 +227,19 @@ def _sse(data: JSONObject | None, event: str | None = None) -> bytes:
     return f"{head}data: {payload}\n\n".encode()
 
 
+def _log_metrics(event: str, data: JSONObject) -> None:
+    metrics_log.info("%s", json.dumps({"event": event, **data}, separators=(",", ":")))
+
+
 def create_app(
-    model: Model, engine: ServedEngine, admin: Admin | None = None, default_max_tokens: int = 0
+    model: Model,
+    engine: ServedEngine,
+    admin: Admin | None = None,
+    default_max_tokens: int = 0,
+    metrics_log_s: float = 0.0,
 ) -> Starlette:
-    """default_max_tokens: what a request without max_tokens may write; 0 for the rest of the context."""
+    """default_max_tokens: what a request without max_tokens may write; 0 for the rest of the context.
+    metrics_log_s: seconds between the logged snapshots of the counters; 0 logs no metrics."""
     counters = Counters()
 
     def admitting() -> None:
@@ -234,7 +261,9 @@ def create_app(
         t0 = time.monotonic()
         async for piece in pieces:
             if isinstance(piece, generate.End):
-                counters.record(piece, api, time.monotonic() - t0)
+                entry = counters.record(piece, api, time.monotonic() - t0)
+                if metrics_log_s > 0:
+                    _log_metrics("request", entry)
             yield piece
 
     async def render(req: generate.Request) -> generate.Prompt:
@@ -336,34 +365,38 @@ def create_app(
     async def slots(_: Request) -> Response:
         return JSONResponse({"slots": engine.slots, "busy": engine.busy, "n_ctx": engine.max_context})
 
-    async def metrics(_: Request) -> Response:
-        c = counters
+    async def counts() -> JSONObject:
         report = await engine.stats()
-        return JSONResponse(
-            {
-                "engine": engine.info,
-                "busy": engine.busy,
-                "totals": {
-                    "requests": c.requests,
-                    "errors": c.errors,
-                    "prompt_tokens": c.prompt_tokens,
-                    "completion_tokens": c.completion_tokens,
-                    "cached_tokens": c.cached_tokens,
-                    "steps": c.steps,
-                    "drafts": c.drafts,
-                    "accepted": c.accepted,
-                    "queue_seconds": round(c.queue_seconds, 3),
-                },
-                "recent": c.recent,
-                "core": numbers(report),
-                "derived": derive(report),
-            }
-        )
+        return {"busy": engine.busy, "totals": counters.totals(), "core": numbers(report), "derived": derive(report)}
+
+    async def metrics(_: Request) -> Response:
+        return JSONResponse({"engine": engine.info, **await counts(), "recent": counters.recent})
+
+    logged = -1  # the request count at the last snapshot: an interval without a finished request logs none
+
+    async def log_snapshot() -> None:
+        nonlocal logged
+        if counters.requests != logged:
+            logged = counters.requests
+            _log_metrics("snapshot", await counts())
+
+    async def log_snapshots() -> None:
+        while True:
+            await asyncio.sleep(metrics_log_s)
+            try:
+                await log_snapshot()
+            except Exception:
+                log.exception("the metrics snapshot failed")
 
     @asynccontextmanager
     async def lifespan(_: Starlette) -> AsyncGenerator[None]:
         await engine.start()
+        snapshots = asyncio.create_task(log_snapshots()) if metrics_log_s > 0 else None
         yield
+        if snapshots is not None:
+            snapshots.cancel()
+            await asyncio.wait((snapshots,))
+            await log_snapshot()  # the counters die with the process
         await engine.close()
 
     routes = [

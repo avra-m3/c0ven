@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from collections.abc import AsyncGenerator, Iterator
 from typing import Any
 
@@ -436,3 +437,42 @@ def test_the_default_limit_gives_way_to_the_context(model: Model, engine: FakeEn
         r = c.post("/v1/chat/completions", json={"messages": [{"role": "user", "content": "x" * 20}]})
         assert r.status_code == 200, r.text
     assert 0 < engine.max_news[0] == 80 - len(engine.prompts[0]) < 100
+
+
+def test_metrics_log_each_request_and_the_counters_until_shutdown(
+    model: Model, engine: FakeEngine, caplog: pytest.LogCaptureFixture
+):
+    caplog.set_level("INFO", logger="frontend.metrics")
+
+    def logged() -> list[dict[str, Any]]:
+        return [json.loads(r.getMessage()) for r in caplog.records if r.name == "frontend.metrics"]
+
+    with TestClient(create_app(model, engine, metrics_log_s=0.05)) as c:
+        body = chat(c)
+        (request,) = logged()
+        assert request["event"] == "request"
+        assert (request["completion_tokens"], request["drafts"], request["accepted"]) == (
+            body["usage"]["completion_tokens"],
+            2,
+            1,
+        )
+        deadline = time.monotonic() + 5
+        while len(logged()) < 2 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        snapshot = logged()[1]
+        assert snapshot["event"] == "snapshot"
+        assert snapshot["totals"]["requests"] == 1
+        assert snapshot["core"] == {"plans": 4, "steps": 3, "step_ns": 30_000_000}
+        assert snapshot["derived"]["step_ms"] == 10.0
+        time.sleep(0.2)
+        assert len(logged()) == 2, "an interval without a finished request logs no snapshot"
+        chat(c)
+    events = [e["event"] for e in logged()]
+    assert events == ["request", "snapshot", "request", "snapshot"], "shutdown logs the counters a last time"
+    assert logged()[-1]["totals"]["requests"] == 2
+
+
+def test_no_metrics_are_logged_by_default(client: TestClient, caplog: pytest.LogCaptureFixture):
+    caplog.set_level("INFO", logger="frontend.metrics")
+    chat(client)
+    assert not [r for r in caplog.records if r.name == "frontend.metrics"]

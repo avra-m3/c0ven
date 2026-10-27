@@ -160,6 +160,7 @@ The server's flags:
 | `--admin-port` | | Serve `/admin/wake`, `/admin/sleep` and `/admin/lease` on this port. Without it there are none. |
 | `--drain-timeout` | `30` | Seconds a sleep lets running requests go on before it cancels them. |
 | `--log-level` | `INFO` | Log level. |
+| `--metrics-log` | `0` | Seconds between log lines of the `/metrics` counters. Each request's record is logged too. `0`: none. |
 | `--version` | | Print the version and exit. |
 
 `--kv-tokens` sets the KV cache's size apart from `--slots`. With `--slots 4 --kv-tokens 512k`, four requests run
