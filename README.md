@@ -30,21 +30,21 @@ if you have one, try Strata.
 ## Benchmarks
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/bench-decode-dark.png">
-  <img src="docs/images/bench-decode.png" alt="Decode speed, median of 6 runs: after a 4,159-token prompt C0ven 102.2 tokens/s, llama.cpp 17.0; after a 32,010-token prompt C0ven 111.1, llama.cpp 14.3; after a 255,017-token prompt C0ven 69.2, llama.cpp not measured" width="800">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/bench-dark.png">
+  <img src="docs/images/bench.png" alt="Median of 6 runs, tokens per second. Prompt reading at 4k, 32k and 255k tokens: C0ven on two B60s 2,072, 2,069 and 1,700; on one B60 1,076, 1,174 and 913; llama.cpp on two B60s 357, 354 and not measured. Decode: two B60s 102, 111 and 69; one B60 48, 45 and 30; llama.cpp 17, 14 and not measured" width="800">
 </picture>
 
-| Test | Prompt tokens | 2xB60's (C0ven) | 1xB60 (C0ven) | llama.cpp (SYCL) |
-| --- | ---: | ---: | ---: | ---: |
-| Prompt reading (tokens/s) | 4k | [2,072](docs/measurements/MEASUREMENTS.md#2026-10-27-readme-benchmarks) | [1,076](docs/measurements/MEASUREMENTS.md#2026-10-27-readme-benchmarks) | [357](docs/measurements/MEASUREMENTS.md#2026-10-18-against-llama-cpp) |
-| Prompt reading (tokens/s) | 32k | [2,069](docs/measurements/MEASUREMENTS.md#2026-10-27-readme-benchmarks) | [1,174](docs/measurements/MEASUREMENTS.md#2026-10-27-readme-benchmarks) | [354](docs/measurements/MEASUREMENTS.md#2026-10-18-against-llama-cpp) |
-| Prompt reading (tokens/s) | 255k | [1,700](docs/measurements/MEASUREMENTS.md#2026-10-27-readme-benchmarks) | [913](docs/measurements/MEASUREMENTS.md#2026-10-27-readme-benchmarks) | not measured |
-| Decode (tokens/s) | 4k | [102.2](docs/measurements/MEASUREMENTS.md#2026-10-27-readme-benchmarks) | [48.3](docs/measurements/MEASUREMENTS.md#2026-10-27-readme-benchmarks) | [17.0](docs/measurements/MEASUREMENTS.md#2026-10-18-against-llama-cpp) |
-| Decode (tokens/s) | 32k | [111.1](docs/measurements/MEASUREMENTS.md#2026-10-27-readme-benchmarks) | [45.1](docs/measurements/MEASUREMENTS.md#2026-10-27-readme-benchmarks) | [14.3](docs/measurements/MEASUREMENTS.md#2026-10-18-against-llama-cpp) |
-| Decode (tokens/s) | 255k | [69.2](docs/measurements/MEASUREMENTS.md#2026-10-27-readme-benchmarks) | [29.6](docs/measurements/MEASUREMENTS.md#2026-10-27-readme-benchmarks) | not measured |
-| Time to first token (s) | 4k | [2.01](docs/measurements/MEASUREMENTS.md#2026-10-27-readme-benchmarks) | [3.87](docs/measurements/MEASUREMENTS.md#2026-10-27-readme-benchmarks) | [11.65](docs/measurements/MEASUREMENTS.md#2026-10-18-against-llama-cpp) |
-| Time to first token (s) | 32k | [15.5](docs/measurements/MEASUREMENTS.md#2026-10-27-readme-benchmarks) | [27.3](docs/measurements/MEASUREMENTS.md#2026-10-27-readme-benchmarks) | [90.5](docs/measurements/MEASUREMENTS.md#2026-10-18-against-llama-cpp) |
-| Time to first token (s) | 255k | [150.0](docs/measurements/MEASUREMENTS.md#2026-10-27-readme-benchmarks) | [279.4](docs/measurements/MEASUREMENTS.md#2026-10-27-readme-benchmarks) | not measured |
+| Tokens per second | | 4k prompt | 32k prompt | 255k prompt |
+| --- | --- | ---: | ---: | ---: |
+| Prompt reading | C0ven, two B60s | 2,072 | 2,069 | 1,700 |
+| | C0ven, one B60 | 1,076 | 1,174 | 913 |
+| | llama.cpp, two B60s | 357 | 354 | – |
+| Decode | C0ven, two B60s | 102 | 111 | 69 |
+| | C0ven, one B60 | 48 | 45 | 30 |
+| | llama.cpp, two B60s | 17 | 14 | – |
+
+With the 255k prompt the first token comes after 150 s on two cards and 279 s on one. Ranges and the time to the first
+token at each size: [C0ven](docs/measurements/MEASUREMENTS.md#2026-10-27-readme-benchmarks), [llama.cpp](docs/measurements/MEASUREMENTS.md#2026-10-18-against-llama-cpp).
 
 One request at a time through each server's `/v1/chat/completions`: the reference prompts `doc-4k-qa` (4,159 tokens)
 and `doc-32k` (32,010 tokens), and a 255,017-token prompt that, with its answer, nearly fills the 262,144-token context.
