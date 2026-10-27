@@ -946,12 +946,15 @@ struct engine_ctx {
     // The draft layer needs no rejected row: its cell is written again before any row reads it. Each live slot's
     // last accepted row runs the whole layer.
     std::vector<StepIn> ma;
-    std::vector<uint32_t> keep;
+    std::vector<uint32_t> from, keep;  // each row's row of the window
     for (uint32_t i = 0; i < ns; i++) {
-      for (uint32_t j = 0; j <= acc[i]; j++) ma.push_back(mr[start[i] + j]);
+      for (uint32_t j = 0; j <= acc[i]; j++) {
+        ma.push_back(mr[start[i] + j]);
+        from.push_back(start[i] + j);
+      }
       if (live[i]) keep.push_back((uint32_t)ma.size() - 1);
     }
-    auto dc = model->mtp_catchup(ma.data(), (uint32_t)ma.size(), keep);
+    auto dc = model->mtp_catchup(ma.data(), (uint32_t)ma.size(), keep, from.data());
     {
       std::lock_guard<std::mutex> lk(mu);
       if (reading()) return;  // a request admitted while the round ran

@@ -141,12 +141,13 @@ class Model {
   void commit_runs(const CommitRun *runs, uint32_t n);
 
   // The draft layer (mtp.cpp). mtp_catchup: rows r = (slot, position i, the token at i + 1), the hidden input the
-  // main model's final residual of the last step's row r. Every row writes its cell; only the rows in keep run the
-  // rest of the layer, and it returns their draft candidates (for i + 2) in keep's order. A draft from keep[j] reads
-  // src_row j. mtp_draft: one more draft for such a row, the hidden input the draft layer's own residual of row src_row
-  // of its last pass (whose cell was i - 1).
+  // main model's final residual of the last step's row r (row from[r] with from). Every row writes its cell; only the
+  // rows in keep run the rest of the layer, and it returns their draft candidates (for i + 2) in keep's order. A draft
+  // from keep[j] reads src_row j. mtp_draft: one more draft for such a row, the hidden input the draft layer's own
+  // residual of row src_row of its last pass (whose cell was i - 1).
   bool drafting() const { return mtp_on_ || df_on_; }
-  std::vector<std::vector<Candidate>> mtp_catchup(const StepIn *rows, uint32_t n, const std::vector<uint32_t> &keep);
+  std::vector<std::vector<Candidate>> mtp_catchup(const StepIn *rows, uint32_t n, const std::vector<uint32_t> &keep,
+                                                  const uint32_t *from = nullptr);
   std::vector<Candidate> mtp_draft(uint32_t slot, uint32_t pos, int32_t token, uint32_t src_row);
   // mtp_drafts: mtp_draft for rows of distinct sequences in one pass, row r's input row src_rows[r] of the last pass.
   std::vector<std::vector<Candidate>> mtp_drafts(const StepIn *rows, uint32_t n, const uint32_t *src_rows);
@@ -291,7 +292,8 @@ class Model {
   void record_mtp(Card &card, uint32_t width, uint32_t rest, bool chain);
   std::vector<std::vector<Candidate>> run_mtp(const StepIn *rows, uint32_t n, uint32_t nkeep, bool chain,
                                               uint32_t src_rows);
-  std::vector<std::vector<Candidate>> catchup(const StepIn *rows, uint32_t n, const std::vector<uint32_t> &keep);
+  std::vector<std::vector<Candidate>> catchup(const StepIn *rows, uint32_t n, const std::vector<uint32_t> &keep,
+                                              const uint32_t *from);
   bool init_dflash();  // DFlash 2's host buffers, when Options::mtp_dir holds its files
   void load_dflash(Card &card);
   void record_df(Card &card, uint32_t width, bool block);

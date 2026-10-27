@@ -487,8 +487,9 @@ std::vector<std::vector<Candidate>> Model::run_mtp(const StepIn *rows, uint32_t 
   return out;
 }
 
-// The catch-up's rows reordered, keep's first: row r of the pass reads card.R row order[r].
-std::vector<std::vector<Candidate>> Model::catchup(const StepIn *rows, uint32_t n, const std::vector<uint32_t> &keep) {
+// The catch-up's rows reordered, keep's first: row r of the pass reads card.R row from[order[r]] (order[r] without from).
+std::vector<std::vector<Candidate>> Model::catchup(const StepIn *rows, uint32_t n, const std::vector<uint32_t> &keep,
+                                                   const uint32_t *from) {
   std::vector<uint32_t> order(keep);
   std::vector<bool> kept(n, false);
   for (uint32_t r : keep) {
@@ -501,17 +502,20 @@ std::vector<std::vector<Candidate>> Model::catchup(const StepIn *rows, uint32_t 
   uint32_t src = 0;
   for (uint32_t r = 0; r < n; r++) {
     ro[r] = rows[order[r]];
-    src |= order[r] << (4 * r);
+    const uint32_t f = from ? from[order[r]] : order[r];
+    if (f >= STEP_MAX_ROWS) throw std::runtime_error("a catch-up row reads a row past the last step");
+    src |= f << (4 * r);
   }
   auto out = run_mtp(ro.data(), n, (uint32_t)keep.size(), false, src);
   out.resize(keep.size());
   return out;
 }
 
-std::vector<std::vector<Candidate>> Model::mtp_catchup(const StepIn *rows, uint32_t n, const std::vector<uint32_t> &keep) {
-  // The main model's final residuals of the last step's rows are the hidden inputs: card.R row r for row r.
+std::vector<std::vector<Candidate>> Model::mtp_catchup(const StepIn *rows, uint32_t n, const std::vector<uint32_t> &keep,
+                                                       const uint32_t *from) {
+  // The main model's final residuals of the last step's rows are the hidden inputs: card.R row r (or from[r]).
   if (n == 0 || n > STEP_MAX_ROWS) throw std::runtime_error("a catch-up takes 1 to 8 rows");
-  return catchup(rows, n, keep);
+  return catchup(rows, n, keep, from);
 }
 
 std::vector<std::vector<Candidate>> Model::mtp_catchup_prompt(const StepIn *rows, uint32_t n, uint32_t end,
@@ -521,7 +525,7 @@ std::vector<std::vector<Candidate>> Model::mtp_catchup_prompt(const StepIn *rows
   for (auto &card : cards_)
     card->up->copy(card->R, card->pc->R + (size_t)(end - n) * Q_HC_DIM, (size_t)n * Q_HC_DIM * 4);
   for (auto &card : cards_) card->up->synchronize();
-  return catchup(rows, n, keep);
+  return catchup(rows, n, keep, nullptr);
 }
 
 std::vector<Candidate> Model::mtp_draft(uint32_t slot, uint32_t pos, int32_t token, uint32_t src_row) {
