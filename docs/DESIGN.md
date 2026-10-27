@@ -234,8 +234,10 @@ The rules ([ADR-0033](adr/0033-paged-kv-kept-by-python.md)):
   through a checkpoint taken where the prefix ends, so a later request with the same prefix waits for the first
   one's checkpoint ([ADR-0017](adr/0017-scheduling-several-requests.md)). Prefixes are matched by token ids, never by
   text.
-- The engine process keeps 8 checkpoints by default (`--checkpoints`), in pinned host memory allocated at start. The
-  least recently used goes first. `engine_checkpoint` and `engine_restore` wait for every queued plan to run.
+- The engine process keeps 8 checkpoints by default (`--checkpoints`), in pinned host memory allocated at start. Past
+  the count, a checkpoint that a longer one extends goes first, chosen to keep each conversation's checkpoints spread
+  back from its end ([ADR-0051](adr/0051-checkpoints-stay-spread-back-from-each-conversations-end.md)); otherwise,
+  and to make room, the least recently used. `engine_checkpoint` and `engine_restore` wait for every queued plan to run.
 - A window of drafts runs the DeltaNet state forward for every row. The core then keeps the state of the accepted
   rows only. The KV cells of rejected rows are overwritten when those positions come again
   ([MODEL_LAYER.md, 2.8](spec/MODEL_LAYER.md#28-what-must-be-saved-to-roll-back-rejected-draft-tokens)).
@@ -386,7 +388,10 @@ The engine process answers `STATS` with the core's counters and the scheduler's 
 writing, and the cost model's parts), and each request's `DONE` line carries its wait for a slot, its steps and its
 drafts. `/metrics` reports both, and the ratios read from the counters (`frontend/metrics.py`): a step's and a
 round's time, misses per decode row, tokens per second of card time in plain steps and in rounds by draft source,
-drafts accepted per run, the engine thread's busy share and the swap rounds' part of it.
+drafts accepted per run, the engine thread's busy share and the swap rounds' part of it. With `--metrics-log`, the
+`frontend.metrics` logger writes each request's record as it ends, and the counters and ratios at that interval and at
+shutdown, each as one JSON object on a line with an `event` of `request` or `snapshot`. The counters start from zero
+with each process, so a log store is what keeps them.
 
 The scheduler's cost model (`engine/timing.py`) keeps a moving average of a decode step's time. It fits a prompt
 chunk's time as a fixed part, the staging of the layers' uncached experts, and a part per row, and sizes prompt pieces

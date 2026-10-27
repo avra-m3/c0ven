@@ -1,6 +1,6 @@
 # Kernels are OpenCL C, compiled ahead of time by ocloc into native binaries (ADR-0003).
 # The source is built with -cl-std=CL3.0: without it ocloc compiles OpenCL C 1.2. Divides and sqrt are rounded
-# correctly, as ggml's CPU code rounds them, so a quantizer's amax / 127 gives ggml's bytes (ADR-0051).
+# correctly, as ggml's CPU code rounds them, so a quantizer's amax / 127 gives ggml's bytes (ADR-0052).
 
 find_program(ENGINE_OCLOC ocloc)
 if(NOT ENGINE_OCLOC)

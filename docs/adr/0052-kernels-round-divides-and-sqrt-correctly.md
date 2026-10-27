@@ -1,4 +1,4 @@
-# ADR-0051: kernels round fp32 divides and square roots correctly
+# ADR-0052: kernels round fp32 divides and square roots correctly
 
 **Status:** draft, 2026-10-28; not accepted. Supersedes item 2 of [ADR-0003](0003-kernel-language.md) in part (the
 kernels' build options).

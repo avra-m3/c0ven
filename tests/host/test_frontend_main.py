@@ -61,3 +61,8 @@ def test_the_kv_pool_reaches_the_engine_only_when_set():
 def test_the_default_limit_takes_a_token_count():
     assert parse_args(["--default-max-tokens", "32k"]).default_max_tokens == 32_768
     assert parse_args([]).default_max_tokens == 0
+
+
+def test_metrics_are_not_logged_unless_asked():
+    assert parse_args([]).metrics_log == 0
+    assert parse_args(["--metrics-log", "60"]).metrics_log == 60
