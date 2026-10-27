@@ -1,5 +1,6 @@
 # Kernels are OpenCL C, compiled ahead of time by ocloc into native binaries (ADR-0003).
-# The source is built with -cl-std=CL3.0: without it ocloc compiles OpenCL C 1.2.
+# The source is built with -cl-std=CL3.0: without it ocloc compiles OpenCL C 1.2. Divides and sqrt are rounded
+# correctly, as ggml's CPU code rounds them, so a quantizer's amax / 127 gives ggml's bytes (ADR-0052).
 
 find_program(ENGINE_OCLOC ocloc)
 if(NOT ENGINE_OCLOC)
@@ -20,7 +21,7 @@ function(engine_add_kernel_module name)
   add_custom_command(
     OUTPUT ${ENGINE_KERNEL_DIR}/${name}.bin
     COMMAND ${ENGINE_OCLOC} compile -q -file ${src} -device ${ENGINE_AOT_DEVICE}
-            -options "-cl-std=CL3.0 -I${CMAKE_SOURCE_DIR}/kernels/include -I${CMAKE_SOURCE_DIR}/shared ${opts}"
+            -options "-cl-std=CL3.0 -cl-fp32-correctly-rounded-divide-sqrt -I${CMAKE_SOURCE_DIR}/kernels/include -I${CMAKE_SOURCE_DIR}/shared ${opts}"
             -out_dir ${ENGINE_KERNEL_DIR} -output ${name} -output_no_suffix
     DEPENDS ${src} ${headers}
     COMMENT "ocloc ${K_SOURCE} -> ${name}.bin (${ENGINE_AOT_DEVICE})"
