@@ -736,7 +736,7 @@ struct engine_ctx {
       const bool read = reading();
       for (uint32_t i = 0; i < mr.size(); i++) {
         const Slot &sl = slots[mr[i].slot];
-        if (mr.size() == 1 || (!read && sl.used && !sl.done)) keep.push_back(i);
+        if (sl.used && !sl.done && (mr.size() == 1 ? sl.fed >= sl.prompt.size() : !read)) keep.push_back(i);
       }
     }
     auto dc = model->mtp_catchup(mr.data(), (uint32_t)mr.size(), keep);
@@ -763,7 +763,7 @@ struct engine_ctx {
     }
     std::unique_lock<std::mutex> lk(mu);
     Slot &sl = slots[mr[0].slot];
-    if (!sl.used || sl.done || sl.fed < sl.prompt.size()) return;
+    if (!sl.used || sl.done || sl.fed < sl.prompt.size() || dc.empty()) return;
     const uint32_t s = mr[0].slot, pos = sl.fed + 1;
     const engine_settings st = sl.settings;
     std::vector<int32_t> h = draft_history(sl);
