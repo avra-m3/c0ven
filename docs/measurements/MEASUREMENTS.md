@@ -158,6 +158,7 @@ reordered layout run 3.2-8.8 times faster than in the file's layout
 | hyper-connections' down product | K split of 8 in place of 16 | 19.1 → 18.1 µs at one row | 18.07 → 18.03 ms a token; greedy agreement moved to 1,041 of 1,063 | <a id="2026-10-15-hc-down-split"></a>[2026-10-15](#2026-10-15-hc-down-split) |
 | BF16 products | XMX units with bf16 activations | router's product 12.1 → 9.0 µs; PLE key product 169 → 123 µs | five products 1.41 → 1.11 ms; 19.13 → 18.82 ms a token; misses 25.01 → 25.12 a token from the rounding | <a id="2026-10-15-bf16-products-xmx"></a>[2026-10-15](#2026-10-15-bf16-products-xmx) |
 | BF16 products | plan copied to each card in place of read from host memory | each launch 1.8-2.9 µs over a streaming read of its bytes; K split over work-groups 0.5-1.9 µs slower | 19.00 → 18.62 ms; decode 1.8-2.3% faster | [2026-10-16](#2026-10-16-bf16-products-occupancy) |
+| every kernel module | built with `-cl-fp32-correctly-rounded-divide-sqrt` ([ADR-0052](../adr/0052-kernels-round-divides-and-sqrt-correctly.md)) | of 16.8 million inputs, `x / 127` 4.7% and `sqrt(x)` 8.2% off the correctly rounded value, and of a million Q8_0 blocks 4.3% off ggml's bytes, against none | 15.62 → 15.69 ms a token; prompt of doc-4k-qa 2,967 → 2,957 tokens/s; greedy agreement 843 → 847 of 861 (843 → 844 with prompts read in chunks of 512) | <a id="2026-10-27-divide-sqrt-rounding"></a>[2026-10-27](#2026-10-27-divide-sqrt-rounding) |
 | out products (`ssm_out`, `attn_output`) | partial sums written in the card's memory and copied out, in place of written to host memory a float at a time | Q6_K at two rows 24.8 → 21.4 µs, four rows 35.6 → 26.3 µs; one row unchanged (19.9 against 20.0) | decode at long-4k 69.79 → 71.06 tokens/s | <a id="2026-10-16-out-products-host-writes"></a>[2026-10-16](#2026-10-16-out-products-host-writes) |
 | `router_group` | router and expert grouping in one launch | 0.822 → 0.688 ms | 19.17 → 19.07 ms a token, ranges overlapping | <a id="2026-10-15-router-group"></a>[2026-10-15](#2026-10-15-router-group) |
 | `router_group` | threshold top 10 and the job written by a work split | one row 14.6 → 5.3 µs | 0.685 → 0.421 ms; 17.88 → 17.67 ms a token | <a id="2026-10-15-router-top10"></a>[2026-10-15](#2026-10-15-router-top10) |
@@ -218,7 +219,7 @@ reordered layout run 3.2-8.8 times faster than in the file's layout
 | --- | --- | --- |
 | Decode of doc-4k-qa | 17.255 ms a token | [2026-10-15](#2026-10-15-sub-bytes-words) |
 | Prompt of doc-4k-qa (4,159 tokens) | 2,135 tokens/s | [2026-10-15](#2026-10-15-prompt-router) |
-| `greedy_test` against llama.cpp, prompts of up to 512 tokens | 1,046 of 1,063 positions agree | [2026-10-15](#2026-10-15-matvec-k-split) |
+| `greedy_test` against llama.cpp, prompts of up to 512 tokens | 847 of 861 positions agree | [2026-10-27](#2026-10-27-divide-sqrt-rounding) |
 
 ### Start, load, sleep and wake
 
@@ -400,6 +401,7 @@ own docs and source, 246,571 tokens. The quant's value is given first, then its 
 | Layers with no miss at 3 tokens | 26.9%; 46.1% with swaps | [2026-10-12](#2026-10-12-expert-hit-rates) |
 | Four requests sent within 0.1 ms | Without a wait the engine planned before reading all four in 10 of 51 runs, and the late ones reached their first token 0.55-1.78 s later. With up to 2 ms of wait after a GEN to an idle engine, 0 of 24. | <a id="2026-10-17-requests-sent-together"></a>[2026-10-17](#2026-10-17-requests-sent-together) |
 | Adaptive swaps shared out among the slots that wrote (a round's 64 over their count) | chats4 94.7 → 100.9 tokens/s while all write; staggered's two writers 37.9 → 39.1; four 1,536-token answers 145.9 → 146.8; one request 81.8 → 81.8 | <a id="2026-10-19-swaps-several-writers"></a>[2026-10-19](#2026-10-19-swaps-several-writers) |
+| A new checkpoint past the count pushing out, of those another extends, the one leaving the smallest gap for its distance from its conversation's end ([ADR-0051](../adr/0051-checkpoints-stay-spread-back-from-each-conversations-end.md)), against the least recently used; 8 checkpoints, `engine/seqstate/` replaying 37,881 requests of 1,022 agent sessions (635 of them subagents, median prompt 48,686 tokens) one at a time | prompt tokens read again 248.4 → 100.0 M of 2,293 M (10.8 → 4.4%); least recently used with 16 checkpoints 180.8 M, with 64 103.0 M; this rule with 16 93.2 M. Fewer on 4,084 requests (median 33,976 tokens each), more on 61 (1.8 M in all). Requests continuing their conversation that did not resume where their last turn started 4,273 → 216. One conversation, 200 turns of 1,000 tokens after a 9,525-token system prompt, rewritten 42,000 tokens back: 200,000 → 47,000 tokens read again; 6,000 back: 6,000 → 11,000 | <a id="2026-10-28-checkpoints-spread"></a>[2026-10-28](#2026-10-28-checkpoints-spread) |
 
 ### Agreement with references
 

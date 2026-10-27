@@ -105,7 +105,15 @@ use, and they stay until a request needs the room. The expert cache gets what is
 Two limits decide how many checkpoints the server keeps.
 
 The first is a count. The server keeps 8 checkpoints (set with `--engine-arg=--checkpoints=N`, each one another
-118 MB of main memory). A new checkpoint past the count pushes out the one used longest ago.
+118 MB of main memory). A new checkpoint past the count pushes out one of the checkpoints that a later checkpoint of
+the same conversation extends, so the newest checkpoint of each conversation stays. Of those, it pushes out the one
+whose loss leaves the smallest gap for how far it is from its conversation's end. The checkpoints left are close
+together near the end of each conversation and further apart towards its start. A program that rewrites its history
+some way back, trimming an old tool output or dropping a step, then finds a checkpoint about that far back instead of
+reading the whole conversation again. When no checkpoint is extended by a later one, the one used longest ago goes
+([ADR-0051](adr/0051-checkpoints-stay-spread-back-from-each-conversations-end.md)). Replayed on 37,881 requests of
+agent sessions, this rule reads 60% fewer prompt tokens again than pushing out the one used longest ago
+([replayed](measurements/MEASUREMENTS.md#2026-10-28-checkpoints-spread)).
 
 The second is room. A request that cannot get its room drops checkpoints, the one used longest ago first and the kept
 ones last, until it fits. It never drops the checkpoint it is about to start from. If dropping the others still does
@@ -156,10 +164,9 @@ On a quiet server, the same follow-up from B would have read 2K tokens.
 ### Example: more conversations than checkpoints
 
 Here the room is plentiful and the count runs out. Several short chats take turns, one after another, each turn a few
-thousand tokens. Each turn starts from its chat's last checkpoint and takes a new one where its answer starts, so for a
-while each chat holds two checkpoints: the one it just used and the new one. With 8 checkpoints, four chats keep
-everything they need. A fifth starts pushing out checkpoints that are about to be used, and from nine on, no turn finds
-its checkpoint.
+thousand tokens. Each turn starts from its chat's last checkpoint and takes a new one where its answer starts. The one
+it started from is then the first to go, so each chat needs one checkpoint. With 8 checkpoints, eight chats keep
+everything they need, and from nine on, no turn finds its checkpoint.
 
 The chart counts the turns that started from a checkpoint, out of five turns of each chat after its first. It comes
 from running the server's own checkpoint bookkeeping (`engine/seqstate/`) on this pattern, not from a measurement.
@@ -169,7 +176,7 @@ xychart-beta
     title "Turns that start from a checkpoint (8 checkpoints)"
     x-axis "Chats taking turns" [2, 3, 4, 5, 6, 7, 8, 9, 10]
     y-axis "Share of turns (%)" 0 --> 100
-    bar [100, 100, 100, 80, 50, 29, 13, 0, 0]
+    bar [100, 100, 100, 100, 100, 100, 100, 0, 0]
 ```
 
 Real traffic is less regular: a chat that answers quickly reuses its checkpoint before others push it out. The shape
