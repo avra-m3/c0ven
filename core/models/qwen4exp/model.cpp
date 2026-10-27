@@ -181,6 +181,8 @@ Model::Model(const std::string &path, const Options &opt) : opt_(opt), gguf_(pat
     mtp_on_ = true;
     mplan_ = static_cast<StepPlan *>(rt_->alloc_host(sizeof(StepPlan)));
     std::memset(mplan_, 0, sizeof(StepPlan));
+    mrest_ = static_cast<StepPlan *>(rt_->alloc_host(sizeof(StepPlan)));
+    std::memset(mrest_, 0, sizeof(StepPlan));
     membed_ = static_cast<float *>(rt_->alloc_host(STEP_MAX_ROWS * Q_EMBD * 4));
     mex1_ = static_cast<float *>(rt_->alloc_host((size_t)ncards_ * STEP_MAX_ROWS * Q_EMBD * 4));
     mex2_ = static_cast<float *>(rt_->alloc_host((size_t)ncards_ * STEP_MAX_ROWS * Q_EMBD * 4));
@@ -232,8 +234,11 @@ void Model::load_cards(bool first) {
     for (uint32_t W = 1; W <= STEP_MAX_ROWS; W *= 2) record(*card, W);
     record_commit(*card);
     if (mtp_on_) {
-      for (uint32_t W = 1; W <= STEP_MAX_ROWS; W *= 2) record_mtp(*card, W, false);
-      for (uint32_t W = 1; W <= STEP_MAX_ROWS; W *= 2) record_mtp(*card, W, true);
+      for (uint32_t W = 1; W <= STEP_MAX_ROWS; W *= 2) {
+        record_mtp(*card, W, 0, false);
+        for (uint32_t Wr = 1; Wr <= W; Wr *= 2) record_mtp(*card, W, Wr, false);
+        record_mtp(*card, W, W, true);
+      }
     }
     if (df_on_)
       for (uint32_t W = 1; W <= STEP_MAX_ROWS; W *= 2) {

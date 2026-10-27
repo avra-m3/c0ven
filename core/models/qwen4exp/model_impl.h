@@ -151,9 +151,10 @@ struct Model::MtpCard {
   // Buffers, STEP_MAX_ROWS rows (hn and hs: 4 streams a row).
   float *R = nullptr, *e = nullptr, *en = nullptr, *hn = nullptr, *hs = nullptr;
   uint32_t *first = nullptr;  // per slot: its first cell
-  StepPlan *plan = nullptr;     // the draft step's plan, copied from host memory by each list's first command
+  StepPlan *plan = nullptr;     // the draft step's plan, copied from host memory by each list's first commands
+  StepPlan *rest = nullptr;     // the rows of it that run the whole layer, first in the plan
   uint32_t *counts = nullptr;   // counts[i] = i, for row counts that are not the plan's
-  std::map<uint32_t, std::unique_ptr<ze::List>> lists;  // catch-up, per width
+  std::map<uint32_t, std::unique_ptr<ze::List>> lists;  // catch-up, per width * 16 + the rest's width (0 to width)
   std::map<uint32_t, std::unique_ptr<ze::List>> chains; // one draft step from the draft before, per width
 };
 

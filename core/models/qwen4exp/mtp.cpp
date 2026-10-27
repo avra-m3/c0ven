@@ -311,6 +311,7 @@ void Model::load_mtp(Card &card) {
   M.hs = fbuf(Q_HC_DIM);
   M.first = upload<uint32_t>(card, nullptr, opt_.slots * 4);
   M.plan = upload<StepPlan>(card, nullptr, sizeof(StepPlan));
+  M.rest = upload<StepPlan>(card, nullptr, sizeof(StepPlan));
   {
     std::vector<uint32_t> n(Q_HC * W + 1);
     for (uint32_t i = 0; i < n.size(); i++) n[i] = i;
@@ -319,21 +320,24 @@ void Model::load_mtp(Card &card) {
   (void)C;
 }
 
-// One MTP pass of W rows: catch-up (hidden from the main model's final residuals of the last decode step, card.R) or,
-// with chain, one draft step (hidden from row mplan_->pad of the MTP's own residual R before it).
-void Model::record_mtp(Card &card, uint32_t W, bool chain) {
+// One MTP pass of W rows: catch-up (hidden from the main model's final residuals of the last decode step, card.R row
+// pad's 4-bit field r for row r) or, with chain, one draft step (hidden from that row of the MTP's own residual R before
+// it). Every row writes its cell; the plan's first Wr rows (mrest_) then run the rest of the layer and the head. Wr 0
+// writes cells only. Each row's cell is written before any row attends, so the rows may come in any order.
+void Model::record_mtp(Card &card, uint32_t W, uint32_t Wr, bool chain) {
   MtpCard &M = *card.mtp;
   auto list = std::make_unique<ze::List>(*rt_, card.c, ze::List::regular);
   ze::List &L = *list;
   const uint32_t c = card.c, C = ncards_, E = Q_EMBD;
   auto common = [&](const char *name) { return kernel(c, "common", name); };
   auto q4 = [&](const char *name) { return kernel(c, "qwen4exp", name); };
-  // The kernels read the plan from the card's copy, as the decode step's do.
-  const StepPlan *pl = M.plan;
-  const uint32_t *nrows = &M.plan->nrows;
+  // The kernels read the plans from the card's copies, as the decode step's do.
+  const StepPlan *pl = M.plan, *pr = Wr < W ? M.rest : M.plan;
+  const uint32_t *nrows = &M.plan->nrows, *nrest = &pr->nrows;
   const float one = 1.0f, quarter = 0.25f;
-  const uint32_t zero = 0, mode_silu = 1, ch = chain ? 1 : 0;
+  const uint32_t zero = 0, mode_silu = 1, from_pad = 1;
   L.copy(M.plan, mplan_, sizeof(StepPlan));
+  if (pr != pl) L.copy(M.rest, mrest_, sizeof(StepPlan));
   // The BF16 products on the XMX units with bf16 activations (xb: 8 rows of K), as the decode step's
   // (docs/measurements/MEASUREMENTS.md#2026-10-16-draft-layer-xmx). Every product here has 128 rows or more: K split in 4.
   uint16_t *no_yb = nullptr;
@@ -347,30 +351,31 @@ void Model::record_mtp(Card &card, uint32_t W, bool chain) {
   };
   const uint32_t lw = Q_HC_LR + Q_HC, post = Q_HC_LR;
   // The hyper-connection mix into card.x, its a8 card.xa8 and its bf16 card.xbf16, as the decode step's hc_mix.
-  auto hc_mix = [&](const float *norm, const uint16_t *down, const uint16_t *up, float *lri, uint32_t down_rows) {
-    L.launch(q4("rms_norm"), {M.R, norm, pl, card.n, card.xb16}, Q_HC, W, 1, 256);
-    L.launch(common("mv_xmx_bf16"), {down, down_rows, (uint32_t)Q_HC_DIM, (uint32_t)Q_HC_DIM, card.xb16, nrows, lri, lw,
-                                     mode_silu, quarter, post, 8u, card.lrb16}, (down_rows + 15) / 16, 1, 1, 16 * 8);
-    L.launch(q4("hc_up_mix_xmx"), {up, card.lrb16, card.n, pl, card.x, card.xa8, card.xbf16}, Q_HC_DIM / 128, 1, 1, 128);
+  auto hc_mix = [&](const float *norm, const uint16_t *down, const uint16_t *up, float *lri, uint32_t down_rows,
+                    const StepPlan *p, uint32_t w) {
+    L.launch(q4("rms_norm"), {M.R, norm, p, card.n, card.xb16}, Q_HC, w, 1, 256);
+    L.launch(common("mv_xmx_bf16"), {down, down_rows, (uint32_t)Q_HC_DIM, (uint32_t)Q_HC_DIM, card.xb16, &p->nrows, lri,
+                                     lw, mode_silu, quarter, post, 8u, card.lrb16}, (down_rows + 15) / 16, 1, 1, 16 * 8);
+    L.launch(q4("hc_up_mix_xmx"), {up, card.lrb16, card.n, p, card.x, card.xa8, card.xbf16}, Q_HC_DIM / 128, 1, 1, 128);
   };
   const uint32_t rows_apart = STEP_MAX_ROWS;
   auto exchange = [&](uint32_t which, float *partials, const float *inj) {
     if (C > 1) L.wait({(*mevents_)[which * C + (1 - c)]});
-    L.launch(q4("hc_combine"), {partials, C, rows_apart, inj, lw, pl, M.R}, E / 64, W, 1, 64);
+    L.launch(q4("hc_combine"), {partials, C, rows_apart, inj, lw, pr, M.R}, E / 64, Wr, 1, 64);
   };
 
   // The input (MODEL_IO.md, 3, steps 1-3).
   L.launch(q4("mtp_norm_e"), {membed_, M.ge, pl, M.en}, W, 1, 1, 256);
   to_bf16(M.en, E, nrows, card.xbf16, W);
   bf16mv(M.fc_e, E, E, card.xbf16, nrows, M.e);
-  L.launch(q4("mtp_norm_h"), {chain ? M.R : card.R, M.gh, ch, pl, M.hn}, W, 1, 1, 256);
+  L.launch(q4("mtp_norm_h"), {chain ? M.R : card.R, M.gh, from_pad, pl, M.hn}, W, 1, 1, 256);
   // fc_hidden takes each of the 4 streams: the streams as rows of E, 8 to a read of the weights.
   to_bf16(M.hn, E, M.counts + Q_HC * W, card.xb16, Q_HC * W);
   for (uint32_t r0 = 0; r0 < Q_HC * W; r0 += 8)
     bf16mv(M.fc_h, E, E, card.xb16 + (size_t)r0 * E, M.counts + std::min(8u, Q_HC * W - r0), M.hs + (size_t)r0 * E);
   L.launch(q4("mtp_sum"), {M.hs, M.e, pl, M.R}, Q_HC_DIM / 64, W, 1, 64);
-  // Attention, densely over its own cells.
-  hc_mix(M.hc_norm[0], M.hc_down[0], M.hc_up[0], card.inj[0], lw);
+  // Attention, densely over its own cells: every row's K and V into its cell, then the rest's rows attend.
+  hc_mix(M.hc_norm[0], M.hc_down[0], M.hc_up[0], card.inj[0], lw, pl, W);
   bf16mv(M.q, card.nq * 2 * Q_ATT_D, E, card.xbf16, nrows, card.Q);
   bf16mv(M.k, card.nkv * Q_ATT_D, E, card.xbf16, nrows, card.Kt);
   bf16mv(M.v, card.nkv * Q_ATT_D, E, card.xbf16, nrows, card.Vt);
@@ -378,64 +383,70 @@ void Model::record_mtp(Card &card, uint32_t W, bool chain) {
   const uint32_t *no_table = nullptr, mnpp = opt_.max_ctx / KV_PAGE_CELLS;
   L.launch(q4("attn_prep"), {card.Q, card.Kt, card.Vt, M.qn, M.kn, card.nq, card.nkv, M.kc, M.vc, no_table, mnpp, pl,
                              rope_}, card.nq + card.nkv, W, 1, Q_ATT_D);
-  L.launch(q4("mtp_cells"), {M.first, pl, card.cells, card.ncells}, W, 1, 1, 256);
-  L.launch(q4("attn_split"), {card.Q, M.kc, M.vc, no_table, mnpp, card.nq, card.nkv, card.cells, card.ncells, pl,
-                              card.att}, card.nkv, W, kAttSplits, Q_ATT_D);
-  uint8_t *no_a8 = nullptr;
-  L.launch(q4("attn_merge"), {card.Q, card.nq, card.ncells, pl, card.att, card.o, no_a8}, card.nq, W, 1, Q_ATT_D);
-  float *p1 = mex1_ + (size_t)c * STEP_MAX_ROWS * E;
-  to_bf16(card.o, card.nq * Q_ATT_D, nrows, card.xb16, W);
-  bf16mv(M.o, E, card.nq * Q_ATT_D, card.xb16, nrows, p1, (*mevents_)[0 * C + c]);
-  exchange(0, mex1_, card.inj[0] + Q_HC_LR);
-  // The MoE block: every expert on the cards.
-  hc_mix(M.hc_norm[1], M.hc_down[1], M.hc_up[1], card.inj[1], lw);
-  bf16mv(M.router, Q_EXPERTS + 1, E, card.xbf16, nrows, card.rl);
-  uint32_t *nmiss = card.nmiss;  // scratch: the MTP has no misses
-  MissJob *nojobs = nullptr;
-  L.launch(q4("router"), {card.rl, M.slot_map, card.x, card.ids, card.w, card.slots, nmiss, nojobs, pl}, W, 1, 1,
-           kSgSize);
-  L.launch(q4("moe_group"), {card.slots, pl, card.groups, card.ngroups}, 1, 1, 1, 128);
-  {
-    const uint32_t qk = quant_block_values(mtp_type_);
-    uint32_t gbpr = E / qk, xs = (uint32_t)a8_bytes(E), per = Q_USED, K = E;
-    L.launch(kernel(c, mv_module(mtp_type_, 16), "moe_gate_up_g"),
-             {M.cache, M.slot_bytes, card.groups, card.ngroups, card.ff, gbpr, M.up_off, card.xa8, K, xs, per, card.h,
-              card.grids}, (card.ff + 3) / 4, W * Q_USED, 1, 64);
-    L.launch(common("quantize_a8"), {card.h, card.ff, card.ff, W * Q_USED, card.ha8}, (card.ff / 32 * W * Q_USED + 3) / 4,
-             1, 1, 64);
-    uint32_t dbpr = card.ff / qk, stride = (uint32_t)a8_bytes(card.ff);
-    L.launch(kernel(c, mv_module(mtp_type_, 4), "moe_down_g"),
-             {M.cache, M.slot_bytes, card.groups, card.ngroups, E, dbpr, M.down_off, card.ha8, card.ff, stride, card.y,
-              card.grids}, (E + 15) / 16, W * Q_USED, 1, 64);
+  if (Wr > 0) {
+    L.launch(q4("mtp_cells"), {M.first, pr, card.cells, card.ncells}, Wr, 1, 1, 256);
+    L.launch(q4("attn_split"), {card.Q, M.kc, M.vc, no_table, mnpp, card.nq, card.nkv, card.cells, card.ncells, pr,
+                                card.att}, card.nkv, Wr, kAttSplits, Q_ATT_D);
+    uint8_t *no_a8 = nullptr;
+    L.launch(q4("attn_merge"), {card.Q, card.nq, card.ncells, pr, card.att, card.o, no_a8}, card.nq, Wr, 1, Q_ATT_D);
+    float *p1 = mex1_ + (size_t)c * STEP_MAX_ROWS * E;
+    to_bf16(card.o, card.nq * Q_ATT_D, nrest, card.xb16, Wr);
+    bf16mv(M.o, E, card.nq * Q_ATT_D, card.xb16, nrest, p1, (*mevents_)[0 * C + c]);
+    exchange(0, mex1_, card.inj[0] + Q_HC_LR);
+    // The MoE block: every expert on the cards.
+    hc_mix(M.hc_norm[1], M.hc_down[1], M.hc_up[1], card.inj[1], lw, pr, Wr);
+    bf16mv(M.router, Q_EXPERTS + 1, E, card.xbf16, nrest, card.rl);
+    uint32_t *nmiss = card.nmiss;  // scratch: the MTP has no misses
+    MissJob *nojobs = nullptr;
+    L.launch(q4("router"), {card.rl, M.slot_map, card.x, card.ids, card.w, card.slots, nmiss, nojobs, pr}, Wr, 1, 1,
+             kSgSize);
+    L.launch(q4("moe_group"), {card.slots, pr, card.groups, card.ngroups}, 1, 1, 1, 128);
+    {
+      const uint32_t qk = quant_block_values(mtp_type_);
+      uint32_t gbpr = E / qk, xs = (uint32_t)a8_bytes(E), per = Q_USED, K = E;
+      L.launch(kernel(c, mv_module(mtp_type_, 16), "moe_gate_up_g"),
+               {M.cache, M.slot_bytes, card.groups, card.ngroups, card.ff, gbpr, M.up_off, card.xa8, K, xs, per, card.h,
+                card.grids}, (card.ff + 3) / 4, Wr * Q_USED, 1, 64);
+      L.launch(common("quantize_a8"), {card.h, card.ff, card.ff, Wr * Q_USED, card.ha8},
+               (card.ff / 32 * Wr * Q_USED + 3) / 4, 1, 1, 64);
+      uint32_t dbpr = card.ff / qk, stride = (uint32_t)a8_bytes(card.ff);
+      L.launch(kernel(c, mv_module(mtp_type_, 4), "moe_down_g"),
+               {M.cache, M.slot_bytes, card.groups, card.ngroups, E, dbpr, M.down_off, card.ha8, card.ff, stride, card.y,
+                card.grids}, (E + 15) / 16, Wr * Q_USED, 1, 64);
+    }
+    bf16mv(M.sh_gate, card.ff, E, card.xbf16, nrest, card.shg);
+    bf16mv(M.sh_up, card.ff, E, card.xbf16, nrest, card.shu);
+    L.launch(q4("swiglu_rows"), {card.shg, card.shu, card.ff, pr, card.shh}, (card.ff + 63) / 64, Wr, 1, 64);
+    to_bf16(card.shh, card.ff, nrest, card.xb16, Wr);
+    bf16mv(M.sh_down, E, card.ff, card.xb16, nrest, card.s);
+    float *p2 = mex2_ + (size_t)c * STEP_MAX_ROWS * E;
+    const float *nocpu = nullptr;
+    L.launch(q4("moe_combine"), {card.y, card.w, card.slots, card.s, card.rl, nocpu, nmiss, pr, p2}, E / 64, Wr, 1, 64, 1,
+             1, (*mevents_)[1 * C + c]);
+    exchange(1, mex2_, card.inj[1] + Q_HC_LR);
+    // The MTP's own final mixer, then the main head (step 5), from its residual R (kept for the next draft step).
+    hc_mix(M.mx_norm, M.mx_down, M.mx_up, card.lr, Q_HC_LR, pr, Wr);
+    matvec(L, card, card.head, card.xa8, card.logits, Wr);
+    uint32_t *ti = mtop_idx_ + (size_t)c * STEP_MAX_ROWS * opt_.candidates;
+    float *tv = mtop_val_ + (size_t)c * STEP_MAX_ROWS * opt_.candidates;
+    L.launch(common("topk_rows"), {card.logits, card.vocab_n, card.vocab_n, opt_.candidates, card.vocab0, nrest, ti, tv,
+                                   mtop_n_ + (size_t)c * STEP_MAX_ROWS}, Wr, 1, 1, 1024);
   }
-  bf16mv(M.sh_gate, card.ff, E, card.xbf16, nrows, card.shg);
-  bf16mv(M.sh_up, card.ff, E, card.xbf16, nrows, card.shu);
-  L.launch(q4("swiglu_rows"), {card.shg, card.shu, card.ff, pl, card.shh}, (card.ff + 63) / 64, W, 1, 64);
-  to_bf16(card.shh, card.ff, nrows, card.xb16, W);
-  bf16mv(M.sh_down, E, card.ff, card.xb16, nrows, card.s);
-  float *p2 = mex2_ + (size_t)c * STEP_MAX_ROWS * E;
-  const float *nocpu = nullptr;
-  L.launch(q4("moe_combine"), {card.y, card.w, card.slots, card.s, card.rl, nocpu, nmiss, pl, p2}, E / 64, W, 1, 64, 1, 1,
-           (*mevents_)[1 * C + c]);
-  exchange(1, mex2_, card.inj[1] + Q_HC_LR);
-  // The MTP's own final mixer, then the main head (step 5), from its residual R (kept for the next draft step).
-  hc_mix(M.mx_norm, M.mx_down, M.mx_up, card.lr, Q_HC_LR);
-  matvec(L, card, card.head, card.xa8, card.logits, W);
-  uint32_t *ti = mtop_idx_ + (size_t)c * STEP_MAX_ROWS * opt_.candidates;
-  float *tv = mtop_val_ + (size_t)c * STEP_MAX_ROWS * opt_.candidates;
-  L.launch(common("topk_rows"), {card.logits, card.vocab_n, card.vocab_n, opt_.candidates, card.vocab0, nrows, ti, tv,
-                                 mtop_n_ + (size_t)c * STEP_MAX_ROWS}, W, 1, 1, 1024);
   L.close();
   if (chain)
     M.chains[W] = std::move(list);
   else
-    M.lists[W] = std::move(list);
+    M.lists[W * 16 + Wr] = std::move(list);
 }
 
-std::vector<std::vector<Candidate>> Model::run_mtp(const StepIn *rows, uint32_t n, bool chain, uint32_t src_rows) {
+// rows[0, nkeep) run the whole layer; src_rows: row r's hidden input, the 4-bit field r.
+std::vector<std::vector<Candidate>> Model::run_mtp(const StepIn *rows, uint32_t n, uint32_t nkeep, bool chain,
+                                                   uint32_t src_rows) {
   if (!mtp_on_) throw std::runtime_error("the draft layer is not loaded");
-  uint32_t W = 1;
+  uint32_t W = 1, Wr = nkeep ? 1 : 0;
   while (W < n) W *= 2;
+  while (Wr < nkeep) Wr *= 2;
+  if (chain || Wr == W) nkeep = n, Wr = W;  // the rest's rows would be padded to all of them
   mplan_->nrows = n;
   mplan_->step++;
   mplan_->window = 0;
@@ -445,19 +456,24 @@ std::vector<std::vector<Candidate>> Model::run_mtp(const StepIn *rows, uint32_t 
   for (uint32_t r = 0; r < n; r++) {
     mplan_->rows[r] = {rows[r].slot, rows[r].pos, (uint32_t)rows[r].token, STEP_ROW_LOGITS};
     to_float(te.data + (uint64_t)rows[r].token * te.row_bytes(), membed_ + (size_t)r * Q_EMBD, Q_EMBD);
-    bool first = true;
-    for (uint32_t q = 0; q < r; q++) first = first && rows[q].slot != rows[r].slot;
     // The draft layer's rows may sit on an image's tokens at the end of a prompt chunk: it only drafts, so they turn
-    // by the offset before the image.
+    // by the offset before the image. The slot's earliest row sets it.
+    bool first = true;
+    for (uint32_t q = 0; q < n; q++)
+      first = first && (q == r || rows[q].slot != rows[r].slot || rows[q].pos > rows[r].pos);
     if (first) set_rope(rows[r].slot, rows[r].pos, false);
+  }
+  if (Wr < W) {
+    *mrest_ = *mplan_;
+    mrest_->nrows = nkeep;
   }
   for (uint32_t i = 0; i < mevents_->size(); i++) ZE_CHECK(zeEventHostReset((*mevents_)[i]));
   std::vector<ze::List *> lists;
-  for (auto &card : cards_) lists.push_back(chain ? card->mtp->chains.at(W).get() : card->mtp->lists.at(W).get());
+  for (auto &card : cards_) lists.push_back(chain ? card->mtp->chains.at(W).get() : card->mtp->lists.at(W * 16 + Wr).get());
   for (uint32_t c = ncards_; c-- > 0;) lists[c]->execute();
   for (uint32_t c = 0; c < ncards_; c++) lists[c]->synchronize();
-  std::vector<std::vector<Candidate>> out(n);
-  for (uint32_t r = 0; r < n; r++) {
+  std::vector<std::vector<Candidate>> out(Wr ? nkeep : 0);
+  for (uint32_t r = 0; r < out.size(); r++) {
     auto &o = out[r];
     for (uint32_t c = 0; c < ncards_; c++) {
       size_t base = ((size_t)c * STEP_MAX_ROWS + r) * opt_.candidates;
@@ -471,24 +487,50 @@ std::vector<std::vector<Candidate>> Model::run_mtp(const StepIn *rows, uint32_t 
   return out;
 }
 
-std::vector<std::vector<Candidate>> Model::mtp_catchup(const StepIn *rows, uint32_t n) {
-  // The main model's final residuals of the last step's rows are the hidden inputs: card.R row r for row r.
-  if (n == 0 || n > STEP_MAX_ROWS) throw std::runtime_error("a catch-up takes 1 to 8 rows");
-  return run_mtp(rows, n, false, 0);
+// The catch-up's rows reordered, keep's first: row r of the pass reads card.R row from[order[r]] (order[r] without from).
+std::vector<std::vector<Candidate>> Model::catchup(const StepIn *rows, uint32_t n, const std::vector<uint32_t> &keep,
+                                                   const uint32_t *from) {
+  std::vector<uint32_t> order(keep);
+  std::vector<bool> kept(n, false);
+  for (uint32_t r : keep) {
+    if (r >= n || kept[r]) throw std::runtime_error("a catch-up keeps each of its rows at most once");
+    kept[r] = true;
+  }
+  for (uint32_t r = 0; r < n; r++)
+    if (!kept[r]) order.push_back(r);
+  std::vector<StepIn> ro(n);
+  uint32_t src = 0;
+  for (uint32_t r = 0; r < n; r++) {
+    ro[r] = rows[order[r]];
+    const uint32_t f = from ? from[order[r]] : order[r];
+    if (f >= STEP_MAX_ROWS) throw std::runtime_error("a catch-up row reads a row past the last step");
+    src |= f << (4 * r);
+  }
+  auto out = run_mtp(ro.data(), n, (uint32_t)keep.size(), false, src);
+  out.resize(keep.size());
+  return out;
 }
 
-std::vector<std::vector<Candidate>> Model::mtp_catchup_prompt(const StepIn *rows, uint32_t n, uint32_t end) {
+std::vector<std::vector<Candidate>> Model::mtp_catchup(const StepIn *rows, uint32_t n, const std::vector<uint32_t> &keep,
+                                                       const uint32_t *from) {
+  // The main model's final residuals of the last step's rows are the hidden inputs: card.R row r (or from[r]).
+  if (n == 0 || n > STEP_MAX_ROWS) throw std::runtime_error("a catch-up takes 1 to 8 rows");
+  return catchup(rows, n, keep, from);
+}
+
+std::vector<std::vector<Candidate>> Model::mtp_catchup_prompt(const StepIn *rows, uint32_t n, uint32_t end,
+                                                              const std::vector<uint32_t> &keep) {
   // The hidden inputs are the prompt path's final residuals of the last chunk's n rows before row end.
   if (n == 0 || n > STEP_MAX_ROWS || n > end) throw std::runtime_error("a prompt catch-up takes 1 to 8 rows");
   for (auto &card : cards_)
     card->up->copy(card->R, card->pc->R + (size_t)(end - n) * Q_HC_DIM, (size_t)n * Q_HC_DIM * 4);
   for (auto &card : cards_) card->up->synchronize();
-  return run_mtp(rows, n, false, 0);
+  return catchup(rows, n, keep, nullptr);
 }
 
 std::vector<Candidate> Model::mtp_draft(uint32_t slot, uint32_t pos, int32_t token, uint32_t src_row) {
   StepIn r{slot, pos, token, kNoToken, kNoToken};
-  return std::move(run_mtp(&r, 1, true, src_row)[0]);
+  return std::move(run_mtp(&r, 1, 1, true, src_row)[0]);
 }
 
 std::vector<std::vector<Candidate>> Model::mtp_drafts(const StepIn *rows, uint32_t n, const uint32_t *src_rows) {
@@ -500,7 +542,7 @@ std::vector<std::vector<Candidate>> Model::mtp_drafts(const StepIn *rows, uint32
       if (rows[q].slot == rows[r].slot) throw std::runtime_error("a draft pass takes one row a sequence");
     src |= src_rows[r] << (4 * r);
   }
-  return run_mtp(rows, n, true, src);
+  return run_mtp(rows, n, n, true, src);
 }
 
 void Model::mtp_start(uint32_t slot, uint32_t first) {
