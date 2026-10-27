@@ -234,8 +234,10 @@ The rules ([ADR-0033](adr/0033-paged-kv-kept-by-python.md)):
   through a checkpoint taken where the prefix ends, so a later request with the same prefix waits for the first
   one's checkpoint ([ADR-0017](adr/0017-scheduling-several-requests.md)). Prefixes are matched by token ids, never by
   text.
-- The engine process keeps 8 checkpoints by default (`--checkpoints`), in pinned host memory allocated at start. The
-  least recently used goes first. `engine_checkpoint` and `engine_restore` wait for every queued plan to run.
+- The engine process keeps 8 checkpoints by default (`--checkpoints`), in pinned host memory allocated at start. Past
+  the count, a checkpoint that a longer one extends goes first, chosen to keep each conversation's checkpoints spread
+  back from its end ([ADR-0051](adr/0051-checkpoints-stay-spread-back-from-each-conversations-end.md)); otherwise,
+  and to make room, the least recently used. `engine_checkpoint` and `engine_restore` wait for every queued plan to run.
 - A window of drafts runs the DeltaNet state forward for every row. The core then keeps the state of the accepted
   rows only. The KV cells of rejected rows are overwritten when those positions come again
   ([MODEL_LAYER.md, 2.8](spec/MODEL_LAYER.md#28-what-must-be-saved-to-roll-back-rejected-draft-tokens)).
