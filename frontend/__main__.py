@@ -76,6 +76,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="seconds a sleep lets the running requests go on before it cancels them; a shutdown waits as long",
     )
     p.add_argument("--log-level", default="INFO")
+    p.add_argument(
+        "--metrics-log",
+        type=float,
+        default=0.0,
+        help="seconds between JSON log lines of the /metrics counters, which also logs each request's record; 0: none",
+    )
     return p.parse_args(argv)
 
 
@@ -138,7 +144,7 @@ def main(argv: list[str] | None = None) -> None:
             mode=SleepMode(args.sleep_mode),
             asleep=args.start == "asleep",
         )
-        app = create_app(model, engine, admin, args.default_max_tokens)
+        app = create_app(model, engine, admin, args.default_max_tokens, args.metrics_log)
         # A shutdown waits for open streams, a held lease among them, no longer than a sleep's drain.
         graceful = max(1, round(args.drain_timeout))
         config = uvicorn.Config(app, log_level=args.log_level.lower(), timeout_graceful_shutdown=graceful)
