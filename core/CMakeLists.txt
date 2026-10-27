@@ -9,6 +9,7 @@ add_library(engine_core STATIC
   load/direct.cpp
   load/gguf.cpp
   load/runs.cpp
+  models/qwen4exp/dflash.cpp
   models/qwen4exp/kv_share.cpp
   models/qwen4exp/model.cpp
   models/qwen4exp/ngram.cpp

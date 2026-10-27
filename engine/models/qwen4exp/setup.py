@@ -30,10 +30,13 @@ def memory_plan(table: TensorTable, options: PlanOptions) -> MemoryPlan:
 
 
 def draft_dir(model: Path) -> Path | None:
-    """The draft (MTP) layer's directory beside the model file, `mtp/` with its manifest (MODEL_FILES.md, "The MTP
-    layer"), or None."""
-    d = model.parent / "mtp"
-    return d if (d / "mtp-manifest.json").is_file() else None
+    """The drafter's directory beside the model file: `dflash/` with its manifest (MODEL_FILES.md, "The DFlash 2
+    drafter"), else `mtp/` with its manifest (MODEL_FILES.md, "The MTP layer"), else None."""
+    for name, manifest in (("dflash", "dflash-manifest.json"), ("mtp", "mtp-manifest.json")):
+        d = model.parent / name
+        if (d / manifest).is_file():
+            return d
+    return None
 
 
 def open_config(

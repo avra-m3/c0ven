@@ -69,6 +69,7 @@ template uint16_t *Model::upload<uint16_t>(Card &, const void *, size_t);
 template uint8_t *Model::upload<uint8_t>(Card &, const void *, size_t);
 template float *Model::upload<float>(Card &, const void *, size_t);
 template StepPlan *Model::upload<StepPlan>(Card &, const void *, size_t);
+template DraftPlan *Model::upload<DraftPlan>(Card &, const void *, size_t);
 
 // A card's share of a weight: the given row ranges, and within each row the given ranges of blocks (all of the row
 // when empty), in that order, in the runs layout (raw rows for BF16, F16 and F32).
@@ -176,7 +177,7 @@ Model::Model(const std::string &path, const Options &opt) : opt_(opt), gguf_(pat
     pngram16_ = static_cast<uint16_t *>(rt_->alloc_host((size_t)tmax_ * Q_EMBD * 2));
     std::memset(pngram16_, 0, (size_t)tmax_ * Q_EMBD * 2);
   }
-  if (!opt_.mtp_dir.empty()) {
+  if (!opt_.mtp_dir.empty() && !init_dflash()) {
     mtp_on_ = true;
     mplan_ = static_cast<StepPlan *>(rt_->alloc_host(sizeof(StepPlan)));
     std::memset(mplan_, 0, sizeof(StepPlan));
@@ -219,6 +220,8 @@ void Model::load_cards(bool first) {
   load_vision(first);
   if (mtp_on_)
     for (auto &card : cards_) load_mtp(*card);
+  if (df_on_)
+    for (auto &card : cards_) load_dflash(*card);
   load_experts(first);
   std::fprintf(stderr, "engine: read %.2f GB of weights with O_DIRECT in %.2f s%s\n", reader_->bytes_read() / 1e9,
                std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(),
@@ -232,6 +235,11 @@ void Model::load_cards(bool first) {
       for (uint32_t W = 1; W <= STEP_MAX_ROWS; W *= 2) record_mtp(*card, W, false);
       for (uint32_t W = 1; W <= STEP_MAX_ROWS; W *= 2) record_mtp(*card, W, true);
     }
+    if (df_on_)
+      for (uint32_t W = 1; W <= STEP_MAX_ROWS; W *= 2) {
+        record_df(*card, W, false);
+        record_df(*card, W, true);
+      }
   }
   if (tmax_) {
     for (auto &card : cards_) record_prompt_copy(*card);
@@ -301,6 +309,8 @@ void Model::sleep() {
   venc_slot_ = -1;  // the last image encoded is no slot's any more
   for (auto &card : cards_) {
     for (auto &[w, ts] : card->trace) rt_->free(ts);
+    if (card->df)
+      for (auto &[w, ts] : card->df->trace) rt_->free(ts);
     if (card->pc)
       for (auto &[t, ts] : card->pc->trace) rt_->free(ts);
   }
@@ -1109,6 +1119,10 @@ void Model::record(Card &card, uint32_t W) {
     normed = l + 1 < Q_LAYERS && l + 1 != 1;
     exchange(peer ? card.xp + (size_t)C * STEP_MAX_ROWS * Q_EMBD : ex2_ + l * ex_layer, l, C, card.inj[1] + Q_HC_LR,
              normed ? card.layers[l + 1].hc_norm[0] : nullptr);
+    // DFlash 2 reads the layer's output (dflash.cpp).
+    for (uint32_t k = 0; df_on_ && k < DF_LAYERS; k++)
+      if (l == kDfTargetLayers[k])
+        L.launch(kernel(c, "qwen4exp_dflash", "df_feat"), {card.R, k, plan, card.df->feat}, Q_EMBD / 64, W, 1, 64);
   }
   record_head(L, card, plan, W);
   L.close();

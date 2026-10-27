@@ -322,6 +322,46 @@ struct engine_ctx {
     return d;
   }
 
+  // One slot's DFlash 2 block: its sampler, the first draft's position, the token before it (the anchor, the
+  // slot's token sampled last), the most drafts it may make, and the tokens before the first draft (draft_history).
+  struct DfSeed {
+    uint32_t slot;
+    engine_settings settings;
+    uint32_t pos;
+    int32_t anchor;
+    uint32_t most;
+    std::vector<int32_t> hist;
+  };
+
+  // DFlash 2 (dflash.cpp): the context pass over ctx, rows of the last step whose features the cards hold, then one
+  // block pass for every seed. Each seed's drafts are picked as make_drafts picks them: the request's sampler with
+  // each position's uniform, stopping below draft_min_p. Runs on the engine thread.
+  std::vector<std::vector<int32_t>> df_drafts(const StepIn *ctx, uint32_t nctx, std::vector<DfSeed> &seeds) {
+    std::vector<std::vector<int32_t>> d(seeds.size());
+    std::vector<engine::qwen4exp::Model::DraftBlock> blocks;
+    std::vector<size_t> of;
+    for (size_t i = 0; i < seeds.size(); i++) {
+      const DfSeed &sd = seeds[i];
+      const uint32_t most = std::min<uint32_t>(sd.most, STEP_MAX_ROWS - 1);
+      if (most == 0 || sd.pos == 0 || sd.pos >= info.max_ctx) continue;
+      blocks.push_back({sd.slot, sd.pos - 1, sd.anchor, 1 + most});
+      of.push_back(i);
+    }
+    if (nctx == 0 && blocks.empty()) return d;
+    auto c = model->df_pass(ctx, nctx, blocks.data(), (uint32_t)blocks.size());
+    for (size_t b = 0; b < blocks.size(); b++) {
+      DfSeed &sd = seeds[of[b]];
+      for (uint32_t k = 0; k < c[b].size(); k++) {
+        if (k > 0 && sd.pos + k + 1 >= info.max_ctx) break;
+        std::pair<int32_t, double> pick = sample_p(c[b][k], sd.settings, sd.pos + k, sd.hist);
+        if (c[b][k].empty() || pick.second < draft_min_p) break;
+        d[of[b]].push_back(pick.first);
+        if (penalised(sd.settings)) sd.hist.push_back(pick.first);
+      }
+    }
+    return d;
+  }
+
   // The drafts the i-th of n writing slots may make: the window's rows (STEP_MAX_ROWS) shared out, each slot's row
   // first, and at most draft_max, or kSharedDrafts with several slots.
   uint32_t draft_share(uint32_t i, uint32_t n) const {
@@ -463,7 +503,13 @@ struct engine_ctx {
       uint32_t pos = fed - k + j;
       mr.push_back({pi.slot, pos, pos + 1 < fed ? sl.tokens[pos + 1] : sl.next, kNoToken, kNoToken});
     }
-    model->mtp_start(pi.slot, fed - k);
+    model->draft_start(pi.slot, fed - k);
+    if (model->dflash()) {
+      model->df_context_prompt(mr.data(), k, end);
+      std::vector<DfSeed> seeds{{pi.slot, sl.settings, fed + 1, sl.next, draft_share(0, 1), draft_history(sl)}};
+      sl.drafts = std::move(df_drafts(nullptr, 0, seeds)[0]);  // under mu, as below
+      return;
+    }
     auto dc = model->mtp_catchup_prompt(mr.data(), k, end);
     sl.drafts = make_drafts(pi.slot, sl.settings, fed + 1, dc[k - 1], k - 1, draft_history(sl));  // under mu: admit and release wait for it
   }
@@ -515,7 +561,7 @@ struct engine_ctx {
       after = pos0 + n < sl.prompt.size() ? sl.prompt[pos0 + n] : kNoToken;
     }
     uint64_t t0 = now_ns();
-    if (mtp && restart) model->mtp_start(s, pos0);
+    if (mtp && restart) model->draft_start(s, pos0);
     std::vector<Candidate> cand;
     std::vector<StepIn> mr;  // the last window's rows for the draft layer, each with the token after it
     for (uint32_t i = 0; i < n; i += STEP_MAX_ROWS) {
@@ -531,8 +577,13 @@ struct engine_ctx {
       mr.clear();
       for (uint32_t k = i; k < i + w; k++)
         mr.push_back({s, pos0 + k, k + 1 < n ? toks[k + 1] : after, kNoToken, kNoToken});
-      // The last row's next token is sampled below when the piece ends the prompt.
-      if (mtp && mr.back().token != kNoToken) model->mtp_catchup(mr.data(), w);
+      // The last row's next token is sampled below when the piece ends the prompt; DFlash 2's context needs no token.
+      if (mtp && model->dflash()) {
+        std::vector<DfSeed> none;
+        df_drafts(mr.data(), w, none);
+      } else if (mtp && mr.back().token != kNoToken) {
+        model->mtp_catchup(mr.data(), w);
+      }
     }
     std::lock_guard<std::mutex> lk(mu);
     const uint64_t t1 = now_ns();
@@ -551,6 +602,11 @@ struct engine_ctx {
     prompt_ended = true;
     produce(s, cand);
     if (!mtp || sl.done) return;
+    if (model->dflash()) {
+      std::vector<DfSeed> seeds{{s, sl.settings, sl.fed + 1, sl.next, draft_share(0, 1), draft_history(sl)}};
+      sl.drafts = std::move(df_drafts(nullptr, 0, seeds)[0]);  // under mu, as below
+      return;
+    }
     mr.back().token = sl.next;
     auto dc = model->mtp_catchup(mr.data(), (uint32_t)mr.size());
     sl.drafts = make_drafts(s, sl.settings, sl.fed + 1, dc.back(), (uint32_t)mr.size() - 1, draft_history(sl));  // under mu, as above
@@ -655,6 +711,25 @@ struct engine_ctx {
     }
     // The draft layer reads every computed row, so its cells stay whole; writing slots get drafts.
     if (!model->drafting() || mr.empty()) return;
+    if (model->dflash()) {
+      std::vector<DfSeed> seeds;
+      {
+        std::lock_guard<std::mutex> lk(mu);
+        const uint32_t n = (uint32_t)mr.size();
+        for (uint32_t i = 0; i < n && (n == 1 || !reading()); i++) {
+          const Slot &sl = slots[mr[i].slot];
+          if (sl.used && !sl.done && sl.fed >= sl.prompt.size())
+            seeds.push_back({mr[i].slot, sl.settings, sl.fed + 1, sl.next, draft_share(i, n), draft_history(sl)});
+        }
+      }
+      auto d = df_drafts(mr.data(), (uint32_t)mr.size(), seeds);
+      std::lock_guard<std::mutex> lk(mu);
+      for (size_t i = 0; i < seeds.size(); i++) {
+        Slot &sl = slots[seeds[i].slot];
+        if (sl.used && !sl.done) sl.drafts = d[i];
+      }
+      return;
+    }
     auto dc = model->mtp_catchup(mr.data(), (uint32_t)mr.size());
     if (mr.size() != 1) {
       std::vector<DraftSeed> seeds;
@@ -747,9 +822,15 @@ struct engine_ctx {
     if (done) return;
     std::vector<StepIn> mr;
     for (uint32_t j = 0; j <= a; j++) mr.push_back({s, p + j, picks[j], kNoToken, kNoToken});
-    auto dc = model->mtp_catchup(mr.data(), (uint32_t)mr.size());
     if (pen) hist.push_back(picks[a]);
-    auto d = make_drafts(s, settings, p + a + 2, dc[a], a, std::move(hist));
+    std::vector<int32_t> d;
+    if (model->dflash()) {
+      std::vector<DfSeed> seeds{{s, settings, p + a + 2, picks[a], draft_share(0, 1), std::move(hist)}};
+      d = std::move(df_drafts(mr.data(), (uint32_t)mr.size(), seeds)[0]);
+    } else {
+      auto dc = model->mtp_catchup(mr.data(), (uint32_t)mr.size());
+      d = make_drafts(s, settings, p + a + 2, dc[a], a, std::move(hist));
+    }
     std::lock_guard<std::mutex> lk(mu);
     if (slots[s].used && !slots[s].done) slots[s].drafts = d;
   }
@@ -832,6 +913,27 @@ struct engine_ctx {
         const StepIn &r = rows[start[i] + j];
         mr.push_back({r.slot, r.pos, j < acc[i] ? rows[start[i] + j + 1].token : picks[i][acc[i]], kNoToken, kNoToken});
       }
+    if (model->dflash()) {
+      bool read;
+      {
+        std::lock_guard<std::mutex> lk(mu);
+        read = reading();  // a request admitted while the round ran: no drafts
+      }
+      std::vector<DfSeed> seeds;
+      for (uint32_t i = 0; i < ns && !read; i++)
+        if (live[i]) {
+          if (penalised(settings[i])) hist[i].push_back(picks[i][acc[i]]);
+          seeds.push_back({row0[i].slot, settings[i], row0[i].pos + acc[i] + 2, picks[i][acc[i]], draft_share(i, ns),
+                           std::move(hist[i])});
+        }
+      auto d = df_drafts(mr.data(), n, seeds);
+      std::lock_guard<std::mutex> lk(mu);
+      for (size_t i = 0; i < seeds.size(); i++) {
+        Slot &sl = slots[seeds[i].slot];
+        if (sl.used && !sl.done) sl.drafts = d[i];
+      }
+      return;
+    }
     auto dc = model->mtp_catchup(mr.data(), n);
     {
       std::lock_guard<std::mutex> lk(mu);
@@ -989,6 +1091,7 @@ engine_status engine_open(const engine_config *config, engine_info *info, engine
     e->info.kv_pages = e->model->kv_pages();
     e->info.pages_per_slot = e->model->pages_per_slot();
     if (config->draft_max) e->draft_max = std::min<uint32_t>(config->draft_max, ENGINE_MAX_STEP_SLOTS - 1);
+    else if (e->model->dflash()) e->draft_max = STEP_MAX_ROWS - 1;  // one pass drafts a whole window
     if (config->draft_min_p > 0) e->draft_min_p = config->draft_min_p;
     e->swaps = opt.adapt_swaps;
     e->t_open = now_ns();

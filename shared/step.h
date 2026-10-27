@@ -27,6 +27,28 @@ typedef struct {
   StepRow rows[STEP_MAX_ROWS];
 } StepPlan;
 
+// A pass of the DFlash 2 drafter (docs/MODEL_FILES.md, "The DFlash 2 drafter"). A context pass's row r takes the
+// features of the last decode step's row r into the slot's ring at pos. A block pass's rows are blocks, one a slot,
+// each the rows row0 .. row0 + n - 1 at positions pos0 .. pos0 + n - 1; a row attends to its slot's ring from
+// position lo through its block's last.
+typedef struct {
+  u32 slot;
+  u32 pos;
+  u32 row0;  // the block's first row in the pass (a block pass)
+  u32 n;     // the block's rows (a block pass)
+  u32 lo;    // the first position the row attends to (a block pass)
+  u32 pad[3];
+} DraftRow;
+
+typedef struct {
+  u32 nrows;
+  u32 pad[3];
+  DraftRow rows[STEP_MAX_ROWS];
+} DraftPlan;
+
+SHARED_ASSERT(sizeof(DraftRow) == 32, "DraftRow layout");
+SHARED_ASSERT(sizeof(DraftPlan) == 16 + 32 * STEP_MAX_ROWS, "DraftPlan layout");
+
 // After a window: in each of nruns runs, the n rows from window row row0 (the accepted ones) commit their recurrent
 // state, from position pos0 of slot.
 typedef struct {

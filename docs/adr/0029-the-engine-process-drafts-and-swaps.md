@@ -1,7 +1,7 @@
 # ADR-0029: the engine process turns on drafting and adaptive swaps
 
 **Status:** accepted, 2026-10-16. Settles part of item 14 of
-[ADR-0027](0027-the-c-abi-as-the-core-was-optimised.md).
+[ADR-0027](0027-the-c-abi-as-the-core-was-optimised.md). Item 3 superseded in part by [ADR-0050](0050-dflash-2-drafts.md) (draft).
 **Revisit when:** a request needs tokens identical to another run's without `--deterministic`, or drafting or swaps
 measure slower on a workload the engine serves.
 

@@ -31,6 +31,7 @@ engine_test(encoder_test GPU SOURCES encoder_test.cpp)
 set_tests_properties(encoder_test PROPERTIES TIMEOUT 1800)
 engine_test(batch_test GPU SOURCES batch_test.cpp ARGS ${CMAKE_SOURCE_DIR}/reference)
 engine_test(pack_test GPU SOURCES pack_test.cpp ARGS ${CMAKE_SOURCE_DIR}/reference)
+engine_test(dflash_test GPU SOURCES dflash_test.cpp ARGS ${CMAKE_SOURCE_DIR}/reference)
 engine_test(greedy_test GPU SOURCES greedy_test.cpp ARGS ${CMAKE_SOURCE_DIR}/reference 512)
 set_tests_properties(greedy_test PROPERTIES TIMEOUT 3600)
 
