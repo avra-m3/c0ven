@@ -31,29 +31,35 @@ if you have one, try Strata.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/bench-decode-dark.png">
-  <img src="docs/images/bench-decode.png" alt="Decode speed, median of 6 runs: after a 4,159-token prompt C0ven 85.6 tokens/s, llama.cpp 17.0; after a 32,010-token prompt C0ven 75.0, llama.cpp 14.3" width="800">
+  <img src="docs/images/bench-decode.png" alt="Decode speed, median of 6 runs: after a 4,159-token prompt C0ven 102.2 tokens/s, llama.cpp 17.0; after a 32,010-token prompt C0ven 111.1, llama.cpp 14.3; after a 255,017-token prompt C0ven 69.2, llama.cpp not measured" width="800">
 </picture>
 
 | Test | Prompt tokens | 2xB60's (C0ven) | 1xB60 (C0ven) | llama.cpp (SYCL) |
 | --- | ---: | ---: | ---: | ---: |
-| Prompt reading (tokens/s) | 4k | [2,019](docs/measurements/MEASUREMENTS.md#2026-10-18-against-llama-cpp) | [931](docs/measurements/MEASUREMENTS.md#2026-10-19-one-card) | [357](docs/measurements/MEASUREMENTS.md#2026-10-18-against-llama-cpp) |
-| Prompt reading (tokens/s) | 32k | [2,066](docs/measurements/MEASUREMENTS.md#2026-10-18-against-llama-cpp) | [1,123](docs/measurements/MEASUREMENTS.md#2026-10-19-one-card) | [354](docs/measurements/MEASUREMENTS.md#2026-10-18-against-llama-cpp) |
-| Decode (tokens/s) | 4k | [85.6](docs/measurements/MEASUREMENTS.md#2026-10-18-against-llama-cpp) | [36.2](docs/measurements/MEASUREMENTS.md#2026-10-19-one-card) | [17.0](docs/measurements/MEASUREMENTS.md#2026-10-18-against-llama-cpp) |
-| Decode (tokens/s) | 32k | [75.0](docs/measurements/MEASUREMENTS.md#2026-10-18-against-llama-cpp) | [31.2](docs/measurements/MEASUREMENTS.md#2026-10-19-one-card) | [14.3](docs/measurements/MEASUREMENTS.md#2026-10-18-against-llama-cpp) |
-| Time to first token (s) | 4k | [2.06](docs/measurements/MEASUREMENTS.md#2026-10-18-against-llama-cpp) | [4.47](docs/measurements/MEASUREMENTS.md#2026-10-19-one-card) | [11.65](docs/measurements/MEASUREMENTS.md#2026-10-18-against-llama-cpp) |
+| Prompt reading (tokens/s) | 4k | [2,072](docs/measurements/MEASUREMENTS.md#2026-10-27-readme-benchmarks) | [1,076](docs/measurements/MEASUREMENTS.md#2026-10-27-readme-benchmarks) | [357](docs/measurements/MEASUREMENTS.md#2026-10-18-against-llama-cpp) |
+| Prompt reading (tokens/s) | 32k | [2,069](docs/measurements/MEASUREMENTS.md#2026-10-27-readme-benchmarks) | [1,174](docs/measurements/MEASUREMENTS.md#2026-10-27-readme-benchmarks) | [354](docs/measurements/MEASUREMENTS.md#2026-10-18-against-llama-cpp) |
+| Prompt reading (tokens/s) | 255k | [1,700](docs/measurements/MEASUREMENTS.md#2026-10-27-readme-benchmarks) | [913](docs/measurements/MEASUREMENTS.md#2026-10-27-readme-benchmarks) | not measured |
+| Decode (tokens/s) | 4k | [102.2](docs/measurements/MEASUREMENTS.md#2026-10-27-readme-benchmarks) | [48.3](docs/measurements/MEASUREMENTS.md#2026-10-27-readme-benchmarks) | [17.0](docs/measurements/MEASUREMENTS.md#2026-10-18-against-llama-cpp) |
+| Decode (tokens/s) | 32k | [111.1](docs/measurements/MEASUREMENTS.md#2026-10-27-readme-benchmarks) | [45.1](docs/measurements/MEASUREMENTS.md#2026-10-27-readme-benchmarks) | [14.3](docs/measurements/MEASUREMENTS.md#2026-10-18-against-llama-cpp) |
+| Decode (tokens/s) | 255k | [69.2](docs/measurements/MEASUREMENTS.md#2026-10-27-readme-benchmarks) | [29.6](docs/measurements/MEASUREMENTS.md#2026-10-27-readme-benchmarks) | not measured |
+| Time to first token (s) | 4k | [2.01](docs/measurements/MEASUREMENTS.md#2026-10-27-readme-benchmarks) | [3.87](docs/measurements/MEASUREMENTS.md#2026-10-27-readme-benchmarks) | [11.65](docs/measurements/MEASUREMENTS.md#2026-10-18-against-llama-cpp) |
+| Time to first token (s) | 32k | [15.5](docs/measurements/MEASUREMENTS.md#2026-10-27-readme-benchmarks) | [27.3](docs/measurements/MEASUREMENTS.md#2026-10-27-readme-benchmarks) | [90.5](docs/measurements/MEASUREMENTS.md#2026-10-18-against-llama-cpp) |
+| Time to first token (s) | 255k | [150.0](docs/measurements/MEASUREMENTS.md#2026-10-27-readme-benchmarks) | [279.4](docs/measurements/MEASUREMENTS.md#2026-10-27-readme-benchmarks) | not measured |
 
 One request at a time through each server's `/v1/chat/completions`: the reference prompts `doc-4k-qa` (4,159 tokens)
-and `doc-32k` (32,010 tokens), greedy, 512 tokens out. Both ran on the same two B60s with the same IQ3_S file and a
-262,144-token context: C0ven with its defaults, llama.cpp release b11719 with its SYCL backend and its own placement.
-Each number is the median of six runs, each a fresh server process. On one card (`ZE_AFFINITY_MASK=0`) the engine
-runs the whole model on that card, with fewer experts in VRAM and about 40 GiB of them in RAM; it needs about 45 GiB
-of free host memory to load.
+and `doc-32k` (32,010 tokens), and a 255,017-token prompt that, with its answer, nearly fills the 262,144-token context.
+Greedy, 512 tokens out. C0ven 0.5.0 ran with its defaults and DFlash 2's files beside the model (2026-10-27).
+llama.cpp release b11719 ran with its SYCL backend on the same two B60s and the same IQ3_S file (2026-10-18). Its own
+placement (`--fit`) keeps layer 31's feed-forward and the experts of layers 32-48 on the CPU. Each number is the median
+of six runs, each a fresh server process. On one card (`ZE_AFFINITY_MASK=0`) the engine runs the whole model on that
+card, with 129 experts a layer in VRAM against two cards' 356, and the rest in RAM; it needs about 45 GiB of free host
+memory to load.
 
 
 ## Features
 
 - Splits the work between both cards. The experts used most stay in VRAM, and the rest wait in RAM.
-- Drafts tokens with the model's own MTP layer and checks them in one step.
+- Drafts up to 7 tokens a step with DFlash 2 (or 3 with the model's own MTP layer) and checks them in one step.
 - Moves cached experts between RAM and VRAM as the routing of your requests changes.
 - Contexts up to 262,144 tokens.
 - Gives the cards back on request and takes them again in about 15 s, so llama-swap can run other models on them

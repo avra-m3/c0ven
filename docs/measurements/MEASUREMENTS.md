@@ -293,6 +293,28 @@ reordered layout run 3.2-8.8 times faster than in the file's layout
 | A change of the KV split's blocks moved on a thread beside the steps ([ADR-0048](../adr/0048-the-kv-splits-blocks-move-beside-the-steps.md)), 4 slots, a 262,144-token context and a 524,288-token pool, 7 loads an arm against the commit before | A change blocks the engine 1.0-3.6 ms instead of 14.5-37.8 ms, 28 changes a full load; 42.4-45.0 ms a load instead of 647.3-676.2. The moves take 13.5-36.5 ms on their own thread. Giving pages back, 0.0 ms instead of 34.8 (one load). No rate changed beyond the spread of the loads: a 255,028-token prompt 1,690.3 against 1,690.2 tokens/s and decode at that context 69.6 against 70.0 (medians); four 123,777-token prompts at once 1,498 against 1,503 tokens/s; four short requests 83.0 against 81.6 tokens/s in all. Decode at long context varied up to 14% between loads of either arm with the host's free CPU | <a id="2026-10-25-kv-moves-beside-the-steps"></a>[2026-10-25](#2026-10-25-kv-moves-beside-the-steps) |
 | The engine's counters (`engine_stats`, the `STATS` line, the `DONE` counters; [ADR-0049](../adr/0049-counters-in-the-core-read-by-a-snapshot-call.md)) | three ABBA rounds, 6 fresh servers an arm, 4 slots at 262,144: prompt rates within 0.3% (1,853 → 1,856, 1,747 → 1,750, 1,597 → 1,595 tokens/s); decode medians 0.995-1.043 of main's on seven of eight prompts, long-gen 0.905 in the series and 1.10 alone; four writers 93.9 → 93.3 tokens/s; each run's geometric mean of decode rates 0.975-0.993 (main) and 0.977-1.011. The counters: 331 experts a layer at load, 328 at the end (the floor the load keeps room for, 246, is reported beside it); 66 misses a row; a plain step 20.2 ms, a round 35.0 ms; 67 tokens a second of card time in plain steps, 112 in rounds with the draft layer's drafts, 126 with the slot's own; the engine thread busy 99.3%, swap rounds 1.3% of it | <a id="2026-10-25-counters-abba"></a>[2026-10-25](#2026-10-25-counters-abba) |
 
+### One request, two cards and one
+
+One request at a time through `/v1/chat/completions`, greedy, 512 tokens out, one slot at a 262,144-token context,
+the IQ3_S file, DFlash 2 drafting and the image encoder loaded. Prompt reading is the prompt's tokens over the time to
+the first token, decode the tokens after the first over the time to the last, both at the client. One card is
+`ZE_AFFINITY_MASK=0`. Six fresh server processes each, two cards and one in ABBA order; two cards' value is given
+first.
+
+| Test | Value | Measured |
+| --- | --- | --- |
+| Prompt reading, doc-4k-qa (4,159 tokens) | 2,072.3 (2,022.5-2,078.0) against 1,075.6 (1,020.1-1,089.1) tokens/s | <a id="2026-10-27-readme-benchmarks"></a>[2026-10-27](#2026-10-27-readme-benchmarks) |
+| Prompt reading, doc-32k (32,010 tokens) | 2,069.4 (2,062.0-2,072.6) against 1,174.3 (803.8-1,175.9) tokens/s; one card's lowest is its first load, which swapped out 3.9 GiB | [2026-10-27](#2026-10-27-readme-benchmarks) |
+| Prompt reading, a 255,017-token prompt (with 512 tokens out, 255,529 of the 262,144 cells) | 1,699.6 (1,696.0-1,701.2) against 912.6 (836.5-913.8) tokens/s | [2026-10-27](#2026-10-27-readme-benchmarks) |
+| Decode after doc-4k-qa | 102.24 (89.64-103.03) against 48.33 (28.86-48.71) tokens/s | [2026-10-27](#2026-10-27-readme-benchmarks) |
+| Decode after doc-32k | 111.14 (90.66-123.45) against 45.06 (37.83-45.82) tokens/s; two cards' runs in two groups, 90.7-101.1 and 121.2-123.5, with the same text | [2026-10-27](#2026-10-27-readme-benchmarks) |
+| Decode after the 255,017-token prompt | 69.16 (58.44-71.19) against 29.61 (27.85-30.28) tokens/s | [2026-10-27](#2026-10-27-readme-benchmarks) |
+| Time to the first token, doc-4k-qa | 2.007 (2.001-2.056) against 3.867 (3.819-4.077) s | [2026-10-27](#2026-10-27-readme-benchmarks) |
+| Time to the first token, doc-32k | 15.468 (15.445-15.524) against 27.258 (27.222-39.825) s | [2026-10-27](#2026-10-27-readme-benchmarks) |
+| Time to the first token, the 255,017-token prompt | 150.042 (149.904-150.363) against 279.444 (279.063-304.865) s | [2026-10-27](#2026-10-27-readme-benchmarks) |
+| Experts cached a layer; load, start to serving | 356 against 129; 30.8 (30.0-32.7) against 28.3 (27.9-34.5) s | [2026-10-27](#2026-10-27-readme-benchmarks) |
+| Greedy texts in six processes | two cards 2 for doc-4k-qa, 1 for doc-32k, 5 for the long prompt; one card 1, 1 (ending at 462 tokens) and 3. Swaps change which experts the CPU computes, and so the rounding | [2026-10-27](#2026-10-27-readme-benchmarks) |
+
 ### Against llama.cpp
 
 One request at a time through each server's `/v1/chat/completions`, greedy, 512 tokens out, one slot at a
