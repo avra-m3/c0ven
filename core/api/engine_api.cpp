@@ -496,7 +496,7 @@ struct engine_ctx {
     if (model->dflash())
       model->df_context_prompt(&row, 1, end);
     else
-      model->mtp_catchup_prompt(&row, 1, end);
+      model->mtp_catchup_prompt(&row, 1, end, {});  // writes its cell; no drafts while a prompt is read
   }
 
   // Pieces of different slots through the prompt path as one chunk: the experts are staged once for all their rows
@@ -564,8 +564,8 @@ struct engine_ctx {
       sl.drafts = std::move(df_drafts(nullptr, 0, seeds)[0]);  // under mu, as below
       return;
     }
-    auto dc = model->mtp_catchup_prompt(mr.data(), k, end);
-    sl.drafts = make_drafts(pi.slot, sl.settings, fed + 1, dc[k - 1], k - 1, draft_history(sl));  // under mu: admit and release wait for it
+    auto dc = model->mtp_catchup_prompt(mr.data(), k, end, {k - 1});
+    sl.drafts = make_drafts(pi.slot, sl.settings, fed + 1, dc[0], 0, draft_history(sl));  // under mu: admit and release wait for it
   }
 
   // A plan's prompt pieces. Those of different slots that the prompt path reads go as one chunk, up to
@@ -636,7 +636,7 @@ struct engine_ctx {
         std::vector<DfSeed> none;
         df_drafts(mr.data(), w, none);
       } else if (mtp && mr.back().token != kNoToken) {
-        model->mtp_catchup(mr.data(), w);
+        model->mtp_catchup(mr.data(), w, {});
       }
     }
     std::lock_guard<std::mutex> lk(mu);
@@ -662,8 +662,8 @@ struct engine_ctx {
       return;
     }
     mr.back().token = sl.next;
-    auto dc = model->mtp_catchup(mr.data(), (uint32_t)mr.size());
-    sl.drafts = make_drafts(s, sl.settings, sl.fed + 1, dc.back(), (uint32_t)mr.size() - 1, draft_history(sl));  // under mu, as above
+    auto dc = model->mtp_catchup(mr.data(), (uint32_t)mr.size(), {(uint32_t)mr.size() - 1});
+    sl.drafts = make_drafts(s, sl.settings, sl.fed + 1, dc[0], 0, draft_history(sl));  // under mu, as above
   }
 
   // One decode step for the plan's slots, batched. Runs on the engine thread.
@@ -784,16 +784,26 @@ struct engine_ctx {
       }
       return;
     }
-    auto dc = model->mtp_catchup(mr.data(), (uint32_t)mr.size());
+    std::vector<uint32_t> keep;  // the rows that may draft
+    {
+      std::lock_guard<std::mutex> lk(mu);
+      const bool read = reading();
+      for (uint32_t i = 0; i < mr.size(); i++) {
+        const Slot &sl = slots[mr[i].slot];
+        if (sl.used && !sl.done && (mr.size() == 1 ? sl.fed >= sl.prompt.size() : !read)) keep.push_back(i);
+      }
+    }
+    auto dc = model->mtp_catchup(mr.data(), (uint32_t)mr.size(), keep);
     if (mr.size() != 1) {
       std::vector<DraftSeed> seeds;
       {
         std::lock_guard<std::mutex> lk(mu);
         if (reading()) return;
-        for (uint32_t i = 0; i < mr.size(); i++) {
+        for (uint32_t j = 0; j < keep.size(); j++) {
+          const uint32_t i = keep[j];
           const Slot &sl = slots[mr[i].slot];
           if (sl.used && !sl.done)
-            seeds.push_back({mr[i].slot, sl.settings, sl.fed + 1, dc[i], i, draft_share(i, (uint32_t)mr.size()),
+            seeds.push_back({mr[i].slot, sl.settings, sl.fed + 1, dc[j], j, draft_share(i, (uint32_t)mr.size()),
                              draft_history(sl)});
         }
       }
@@ -807,7 +817,7 @@ struct engine_ctx {
     }
     std::unique_lock<std::mutex> lk(mu);
     Slot &sl = slots[mr[0].slot];
-    if (!sl.used || sl.done || sl.fed < sl.prompt.size()) return;
+    if (!sl.used || sl.done || sl.fed < sl.prompt.size() || dc.empty()) return;
     const uint32_t s = mr[0].slot, pos = sl.fed + 1;
     const engine_settings st = sl.settings;
     std::vector<int32_t> h = draft_history(sl);
@@ -882,8 +892,8 @@ struct engine_ctx {
       std::vector<DfSeed> seeds{{s, settings, p + a + 2, picks[a], draft_share(0, 1), std::move(hist)}};
       d = std::move(df_drafts(mr.data(), (uint32_t)mr.size(), seeds)[0]);
     } else {
-      auto dc = model->mtp_catchup(mr.data(), (uint32_t)mr.size());
-      d = make_drafts(s, settings, p + a + 2, dc[a], a, std::move(hist));
+      auto dc = model->mtp_catchup(mr.data(), (uint32_t)mr.size(), {a});
+      d = make_drafts(s, settings, p + a + 2, dc[0], 0, std::move(hist));
     }
     std::lock_guard<std::mutex> lk(mu);
     if (slots[s].used && !slots[s].done) slots[s].drafts = d;
@@ -891,8 +901,7 @@ struct engine_ctx {
 
   // A draft round for several slots in one window (round, slot by slot): each slot's run of rows, its token sampled
   // last and its drafts, as many as the window's rows allow. Each run is accepted and committed as round's one, then
-  // the draft layer catches up on every row of the window (a run's rows past its accepted ones only fill cells that
-  // are written again before any row reads them) and drafts again for every slot. Runs on the engine thread.
+  // the draft layer catches up on each run's accepted rows and drafts again for every slot. Runs on the engine thread.
   void rounds(uint32_t plan, const std::vector<StepIn> &row0, const std::vector<std::vector<int32_t>> &drafts) {
     const uint32_t ns = (uint32_t)row0.size();
     std::vector<uint32_t> start(ns), k(ns);
@@ -988,18 +997,29 @@ struct engine_ctx {
       }
       return;
     }
-    auto dc = model->mtp_catchup(mr.data(), n);
+    // The draft layer needs no rejected row: its cell is written again before any row reads it. Each live slot's
+    // last accepted row runs the whole layer.
+    std::vector<StepIn> ma;
+    std::vector<uint32_t> from, keep;  // each row's row of the window
+    for (uint32_t i = 0; i < ns; i++) {
+      for (uint32_t j = 0; j <= acc[i]; j++) {
+        ma.push_back(mr[start[i] + j]);
+        from.push_back(start[i] + j);
+      }
+      if (live[i]) keep.push_back((uint32_t)ma.size() - 1);
+    }
+    auto dc = model->mtp_catchup(ma.data(), (uint32_t)ma.size(), keep, from.data());
     {
       std::lock_guard<std::mutex> lk(mu);
       if (reading()) return;  // a request admitted while the round ran
     }
     std::vector<DraftSeed> seeds;
-    for (uint32_t i = 0; i < ns; i++)
+    for (uint32_t i = 0, j = 0; i < ns; i++)
       if (live[i]) {
-        const uint32_t r = start[i] + acc[i];
         if (penalised(settings[i])) hist[i].push_back(picks[i][acc[i]]);
-        seeds.push_back({row0[i].slot, settings[i], row0[i].pos + acc[i] + 2, dc[r], r, draft_share(i, ns),
+        seeds.push_back({row0[i].slot, settings[i], row0[i].pos + acc[i] + 2, dc[j], j, draft_share(i, ns),
                          std::move(hist[i])});
+        j++;
       }
     auto d = make_drafts_many(seeds);
     std::lock_guard<std::mutex> lk(mu);
