@@ -1052,11 +1052,11 @@ struct engine_ctx {
         apply_pages(pages);
         prompt_pieces(seq, plan);
         decode(seq, plan);
-        // A swap round after a plan that ended a prompt, and after every 8th plan while at most one slot writes, every
-        // 16th while several do (docs/measurements/MEASUREMENTS.md#2026-10-20-swap-cadence-and-fill). Never while a slot reads its prompt
+        // A swap round after a plan that ended a prompt, and after every 4th plan while at most one slot writes, every
+        // 16th while several do (docs/measurements/MEASUREMENTS.md#2026-10-28-swaps-every-4th-plan). Never while a slot reads its prompt
         // (docs/measurements/MEASUREMENTS.md#2026-10-16-drafting-and-swaps). While several slots write, the round's swaps are
         // shared out: the cache follows several requests' routing at once.
-        const uint32_t every = writers > 1 ? 16 : 8;
+        const uint32_t every = writers > 1 ? 16 : 4;
         uint64_t swapped = 0, swap_ns = 0;
         if (swaps && (prompt_ended || seq % every == 0) && !prompt_reading()) {
           const uint64_t t0 = now_ns();
