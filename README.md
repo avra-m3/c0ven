@@ -1,27 +1,31 @@
 <p align="center"><img src="docs/images/logo.svg" alt="C0ven" width="520"></p>
 
-<p align="center"><a href="https://github.com/avra-m3/c0ven/actions/workflows/ci.yml?query=branch%3Amain"><img src="https://github.com/avra-m3/c0ven/actions/workflows/ci.yml/badge.svg?branch=main" alt="ci"></a></p>
+<p align="center"><a href="https://avra-m3.github.io/c0ven/docs/showcase/coven-hollow.html"><img src="docs/showcase/coven-hollow-tour.webp" alt="Coven Hollow: witches, cottages and a cauldron in a woodland clearing at dusk, seen from a camera on a slow tour of the hollow" width="800"></a><br>
+<sub><em>Coven Hollow, a scene a coding agent wrote in one HTML file. <a href="https://avra-m3.github.io/c0ven/docs/showcase/coven-hollow.html">See it live</a>, or <a href="https://avra-m3.github.io/c0ven/docs/showcase/coven-hollow/#how-to-make-this">how to make this</a>.</em></sub></p>
 
-<p align="center"><a href="https://avra-m3.github.io/c0ven/docs/showcase/coven-hollow.html"><img src="docs/showcase/coven-hollow-tour.webp" alt="Coven Hollow: witches, cottages and a cauldron in a woodland clearing at dusk, seen from a camera on a slow tour of the hollow" width="800"></a></p>
+<p align="center"><a href="https://github.com/avra-m3/c0ven/actions/workflows/ci.yml?query=branch%3Amain"><img src="https://github.com/avra-m3/c0ven/actions/workflows/ci.yml/badge.svg?branch=main" alt="ci"></a> <a href="VERSION"><img src="https://img.shields.io/badge/dynamic/regex?url=https%3A%2F%2Fraw.githubusercontent.com%2Favra-m3%2Fc0ven%2Fmain%2FVERSION&search=%5B0-9.%5D%2B&label=version&color=8b5cf6" alt="version"></a></p>
 
-*Coven Hollow, a scene a coding agent wrote in one HTML file. [See it live](https://avra-m3.github.io/c0ven/docs/showcase/coven-hollow.html), or [how to make this](https://avra-m3.github.io/c0ven/docs/showcase/coven-hollow/#how-to-make-this).*
+A fast inference engine for one architecture, [Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next),
+designed to run well on Intel Battlemage cards. It runs on one or two cards today, and support for more than two is
+[planned](https://github.com/avra-m3/c0ven/issues/26). It is built for one user running a few threads on one machine, and it is fast for that case.
 
-A fast inference engine for one architecture, [Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next), on two
-Intel Arc Pro B60 cards. It is built for one user running a few threads on one machine, and it is fast for that case.
-
-Just like witches, GPU's work better together in a coven. This repository focuses on optimizing inference between the CPU and one or more Battlemage GPU's through Intel's Level Zero API. Slots right in to your existing setup with OpenAI and Anthropic API compatibility.
+Just like witches, GPUs work better together in a coven. C0ven splits inference between the CPU and one or more
+Battlemage GPUs through Intel's Level Zero API. It slots into your existing setup through its OpenAI and Anthropic
+APIs.
 
 ## Is this for you?
 
 Use C0ven if you have:
 
-- two Intel Arc Pro B60 cards (24 GB each) in one Linux machine, with the `xe` kernel driver (*Other cards likely work but are untested),
+- one or two Intel Battlemage cards in one Linux machine, with the `xe` kernel driver. The engine is tested on Arc
+  Pro B60 cards (24 GB each); other Battlemage cards likely work but are untested
+  ([help test them](https://github.com/avra-m3/c0ven/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22)),
 - a CPU with AVX-512 (VNNI, VBMI and BF16 among it), which computes the experts the cards do not hold,
 - enough RAM to hold the model (the test machine has 96 GiB),
 - one person, or a few requests at once, using the model.
 
-C0ven is the wrong tool if you want to run other models, other GPUs, one card, or serve many users. Use llama.cpp or
-vLLM for those.
+C0ven is the wrong tool if you want to run other models, use other GPUs, or serve many users. Use llama.cpp or vLLM
+for those.
 
 C0ven owes a great deal to [Strata](https://github.com/mach10x/strata), which runs the same model on consumer
 hardware and whose design C0ven borrows from ([docs/spec/](docs/spec/)). C0ven does not support NVIDIA or AMD cards;
