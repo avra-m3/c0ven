@@ -219,7 +219,7 @@ reordered layout run 3.2-8.8 times faster than in the file's layout
 | --- | --- | --- |
 | Decode of doc-4k-qa | 17.255 ms a token | [2026-10-15](#2026-10-15-sub-bytes-words) |
 | Prompt of doc-4k-qa (4,159 tokens) | 2,135 tokens/s | [2026-10-15](#2026-10-15-prompt-router) |
-| `greedy_test` against llama.cpp, prompts of up to 512 tokens | 847 of 861 positions agree | [2026-10-27](#2026-10-27-divide-sqrt-rounding) |
+| `kl_test`: the IQ3_S file against the BF16 checkpoint on the KL set | mean KL 0.158, top-1 84.7% | [2026-10-29](#2026-10-29-kl-bf16) |
 
 ### Start, load, sleep and wake
 
@@ -416,6 +416,10 @@ own docs and source, 246,571 tokens. The quant's value is given first, then its 
 | Video encoder against llama.cpp, two frame pairs | mean cosine 0.99991-0.99992, least 0.9962-0.9983 | <a id="2026-10-17-video-pair-reference"></a>[2026-10-17](#2026-10-17-video-pair-reference) |
 | llama.cpp's CPU video encoder against an F64 computation | least cosine 0.9991 at 64 tokens, 0.9966 at 252; 0.34 with the frames swapped | [2026-10-17](#2026-10-17-video-pair-reference) |
 | Video encoder time, one frame pair | 38.5-40.9 ms | [2026-10-17](#2026-10-17-video-pair-reference) |
+| The engine on the IQ3_S file against the BF16 checkpoint on the KL set (4,995 positions, one token a step, c0ven `54d4170`) | top-1 84.72%, mean KL 0.1584 (standard error 0.0065), p99 KL 1.88; perplexity 6.056 against the base's 6.081. By segment, mean KL: code 0.148, docs 0.096, English 0.087, four languages 0.102, agent 0.359 | <a id="2026-10-29-kl-bf16"></a>[2026-10-29](#2026-10-29-kl-bf16) |
+| The same, positions 499-998 of each segment, the first 498 tokens read by the prompt path in chunks of up to 512 | mean KL 0.1775, top-1 83.80%; the decode path alone on the same positions 0.1755, 83.92% | [2026-10-29](#2026-10-29-kl-bf16) |
+| The prompt path against the decode path on those positions, engine against engine | mean KL 0.035, top-1 93.4% | [2026-10-29](#2026-10-29-kl-bf16) |
+| The engine twice, and vLLM's BF16 reading twice | the same bytes each time | [2026-10-29](#2026-10-29-kl-bf16) |
 
 ### The engine image
 
