@@ -28,9 +28,10 @@ route to, or the writers' tokens beside an arriving prompt are measured to fall.
 
 ## Why
 
-With items 2 and 3, one to three writer rows add 2-10 ms to a chunk, against 15-76 ms through the prompt path's
-kernels and 22-58 ms for the writers' own decode step. Long runs keep their bits. Beside arriving prompts the writers
-get about one more token each a prompt, with the prompt's first token as soon as before
+With items 2 and 3, one to three writer rows add 5.6-9.8 ms (medians) to a chunk at any position, against 7.0-76.3 ms
+through the prompt path's kernels and 20.4-58.4 ms for the writers' own decode step. Long runs keep their bits. Beside
+arriving prompts the writers get one to two more tokens a prompt between them, with the prompt's first token as soon
+as before. A prompt read alone takes 0.2% longer
 ([measurements](../measurements/MEASUREMENTS.md#2026-10-28-writers-rows-in-a-prompt-chunk)).
 
 ## Options not chosen
