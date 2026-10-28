@@ -72,6 +72,9 @@ SHARED_ASSERT(sizeof(CommitPlan) == 16 + 16 * STEP_MAX_ROWS, "CommitPlan layout"
 // The row-wise kernels read the chunk's plan (row0 0, n all its rows), the kernels that follow a sequence one run's.
 // The recorded chunk lists read the plans where they lie, so one list serves any n up to the size it was recorded for.
 #define PROMPT_MAX_RUNS 4
+// A run of at most this many rows (a decode row and its drafts) attends from the 8-bit cache, as the decode step
+// does, over the cells the indexer chose; longer runs convert their sequence to fp16 and attend on the XMX units.
+#define PROMPT_SHORT_RUN 8
 
 typedef struct {
   u32 n;
