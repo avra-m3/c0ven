@@ -1,9 +1,9 @@
 // Level 6 (docs/TESTING.md): a decode step of several rows gives each row exactly what it gets alone. Eight
-// sequences (the reference prompts' first 24 tokens) run one token per step, alone, then eight and four per step;
-// then one as windows of 4 positions, one as draft windows with wrong drafts, committing the rows before the first
-// wrong one, and three as draft windows in one step, each committing its own. Gate: every row's 64 candidates
-// bit-identical to its single-row run (each row is computed alone in every kernel, the CPU's misses are per row, and
-// a commit replays the accepted rows' state).
+// sequences (the reference prompts' first 24 tokens) run one token per step, alone, then eight, six, four and three
+// per step; then one as windows of 4 positions, one as draft windows with wrong drafts, committing the rows before
+// the first wrong one, and three as draft windows in one step, each committing its own. Gate: every row's 64
+// candidates bit-identical to its single-row run (each row is computed alone in every kernel, the CPU's misses are
+// per row, and a commit replays the accepted rows' state).
 #include <algorithm>
 #include <cstring>
 #include <fstream>
@@ -75,7 +75,7 @@ int main(int argc, char **argv) {
   }
   int failures = 0;
   // Rows of several sequences.
-  for (uint32_t width : {8u, 4u}) {
+  for (uint32_t width : {8u, 6u, 4u, 3u}) {
     for (uint32_t s = 0; s < width; s++) model.reset_slot(s);
     uint32_t bad = 0;
     for (uint32_t i = 0; i < N; i++) {

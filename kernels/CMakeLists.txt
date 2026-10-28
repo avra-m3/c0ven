@@ -56,7 +56,7 @@ endforeach()
 # The decode step's expert products for the experts' types, one module per type and largest group: moe_<type>_g<a>.
 foreach(type IQ2_S IQ3_XXS IQ3_S IQ4_XS IQ4_NL Q2_0 IQ2_XXS IQ2_XS IQ1_M)
   string(TOLOWER ${type} lower)
-  foreach(a 1 2 4 8)
+  foreach(a 1 2 3 4 6 8)
     engine_add_kernel_module(moe_${lower}_g${a} SOURCE kernels/quant/moe.cl
                              OPTIONS -DQTYPE=QT_${type} -DGROUP=${a} -I${CMAKE_SOURCE_DIR}/kernels/quant)
   endforeach()

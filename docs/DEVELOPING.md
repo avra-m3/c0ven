@@ -94,9 +94,9 @@ engines read, and under the host's reclaim a copy can reset a card's copy engine
 [DESIGN.md](DESIGN.md) is the architecture. In the code:
 
 - `core/models/qwen4exp/model.cpp` loads each card's half of every layer and records the decode step as one regular
-  command list per card for each width (1, 2, 4 and 8 rows), once. The step's first command copies the step plan
-  ([`shared/step.h`](../shared/step.h)) from host memory to the card, and the kernels read that copy, so the same
-  list runs every step. The host computes the rows' embeddings and resets the step's events before it submits.
+  command list per card for each width (1, 2, 3, 4, 6 and 8 rows), once. The step's first command copies the step plan
+  ([`shared/step.h`](../shared/step.h)) from host memory to the card, and the kernels read that copy, so the same list
+  runs every step. The host computes the rows' embeddings and resets the step's events before it submits.
 - The cards exchange partial sums twice per layer. A one-row step goes through host memory; a window of two rows or
   more writes into the other card's memory ([ADR-0030](adr/0030-exchanges-into-the-other-card.md)). Each card
   signals an event when its partial sum is written and waits on the other's. Regular lists are used because an
