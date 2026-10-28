@@ -231,7 +231,7 @@ void Model::load_cards(bool first) {
   reader_.reset();
   if (first && opt_.anon_arena) settle_arena();
   for (auto &card : cards_) {
-    for (uint32_t W = 1; W <= STEP_MAX_ROWS; W *= 2) record(*card, W);
+    for (uint32_t W : kStepWidths) record(*card, W);
     record_commit(*card);
     if (mtp_on_) {
       for (uint32_t W = 1; W <= STEP_MAX_ROWS; W *= 2) {
@@ -903,7 +903,7 @@ void Model::matvec(ze::List &list, Card &card, const Mat &m, const uint8_t *act,
               (m.rows + rows_per_wg - 1) / rows_per_wg, 1, 1, 64, 1, 1, signal);
 }
 
-// The decode step for up to W rows, recorded once per card and width (1, 2, 4, 8): the kernels read the step plan
+// The decode step for up to W rows, recorded once per card and width (kStepWidths): the kernels read the step plan
 // in host memory, so a list serves any step of up to W rows. Products run for all W rows (their weights are read
 // once whatever the count); row-wise kernels skip the rows past the plan's.
 void Model::record(Card &card, uint32_t W) {
@@ -1238,8 +1238,7 @@ std::vector<std::vector<Candidate>> Model::step(const StepIn *rows, uint32_t n, 
     if (rows[r].pos >= opt_.max_ctx) throw std::runtime_error("position past the context");
   }
   wait_commit();
-  uint32_t W = 1;
-  while (W < n) W *= 2;
+  const uint32_t W = step_width(n);
   last_width_ = W;
   plan_->nrows = n;
   plan_->window = window ? 1 : 0;

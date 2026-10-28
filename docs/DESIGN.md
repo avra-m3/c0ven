@@ -441,9 +441,10 @@ Read at vLLM [`656d0d4`][v], SGLang [`e0c957e`][sg] and llama.cpp [`9d7d504`][l]
 ## 9. One decode step, and the CPU side
 
 A decode step runs one row for each writing slot, or a window of one slot's rows. Each card runs a command list
-recorded at load for the step's width: 1, 2, 4 or 8 rows. The list's first command copies the step plan from host
-memory to the card, and the kernels read that copy: a word read from host memory at each launch's start makes every
-launch slower ([the record](measurements/MEASUREMENTS.md#2026-10-16-bf16-products-occupancy)).
+recorded at load for the step's width: the smallest of 1, 2, 3, 4, 6 and 8 rows that holds the step's rows. The
+list's first command copies the step plan from host memory to the card, and the kernels read that copy: a word read
+from host memory at each launch's start makes every launch slower
+([the record](measurements/MEASUREMENTS.md#2026-10-16-bf16-products-occupancy)).
 
 ```mermaid
 %%{init: {"theme": "base", "themeVariables": {"fontSize": "14px", "textColor": "#8b5cf6", "actorBkg": "#2e1065", "actorBorder": "#8b5cf6", "actorTextColor": "#ede9fe", "actorLineColor": "#8b5cf6", "signalColor": "#8b5cf6", "signalTextColor": "#8b5cf6", "labelBoxBkgColor": "#6d28d9", "labelBoxBorderColor": "#8b5cf6", "labelTextColor": "#ffffff", "loopTextColor": "#8b5cf6", "noteBkgColor": "#1f2433", "noteBorderColor": "#64748b", "noteTextColor": "#e2e8f0"}, "sequence": {"mirrorActors": false}}}%%

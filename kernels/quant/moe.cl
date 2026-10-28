@@ -2,7 +2,8 @@
 // moe_down_g: the lanes take the same units in the same order (16 a row for gate and up, 4 for down). The work around
 // the dot products, which bounds those kernels, is cheaper: 32-bit field offsets stepping by a constant, vector loads,
 // several rows a sub-group per activation load, i-quant signs as dot4(g ^ m, q) - dot4(m, q), m 0xff in negative bytes.
-// Modules moe_<type>_g<GROUP> (-DQTYPE, -DGROUP: 1, 2, 4 or 8); a work-group takes MOE_WG_ROWS rows of one expert.
+// Modules moe_<type>_g<GROUP> (-DQTYPE, -DGROUP: 1, 2, 3, 4, 6 or 8); a work-group takes MOE_WG_ROWS rows of one
+// expert.
 #include "a8.h"
 #include "decode.h"
 #include "moe_tile.h"

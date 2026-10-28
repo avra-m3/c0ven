@@ -31,6 +31,14 @@ inline constexpr uint32_t kFetchRows = 1024;
 inline constexpr uint32_t kAttSplits = (Q_IDX_CELLS + 63) / 64;  // attn_split's ATT_SPLITS
 inline constexpr uint32_t kIdxCand = 2 * (Q_IDX_BLOCKS + 1) + 2;  // words per row of the indexer's candidates
 inline constexpr uint32_t kMvKsRows = 512;  // dense products of up to this many rows split K (matvec_ks)
+// The decode step's widths, each with its own lists: a step runs the smallest of at least its rows, and its products
+// and expert kernels compute that many.
+inline constexpr uint32_t kStepWidths[] = {1, 2, 3, 4, 6, 8};
+inline uint32_t step_width(uint32_t n) {
+  for (uint32_t W : kStepWidths)
+    if (W >= n) return W;
+  return STEP_MAX_ROWS;
+}
 // A prompt token's weight in the swap counts against a written token's 1: there are many, and decode is what the
 // cache serves.
 inline constexpr float kPromptRouting = 0.05f;
@@ -68,7 +76,7 @@ inline std::string mv_module(uint32_t type, uint32_t lanes) {
   return s;
 }
 
-// kernels/quant/moe.cl's module for an expert type and groups of up to W assignments (W: 1, 2, 4 or 8), or "" when it
+// kernels/quant/moe.cl's module for an expert type and groups of up to W assignments (W: kStepWidths), or "" when it
 // has no kernel for the type (matvec.cl's then).
 inline std::string moe_module(uint32_t type, uint32_t W, bool down) {
   bool has = down ? type == QT_IQ4_NL || type == QT_Q2_0
@@ -219,7 +227,7 @@ struct Model::Card {
   float *xp = nullptr;
   StepPlan *plan = nullptr;  // the step plan, copied from host memory by the decode step's first command
   std::unique_ptr<ze::List> up;
-  std::map<uint32_t, std::unique_ptr<ze::List>> lists;  // the decode step, per width (1, 2, 4, 8)
+  std::map<uint32_t, std::unique_ptr<ze::List>> lists;  // the decode step, per width (kStepWidths)
   std::map<uint32_t, uint64_t *> trace;                 // their timestamps, with Options::trace
   std::unique_ptr<ze::List> commit;                     // a window's commit (CommitPlan)
   float *Sw = nullptr;                                  // a window's DeltaNet state past its first row

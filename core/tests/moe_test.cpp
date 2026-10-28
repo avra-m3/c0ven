@@ -1,7 +1,7 @@
 // Level 3 (docs/TESTING.md): the decode step's grouped expert products of kernels/quant/moe.cl against matvec.cl's
 // moe_gate_up_g and moe_down_g, which they must equal bit for bit, on real experts in the slot layout; gate and up's
-// a8 output against quantize_a8 of the reference. Every expert type the file holds, for groups of up to 1, 2, 4 and 8
-// assignments of mixed sizes; down's rows end inside a work-group.
+// a8 output against quantize_a8 of the reference. Every expert type the file holds, for groups of up to 1, 2, 3, 4,
+// 6 and 8 assignments of mixed sizes; down's rows end inside a work-group.
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -96,7 +96,7 @@ int main() {
       auto *cache = static_cast<uint8_t *>(rt.alloc_device(card, host.size()));
       up.copy(cache, host.data(), host.size());
 
-      for (uint32_t A : {1u, 2u, 4u, 8u}) {
+      for (uint32_t A : {1u, 2u, 3u, 4u, 6u, 8u}) {
         // A tokens' assignments, grouped by expert in order of first use (as moe_group groups them).
         const uint32_t nasg = A * PER;
         std::vector<MoeGroup> groups;
