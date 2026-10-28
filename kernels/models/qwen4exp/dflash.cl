@@ -31,8 +31,11 @@ __kernel void df_feat(__global const float *R, uint k, __global const StepPlan *
 
 // The same for a prompt run's last rows (at most STEP_MAX_ROWS), row j of them into out[j]: only the rows r0 .. r1 - 1
 // of the chunk, which this card holds. Groups (Q_EMBD / 64, STEP_MAX_ROWS), 64.
-__kernel void p_df_feat(__global const float *R, __global const PromptPlan *pp, uint k, uint r0, uint r1,
-                        __global ushort *out) {
+__kernel void p_df_feat(__global const float *R, __global const PromptPlan *runs, uint k, uint r0, uint r1,
+                        __global ushort *out_all) {
+  // One launch for all the chunk's runs: run z's rows into out_all + z STEP_MAX_ROWS DF_FEAT.
+  __global const PromptPlan *pp = runs + get_group_id(2);
+  __global ushort *out = out_all + (ulong)get_group_id(2) * STEP_MAX_ROWS * DF_FEAT;
   const uint n = pp->n, m = min(n, (uint)STEP_MAX_ROWS), j = get_group_id(1), i = get_global_id(0);
   if (j >= m) return;
   const uint t = pp->row0 + n - m + j;

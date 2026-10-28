@@ -115,8 +115,15 @@ consecutive tokens of up to four sequences (`Model::prompt_runs`):
 - Each card records a list per chunk size (powers of two from 64, and `prompt_chunk`) for a single run at load, and
   one for several runs from 256 rows; a smaller list for several runs is recorded when first used. The kernels read
   the chunk's plan and its runs' (`PromptPlan` in [`shared/step.h`](../shared/step.h)) from host memory, so a list
-  serves any chunk up to its size. The row-wise kernels take all the chunk's rows at once. The kernels that follow a sequence (the convolutions, the DeltaNet
-  recurrence, attention and its indexer, the PLE history, the rows the head reads) run once per run, on its rows.
+  serves any chunk up to its size. The row-wise kernels take all the chunk's rows at once. The kernels that follow a
+  sequence (the convolutions, the DeltaNet recurrence, attention and its indexer, the PLE history, the rows the head
+  reads) also run once for all the runs: each work-group finds its run from its row, or takes the run of its group
+  index. The fp16 copy of a sequence's K and V (`p_kv16`) and the attention that reads it run once per run, as the
+  copy's buffer holds one sequence.
+- A run of up to 8 rows (`PROMPT_SHORT_RUN`) attends as the decode step does, from the 8-bit cache over the cells the
+  indexer chose (`p_attn_rows`), with no fp16 copy. The core adds writing slots' next tokens to a chunk with runs to
+  spare, as runs of one row ([ADR-0053](adr/0053-writers-rows-ride-in-a-prompt-chunk.md)): they get a token from the
+  chunk instead of waiting for it, and the CPU computes none of their experts, since the chunk stages every expert.
 - Products run on the XMX units: BF16 weights directly, quantised dense weights dequantised to fp16 just before
   their product ([`kernels/gemm.cl`](../kernels/gemm.cl), [`kernels/quant/qgemm.cl`](../kernels/quant/qgemm.cl)).
   The experts' assignments are grouped by expert on the card, and each expert's tile of up to 64 rows is computed

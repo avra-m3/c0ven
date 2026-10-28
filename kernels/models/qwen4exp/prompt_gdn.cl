@@ -15,7 +15,8 @@
 // before its norm, scaled by 1/sqrt(128).
 REQD_SG __kernel void p_gdn_recur(__global const float *u, uint nch, __global const float *gb,
                                   __global float *S, ulong slot_stride, uint nkh, uint nvh,
-                                  __global const PromptPlan *pp, __global float *raw) {
+                                  __global const PromptPlan *runs, __global float *raw) {
+  __global const PromptPlan *pp = runs + get_group_id(2);  // one launch for all the chunk's runs
   // [token % 2][S k or S q][sub-group][lane]
   __local float part[2][2][GR][16];
   const uint lv = get_group_id(0) / 8, cb = get_group_id(0) % 8, lane = sg_lane(), r = sg_id();

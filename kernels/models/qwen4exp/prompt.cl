@@ -73,6 +73,21 @@ static inline float q8_0_load(__global const uchar *row, uint d) {
 #define ROW_OR_RETURN(t) \
   if ((t) >= pp->n) return;
 
+// The kernels that follow a sequence run once for all the chunk's runs (runs: PROMPT_MAX_RUNS plans in host memory,
+// the unused ones empty). RUN_OF_ROW: t, a row of the chunk, becomes a row of the run that holds it, pp that run's
+// plan and ri its index; a row past the last run returns. The runs fill the rows in order, so the search stops at the
+// first run that ends after t: a chunk of one run reads one plan. RUN_OF_GROUP: the run is group z.
+#define RUN_OF_ROW(t)                                                 \
+  uint ri = 0;                                                        \
+  while (ri + 1 < PROMPT_MAX_RUNS && (t) >= runs[ri].row0 + runs[ri].n) \
+    ri++;                                                             \
+  __global const PromptPlan *pp = runs + ri;                          \
+  if ((t) < pp->row0 || (t) - pp->row0 >= pp->n) return;             \
+  (t) -= pp->row0;
+#define RUN_OF_GROUP()                     \
+  const uint ri = get_group_id(2);         \
+  __global const PromptPlan *pp = runs + ri;
+
 // The hyper-connection kernels take rows r0 .. r1 - 1 of the chunk (all of them, or this card's own when the cards
 // split the rows, prompt.cpp): group y is row r0 + y.
 #define OWN_ROW_OR_RETURN(t) \
@@ -199,18 +214,21 @@ __kernel void p_hc_combine_norm(__global const half *p0, __global const half *p1
 
 // Rows r0 .. r1 - 1 among the run's last STEP_MAX_ROWS of R into the other card's R (Rp), so that both cards hold
 // the rows the head and the draft layer read. Groups (Q_HC_DIM / 64, STEP_MAX_ROWS), 64.
-__kernel void p_hc_share(__global const float *R, __global const PromptPlan *pp, uint r0, uint r1, __global float *Rp) {
+__kernel void p_hc_share(__global const float *R, __global const PromptPlan *runs, uint r0, uint r1,
+                         __global float *Rp) {
+  RUN_OF_GROUP()
   const uint n = pp->n, end = pp->row0 + n, i = get_global_id(0);
   const uint t = end - min(n, (uint)STEP_MAX_ROWS) + get_group_id(1);
   if (t < r0 || t >= min(r1, end)) return;
   Rp[(ulong)t * Q_HC_DIM + i] = R[(ulong)t * Q_HC_DIM + i];
 }
 
-// The run's last row of R into r (a row of the decode buffers), for the head. Groups Q_HC_DIM / 64, 64.
-__kernel void p_take_last(__global const float *R, __global const PromptPlan *pp, __global float *r) {
+// Each run's last row of R into row ri of r (the decode buffers), for the head. Groups (Q_HC_DIM / 64, 1, runs), 64.
+__kernel void p_take_last(__global const float *R, __global const PromptPlan *runs, __global float *r) {
+  RUN_OF_GROUP()
   uint i = get_global_id(0);
   if (pp->n == 0) return;
-  r[i] = R[(ulong)(pp->row0 + pp->n - 1) * Q_HC_DIM + i];
+  r[(ulong)ri * Q_HC_DIM + i] = R[(ulong)(pp->row0 + pp->n - 1) * Q_HC_DIM + i];
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -219,9 +237,9 @@ __kernel void p_take_last(__global const float *R, __global const PromptPlan *pp
 // u[t][ch] = silu(conv over m at positions p-3 .. p): rows of the chunk, or the state for positions before it.
 // Groups (ceil(nch / 64), T), 64.
 __kernel void p_gdn_conv(__global const float *m, __global const float *w, __global const float *state,
-                         ulong slot_stride, uint nch, __global const PromptPlan *pp, __global float *u) {
+                         ulong slot_stride, uint nch, __global const PromptPlan *runs, __global float *u) {
   uint ch = get_global_id(0), t = get_group_id(1);
-  ROW_OR_RETURN(t)
+  RUN_OF_ROW(t)
   m += (ulong)pp->row0 * nch;
   u += (ulong)pp->row0 * nch;
   if (ch >= nch) return;
@@ -241,7 +259,8 @@ __kernel void p_gdn_conv(__global const float *m, __global const float *w, __glo
 
 // The state keeps m at position p in slot p % 3: the chunk's last three rows go in. Groups ceil(nch / 64), 64.
 __kernel void p_gdn_conv_save(__global const float *m, __global float *state, ulong slot_stride, uint nch,
-                              __global const PromptPlan *pp) {
+                              __global const PromptPlan *runs) {
+  RUN_OF_GROUP()
   uint ch = get_global_id(0);
   if (ch >= nch) return;
   uint n = pp->n;
@@ -296,11 +315,13 @@ __kernel void p_gdn_out(__global const float *raw, __global const float *z, __gl
 // and to q16, [row][nq][256] (p_attn_tiled).
 __kernel void p_attn_prep(__global float *Q, __global const float *K, __global const float *V,
                           __global const float *qn, __global const float *kn, uint nq, uint nkv, __global uchar *kc,
-                          __global uchar *vc, __global const uint *pt, uint npp, __global const PromptPlan *pp,
-                          __global const uint *ppos, __global half *qt, uint hp, __global half *q16) {
+                          __global uchar *vc, __global const uint *pt, uint npp, __global const PromptPlan *runs,
+                          __global const uint *ppos_all, uint pstride, __global half *qt, uint hp,
+                          __global half *q16) {
   __local float x[Q_ATT_D], y[Q_ATT_D], red[64];
   uint g = get_group_id(0), t = get_group_id(1), d = get_local_id(0);
-  ROW_OR_RETURN(t)
+  RUN_OF_ROW(t)
+  __global const uint *ppos = ppos_all + (ulong)ri * pstride;
   const ulong r0 = pp->row0;
   Q += r0 * nq * 2 * Q_ATT_D;
   K += r0 * nkv * Q_ATT_D;
@@ -338,10 +359,12 @@ __kernel void p_attn_prep(__global float *Q, __global const float *K, __global c
 // The indexer's queries and raw keys: iq[t] holds 4 query heads then the key (640 values). Groups 0-3 norm and
 // rotate a query head in place; group 4 stores the raw key when the row's block is this card's. Groups (5, T), 128.
 __kernel void p_idx_prep(__global float *iq, __global const float *qn, __global uchar *raw, __global const uint *pt,
-                         uint npp, __global const PromptPlan *pp, __global const uint *ppos, uint c, uint C) {
+                         uint npp, __global const PromptPlan *runs, __global const uint *ppos_all, uint pstride,
+                         uint c, uint C) {
   __local float x[Q_IDX_D], red[64];
   uint g = get_group_id(0), t = get_group_id(1), d = get_local_id(0);
-  ROW_OR_RETURN(t)
+  RUN_OF_ROW(t)
+  __global const uint *ppos = ppos_all + (ulong)ri * pstride;
   uint pos = pp->pos0 + t, b = pos / Q_IDX_BLOCK;
   __global float *r = iq + ((ulong)pp->row0 + t) * (Q_IDX_H + 1) * Q_IDX_D;
   if (g < Q_IDX_H) {
@@ -362,9 +385,11 @@ __kernel void p_idx_prep(__global float *iq, __global const float *qn, __global 
 // Pools every block of this card the chunk completes: block b = pos0 / 4 + group, when 4b + 3 lies in the chunk;
 // rotated by the positions of its first cell, which is the table's entry 4 group. Groups (T / 4 + 1), 128.
 __kernel void p_idx_pool(__global const uchar *raw, __global const uint *pt, uint npp, __global const float *kn,
-                         __global float *pooled, __global const PromptPlan *pp, __global const uint *ppos, uint c,
-                         uint C) {
+                         __global float *pooled, __global const PromptPlan *runs, __global const uint *ppos_all,
+                         uint pstride, uint c, uint C) {
   __local float blk[Q_IDX_D], red[64];
+  RUN_OF_GROUP()
+  __global const uint *ppos = ppos_all + (ulong)ri * pstride;
   uint b = pp->pos0 / Q_IDX_BLOCK + get_group_id(0), d = get_local_id(0);
   uint last = Q_IDX_BLOCK * b + Q_IDX_BLOCK - 1;
   if (last < pp->pos0 || last >= pp->pos0 + pp->n || b % C != c) return;
@@ -390,8 +415,9 @@ static inline uint idx_own(uint nb, uint c, uint C) { return nb > c ? (nb - c + 
 #error "p_idx_score holds the indexer's heads in a float4"
 #endif
 __kernel void p_idx_score(__global const float *iq, __global const float *pooled, __global const uint *pt, uint npp,
-                          uint nb_max, __global const PromptPlan *pp, __global float *scores, uint c, uint C) {
+                          uint nb_max, __global const PromptPlan *runs, __global float *scores, uint c, uint C) {
   __local float4 qs[Q_IDX_D][IDX_SCORE_ROWS];  // qs[i][r]: the 4 heads' value i of row t0 + r
+  RUN_OF_GROUP()
   const uint lb = get_global_id(0), t0 = IDX_SCORE_ROWS * get_group_id(1), lid = get_local_id(0);
   const uint n = pp->n;
   if (t0 >= n) return;
@@ -439,13 +465,13 @@ __kernel void p_idx_score(__global const float *iq, __global const float *pooled
 // Row t's candidates on this card: its best Q_IDX_BLOCKS + 1 blocks in block order as (block, score) pairs, after their
 // count; rows IDX_CAND words apart. Groups (T), TOPK_WG.
 #define IDX_CAND (2 * (Q_IDX_BLOCKS + 1) + 2)
-__kernel void p_idx_cand(__global const float *scores, uint nb_max, __global const PromptPlan *pp,
+__kernel void p_idx_cand(__global const float *scores, uint nb_max, __global const PromptPlan *runs,
                          __global uint *blocks_all, __global float *bscores_all, __global uint *cand_all, uint c,
                          uint C) {
   __local uint hist[TOPK_HIST];
   __local uint scan[TOPK_WG];
   uint t = get_group_id(0), lid = get_local_id(0);
-  ROW_OR_RETURN(t)
+  RUN_OF_ROW(t)
   t += pp->row0;  // the chunk's row; the run's is t - row0
   uint nkv = pp->pos0 + t - pp->row0 + 1;
   __global uint *cand = cand_all + (ulong)t * IDX_CAND;
@@ -469,7 +495,7 @@ __kernel void p_idx_cand(__global const float *scores, uint nb_max, __global con
 // layer.cl's idx_merge does, into cells[t] (Q_IDX_CELLS apart) and ncells[t]; also as a mask for p_attn_tiled: one
 // bit per chosen block in sel[t] (nbw words), and wbx[t] = the partial block | its cells << 24 (0xffffff: none).
 // merged, blocks and bscores are per-row scratch. Groups (T), TOPK_WG.
-__kernel void p_idx_merge(__global const uint *c0, __global const uint *c1, __global const PromptPlan *pp,
+__kernel void p_idx_merge(__global const uint *c0, __global const uint *c1, __global const PromptPlan *runs,
                           __global float *merged_all, __global uint *blocks_all, __global float *bscores_all,
                           __global uint *cells_all, __global uint *ncells, __global uint *sel_all, uint nbw,
                           __global uint *wbx) {
@@ -477,7 +503,7 @@ __kernel void p_idx_merge(__global const uint *c0, __global const uint *c1, __gl
   __local uint scan[TOPK_WG];
   __local uint mb[2 * (Q_IDX_BLOCKS + 1)];
   uint t = get_group_id(0), lid = get_local_id(0);
-  ROW_OR_RETURN(t)
+  RUN_OF_ROW(t)
   t += pp->row0;  // the chunk's row; the run's is t - row0
   uint nkv = pp->pos0 + t - pp->row0 + 1;
   __global uint *cells = cells_all + (ulong)t * Q_IDX_CELLS;
@@ -546,20 +572,23 @@ __kernel void p_idx_merge(__global const uint *c0, __global const uint *c1, __gl
   if (lid == 0) ncells[t] = Q_IDX_CELLS;
 }
 
-// The 8-bit K and V of every cached position (up to the chunk's end) as fp16, for p_attn_xmx (prompt_attn.cl): kh and
-// vh hold [position][nkv][256], each found through the page table pt. Groups (nkv * Q_ATT_D / 32, positions), 64: one
-// work-item per Q8_0 block of K or V.
+// The 8-bit K and V of every cached position (up to the run's end) as fp16, for p_attn_xmx and p_attn_tiled
+// (prompt_attn.cl): kh and vh hold [position][nkv][256], each found through the page table pt. Not for a short run,
+// which attends from the 8-bit cache (p_attn_rows). Groups (nkv * Q_ATT_D / 32, any), 64: one work-item per Q8_0 block
+// of K or V, group y taking positions y, y + groups, and so on.
 __kernel void p_kv16(__global const uchar *kc, __global const uchar *vc, __global const uint *pt, uint npp, uint nkv,
                      __global const PromptPlan *pp, __global half *kh, __global half *vh) {
-  uint g = get_global_id(0), pos = get_group_id(1);
-  if (pos >= pp->pos0 + pp->n || g >= 2 * nkv * (Q_ATT_D / 32)) return;
+  const uint g = get_global_id(0), end = pp->pos0 + pp->n;
+  if (pp->n <= PROMPT_SHORT_RUN || g >= 2 * nkv * (Q_ATT_D / 32)) return;
   bool is_v = g >= nkv * (Q_ATT_D / 32);
   uint b = is_v ? g - nkv * (Q_ATT_D / 32) : g;  // block within the position's nkv heads
-  __global const uchar *blk = (is_v ? vc : kc) + kv_cell(kv_page(pt, npp, pp->slot, pos), pos) * nkv * KV_HEAD_BYTES +
-                              (b / (Q_ATT_D / 32)) * KV_HEAD_BYTES + (b % (Q_ATT_D / 32)) * Q8_BLOCK;
-  float d = vload_half(0, (__global const half *)blk);
-  __global half *out = (is_v ? vh : kh) + ((ulong)pos * nkv) * Q_ATT_D + 32 * b;
-  for (uint i = 0; i < 32; i++) out[i] = convert_half(d * (float)((__global const char *)blk)[2 + i]);
+  for (uint pos = get_group_id(1); pos < end; pos += get_num_groups(1)) {
+    __global const uchar *blk = (is_v ? vc : kc) + kv_cell(kv_page(pt, npp, pp->slot, pos), pos) * nkv * KV_HEAD_BYTES +
+                                (b / (Q_ATT_D / 32)) * KV_HEAD_BYTES + (b % (Q_ATT_D / 32)) * Q8_BLOCK;
+    float d = vload_half(0, (__global const half *)blk);
+    __global half *out = (is_v ? vh : kh) + ((ulong)pos * nkv) * Q_ATT_D + 32 * b;
+    for (uint i = 0; i < 32; i++) out[i] = convert_half(d * (float)((__global const char *)blk)[2 + i]);
+  }
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -747,9 +776,9 @@ __kernel void p_ple_norm(__global const float *v, __global const float *gates, _
 // R[t] += G + silu(C). Groups (Q_HC_DIM / 64, T), 64.
 __kernel void p_ple_conv(__global const float *N, __global const float *v, __global const float *gates,
                          __global const float *w, __global const float *hist, ulong slot_stride,
-                         __global const PromptPlan *pp, __global float *R) {
+                         __global const PromptPlan *runs, __global float *R) {
   uint ch = get_global_id(0), t = get_group_id(1);
-  ROW_OR_RETURN(t)
+  RUN_OF_ROW(t)
   const ulong r0 = pp->row0;
   N += r0 * Q_HC_DIM;
   v += r0 * Q_EMBD;
@@ -773,7 +802,8 @@ __kernel void p_ple_conv(__global const float *N, __global const float *v, __glo
 
 // The history keeps N at position p in slot p % 9: the chunk's last nine rows go in. Groups Q_HC_DIM / 64, 64.
 __kernel void p_ple_save(__global const float *N, __global float *hist, ulong slot_stride,
-                         __global const PromptPlan *pp) {
+                         __global const PromptPlan *runs) {
+  RUN_OF_GROUP()
   uint ch = get_global_id(0);
   uint n = pp->n;
   __global float *h = hist + pp->slot * slot_stride;

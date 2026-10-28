@@ -416,6 +416,7 @@ struct engine_ctx {
     std::vector<int32_t> toks, next;  // next: the slot's piece expected after this one, for its n-gram rows
     int32_t p1 = kNoToken, p2 = kNoToken;
     bool windowed = false, restart = false;
+    bool writer = false;  // a writing slot's next token, read beside the prompt pieces (add_writers)
   };
 
   // Reads the piece's tokens from its slot. False when there is nothing to read: the slot is gone or done, or its next
@@ -453,14 +454,64 @@ struct engine_ctx {
     return true;
   }
 
+  // Writing slots whose next token joins the chunk as a run of one row, while the chunk has runs to spare: they get a
+  // token from the chunk instead of waiting it out, and the chunk has staged every expert their rows route to, so the
+  // CPU computes none. A short run attends from the 8-bit cache as the decode step does (prompt_attn.cl, p_attn_rows).
+  // Under mu.
+  void add_writers(std::vector<Piece> &pieces) {
+    for (uint32_t s = 0; s < slots.size() && pieces.size() < PROMPT_MAX_RUNS; s++) {
+      const Slot &sl = slots[s];
+      if (!sl.used || sl.done || sl.fed < sl.prompt.size() || sl.fed >= info.max_ctx || sl.fed >= mapped_cells(s))
+        continue;
+      if (std::any_of(pieces.begin(), pieces.end(), [&](const Piece &pi) { return pi.slot == s; })) continue;
+      Piece pi;
+      pi.slot = s;
+      pi.pos0 = sl.fed;
+      pi.n = 1;
+      pi.toks = {sl.next};
+      pi.p1 = sl.fed >= 1 ? sl.tokens[sl.fed - 1] : kNoToken;
+      pi.p2 = sl.fed >= 2 ? sl.tokens[sl.fed - 2] : kNoToken;
+      pi.writer = true;
+      pieces.push_back(std::move(pi));
+    }
+  }
+
+  // A writer's row the prompt path has read, at row end - 1 of the chunk: as a decode step's row, its token joins the
+  // slot and the next is sampled; the draft layer reads the row so its cells stay whole, and makes no drafts while a
+  // prompt is read, as for several writers in decode. Runs on the engine thread.
+  void writer_read(const Piece &pi, const std::vector<Candidate> &cand, uint32_t end) {
+    StepIn row;
+    {
+      std::lock_guard<std::mutex> lk(mu);
+      Slot &sl = slots[pi.slot];
+      if (!sl.used || sl.done) return;
+      sl.tokens.push_back(pi.toks[0]);
+      sl.fed = pi.pos0 + 1;
+      sl.stats.steps++;
+      produce(pi.slot, cand);
+      sl.drafts.clear();
+      if (!model->drafting()) return;
+      row = {pi.slot, pi.pos0, sl.next, kNoToken, kNoToken};
+    }
+    if (model->dflash())
+      model->df_context_prompt(&row, 1, end);
+    else
+      model->mtp_catchup_prompt(&row, 1, end, {});  // writes its cell; no drafts while a prompt is read
+  }
+
   // Pieces of different slots through the prompt path as one chunk: the experts are staged once for all their rows
-  // (Model::prompt_runs). Runs on the engine thread.
+  // (Model::prompt_runs). Writing slots join it while it has runs to spare (add_writers). Runs on the engine thread.
   void prompt_chunk(uint32_t plan, std::vector<Piece> &pieces) {
+    {
+      std::lock_guard<std::mutex> lk(mu);
+      add_writers(pieces);
+    }
     std::vector<engine::qwen4exp::Model::PromptRun> runs;
-    uint32_t n = 0;
+    uint32_t n = 0, wrote = 0;
     for (const Piece &pi : pieces) {
       runs.push_back({pi.slot, pi.pos0, pi.toks.data(), pi.n, pi.p1, pi.p2});
       n += pi.n;
+      wrote += pi.writer;
     }
     const Piece &first = pieces[0];
     const bool one = pieces.size() == 1 && !first.next.empty();
@@ -472,12 +523,15 @@ struct engine_ctx {
       const uint64_t t1 = now_ns();
       record({ENGINE_TIMING_PROMPT, plan, n, 0, t0, t1});
       stats.prompt_chunks++;
-      stats.prompt_rows += n;
+      stats.prompt_rows += n - wrote;
       stats.prompt_ns += t1 - t0;
     }
     for (uint32_t r = 0, end = 0; r < pieces.size(); r++) {
       end += pieces[r].n;
-      piece_read(pieces[r], cand[r], end);
+      if (pieces[r].writer)
+        writer_read(pieces[r], cand[r], end);
+      else
+        piece_read(pieces[r], cand[r], end);
     }
     pieces.clear();
   }
