@@ -420,6 +420,8 @@ own docs and source, 246,571 tokens. The quant's value is given first, then its 
 | The same, positions 499-998 of each segment, the first 499 tokens read by the prompt path in one chunk | mean KL 0.1775, top-1 83.80%; the decode path alone on the same positions 0.1755, 83.92% | [2026-10-29](#2026-10-29-kl-bf16) |
 | The prompt path against the decode path on those positions, engine against engine | mean KL 0.035, top-1 93.4% | [2026-10-29](#2026-10-29-kl-bf16) |
 | The engine twice, and vLLM's BF16 reading twice | the same bytes each time | [2026-10-29](#2026-10-29-kl-bf16) |
+| llama.cpp `3cf0325` (CPU, AVX2 build) on the same file against the BF16 checkpoint, same set | one token a step: top-1 84.78%, mean KL 0.1602, p99 2.24; each segment in one batch at `-ub 512`: 84.44%, 0.1590. The engine minus llama.cpp step, paired: -0.0018 +/- 0.0063 (95%), so the engine's 0.158 is the file's loss | <a id="2026-10-29-kl-iq3s-llamacpp"></a>[2026-10-29](#2026-10-29-kl-iq3s-llamacpp) |
+| The engine against llama.cpp on the same file, and llama.cpp batch against llama.cpp step | 93.53% top-1, mean KL 0.035; 93.17%, 0.034 | [2026-10-29](#2026-10-29-kl-iq3s-llamacpp) |
 
 ### The engine image
 

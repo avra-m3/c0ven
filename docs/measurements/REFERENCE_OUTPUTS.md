@@ -288,12 +288,27 @@ mass it is within 3% of it. The report gives, per segment and over all positions
 tokens equal), the mean KL, the 99th percentile of KL, both perplexities (`exp` of the mean negative log-probability of
 the targets), the base's mass in its 1,024 tokens, and the base's mass on tokens missing from the engine's 1,024.
 
+### llama.cpp on the same file
+
+llama.cpp's CPU backend at `3cf0325` on the IQ3_S file, read over the KL set in the same dump format, splits the
+engine's KL between the file and the engine ([record](MEASUREMENTS.md#2026-10-29-kl-iq3s-llamacpp)). Against the base:
+
+| Arm | Top-1 | Mean KL | p99 KL | Perplexity |
+| --- | ---: | ---: | ---: | ---: |
+| the engine, one token a step | 84.72% | 0.158 | 1.88 | 6.056 |
+| llama.cpp, one token a step | 84.78% | 0.160 | 2.24 | 6.060 |
+| llama.cpp, each segment in one batch, `-ub 512` | 84.44% | 0.159 | 1.95 | 5.990 |
+
+The engine minus llama.cpp one token a step is -0.002, with a 95% interval of +/-0.006: the 0.158 is the file's loss.
+The engine against llama.cpp gives 0.035 and 93.5% top-1, and llama.cpp's two passes against each other 0.033 and
+93.2%. The build had the four AVX-512 options off; the rest is the line above.
+
 ## How the engine is compared
 
 | Check | How | What it shows |
 | --- | --- | --- |
 | Tokenizer | the engine's tokenizer on each prompt's `text` equals its `tokens` | the tokenizer |
-| KL set against the BF16 checkpoint (`kl_test`) | the engine reads each segment one token a step; its log-probabilities against the base ([The KL set](#the-kl-set)) | the distribution as a whole, the file's loss and the engine's together; the gate is in [TESTING.md](../TESTING.md#tolerances) |
+| KL set against the BF16 checkpoint (`kl_test`) | the engine reads each segment one token a step; its log-probabilities against the base ([The KL set](#the-kl-set)) | the distribution as a whole, the file's loss and the engine's together; on main all of it is the file's ([llama.cpp on the same file](#llamacpp-on-the-same-file)). The gate is in [TESTING.md](../TESTING.md#tolerances) |
 | Greedy agreement, free-running | the engine generates 128 tokens; report the length of the common prefix with llama.cpp's, and the fraction of positions equal | what a user sees. After the first flip the two texts differ and later positions are not comparable. `api_test` checks the first 32 tokens of `chat-hashmap` |
 
 The KL base of llama.cpp and the greedy agreement against llama.cpp, teacher-forced, are read by no check since

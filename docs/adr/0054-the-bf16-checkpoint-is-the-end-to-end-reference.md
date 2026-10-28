@@ -39,7 +39,9 @@ loads a file other than IQ3_S ([ADR-0038](0038-the-other-quants-load.md)).
 ## Why
 
 - The BF16 checkpoint is what the model is. Against it, the KL counts the file's loss and the engine's together, and
-  a change's cost is the difference it makes to that figure.
+  a change's cost is the difference it makes to that figure. llama.cpp on the same file gives 0.160 against it, the
+  engine 0.158: on main the figure is the file's loss
+  ([record](../measurements/MEASUREMENTS.md#2026-10-29-kl-iq3s-llamacpp)).
 - KL over the whole distribution sees changes that keep the top token, and per-segment figures show which kind of
   text a change hurts. The agent segment gives 0.359, against 0.087 to 0.148 for the others.
 - vLLM gives the same bytes on two passes, and the engine gives the same bytes on two runs, so the figures have no
