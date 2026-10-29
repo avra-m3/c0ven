@@ -41,15 +41,12 @@ foreach(type ${ENGINE_QUANT_TYPES})
   endforeach()
 endforeach()
 
-# The prompt path's quantised products, one module per type in the runs layout (qgemm_<type>), and for the experts'
-# types also in the file's layout (qgemm_<type>_file), for the experts streamed to the cards.
+# The prompt path's quantised products, one module per type in the runs layout (qgemm_<type>), and also in the file's
+# layout (qgemm_<type>_file), for the experts streamed to the cards: any type may be an expert type.
 foreach(type ${ENGINE_QUANT_TYPES})
   string(TOLOWER ${type} lower)
   engine_add_kernel_module(qgemm_${lower} SOURCE kernels/quant/qgemm.cl
                            OPTIONS -DQTYPE=QT_${type} -cl-intel-256-GRF-per-thread -I${CMAKE_SOURCE_DIR}/kernels/quant)
-endforeach()
-foreach(type Q8_0 Q5_1 Q2_0 IQ4_NL IQ4_XS IQ1_S IQ1_M IQ2_XXS IQ2_XS IQ2_S IQ3_XXS IQ3_S)
-  string(TOLOWER ${type} lower)
   engine_add_kernel_module(qgemm_${lower}_file SOURCE kernels/quant/qgemm.cl
                            OPTIONS -DQTYPE=QT_${type} -DLAYOUT_FILE -cl-intel-256-GRF-per-thread -I${CMAKE_SOURCE_DIR}/kernels/quant)
 endforeach()
