@@ -1176,26 +1176,38 @@ __kernel void mtp_cells(__global const uint *first, __global const StepPlan *pla
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// KV streaming (ADR-0008 item 3, Options::kv_resident): kc and vc hold R resident pages a layer; the host copies
-// kh and vh hold every page of the pool. where[p] is page p's resident slot or KV_NO_PAGE, spage[s] the page in slot
-// s, ref[s] the epoch (step of this layer) the slot was last read in, mark[p] the epoch page p was last claimed in.
-// kst holds {hand, epoch, misses}. Before attn_split, kvs_claim gives every page the rows read a resident slot:
-// by CLOCK, a slot read this step is never taken, one read the step before gets a second chance, any other is
-// taken. The missed pages' (page, slot) pairs go to miss; kvs_gather copies them in. One work-group of 1024.
-__kernel void kvs_claim(__global const uint *pt, uint npp, __global const uint *cells_all, __global const uint *ncells,
-                        __global const StepPlan *plan, __global uint *where, __global uint *spage, __global uint *ref,
-                        __global uint *mark, __global uint *kst, uint R, __global uint *miss, uint maxmiss) {
+// KV streaming (ADR-0008 item 3, Options::kv_resident): kc and vc hold a ring of resident pages a layer; the host
+// copies kh and vh hold every page of the pool. where[p] is page p's resident slot or KV_NO_PAGE, spage[s] the page
+// in slot s, ref[s] the epoch (step of this layer) the slot was last read in, mark[p] the epoch page p was last
+// claimed in. kst holds {hand, epoch, misses, 0, R}: the ring is slots [0, R), and R moves between steps
+// (kvs_trim). Before attn_split, kvs_claim gives every page the rows read a resident slot, and the `ahead` logical
+// pages after each row's, so that steps that open those pages need no claim (Model::step skips the claim while a
+// slot's pages are claimed through its position): by CLOCK, a slot read this step is never taken, one read the
+// step before gets a second chance, any other is taken. The missed pages' (page, slot) pairs go to miss;
+// kvs_gather copies them in. One work-group of 1024.
+__kernel void kvs_claim(__global const uint *pt, uint npp, uint npages, __global const uint *cells_all,
+                        __global const uint *ncells, __global const StepPlan *plan, __global uint *where,
+                        __global uint *spage, __global uint *ref, __global uint *mark, __global uint *kst,
+                        uint ahead, __global uint *miss, uint maxmiss) {
   __local uint nm;
-  const uint lid = get_local_id(0), W = get_local_size(0), epoch = kst[1] + 1;
+  const uint lid = get_local_id(0), W = get_local_size(0), epoch = kst[1] + 1, R = kst[4];
   if (lid == 0) nm = 0;
   barrier(CLK_LOCAL_MEM_FENCE);
   for (uint r = 0; r < plan->nrows; r++) {
-    const uint n = ncells[r], slot = plan->rows[r].slot;
+    const uint n = ncells[r], slot = plan->rows[r].slot, pos0 = plan->rows[r].pos;
     __global const uint *cells = cells_all + (ulong)r * Q_IDX_CELLS;
-    for (uint i = lid; i < n; i += W) {
-      const uint pos = cells[i];
-      if (pos % KV_PAGE_CELLS != 0 && i > 0 && cells[i - 1] == pos - 1) continue;  // the page's first cell claims it
-      const uint p = kv_page(pt, npp, slot, pos);
+    for (uint i = lid; i < n + ahead; i += W) {
+      uint p;
+      if (i < n) {
+        const uint pos = cells[i];
+        if (pos % KV_PAGE_CELLS != 0 && i > 0 && cells[i - 1] == pos - 1) continue;  // the page's first cell claims it
+        p = kv_page(pt, npp, slot, pos);
+      } else {  // the logical pages after the row's
+        const uint lp = pos0 / KV_PAGE_CELLS + 1 + (i - n);
+        if (lp >= npp) continue;
+        p = pt ? pt[slot * npp + lp] : slot * npp + lp;
+      }
+      if (p >= npages) continue;
       if (atomic_xchg(&mark[p], epoch) == epoch) continue;  // claimed already this step
       const uint s = where[p];
       if (s != KV_NO_PAGE) {
@@ -1209,7 +1221,7 @@ __kernel void kvs_claim(__global const uint *pt, uint npp, __global const uint *
   barrier(CLK_LOCAL_MEM_FENCE | CLK_GLOBAL_MEM_FENCE);
   if (lid != 0) return;
   const uint n = min(nm, maxmiss);
-  uint hand = kst[0];
+  uint hand = kst[0] < R ? kst[0] : 0;
   for (uint k = 0; k < n; k++) {
     const uint p = miss[2 * k];
     for (;;) {
@@ -1229,6 +1241,38 @@ __kernel void kvs_claim(__global const uint *pt, uint npp, __global const uint *
   kst[0] = hand;
   kst[1] = epoch;
   kst[2] = n;
+}
+
+// The ring's size set to R: the slots from R up give up their pages, and the hand comes back inside. Between steps.
+// One work-group of 1024.
+__kernel void kvs_trim(__global uint *where, __global uint *spage, __global uint *ref, __global uint *kst, uint R) {
+  const uint old = kst[4];
+  for (uint s = R + get_local_id(0); s < old; s += get_local_size(0)) {
+    const uint p = spage[s];
+    if (p != KV_NO_PAGE && where[p] == s) where[p] = KV_NO_PAGE;
+    spage[s] = KV_NO_PAGE;
+    ref[s] = 0;
+  }
+  barrier(CLK_GLOBAL_MEM_FENCE);  // every lane has read the old size
+  if (get_local_id(0) == 0) {
+    if (kst[0] >= R) kst[0] = 0;
+    kst[4] = R;
+  }
+}
+
+// A slot's first `pages` logical pages leave the ring: their slots are free for the next claims. Between steps.
+// Groups (any), 256.
+__kernel void kvs_drop(__global const uint *pt, uint npp, uint npages, uint slot, uint pages, __global uint *where,
+                       __global uint *spage, __global uint *ref) {
+  for (uint lp = get_global_id(0); lp < pages && lp < npp; lp += get_global_size(0)) {
+    const uint p = pt[slot * npp + lp];
+    if (p >= npages) continue;
+    const uint s = where[p];
+    if (s == KV_NO_PAGE) continue;
+    where[p] = KV_NO_PAGE;
+    spage[s] = KV_NO_PAGE;
+    ref[s] = 0;
+  }
 }
 
 // The missed pages' K and V from the host copies into their resident slots. Groups (any), 64; group g copies misses

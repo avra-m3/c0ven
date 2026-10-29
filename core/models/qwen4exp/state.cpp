@@ -62,6 +62,7 @@ void Model::set_pages(uint32_t slot, uint32_t first, const uint32_t *pages, uint
     if (pages[i] >= kv_pages_ || pages[i] % ncards_ != (first + i) % ncards_)
       throw std::runtime_error("page " + std::to_string(pages[i]) + " cannot hold logical page " +
                                std::to_string(first + i));
+  if (kv_res_) kvs_to_[slot] = 0;  // the slot's new pages have no resident copy
   if (n == 0) return;
   // The immediate list copies from the caller's memory before it returns.
   for (auto &card : cards_) {
@@ -74,6 +75,7 @@ void Model::copy_cells(uint32_t from, uint32_t to, uint32_t cells) {
   if (from >= kv_pages_ || to >= kv_pages_ || from % ncards_ != to % ncards_ || cells >= KV_PAGE_CELLS)
     throw std::runtime_error("copy between pages out of range");
   if (cells == 0 || from == to) return;
+  if (kv_res_) std::fill(kvs_to_.begin(), kvs_to_.end(), 0);  // `to` loses its resident copy
   const uint32_t none = KV_NO_PAGE;
   for (auto &card : cards_) {
     const uint32_t C = card->C;

@@ -32,8 +32,12 @@ inline constexpr uint32_t kFetchRows = 1024;
 inline constexpr uint32_t kIdxXmxRows = 16, kIdxXmxSg = 4, kIdxXmxBlocks = 16 * 2 * kIdxXmxSg;
 inline constexpr uint32_t kAttSplits = (Q_IDX_CELLS + 63) / 64;  // attn_split's ATT_SPLITS
 inline constexpr uint32_t kIdxCand = 2 * (Q_IDX_BLOCKS + 1) + 2;  // words per row of the indexer's candidates
-// The pages a decode step's rows can read at most: the streamed pool's miss list (kvs_claim).
-inline constexpr uint32_t kKvsMaxMiss = STEP_MAX_ROWS * (Q_IDX_BLOCKS + 2);
+// The streamed pool (kvs_claim): the logical pages a claim takes past each row's, so the steps that open them need
+// no claim; the pages a step's rows can claim at most, its miss list; and what a width's list without the claim adds
+// to its key (Model::record).
+inline constexpr uint32_t kKvsAhead = 32;
+inline constexpr uint32_t kKvsMaxMiss = STEP_MAX_ROWS * (Q_IDX_BLOCKS + 2 + kKvsAhead);
+inline constexpr uint32_t kKvsSkipList = 16;
 inline constexpr uint32_t kMvKsRows = 512;  // dense products of up to this many rows split K (matvec_ks)
 // The decode step's widths, each with its own lists: a step runs the smallest of at least its rows, and its products
 // and expert kernels compute that many.
@@ -138,8 +142,9 @@ struct Model::Layer {
   // pages only, at local page p / C.
   uint8_t *kc = nullptr, *vc = nullptr, *raw = nullptr;
   float *pooled = nullptr;
-  // Streamed (Options::kv_resident, layer.cl's kvs_claim): kc and vc hold kv_res_ resident pages; khost and vhost in
-  // host memory hold every page; where, spage, ref, mark, kst and miss are the residency's state.
+  // Streamed (Options::kv_resident, layer.cl's kvs_claim): kc and vc hold a ring of up to kv_res_ resident pages,
+  // kst[4] its size now; khost and vhost in host memory hold every page; where, spage, ref, mark, kst and miss are
+  // the residency's state.
   uint8_t *khost = nullptr, *vhost = nullptr;
   uint32_t *where = nullptr, *spage = nullptr, *ref = nullptr, *mark = nullptr, *kst = nullptr, *miss = nullptr;
 };
