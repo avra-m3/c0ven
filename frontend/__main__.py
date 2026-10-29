@@ -54,12 +54,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="the KV pool the slots share, in tokens (512k = 524,288), at least --context; default: slots x context",
     )
     p.add_argument(
-        "--kv-stream",
-        action="store_true",
-        help="stream the KV cache: 32,768 cells of K and V per slot stay in VRAM, the rest in host memory, and the "
-        "room caches experts (ADR-0008 item 3)",
-    )
-    p.add_argument(
         "--default-max-tokens",
         type=protocol.tokens,
         default=0,
@@ -105,7 +99,6 @@ def engine_argv(args: argparse.Namespace, arch: str = "", table_cache: Path | No
         "--context",
         str(args.context),
         *(["--kv-tokens", str(args.kv_tokens)] if args.kv_tokens else []),
-        *(["--kv-stream"] if args.kv_stream else []),
         "--log-level",
         args.log_level,
     ]
