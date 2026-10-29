@@ -369,3 +369,81 @@ __kernel void p_attn_rows_merge(__global const float *Q, uint nq, __global const
   float gate = Q[((ulong)r * nq + lh) * 2 * Q_ATT_D + Q_ATT_D + d];
   o16[((ulong)r * nq + lh) * Q_ATT_D + d] = convert_half(acc / sum * sigmoid(gate));
 }
+
+// The prompt indexer's scores (p_idx_score's, same rows, blocks and stores) on the XMX units. Each operand is split
+// in two fp16 terms, x = hi + lo, and a score is hi hi + hi lo + lo hi summed in f32 (three DPAS calls): plain fp16
+// changes a row's chosen blocks one row in six, the split as often as summing the f32 products in another order (on
+// long-256k's queries and keys of layers 3, 23 and 47: 0 to 2 rows of 4,352 differ, by one block of 512). At
+// position 239,360, 10.5 ms a layer against p_idx_score's 21.2; a 255k prompt's 8.9 s become 4.3 s.
+// A work-group takes IDX_XMX_ROWS rows of a run, as 8 tiles of 2 rows by 4 heads (the queries split by p_idx_qsplit:
+// qh, ql [chunk row][Q_IDX_D][Q_IDX_H]); each sub-group takes 16 IDX_XMX_TB blocks, their keys split by p_idx_ksplit
+// (kh, kl: [local page][Q_IDX_D]). Groups
+// (ceil(nb_max / (16 IDX_XMX_TB IDX_XMX_SG)), ceil(T / IDX_XMX_ROWS), runs), 16 IDX_XMX_SG.
+#define IDX_XMX_ROWS 16
+#define IDX_XMX_TB 2
+#define IDX_XMX_SG 4
+#if Q_IDX_H != 4 || Q_IDX_D % 16
+#error "p_idx_score_xmx tiles 2 rows by the indexer's 4 heads, and 16 dimensions a step"
+#endif
+static inline uint idx_own_x(uint nb, uint c, uint C) { return nb > c ? (nb - c + C - 1) / C : 0; }
+REQD_SG __kernel void p_idx_score_xmx(__global const ushort *qh, __global const ushort *ql, __global const half *kh,
+                                      __global const half *kl, __global const uint *pt, uint npp, uint nb_max,
+                                      __global const PromptPlan *runs, __global float *scores, uint c, uint C) {
+  __global const PromptPlan *pp = runs + get_group_id(2);
+  const uint lane = sg_lane(), n = pp->n, t0 = IDX_XMX_ROWS * get_group_id(1);
+  if (t0 >= n) return;
+  scores += (ulong)pp->row0 * nb_max;
+  const uint rows = min((uint)IDX_XMX_ROWS, n - t0);
+  const uint nkv_last = pp->pos0 + t0 + rows;
+  if (nkv_last <= Q_IDX_CELLS) return;
+  const uint nown = idx_own_x(nkv_last / Q_IDX_BLOCK, c, C);
+  const uint b0 = (get_group_id(0) * get_num_sub_groups() + get_sub_group_id()) * 16 * IDX_XMX_TB;
+  if (b0 >= nown) return;
+  ulong K[IDX_XMX_TB];
+  for (uint j = 0; j < IDX_XMX_TB; j++) {
+    const uint lb = min(b0 + 16 * j + lane, nown - 1);
+    K[j] = (ulong)(kv_page(pt, npp, pp->slot, (lb * C + c) * Q_IDX_BLOCK) / C) * Q_IDX_D;
+  }
+  float8 acc[IDX_XMX_ROWS / 2][IDX_XMX_TB];
+  for (uint i = 0; i < IDX_XMX_ROWS / 2; i++)
+    for (uint j = 0; j < IDX_XMX_TB; j++) acc[i][j] = (float8)0.0f;
+  for (uint s = 0; s < Q_IDX_D / 16; s++) {
+    int8 bh[IDX_XMX_TB], bl[IDX_XMX_TB];
+    for (uint j = 0; j < IDX_XMX_TB; j++) {
+      bh[j] = as_int8(vload8(0, (__global const uint *)(kh + K[j]) + 8 * s));
+      bl[j] = as_int8(vload8(0, (__global const uint *)(kl + K[j]) + 8 * s));
+    }
+    for (uint i = 0; i < IDX_XMX_ROWS / 2; i++) {
+      // The tile's rows 2i and 2i + 1 (the last row again past the run's end), 4 heads each, at dimension 16 s + lane.
+      const ulong r0 = ((ulong)(pp->row0 + t0 + min(2 * i, rows - 1)) * Q_IDX_D + 16 * s + lane) * Q_IDX_H;
+      const ulong r1 = ((ulong)(pp->row0 + t0 + min(2 * i + 1, rows - 1)) * Q_IDX_D + 16 * s + lane) * Q_IDX_H;
+      const short8 a = as_short8((ushort8)(vload4(0, qh + r0), vload4(0, qh + r1)));
+      const short8 b = as_short8((ushort8)(vload4(0, ql + r0), vload4(0, ql + r1)));
+      for (uint j = 0; j < IDX_XMX_TB; j++) {
+        acc[i][j] = dpas_f16(a, bh[j], acc[i][j]);
+        acc[i][j] = dpas_f16(a, bl[j], acc[i][j]);
+        acc[i][j] = dpas_f16(b, bh[j], acc[i][j]);
+      }
+    }
+  }
+  uint lim[IDX_XMX_ROWS];  // row r's blocks on this card, those complete at its position (none below the width)
+  for (uint r = 0; r < IDX_XMX_ROWS; r++) {
+    const uint nkv = pp->pos0 + t0 + r + 1;
+    lim[r] = r < rows && nkv > Q_IDX_CELLS ? idx_own_x(nkv / Q_IDX_BLOCK, c, C) : 0;
+  }
+  for (uint i = 0; i < IDX_XMX_ROWS / 2; i++)
+    for (uint j = 0; j < IDX_XMX_TB; j++) {
+      const uint lb = b0 + 16 * j + lane;
+      const float8 a = acc[i][j];
+      for (uint u = 0; u < 2; u++) {
+        const uint r = 2 * i + u, t = t0 + r;
+        if (lb >= lim[r]) continue;
+        float score = 0.0f;
+        score += fmax(u ? a.s4 : a.s0, 0.0f);
+        score += fmax(u ? a.s5 : a.s1, 0.0f);
+        score += fmax(u ? a.s6 : a.s2, 0.0f);
+        score += fmax(u ? a.s7 : a.s3, 0.0f);
+        scores[(ulong)t * nb_max + lb] = score;
+      }
+    }
+}

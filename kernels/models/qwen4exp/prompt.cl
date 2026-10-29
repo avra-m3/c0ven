@@ -464,7 +464,8 @@ __kernel void p_idx_pool(__global const uchar *raw, __global const uint *pt, uin
 static inline uint idx_own(uint nb, uint c, uint C) { return nb > c ? (nb - c + C - 1) / C : 0; }
 
 // scores[t][lb] = sum_h relu(iq_h . K_b) for this card's blocks complete at row t's position, by local index lb
-// (block lb C + c). A work-item takes one block for IDX_SCORE_ROWS consecutive rows, reading its key once; each sum
+// (block lb C + c). The prompt runs p_idx_score_xmx (prompt_attn.cl) instead; this is its f32 reference, the decode
+// step's sums (layer.cl). A work-item takes one block for IDX_SCORE_ROWS consecutive rows, reading its key once; each sum
 // is the one-row expression in the same order, so the same bits. Groups (ceil(nb_max / 64), ceil(T / IDX_SCORE_ROWS)),
 // 64; rows nb_max apart.
 #define IDX_SCORE_ROWS 8
@@ -516,6 +517,32 @@ __kernel void p_idx_score(__global const float *iq, __global const float *pooled
     score += fmax(dot[r].s2, 0.0f);
     score += fmax(dot[r].s3, 0.0f);
     scores[(ulong)t * nb_max + lb] = score;
+  }
+}
+
+// The pooled keys of the blocks the runs' rows score, each split in two fp16 terms, x = hi + lo (p_idx_score_xmx):
+// kh, kl at the key's local page, as pooled. Groups (nb_max, 1, runs), Q_IDX_D.
+__kernel void p_idx_ksplit(__global const float *pooled, __global const uint *pt, uint npp, uint nb_max,
+                           __global const PromptPlan *runs, __global half *kh, __global half *kl, uint c, uint C) {
+  RUN_OF_GROUP()
+  const uint lb = get_group_id(0), d = get_local_id(0);
+  if (pp->n == 0 || lb >= idx_own((pp->pos0 + pp->n) / Q_IDX_BLOCK, c, C)) return;
+  const ulong at = (ulong)(kv_page(pt, npp, pp->slot, (lb * C + c) * Q_IDX_BLOCK) / C) * Q_IDX_D + d;
+  const float x = pooled[at];
+  const half h = convert_half(x);
+  kh[at] = h;
+  kl[at] = convert_half(x - (float)h);
+}
+
+// The chunk's indexer queries (iq, [row][Q_IDX_H + 1][Q_IDX_D]: the heads, then the raw key) split in two fp16 terms
+// for p_idx_score_xmx: qh, ql [row][Q_IDX_D][Q_IDX_H]. Groups (T), Q_IDX_D.
+__kernel void p_idx_qsplit(__global const float *iq, __global half *qh, __global half *ql) {
+  const uint t = get_group_id(0), d = get_local_id(0);
+  for (uint h = 0; h < Q_IDX_H; h++) {
+    const float x = iq[((ulong)t * (Q_IDX_H + 1) + h) * Q_IDX_D + d];
+    const half hi = convert_half(x);
+    qh[((ulong)t * Q_IDX_D + d) * Q_IDX_H + h] = hi;
+    ql[((ulong)t * Q_IDX_D + d) * Q_IDX_H + h] = convert_half(x - (float)hi);
   }
 }
 

@@ -122,6 +122,10 @@ void Model::load_prompt(Card &card) {
   P.nbw = (opt_.max_ctx / Q_IDX_BLOCK + 31) / 32;
   P.sel = u32(T * P.nbw);
   P.wbx = u32(T);
+  P.ikh = u16((uint64_t)kv_pages_ / ncards_ * Q_IDX_D);  // the pooled keys split for p_idx_score_xmx (p_idx_ksplit)
+  P.ikl = u16((uint64_t)kv_pages_ / ncards_ * Q_IDX_D);
+  P.iqh = u16(T * Q_IDX_D * Q_IDX_H);  // and the queries (p_idx_qsplit)
+  P.iql = u16(T * Q_IDX_D * Q_IDX_H);
   if (kv_res_) P.kvst = dev((uint64_t)2 * T * card.nkv * KV_HEAD_BYTES);  // p_attn_prep's staging, K then V
   card.up->fill(P.qt, &zero16, 2, T * Q_ATT_D * P.hp * 2);
   P.rl = f32(T * (Q_EXPERTS + 1));
@@ -447,8 +451,12 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
                T, 1, Q_IDX_D);
       L.launch(q4("p_idx_pool"), {Ly.raw, card.ptab, npp_, Ly.ikn, Ly.pooled, runs_p, ppos_, pstride, c, C},
                T / 4 + 1, 1, runs, Q_IDX_D);
-      L.launch(q4("p_idx_score"), {P.iq, Ly.pooled, card.ptab, npp_, nbl, runs_p, P.scores, c, C}, (nbl + 63) / 64,
-               (T + kIdxScoreRows - 1) / kIdxScoreRows, runs, 64);
+      L.launch(q4("p_idx_ksplit"), {Ly.pooled, card.ptab, npp_, nbl, runs_p, P.ikh, P.ikl, c, C}, nbl, 1, runs,
+               Q_IDX_D);
+      L.launch(q4("p_idx_qsplit"), {P.iq, P.iqh, P.iql}, T, 1, 1, Q_IDX_D);
+      L.launch(kernel(c, "qwen4exp_attn", "p_idx_score_xmx"),
+               {P.iqh, P.iql, P.ikh, P.ikl, card.ptab, npp_, nbl, runs_p, P.scores, c, C}, (nbl + kIdxXmxBlocks - 1) / kIdxXmxBlocks,
+               (T + kIdxXmxRows - 1) / kIdxXmxRows, runs, 16 * kIdxXmxSg);
       L.launch(q4("p_idx_cand"), {P.scores, nbl, runs_p, P.blocks, P.bscores, P.cand, c, C}, T, 1, 1, 1024);
       const uint32_t *c0 = P.cand, *c1 = nullptr;
       if (C > 1) {

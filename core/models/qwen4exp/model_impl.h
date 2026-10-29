@@ -28,6 +28,8 @@ inline constexpr uint32_t kHcSplitRows = 2048;
 // The largest prompt chunk whose uncached experts are fetched as its router picks them (prompt.cpp, fetch_experts)
 // instead of all staged by the recorded copy list.
 inline constexpr uint32_t kFetchRows = 1024;
+// p_idx_score_xmx's work-group (prompt_attn.cl): IDX_XMX_ROWS rows by IDX_XMX_SG sub-groups of 16 IDX_XMX_TB blocks.
+inline constexpr uint32_t kIdxXmxRows = 16, kIdxXmxSg = 4, kIdxXmxBlocks = 16 * 2 * kIdxXmxSg;
 inline constexpr uint32_t kAttSplits = (Q_IDX_CELLS + 63) / 64;  // attn_split's ATT_SPLITS
 inline constexpr uint32_t kIdxCand = 2 * (Q_IDX_BLOCKS + 1) + 2;  // words per row of the indexer's candidates
 // The pages a decode step's rows can read at most: the streamed pool's miss list (kvs_claim).
@@ -277,6 +279,8 @@ struct Model::PromptCard {
   uint32_t *cand = nullptr, *cand_peer = nullptr;  // the indexer's candidates: this card's, and the other card's
   float *merged = nullptr;
   uint16_t *kh = nullptr, *vh = nullptr;  // the layer's K and V as fp16, every position
+  uint16_t *iqh = nullptr, *iql = nullptr;  // the chunk's indexer queries as two fp16 terms (p_idx_qsplit)
+  uint16_t *ikh = nullptr, *ikl = nullptr;  // the pooled keys as two fp16 terms, at their local page (p_idx_ksplit)
   uint8_t *kvst = nullptr;  // streamed: p_attn_prep's new K then V cells, [row][nkv] (p_kv_flush)
   float *apart = nullptr;                 // the short runs' attention splits (p_attn_rows)
   uint16_t *qt = nullptr;                 // the queries as fp16, dimension-major (p_attn_xmx)
