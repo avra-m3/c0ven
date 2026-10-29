@@ -48,7 +48,7 @@ static inline float8 dpas_bf16(short8 a, int8 b, float8 c) { return intel_sub_gr
 // Sub-group block read: lane i gets p[i]. p must be 4-byte aligned.
 static inline ushort sg_read_us(__global const ushort *p) { return intel_sub_group_block_read_us(p); }
 // 8 values a lane, 256 bytes: lane i gets (or writes) p[16 j + i] as element j. p must be 16-byte aligned.
-// Checked by core/tests/greedy_test.cpp given a prompt chunk, through the prompt path's p_moe_scatter.
+// Checked by core/tests/kl_test.cpp given prompt tokens, through the prompt path's p_moe_scatter.
 static inline ushort8 sg_read_us8(__global const ushort *p) { return intel_sub_group_block_read_us8(p); }
 static inline void sg_write_us8(__global ushort *p, ushort8 v) { intel_sub_group_block_write_us8(p, v); }
 // Element j of the result: element j of x in lane `from`.

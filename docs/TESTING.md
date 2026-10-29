@@ -2,7 +2,9 @@
 
 How each part of the engine is checked, against what, where, and in how long.
 
-The reference is llama.cpp's CPU backend at `3cf0325` ([ADR-0012](adr/0012-correctness-reference.md)), through the
+End to end, the reference is Qwen's BF16 checkpoint read by vLLM on the KL set
+([ADR-0054](adr/0054-the-bf16-checkpoint-is-the-end-to-end-reference.md)); for layers and kernels it is llama.cpp's CPU
+backend at `3cf0325` and ggml ([ADR-0012](adr/0012-correctness-reference.md)). Both are described in the
 [reference outputs](measurements/REFERENCE_OUTPUTS.md). Tests use `pytest`, `numpy` to compare tensors, and plain
 executables under `ctest` for the core's unit tests ([ADR-0004](adr/0004-write-or-reuse.md)).
 
@@ -17,7 +19,7 @@ Level Zero has no CPU device, so every kernel test needs a B60 ([ADR-0001](adr/0
 | 2. Wrapper | each Intel builtin in [ADR-0003](adr/0003-kernel-language.md)'s header (block reads, DPAS, sub-group shuffles) | results written in the test ([record](measurements/MEASUREMENTS.md#2026-10-11-kernel-spike)) | the machine | 1 min |
 | 3. Kernel | each kernel on fixed inputs: every expert type's decode, the dense products, DeltaNet, attention, the indexer, norms, sampling | ggml's CPU code for the same operation, through the pinned ggml, or a double-precision reference in the test | the machine | 5 min |
 | 4. Layer | one whole block of the model on fixed inputs. Only the image encoder has one | llama.cpp's rows for the same images ([record](measurements/MEASUREMENTS.md#2026-10-17-encoder-reference)) | the machine | 10 min |
-| 5. End to end | the tokenizer; greedy agreement, teacher-forced and free-running; mean KL and top-1 agreement on the KL text | the reference prompts, greedy tokens and KL base ([REFERENCE_OUTPUTS.md](measurements/REFERENCE_OUTPUTS.md)) | the machine | 30 min |
+| 5. End to end | the tokenizer; top-1 agreement, mean and p99 KL and perplexity on the KL set, teacher-forced | the reference prompts and the BF16 base dump ([REFERENCE_OUTPUTS.md](measurements/REFERENCE_OUTPUTS.md#the-kl-set)) | the machine | 30 min |
 | 6. Determinism | a request gives the same tokens alone, in a window, batched and packed with other prompts, with [ADR-0016](adr/0016-how-a-change-is-judged.md)'s switches set (no PCIe share of the misses, no adaptive swaps, no prefetching, no prompt cache). Also two runs of one request, and the CPU's misses on 8 and 16 workers | the same request run alone | the machine | 30 min |
 | 7. Performance | accepted tokens and wall time per window ([ADR-0016](adr/0016-how-a-change-is-judged.md)); decode and prompt tokens/s at 4K against [ADR-0019](adr/0019-performance-target.md)'s target | the latest [measurements](measurements/MEASUREMENTS.md), before and after alternating (ABBA) on fresh processes, 3 rounds, medians and ranges ([method](measurements/MEASUREMENTS.md#how-the-numbers-were-taken)) | the machine, set up as the method's step 1 says | about 30 min |
 
@@ -36,7 +38,7 @@ The tests that exist ([DEVELOPING.md](DEVELOPING.md#tests) describes each):
 | 2 | `ze_smoke_test`, `topk_test`, `gemm_test`'s DPAS layout check | some builtins |
 | 3 | `matvec_test`, `moe_test`, `gemm_test`, `qgemm_test`, `attn_test`, `vision_test` | |
 | 4 | `encoder_test` | a text layer |
-| 5 | `greedy_test` (teacher-forced), `api_test`, the tokenizer check in `tests/end_to_end/` | free-running, KL |
+| 5 | `kl_test`, `api_test`, the tokenizer check in `tests/end_to_end/` | free-running |
 | 6 | `batch_test`, `pack_test`, `api_test`'s drafting and swap cases | two runs, worker counts |
 
 ## Tolerances
@@ -51,8 +53,7 @@ says otherwise.
 | FP16 products on the XMX units (the prompt path) | 2e-3 | fp16 has 11 bits, a rounding of 4.9e-4 per value. Measured: 1e-7 to 3e-4 ([record, part 8](measurements/MEASUREMENTS.md#2026-10-13-design-inputs)) |
 | BF16 outputs (the image encoder's kernels that write a product's next input, [MODEL_VISION.md](spec/MODEL_VISION.md)) | 1e-2 | bf16 has 8 bits, a rounding of 3.9e-3 per value, plus the fp16 error where inputs are fp16 |
 | The DeltaNet recurrence over 2,048 tokens, FP32 state | 1e-5 | checked against double precision in the same record; the state does not grow, as its gate is below 1 |
-| End to end, the KL text | mean KL at most 0.02, top-1 agreement at least 95% | 0.02 is ADR-0012's gate. Changing only llama.cpp's batch size gives 0.035 KL and 91% top-1 ([why](measurements/REFERENCE_OUTPUTS.md#what-changes-it)), so this check feeds the text in 512-token pieces. *Provisional* until first measured |
-| End to end, greedy, teacher-forced | at least 95% of positions, on prompts of up to 512 tokens | those references are the most reliable ([which to trust](measurements/REFERENCE_OUTPUTS.md#which-greedy-outputs-to-trust)); longer prompts are reported, not gated |
+| End to end, the KL set against the BF16 checkpoint | mean KL at most 0.170, top-1 agreement at least 83.5% | the IQ3_S file read by the engine gives 0.158 and 84.7% ([record](measurements/MEASUREMENTS.md#2026-10-29-kl-bf16)); the gate catches breakage. A change that moves the distribution is judged by `kl_test --ab`, the change in mean KL with its 95% interval ([ADR-0054](adr/0054-the-bf16-checkpoint-is-the-end-to-end-reference.md)) |
 
 ## Test data
 
@@ -60,7 +61,8 @@ says otherwise.
 | --- | --- | --- |
 | Small vectors (a few KB): wrapper results, hand-made kernel inputs | committed, beside the tests | relative path |
 | The reference prompts and greedy tokens | committed, `reference/` | relative path |
-| The KL base (8.1 GB) | not distributed; [REFERENCE_OUTPUTS.md](measurements/REFERENCE_OUTPUTS.md) says how to make it | `FLASH_REF_DIR` |
+| The BF16 base dump, `kl-base-bf16.bin` (41 MB) | not in Git; [REFERENCE_OUTPUTS.md](measurements/REFERENCE_OUTPUTS.md#the-kl-set) says how to make it and gives its sha256 | `FLASH_REF_DIR` |
+| llama.cpp's KL base (8.1 GB) | not distributed, and read by no check; [REFERENCE_OUTPUTS.md](measurements/REFERENCE_OUTPUTS.md) says how to make it | `FLASH_REF_DIR` |
 | The encoder's reference rows | the machine, `$FLASH_REF_DIR/vision` ([record](measurements/MEASUREMENTS.md#2026-10-17-encoder-reference)) | `FLASH_REF_DIR` |
 | The model | the machine, `/models` in the container ([MODEL_FILES.md](MODEL_FILES.md)) | `FLASH_MODEL_DIR`, default `/models` |
 

@@ -32,8 +32,8 @@ set_tests_properties(encoder_test PROPERTIES TIMEOUT 1800)
 engine_test(batch_test GPU SOURCES batch_test.cpp ARGS ${CMAKE_SOURCE_DIR}/reference)
 engine_test(pack_test GPU SOURCES pack_test.cpp ARGS ${CMAKE_SOURCE_DIR}/reference)
 engine_test(dflash_test GPU SOURCES dflash_test.cpp ARGS ${CMAKE_SOURCE_DIR}/reference)
-engine_test(greedy_test GPU SOURCES greedy_test.cpp ARGS ${CMAKE_SOURCE_DIR}/reference 512)
-set_tests_properties(greedy_test PROPERTIES TIMEOUT 3600)
+engine_test(kl_test GPU SOURCES kl_test.cpp ARGS ${CMAKE_SOURCE_DIR}/reference/kl-set.jsonl kl-base-bf16.bin)
+set_tests_properties(kl_test PROPERTIES TIMEOUT 1800)
 
 # The C ABI, from C, through the shared library.
 add_executable(api_test api_test.c)

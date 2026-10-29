@@ -52,7 +52,7 @@ docker exec engine-dev bash -c 'cd /src/build && ENGINE_EXPECT_GPUS=2 ctest -L g
 | `topk_test` | 2 | `topk_rows` against the host: the k largest of rows of up to 248,320 values, ties to the lower indices, both of its paths |
 | `gemm_test` | 2, 3 | the prompt path's fp16 and bf16 products on the XMX units, and the DPAS register layout, 2e-3 |
 | `qgemm_test` | 3 | the prompt path's quantised products: dense weights dequantised to fp16, the experts decoded on the fly in both layouts, 2e-3 |
-| `greedy_test` | 5 | greedy agreement with llama.cpp's tokens, teacher-forced, on the prompts of up to 512 tokens: 95% or more |
+| `kl_test` | 5 | the engine's distribution against the BF16 checkpoint's on the KL set, teacher-forced one token a step: mean KL at most 0.170, top-1 agreement at least 83.5%. Needs `$FLASH_REF_DIR/kl-base-bf16.bin` |
 | `attn_test` | 3 | the prompt path's two attention kernels against double precision, dense and sparse rows, 2e-3 |
 | `vision_test` | 3 | the image encoder's kernels against double precision: 1e-5 for f32 outputs, 2e-3 for fp16, 1e-2 for bf16 |
 | `encoder_test` | 4 | the image encoder against llama.cpp's rows for the same images and video frame pairs ([images](measurements/MEASUREMENTS.md#2026-10-17-encoder-reference), [pairs](measurements/MEASUREMENTS.md#2026-10-17-video-pair-reference)): mean cosine at least 0.999, least at least 0.95. Needs `$FLASH_REF_DIR/vision` and the `mmproj` file |
@@ -63,14 +63,17 @@ docker exec engine-dev bash -c 'cd /src/build && ENGINE_EXPECT_GPUS=2 ctest -L g
 A test whose model is missing skips (exit code 77). Tests find the model at `FLASH_MODEL_DIR`, by default
 `/models`; ctest gives `api_test` the path `/models/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf`.
 `FLASH_MODEL` names another file's first shard instead: `matvec_test`, `qgemm_test` and `moe_test` then check the
-kernels of every quantised type that file has (`gguf_test` and `greedy_test` hold the IQ3_S file's own numbers).
+kernels of every quantised type that file has (`gguf_test` and `kl_test` hold the IQ3_S file's own numbers).
 A GPU test also skips when Level Zero lists no GPU, unless `ENGINE_EXPECT_GPUS` is set; then it fails. `api_test`
 checks only for the model, since the C ABI does not say why `engine_open` failed.
 
-`greedy_test <reference dir> <max prompt tokens> <cards> [prompt chunk]` also runs by hand on longer prompts. It
-reports them without gating. Given a chunk size, it reads each prompt through the prompt path, in chunks of at most
-that many tokens, and reports the prompt's tokens per second. With `FLASH_SWAPS=1` it runs adaptive swaps, one round
-every 16 steps and one after each prompt, and reports how many experts came onto the cards.
+`kl_test <set> <base dump> [cards] [prompt tokens] [dump to write]` also runs by hand. Given a number of prompt
+tokens, it reads each segment's first ones through the prompt path, in chunks of up to 512, and scores the positions
+after them. Given a path, it writes the engine's dump there. `kl_test --compare <base dump> <dump> [set]` compares two
+dumps without a card and without the gate. `kl_test --ab <base dump> <before> <after> [set]` compares a change's two
+dumps with the base and gives the change in mean KL with its 95% interval, the figure a change is judged by
+([ADR-0054](adr/0054-the-bf16-checkpoint-is-the-end-to-end-reference.md)). A dump named without a directory is read
+from `FLASH_REF_DIR`.
 
 `ENGINE_MTP_CACHE_DIR` keeps the draft layer's quantised experts between loads. When it is set, a load reads them
 from that directory instead of quantising the BF16 tensors again (about 43 s for both cards,
