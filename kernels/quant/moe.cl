@@ -265,7 +265,7 @@ REQD_SG __kernel void moe_gate_up_g(__global const uchar *cache, ulong slot_byte
 // Down: short rows (the card's ff values). 4 lanes a row, lane l taking units l, l + 4, ...; a sub-group pass covers
 // 4 rows, and a sub-group makes MOE_DOWN_ROWS / 4 passes, rows base, base + 4, ...
 
-#if QTYPE == QT_IQ4_NL || QTYPE == QT_Q2_0
+#if QTYPE == QT_IQ4_NL || QTYPE == QT_Q2_0 || QTYPE == QT_Q8_0
 
 #define DL 4
 
@@ -290,6 +290,13 @@ static inline float down_decode(__global const uchar *W, uint n, uint kr, uint u
     w[j] = lo4;
     w[4 + j] = hi4;
   }
+  return vload_half(0, (__global const half *)(W + RUN(1) + k * 2));
+#elif QTYPE == QT_Q8_0
+  // Q8_0: the 32 signed bytes as they are, no codebook.
+  const uint k = kr + u;
+  uint8 qv = vload8(0, (__global const uint *)(W + RUN(0) + k * 32));
+  w[0] = qv.s0; w[1] = qv.s1; w[2] = qv.s2; w[3] = qv.s3;
+  w[4] = qv.s4; w[5] = qv.s5; w[6] = qv.s6; w[7] = qv.s7;
   return vload_half(0, (__global const half *)(W + RUN(1) + k * 2));
 #else
   // Q2_0: the codes 0-3 unsigned here; the caller subtracts the activation's sum for the -1.
