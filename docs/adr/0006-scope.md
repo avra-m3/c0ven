@@ -1,6 +1,7 @@
 # ADR-0006: scope - one machine, one model family, full context, several requests
 
-**Status:** accepted, 2026-10-09.
+**Status:** accepted, 2026-10-09. Item 1 superseded in part (one machine), and item 2, by
+[ADR-0056](0056-the-aim-is-the-fastest-performance-on-battlemage.md) (draft).
 **Revisit when:** the machine changes (another card, more RAM), or a model family is added.
 
 ## Context

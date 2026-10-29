@@ -1,6 +1,7 @@
 # ADR-0019: performance - a set target
 
-**Status:** accepted, 2026-10-10. Supersedes [ADR-0013](0013-performance-floor.md).
+**Status:** accepted, 2026-10-10. Supersedes [ADR-0013](0013-performance-floor.md). Superseded by
+[ADR-0056](0056-the-aim-is-the-fastest-performance-on-battlemage.md) (draft).
 **Revisit when:** the target changes, or the forecast built on the
 [design-inputs record](../measurements/MEASUREMENTS.md#2026-10-13-design-inputs) shows it out of reach.
 
