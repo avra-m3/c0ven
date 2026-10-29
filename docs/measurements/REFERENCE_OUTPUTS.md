@@ -1,8 +1,10 @@
 # Reference outputs: what "correct" means end to end
 
-The tokens and probabilities the engine is compared against, made with llama.cpp on 2026-10-11 and 2026-10-12 (the
-outputs of two prompts again on 2026-10-18), and how they were made. The correctness rule they serve is
-[ADR-0012](../adr/0012-correctness-reference.md).
+The tokens and probabilities the engine is compared against, and how they were made: the BF16 checkpoint's
+distribution on the KL set, made with vLLM on 2026-10-29 ([The KL set](#the-kl-set)), which `kl_test` reads; and
+llama.cpp's greedy tokens and KL base, made on 2026-10-11 and 2026-10-12 (the outputs of two prompts again on
+2026-10-18). The correctness rules they serve are [ADR-0054](../adr/0054-the-bf16-checkpoint-is-the-end-to-end-reference.md)
+end to end and [ADR-0012](../adr/0012-correctness-reference.md) for layers and kernels.
 
 **Warning: the reference depends on how the prompt is chunked.** With the same file, the same prompt and greedy
 sampling, llama.cpp gives different tokens when its physical batch size (`-ub`) changes, and a mean KL of about 0.036
@@ -17,8 +19,10 @@ matter. So the reference is pinned to `-ub 512`, and the engine's prompt chunkin
 | [`reference/messages.jsonl`](../../reference/messages.jsonl) | the chat messages and tools of the 12 prompts added on 2026-10-20, as `/v1/chat/completions` takes them; `tools/reference_prompts.py` renders them | 644 KB |
 | [`reference/llamacpp-3cf0325-IQ3_S-greedy.jsonl`](../../reference/llamacpp-3cf0325-IQ3_S-greedy.jsonl) | greedy output token ids per prompt, first line names the commit, the backend and the model files with their sha256 | 8 KB |
 | The KL base (on the machine, not in Git) | llama.cpp's saved log-probabilities for 64 chunks of a fixed text | 8.1 GB |
+| [`reference/kl-set.jsonl`](../../reference/kl-set.jsonl) | the KL set: five segments of 1,000 tokens, each with its source, token ids and text; `tools/kl_set.py` makes it from `reference/kl-text/` and the files it names | 49 KB |
+| `kl-base-bf16.bin` (not in Git) | the BF16 checkpoint's log-probabilities on the KL set, in `kl_test`'s dump format | 41 MB |
 
-Everything in `reference/` is text and holds no logits.
+Everything in `reference/` is text and holds no logits or log-probabilities.
 
 ## The reference
 
@@ -150,9 +154,7 @@ first 14,369 characters of `docs/DESIGN.md` at commit `fdfc1bb`, between `Here i
 
 For each prompt, the largest-logit token is taken at every step, with no penalties, for up to 128 new tokens. The 12
 prompts of 2026-10-20 have none yet: `refgen gen` on the machine, as below, adds them (`agent-180k` needs a context
-of 180,000 tokens and more, so it runs alone). Until then `greedy_test` and `route_profile` run the 12 that have
-outputs. The four prompts taken out on 2026-10-20 held 202 of the 1,063 positions the agreement figure was over, so
-the figure is taken again over the prompts that remain.
+of 180,000 tokens and more, so it runs alone). Until then `route_profile` runs the 12 that have outputs.
 
 llama.cpp's `llama-completion` prints text, not token ids. So the outputs come from `refgen`, a 90-line C++ program
 that is not in the repository. It links `libllama` and, for each prompt:
@@ -235,18 +237,83 @@ log-sum-exp gives the log-probability. This layout accounts for the file's size 
 16,320 x 496,648 = 8,105,426,452. The tokens in the file are the ids the engine must feed. No BOS token is
 added: the program adds one only when the model's `add_bos_token` is true, and for this model it is false.
 
+## The KL set
+
+The end-to-end reference ([ADR-0054](../adr/0054-the-bf16-checkpoint-is-the-end-to-end-reference.md)). Five segments of
+exactly 1,000 tokens, each read from position 0 with nothing before it, are scored at every position: 999 a segment,
+4,995 in all.
+
+| Segment | Source | Base perplexity |
+| --- | --- | ---: |
+| `code` | the first 1,000 tokens of `core/models/qwen4exp/swap.cpp` at `54d4170` | 6.81 |
+| `docs` | the first 1,000 tokens of `docs/CACHING.md` at `54d4170` | 4.66 |
+| `english` | the first 1,000 tokens of `reference/kl-text/english.txt`, a story written for the set | 3.87 |
+| `languages` | the first 250 tokens of each of `german.txt`, `french.txt`, `japanese.txt` and `chinese.txt` in `reference/kl-text/`, written for the set, joined in that order | 4.66 |
+| `agent` | tokens 3,158 to 4,157 of `agent-turn4`: the task, the model's first turn with two tool calls, and their results, from the window of 1,000 tokens that holds the most turns | 14.52 |
+
+`tools/kl_set.py --tokenizer <tokenizer.json> reference/kl-set.jsonl` makes the file with the front end's tokenizer
+and the checkpoint's `tokenizer.json` at the revision below. A row holds the tokens the engine and the base read, so the
+files it names may change afterwards without changing the set.
+
+### The base
+
+| Item | Value |
+| --- | --- |
+| Checkpoint | `Qwen/Qwen3.8-Flash-Next` at `de4b8e4d43b917e7706784d8bb445c9af86a3540`, 131 safetensors shards, 360,000,192,888 bytes, BF16 |
+| Program | vLLM 0.32.0 from PyPI on `nvidia/cuda:12.9.1-devel-ubuntu24.04` with Python 3.12, `LLM(dtype="bfloat16", tensor_parallel_size=4, max_model_len=4096, max_logprobs=1024, limit_mm_per_prompt={"image": 0, "video": 0}, enable_prefix_caching=False, seed=0)` |
+| Hardware | four H200s, rented |
+| Request | one segment a `generate` call, as token ids (`TokensPrompt`), `SamplingParams(max_tokens=1, temperature=0.0, prompt_logprobs=1024)`. vLLM reads the segment as one prompt and returns, for each position, the log-probabilities of the actual next token and of the 1,024 most likely, from the raw logits |
+| Passes | the five segments twice in one process; the two passes gave the same bytes |
+| File | `kl-base-bf16.bin`, 40,959,060 bytes, sha256 `8496673dc1bff7e8a5302e1f553dda402a6d4db14146b4ae1dae2d7eadd3ba9c` |
+| Made | 2026-10-29 |
+
+The program that drives vLLM is a 90-line Python script, not in the repository. It downloads the checkpoint once
+(`huggingface_hub.snapshot_download` at the revision), then makes the passes above and writes each
+position's 1,024 tokens sorted by log-probability, ties to the lower id.
+
+### The dump format
+
+`kl_test` reads and writes it, and the base is written in it. Little-endian: the 8 bytes `C0KLDUMP`, a `uint32`
+version (1), a `uint32` segment count and a `uint32` K. Then for each segment a `uint32` first position and a `uint32`
+position count, and for each position an `int32` target (the token at the next position), a `float32` log-probability
+of the target, K `int32` token ids and K `float32` log-probabilities, highest first, ties to the lower id. The base
+has K = 1,024 and first position 0.
+
+### The figures
+
+For each position, `kl_test` takes KL(base ‖ engine) over the base's 1,024 tokens and the rest of the vocabulary as one
+bucket. A base token missing from the engine's 1,024 is given the engine's 1,024th log-probability, an upper bound on
+its own. The sum is then a lower bound on the whole KL; on synthetic distributions whose top 64 hold 80 to 90% of the
+mass it is within 3% of it. The report gives, per segment and over all positions, top-1 agreement (the two largest
+tokens equal), the mean KL, the 99th percentile of KL, both perplexities (`exp` of the mean negative log-probability of
+the targets), the base's mass in its 1,024 tokens, and the base's mass on tokens missing from the engine's 1,024.
+
+### llama.cpp on the same file
+
+llama.cpp's CPU backend at `3cf0325` on the IQ3_S file, read over the KL set in the same dump format, splits the
+engine's KL between the file and the engine ([record](MEASUREMENTS.md#2026-10-29-kl-iq3s-llamacpp)). Against the base:
+
+| Arm | Top-1 | Mean KL | p99 KL | Perplexity |
+| --- | ---: | ---: | ---: | ---: |
+| the engine, one token a step | 84.72% | 0.158 | 1.88 | 6.056 |
+| llama.cpp, one token a step | 84.78% | 0.160 | 2.24 | 6.060 |
+| llama.cpp, each segment in one batch, `-ub 512` | 84.44% | 0.159 | 1.95 | 5.990 |
+
+The engine minus llama.cpp one token a step is -0.002, with a 95% interval of +/-0.006: the 0.158 is the file's loss.
+The engine against llama.cpp gives 0.035 and 93.5% top-1, and llama.cpp's two passes against each other 0.033 and
+93.2%. The build had the four AVX-512 options off; the rest is the line above.
+
 ## How the engine is compared
 
 | Check | How | What it shows |
 | --- | --- | --- |
 | Tokenizer | the engine's tokenizer on each prompt's `text` equals its `tokens` | the tokenizer |
-| Greedy agreement, teacher-forced | feed the prompt as the reference did (512-token pieces), then the reference tokens one at a time, as they were generated; at each generated position, is the engine's largest logit the reference's next token? Report the fraction of positions | the per-position agreement. A flipped token does not carry into later positions |
-| Greedy agreement, free-running | the engine generates 128 tokens; report the length of the common prefix with the reference, and the fraction of positions equal | what a user sees. After the first flip the two texts differ and later positions are not comparable |
-| Mean KL and top-1 agreement | the engine's log-probabilities on the 64 chunks of the KL text against the base file | the distribution as a whole (`Mean KLD`, `Same top p` in llama.cpp's report) |
+| KL set against the BF16 checkpoint (`kl_test`) | the engine reads each segment one token a step; its log-probabilities against the base ([The KL set](#the-kl-set)) | the distribution as a whole, the file's loss and the engine's together; on main all of it is the file's ([llama.cpp on the same file](#llamacpp-on-the-same-file)). The gate is in [TESTING.md](../TESTING.md#tolerances) |
+| Greedy agreement, free-running | the engine generates 128 tokens; report the length of the common prefix with llama.cpp's, and the fraction of positions equal | what a user sees. After the first flip the two texts differ and later positions are not comparable. `api_test` checks the first 32 tokens of `chat-hashmap` |
 
-For llama.cpp itself, the last check is `llama-perplexity -m <file> -f kl-text.txt -c 512 --chunks 64 --kl-divergence-base
-<base> --kl-divergence`. The engine is not llama.cpp, so it needs its own comparator that reads the layout above.
-The repository has no such comparator, and no test reads the KL base.
+The KL base of llama.cpp and the greedy agreement against llama.cpp, teacher-forced, are read by no check since
+[ADR-0054](../adr/0054-the-bf16-checkpoint-is-the-end-to-end-reference.md). For llama.cpp itself, its KL check is
+`llama-perplexity -m <file> -f kl-text.txt -c 512 --chunks 64 --kl-divergence-base <base> --kl-divergence`.
 
 ## How far to trust the reference
 
@@ -298,8 +365,8 @@ Greedy tokens against the `-ub 512` outputs:
 | `doc-4k-qa` | 4,159 | not run | differs from token 113 |
 
 The tokens change only when the prompt is split into different physical batches. A prompt of up to 512 tokens is one
-batch at both `-ub 512` and `-ub 2048`, so those outputs are the most reliable. The teacher-forced gate covers only
-those prompts. The longer prompts are tied to `-ub 512` and are reported, not gated.
+batch at both `-ub 512` and `-ub 2048`, so those outputs are the most reliable. The longer prompts are tied to
+`-ub 512`.
 
 ### The known cause
 
@@ -336,8 +403,8 @@ that accumulates attention in F32 everywhere can differ from the reference on ge
 
 ## Agreement gates
 
-The gates are in [TESTING.md](../TESTING.md#tolerances). `core/tests/greedy_test.cpp` applies the teacher-forced greedy
-gate, and `core/tests/api_test.c` checks the first 32 tokens of `chat-hashmap` exactly.
+The gates are in [TESTING.md](../TESTING.md#tolerances). `core/tests/kl_test.cpp` applies the KL set's gate, and
+`core/tests/api_test.c` checks the first 32 tokens of `chat-hashmap` exactly.
 
 ## Choices made
 

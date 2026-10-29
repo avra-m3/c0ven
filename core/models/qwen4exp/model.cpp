@@ -1242,6 +1242,15 @@ void Model::record_head(ze::List &L, Card &card, const StepPlan *plan, uint32_t 
                                  top_n_ + (size_t)c * STEP_MAX_ROWS}, W, 1, 1, 1024);
 }
 
+std::vector<float> Model::logits(uint32_t row) {
+  if (row >= STEP_MAX_ROWS) throw std::runtime_error("no such row");
+  std::vector<float> v(Q_VOCAB);
+  for (auto &card : cards_) card->up->copy(v.data() + card->vocab0, card->logits + (size_t)row * card->vocab_n,
+                                           (size_t)card->vocab_n * 4);
+  for (auto &card : cards_) card->up->synchronize();
+  return v;
+}
+
 void Model::reset_slot(uint32_t slot) {
   if (slot >= opt_.slots) throw std::runtime_error("slot out of range");
   wait_commit();
