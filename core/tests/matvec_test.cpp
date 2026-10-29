@@ -1,7 +1,7 @@
 // Level 3 (docs/TESTING.md): the matrix-vector kernels of every weight type the file holds, on real rows of the
 // model in the runs layout, against ggml's CPU dequantisation of the same rows multiplied in double precision by
 // the same a8 activations. Tolerance 1e-5 of the largest |reference| (TESTING.md, "Tolerances"). Also checks that
-// the runs layout is a permutation of the file's blocks.
+// the runs layout is a permutation of the file's blocks, and names the types the file has none of.
 #include <cmath>
 #include <cstring>
 #include <random>
@@ -132,6 +132,10 @@ int main() {
     rt.free(dA);
     rt.free(dY);
   }
+  std::string untested;
+  for (uint32_t type : test::quant_types())
+    if (!types.count(type)) untested += std::string(" ") + ggml_type_label(type);
+  std::printf("not in this file, so not tested:%s\n", untested.empty() ? " none" : untested.c_str());
   EXPECT(failures == 0, "%d case(s) over tolerance", failures);
   std::printf("PASS\n");
   return 0;

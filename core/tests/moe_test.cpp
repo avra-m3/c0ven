@@ -65,7 +65,7 @@ int main() {
   for (bool down : {false, true}) {
     std::vector<uint32_t> types = down ? std::vector<uint32_t>{QT_IQ4_NL, QT_Q2_0, QT_Q8_0}
                                        : std::vector<uint32_t>{QT_IQ2_S, QT_IQ3_XXS, QT_IQ3_S, QT_IQ4_XS, QT_IQ2_XXS,
-                                                                  QT_IQ2_XS, QT_IQ1_M};
+                                                                  QT_IQ2_XS, QT_IQ1_S, QT_IQ1_M};
     for (uint32_t type : types) {
       // The first layer whose experts are of the type.
       const GgufTensor *g = nullptr, *u = nullptr;
