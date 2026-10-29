@@ -1,7 +1,7 @@
 <p align="center"><img src="docs/images/logo.svg" alt="C0ven" width="520"></p>
 
 <p align="center"><a href="https://avra-m3.github.io/c0ven/docs/showcase/coven-hollow.html"><img src="docs/showcase/coven-hollow-tour.webp" alt="Coven Hollow: witches, cottages and a cauldron in a woodland clearing at dusk, seen from a camera on a slow tour of the hollow" width="800"></a><br>
-<sub><em>Coven Hollow, a scene a coding agent wrote in one HTML file. <a href="https://avra-m3.github.io/c0ven/docs/showcase/coven-hollow.html">See it live</a>, or <a href="https://avra-m3.github.io/c0ven/docs/showcase/coven-hollow/#how-to-make-this">how to make this</a>.</em></sub></p>
+<sub><em>Coven Hollow, built using c0ven, in one HTML file. <a href="https://avra-m3.github.io/c0ven/docs/showcase/coven-hollow.html">See it live</a>, or <a href="https://avra-m3.github.io/c0ven/docs/showcase/coven-hollow/#how-to-make-this">how to make this</a>.</em></sub></p>
 
 <p align="center"><a href="https://github.com/avra-m3/c0ven/actions/workflows/ci.yml?query=branch%3Amain"><img src="https://github.com/avra-m3/c0ven/actions/workflows/ci.yml/badge.svg?branch=main" alt="ci"></a> <a href="VERSION"><img src="https://img.shields.io/badge/dynamic/regex?url=https%3A%2F%2Fraw.githubusercontent.com%2Favra-m3%2Fc0ven%2Fmain%2FVERSION&search=%5B0-9.%5D%2B&label=version&color=8b5cf6" alt="version"></a></p>
 
@@ -38,27 +38,7 @@ if you have one, try Strata.
   <img src="docs/images/bench.png" alt="Median of 6 runs, tokens per second. Prompt reading at 4k, 32k and 255k tokens: C0ven on two B60s 2,072, 2,069 and 1,700; on one B60 1,076, 1,174 and 913; llama.cpp on two B60s 357, 354 and not measured. Decode: two B60s 102, 111 and 69; one B60 48, 45 and 30; llama.cpp 17, 14 and not measured" width="800">
 </picture>
 
-| Tokens per second | | 4k prompt | 32k prompt | 255k prompt |
-| --- | --- | ---: | ---: | ---: |
-| Prompt reading | C0ven, two B60s | 2,072 | 2,069 | 1,700 |
-| | C0ven, one B60 | 1,076 | 1,174 | 913 |
-| | llama.cpp, two B60s | 357 | 354 | – |
-| Decode | C0ven, two B60s | 102 | 111 | 69 |
-| | C0ven, one B60 | 48 | 45 | 30 |
-| | llama.cpp, two B60s | 17 | 14 | – |
-
-With the 255k prompt the first token comes after 150 s on two cards and 279 s on one. Ranges and the time to the first
-token at each size: [C0ven](docs/measurements/MEASUREMENTS.md#2026-10-27-readme-benchmarks), [llama.cpp](docs/measurements/MEASUREMENTS.md#2026-10-18-against-llama-cpp).
-
-One request at a time through each server's `/v1/chat/completions`: the reference prompts `doc-4k-qa` (4,159 tokens)
-and `doc-32k` (32,010 tokens), and a 255,017-token prompt that, with its answer, nearly fills the 262,144-token context.
-Greedy, 512 tokens out. C0ven 0.5.0 ran with its defaults and DFlash 2's files beside the model (2026-10-27).
-llama.cpp release b11719 ran with its SYCL backend on the same two B60s and the same IQ3_S file (2026-10-18). Its own
-placement (`--fit`) keeps layer 31's feed-forward and the experts of layers 32-48 on the CPU. Each number is the median
-of six runs, each a fresh server process. On one card (`ZE_AFFINITY_MASK=0`) the engine runs the whole model on that
-card, with 129 experts a layer in VRAM against two cards' 356, and the rest in RAM; it needs about 45 GiB of free host
-memory to load.
-
+[How these were measured](docs/BENCHMARKS.md).
 
 ## Features
 
@@ -330,6 +310,7 @@ For users:
 - [CHOOSING_A_MODEL.md](docs/CHOOSING_A_MODEL.md): which of the four model files to pick, for your hardware and the
   speed and accuracy you want.
 - [CACHING.md](docs/CACHING.md): how the server reuses the start of a prompt, and what load does to that.
+- [BENCHMARKS.md](docs/BENCHMARKS.md): how the benchmarks above were measured.
 
 For developers:
 
