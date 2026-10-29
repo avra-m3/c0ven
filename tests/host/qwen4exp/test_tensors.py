@@ -1,4 +1,4 @@
-"""The committed tensor table, against MODEL_FILES.md and MEMORY_BUDGET.md."""
+"""The committed tensor tables, against MODEL_FILES.md and MEMORY_BUDGET.md."""
 
 from __future__ import annotations
 
@@ -9,7 +9,14 @@ import pytest
 from engine.api.interface import SplitKind
 from engine.models.qwen4exp import tensors
 from engine.models.qwen4exp.split import split_of
-from engine.models.qwen4exp.tensors import Category, LayerKind, from_gguf_cached, from_tsv, shard_paths
+from engine.models.qwen4exp.tensors import (
+    TSV_UD_IQ4_XS,
+    Category,
+    LayerKind,
+    from_gguf_cached,
+    from_tsv,
+    shard_paths,
+)
 
 TABLE = from_tsv()
 
@@ -32,6 +39,21 @@ def test_expert_sizes():
     assert TABLE.expert_bytes(3) == 1_971_200
     assert TABLE.expert_bytes(1) == 1_510_400
     assert TABLE.expert_bytes(47) == 2_662_400
+
+
+def test_the_ud_iq4_xs_table():
+    """Unsloth's UD-IQ4_XS file: the IQ3_S file's tensors and shapes in other types, Q8_0 down experts in five
+    layers."""
+    ud = from_tsv(TSV_UD_IQ4_XS)
+    assert {(t.name, t.shape) for t in ud.tensors} == {(t.name, t.shape) for t in TABLE.tensors}
+    assert ud.bytes_of(Category.EXPERTS) == 59_519_795_200
+    assert ud.bytes_of(Category.DENSE) == 4_112_616_960
+    assert ud.bytes_of(Category.NGRAM) == 28_800_138_240
+    assert sum(t.nbytes for t in ud.tensors) == 93_671_559_680
+    downs = {t.layer for t in ud.tensors if t.name.endswith(".ffn_down_exps.weight") and t.type_name == "Q8_0"}
+    assert downs == {2, 4, 30, 46, 47}
+    assert ud.expert_bytes(1) == 2_329_600
+    assert ud.expert_bytes(2) == 3_481_600
 
 
 def test_every_tensor_has_a_split_rule():
