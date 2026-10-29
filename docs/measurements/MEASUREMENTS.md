@@ -385,6 +385,25 @@ own docs and source, 246,571 tokens. The quant's value is given first, then its 
 | Decode after long-256k | IQ2_XS 84.77 (84.49-84.84) against 79.25; Q2_0 79.63 (79.31-79.64) against 79.38 tokens/s, after doc-4k-qa and doc-32k in the same process. IQ3_XXS 68.46 (67.75-68.71) against 72.50, with long-256k alone | [2026-10-19](#2026-10-19-other-quants) |
 | Greedy agreement with IQ3_S's references, prompts of up to 512 tokens | IQ3_XXS 93.60%, IQ2_XS 90.31%, Q2_0 89.93% (995, 960 and 956 of 1,063), against IQ3_S's own 98.02% | [2026-10-19](#2026-10-19-other-quants) |
 
+### Unsloth's UD-IQ4_XS
+
+Unsloth's UD-IQ4_XS file against IQ3_S in one ABBA series on two cards, one slot of 262,144 tokens, MTP drafting, a
+fresh server process a run: 5 IQ3_S runs and 4 UD-IQ4_XS runs (a card reset in another program's run cut the third
+round short).
+The tests of [Other quants](#other-quants). UD-IQ4_XS's value is given first, then IQ3_S's.
+
+| Test | Value | Measured |
+| --- | --- | --- |
+| Experts a layer in VRAM | 278 at load, 244 after long-256k (243-268), against 346 and 306 (305-316) | <a id="2026-10-29-ud-iq4xs-speed"></a>[2026-10-29](#2026-10-29-ud-iq4xs-speed) |
+| Experts in RAM (the arena), from the server's load log | 29.1 against 18.8 GiB | [2026-10-29](#2026-10-29-ud-iq4xs-speed) |
+| Prompt reading, doc-4k-qa | 1,916.3 (1,912.7-1,922.1) against 2,054.1 (2,039.9-2,056.7) tokens/s | [2026-10-29](#2026-10-29-ud-iq4xs-speed) |
+| Prompt reading, doc-32k | 1,965.9 (1,963.8-1,968.0) against 2,050.9 (2,049.7-2,052.4) tokens/s | [2026-10-29](#2026-10-29-ud-iq4xs-speed) |
+| Prompt reading, long-256k | 1,694.7 (1,694.6-1,694.8) against 1,763.0 (1,726.1-1,765.1) tokens/s | [2026-10-29](#2026-10-29-ud-iq4xs-speed) |
+| Time to the first token, long-256k | 145.49 (145.48-145.50) against 139.86 (139.69-142.85) s | [2026-10-29](#2026-10-29-ud-iq4xs-speed) |
+| Decode after doc-4k-qa | 81.48 (81.21-81.80) against 99.74 (99.67-100.15) tokens/s | [2026-10-29](#2026-10-29-ud-iq4xs-speed) |
+| Decode after doc-32k, an answer of 110 tokens | 65.64 (65.22-66.11) against 83.53 (80.19-84.68) tokens/s | [2026-10-29](#2026-10-29-ud-iq4xs-speed) |
+| Decode after long-256k | 65.46 (62.75-66.04) against 74.34 (74.23-74.82, and 30.05 in a run another process slowed) tokens/s | [2026-10-29](#2026-10-29-ud-iq4xs-speed) |
+
 ### Tried and not adopted
 
 | Idea | Value | Measured |
@@ -430,6 +449,7 @@ own docs and source, 246,571 tokens. The quant's value is given first, then its 
 | The engine twice, and vLLM's BF16 reading twice | the same bytes each time | [2026-10-29](#2026-10-29-kl-bf16) |
 | llama.cpp `3cf0325` (CPU, AVX2 build) on the same file against the BF16 checkpoint, same set | one token a step: top-1 84.78%, mean KL 0.1602, p99 2.24; each segment in one batch at `-ub 512`: 84.44%, 0.1590. The engine minus llama.cpp step, paired: -0.0018 +/- 0.0063 (95%), so the engine's 0.158 is the file's loss | <a id="2026-10-29-kl-iq3s-llamacpp"></a>[2026-10-29](#2026-10-29-kl-iq3s-llamacpp) |
 | The engine against llama.cpp on the same file, and llama.cpp batch against llama.cpp step | 93.53% top-1, mean KL 0.035; 93.17%, 0.034 | [2026-10-29](#2026-10-29-kl-iq3s-llamacpp) |
+| The engine on Unsloth's UD-IQ4_XS file against the BF16 checkpoint on the KL set (4,995 positions, one token a step) | top-1 87.45%, mean KL 0.1121, p99 KL 1.39; perplexity 6.254 against the base's 6.081. By segment, mean KL: code 0.114, docs 0.063, English 0.053, four languages 0.060, agent 0.271 | <a id="2026-10-29-kl-ud-iq4xs"></a>[2026-10-29](#2026-10-29-kl-ud-iq4xs) |
 
 ### The engine image
 

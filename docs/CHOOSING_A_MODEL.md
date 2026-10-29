@@ -1,7 +1,7 @@
 # Which model file to pick
 
-C0ven runs one model, Qwen3.8-Flash-Next, from any of four files that ISTA-DASLab publishes. This page is for
-choosing between them when you have not done it before. Where to download the file you pick and how to lay it out is
+C0ven runs one model, Qwen3.8-Flash-Next, from any of four files that ISTA-DASLab publishes or from Unsloth's
+UD-IQ4_XS. This page is for choosing between them when you have not done it before. Where to download the file you pick and how to lay it out is
 in [MODEL_FILES.md](MODEL_FILES.md).
 
 ## The short answer
@@ -13,6 +13,9 @@ within a few questions of IQ3_S's.
 
 Pick IQ2_XS or Q2_0 if your machine is short of RAM, or if speed matters more to you than the last few points
 of accuracy. They score about 4 points lower on hard reasoning and coding tests.
+
+Pick UD-IQ4_XS if you want answers closer to the original model and can spare about 11 GiB more RAM. Replies
+stream about a fifth slower than IQ3_S's.
 
 ## What the four files are
 
@@ -34,11 +37,13 @@ and need less RAM.
 | IQ3_XXS | 75.8 GB | [14.6 GiB](measurements/MEASUREMENTS.md#2026-10-19-other-quants) | [369](measurements/MEASUREMENTS.md#2026-10-19-other-quants) |
 | IQ2_XS | 68.0 GB | [7.1 GiB](measurements/MEASUREMENTS.md#2026-10-19-other-quants) | [460](measurements/MEASUREMENTS.md#2026-10-19-other-quants) |
 | Q2_0 | 66.4 GB | about 5.6 GiB (*estimate*) | [481](measurements/MEASUREMENTS.md#2026-10-19-other-quants) |
+| UD-IQ4_XS | 93.7 GB | about 32 GiB, against IQ3_S's 21 in the same test ([record](measurements/MEASUREMENTS.md#2026-10-29-ud-iq4xs-speed)) | [244](measurements/MEASUREMENTS.md#2026-10-29-ud-iq4xs-speed) |
 
 ### Disk
 
-Each file comes in two parts. The second part, 28.8 GB, is the same in all four, so keeping a second
-size costs only its first part ([MODEL_FILES.md](MODEL_FILES.md#the-other-quants)). The draft layer and the image
+Each of ISTA-DASLab's files comes in two parts. The second part, 28.8 GB, is the same in all four, so keeping a
+second size costs only its first part ([MODEL_FILES.md](MODEL_FILES.md#the-other-quants)). UD-IQ4_XS comes in three
+parts and shares none of them. The draft layer and the image
 encoder are extra and the same for every file.
 
 ### RAM
@@ -63,6 +68,7 @@ been measured on one card. They should need far less RAM there, for the same rea
 | IQ3_XXS | [98.3](measurements/MEASUREMENTS.md#2026-10-19-other-quants) | [132.0](measurements/MEASUREMENTS.md#2026-10-19-other-quants) |
 | IQ2_XS | [100.8](measurements/MEASUREMENTS.md#2026-10-19-other-quants) | [127.9](measurements/MEASUREMENTS.md#2026-10-19-other-quants) |
 | Q2_0 | [104.4](measurements/MEASUREMENTS.md#2026-10-19-other-quants) | [128.1](measurements/MEASUREMENTS.md#2026-10-19-other-quants) |
+| UD-IQ4_XS | [81.5](measurements/MEASUREMENTS.md#2026-10-29-ud-iq4xs-speed), against IQ3_S's 99.7 in the same test | [145.5](measurements/MEASUREMENTS.md#2026-10-29-ud-iq4xs-speed), against IQ3_S's 139.9 |
 
 A token is a piece of a word: English text runs at about four tokens to three words. Reply speed is how fast the
 answer streams once it starts, after a 4,159-token prompt. All four stream several times faster than anyone reads,
@@ -98,6 +104,15 @@ coding.
 These tests are hard on purpose: long chains of reasoning and code that has to run, where small errors add up.
 Nobody has measured the files on everyday questions, summaries or chat.
 
+Unsloth does not publish these scores for UD-IQ4_XS. C0ven's `kl_test` instead measures how far a file's next-word
+choices are from the original model's, on 5,000 tokens of code, docs, English, four other languages and agent turns.
+Lower is closer:
+
+| File | Mean KL | Same top choice as the original |
+| --- | ---: | ---: |
+| IQ3_S | [0.158](measurements/MEASUREMENTS.md#2026-10-29-kl-bf16) | 84.7% |
+| UD-IQ4_XS | [0.112](measurements/MEASUREMENTS.md#2026-10-29-kl-ud-iq4xs) | 87.4% |
+
 ## Choosing
 
 | Your situation | File |
@@ -108,6 +123,7 @@ Nobody has measured the files on everyday questions, summaries or chat.
 | Less than about 15 GiB free, or you want the fastest replies | IQ2_XS, or Q2_0 for the least RAM |
 | Mostly code | IQ3_S or IQ3_XXS; of the 2-bit files, IQ2_XS |
 | A low disk budget | Q2_0, 66.4 GB |
+| The answers closest to the original, at about a fifth less reply speed | UD-IQ4_XS |
 
 Changing your mind costs only a download: point `--model` at the other file's first part and restart
 ([MODEL_FILES.md](MODEL_FILES.md#pointing-the-engine-at-the-files)). The engine's tests, references and the README's
