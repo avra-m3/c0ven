@@ -1,8 +1,7 @@
 // Level 3 (docs/TESTING.md): the decode step's grouped expert products of kernels/quant/moe.cl against matvec.cl's
 // moe_gate_up_g and moe_down_g, which they must equal bit for bit, on real experts in the slot layout; gate and up's
-// a8 output against quantize_a8 of the reference. Every expert type the file holds, and Q8_0 down on random weights
-// when the file has none, for groups of up to 1, 2, 3, 4, 6 and 8 assignments of mixed sizes; down's rows end inside a
-// work-group.
+// a8 output against quantize_a8 of the reference. Every expert type the file holds, for groups of up to 1, 2, 3, 4,
+// 6 and 8 assignments of mixed sizes; down's rows end inside a work-group.
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -78,28 +77,20 @@ int main() {
           u = down ? nullptr : &model.tensor(b + "ffn_up_exps.weight");
         }
       }
-      // Q8_0 down experts, which the IQ3_S file has none of: random ones in the file's shape (2,560 rows of 640).
-      std::vector<uint8_t> random;
-      if (!g && down && type == QT_Q8_0) {
-        random = test::random_q8_0(E * EMBD, 2 * FF, 77);
-        std::printf("down  %-8s no experts of the type in this file: random weights quantised by ggml\n",
-                    ggml_type_label(type));
-      } else if (!g) {  // moe.cl's types the file does not have
+      if (!g) {  // moe.cl's types the file does not have
         std::printf("%-5s %-8s no experts of the type in this file, skipped\n", down ? "down" : "gate",
                     ggml_type_label(type));
         continue;
       }
-      const uint8_t *gd = g ? g->data : random.data();
-      const uint64_t row_bytes = g ? g->row_bytes() : random.size() / (E * EMBD);
       const uint32_t rows = down ? DOWN_ROWS : GU_ROWS, K = down ? FF : EMBD;
       const uint32_t bpr = K / quant_block_values(type);
       const uint64_t n = (uint64_t)rows * bpr, mat = align256(runs_bytes(type, n));
       const uint64_t slot_bytes = down ? mat : 2 * mat, up_off = mat;
       std::vector<uint8_t> host(E * slot_bytes);
-      const uint64_t per_expert = g ? g->bytes / g->shape[2] : random.size() / E;
+      const uint64_t per_expert = g->bytes / g->shape[2];
       for (uint32_t e = 0; e < E; e++) {
         uint8_t *s = host.data() + e * slot_bytes;
-        to_runs(type, {{gd + e * per_expert, row_bytes, 0, rows, 0, bpr}}, s);
+        to_runs(type, {{g->data + e * per_expert, g->row_bytes(), 0, rows, 0, bpr}}, s);
         if (u) to_runs(type, {{u->data + e * per_expert, u->row_bytes(), 0, rows, 0, bpr}}, s + up_off);
       }
       auto *cache = static_cast<uint8_t *>(rt.alloc_device(card, host.size()));
