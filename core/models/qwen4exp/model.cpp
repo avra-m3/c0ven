@@ -72,14 +72,20 @@ template float *Model::upload<float>(Card &, const void *, size_t);
 template StepPlan *Model::upload<StepPlan>(Card &, const void *, size_t);
 template DraftPlan *Model::upload<DraftPlan>(Card &, const void *, size_t);
 
-// A card's share of a weight: the given row ranges, and within each row the given ranges of blocks (all of the row
-// when empty), in that order, in the runs layout (raw rows for BF16, F16 and F32).
+// A card's share of a weight: the given row ranges, and within each row the given ranges of values (all of the row
+// when empty), in that order, in the runs layout (raw rows for BF16, F16 and F32). A range of values starts and ends
+// on the type's block edges.
 Model::Mat Model::mat(Card &card, const GgufTensor &t, const Ranges &rows, const Ranges &cols) {
   Mat m;
   m.type = t.type;
   uint64_t qk = quant_block_values(t.type);
   uint64_t bpr_full = t.shape[0] / qk;
-  Ranges bc = cols.empty() ? Ranges{{0, bpr_full}} : cols;
+  Ranges bc = cols.empty() ? Ranges{{0, bpr_full}} : Ranges{};
+  for (auto &c : cols) {
+    if (c.first % qk || c.second % qk)
+      throw std::runtime_error(t.name + ": a column range does not fall on " + ggml_type_label(t.type) + " blocks");
+    bc.push_back({c.first / qk, c.second / qk});
+  }
   uint64_t nb = 0, nr = 0;
   for (auto &r : bc) nb += r.second;
   for (auto &r : rows) nr += r.second;
@@ -450,32 +456,71 @@ void Model::load_card(Card &card) {
     }
     return upload<uint8_t>(card, t.data, t.bytes);
   };
-  auto f32 = [&](const std::string &name) { return reinterpret_cast<float *>(raw(name)); };
-  // A file may store a tensor the kernels take as BF16 in a quantised type (blk.1.ple_key is Q2_0 in the Q2_0 file):
-  // widened to BF16 once.
+  auto need_f32 = [&](const GgufTensor &t) {
+    if (t.type != QT_F32 && t.type != QT_F16)
+      throw std::runtime_error(t.name + " is " + ggml_type_label(t.type) + "; the engine reads it as F32");
+  };
+  auto f32 = [&](const std::string &name) {
+    need_f32(src(name));
+    return reinterpret_cast<float *>(raw(name));
+  };
+  // A tensor the kernels take as BF16, as BF16 values from the type the file stores it in. A file may store one in
+  // another type (blk.1.ple_key is Q2_0 in the Q2_0 file; Unsloth's UD-IQ4_XS has Q8_0 and F32 ones). F32 values are
+  // rounded to BF16, exactly when their low 16 bits are zero (f32_inexact counts the others); a quantised type is
+  // widened by ggml and rounded (a Q8_0 value can need 18 bits of significand, BF16 keeps 8).
+  uint64_t f32_values = 0, f32_inexact = 0;
+  auto bf16_values = [&](const GgufTensor &t) {
+    std::vector<uint16_t> b(t.elements());
+    if (t.type == QT_BF16) {
+      std::memcpy(b.data(), t.data, t.bytes);
+    } else if (t.type == QT_F32) {
+      for (size_t i = 0; i < b.size(); i++) {
+        uint32_t u;
+        float f;
+        std::memcpy(&u, t.data + 4 * i, 4);
+        std::memcpy(&f, &u, 4);
+        f32_inexact += (u & 0xffffu) != 0;
+        b[i] = bf16_bits(f);
+      }
+      f32_values += b.size();
+    } else {
+      if (quant_block_bytes(t.type) == 0)
+        throw std::runtime_error(t.name + " is " + ggml_type_label(t.type) + "; the engine cannot read it as BF16");
+      std::vector<float> f(b.size());
+      ggml_get_type_traits((ggml_type)t.type)->to_float(t.data, f.data(), (int64_t)f.size());
+      for (size_t i = 0; i < f.size(); i++) b[i] = bf16_bits(f[i]);
+    }
+    return b;
+  };
+  auto up16 = [&](const std::vector<uint16_t> &v) { return upload<uint16_t>(card, v.data(), v.size() * 2); };
   auto bf16 = [&](const std::string &name) {
     const GgufTensor &t = src(name);
     if (t.type == QT_BF16) return reinterpret_cast<uint16_t *>(raw(name));
-    std::vector<float> f(t.elements());
-    ggml_get_type_traits((ggml_type)t.type)->to_float(t.data, f.data(), (int64_t)f.size());
-    std::vector<uint16_t> b(f.size());
-    for (size_t i = 0; i < f.size(); i++) b[i] = bf16_bits(f[i]);
-    return upload<uint16_t>(card, b.data(), b.size() * 2);
+    return up16(bf16_values(t));
+  };
+  // Two tensors' BF16 values one after the other, in one upload.
+  auto bf16_pair = [&](const std::string &a, const std::string &b) {
+    std::vector<uint16_t> v = bf16_values(src(a)), w = bf16_values(src(b));
+    v.insert(v.end(), w.begin(), w.end());
+    return up16(v);
   };
   // The hyper-connections' up projections, rows reordered from stream-major (s * 2560 + i) to value-major
   // (i * 4 + s), so the 4 streams of a value sit in 4 neighbouring rows: the prompt path sums them inside its product
   // (gemm_hcmix), and the decode step's hc_mix reads them so.
   auto hc_up_rows = [&](const std::string &name) {
     const GgufTensor &t = src(name);
-    const uint64_t rb = t.row_bytes();
-    std::vector<uint8_t> v(t.bytes);
+    const std::vector<uint16_t> w = bf16_values(t);
+    const uint64_t K = t.shape[0];
+    std::vector<uint16_t> v(w.size());
     for (uint32_t st = 0; st < Q_HC; st++)
       for (uint32_t i = 0; i < Q_EMBD; i++)
-        std::memcpy(v.data() + ((uint64_t)i * Q_HC + st) * rb, t.data + ((uint64_t)st * Q_EMBD + i) * rb, rb);
-    return upload<uint16_t>(card, v.data(), v.size());
+        std::memcpy(&v[((uint64_t)i * Q_HC + st) * K], &w[((uint64_t)st * Q_EMBD + i) * K], K * 2);
+    return up16(v);
   };
   auto gather_f32 = [&](const std::string &name, const Ranges &idx, uint32_t width) {
     const GgufTensor &t = src(name);
+    if (t.type != QT_F32)
+      throw std::runtime_error(t.name + " is " + ggml_type_label(t.type) + "; the engine reads it as F32");
     const float *src = reinterpret_cast<const float *>(t.data);
     std::vector<float> v;
     for (auto &r : idx)
@@ -491,7 +536,7 @@ void Model::load_card(Card &card) {
   qkv_rows.push_back({Q_GDN_KH * Q_GDN_D + Q_GDN_D * kh0, Q_GDN_D * card.nkh});
   for (auto &r : vh) qkv_rows.push_back({2 * Q_GDN_KH * Q_GDN_D + Q_GDN_D * r.first, Q_GDN_D * r.second});
   for (auto &r : vh) z_rows.push_back({Q_GDN_D * r.first, Q_GDN_D * r.second});
-  for (auto &r : vh) out_cols.push_back({r.first / 2, r.second / 2});  // two heads per 256-value block
+  for (auto &r : vh) out_cols.push_back({Q_GDN_D * r.first, Q_GDN_D * r.second});
 
   uint32_t gi = 0, ai = 0;
   card.layers.resize(Q_LAYERS);
@@ -503,13 +548,9 @@ void Model::load_card(Card &card) {
                             {"hc_ffn_norm.weight", "hc_ffn_down.weight", "hc_ffn_up.weight", "hc_ffn_inject.weight"}};
     for (int i = 0; i < 2; i++) {
       L.hc_norm[i] = f32(blk(l, hn[i][0]));
-      {  // down's 320 rows, then inject's 4: one product for both in the prompt path
-        const GgufTensor &td = src(blk(l, hn[i][1])), &tj = src(blk(l, hn[i][3]));
-        std::vector<uint8_t> v(td.data, td.data + td.bytes);
-        v.insert(v.end(), tj.data, tj.data + tj.bytes);
-        L.hc_down[i] = upload<uint16_t>(card, v.data(), v.size());
-        L.hc_inj[i] = L.hc_down[i] + (size_t)Q_HC_LR * Q_HC_DIM;
-      }
+      // down's 320 rows, then inject's 4: one product for both in the prompt path
+      L.hc_down[i] = bf16_pair(blk(l, hn[i][1]), blk(l, hn[i][3]));
+      L.hc_inj[i] = L.hc_down[i] + (size_t)Q_HC_LR * Q_HC_DIM;
       L.hc_up[i] = hc_up_rows(blk(l, hn[i][2]));
     }
     if (!L.attn) {
@@ -517,12 +558,14 @@ void Model::load_card(Card &card) {
       L.z = mat(card, src(blk(l, "attn_gate.weight")), z_rows);
       L.out = mat(card, src(blk(l, "ssm_out.weight")), {{0, Q_EMBD}}, out_cols);
       {
-        const GgufTensor &ta = src(blk(l, "ssm_alpha.weight")), &tb = src(blk(l, "ssm_beta.weight"));
-        std::vector<uint8_t> v;
-        for (const GgufTensor *t : {&ta, &tb})
-          for (auto &r : vh) v.insert(v.end(), t->data + r.first * t->row_bytes(),
-                                      t->data + (r.first + r.second) * t->row_bytes());
-        L.ab = upload<uint16_t>(card, v.data(), v.size());
+        std::vector<uint16_t> v;
+        for (const char *n : {"ssm_alpha.weight", "ssm_beta.weight"}) {
+          const GgufTensor &t = src(blk(l, n));
+          const std::vector<uint16_t> w = bf16_values(t);
+          const uint64_t K = t.shape[0];
+          for (auto &r : vh) v.insert(v.end(), w.begin() + r.first * K, w.begin() + (r.first + r.second) * K);
+        }
+        L.ab = up16(v);
       }
       std::vector<std::pair<uint64_t, uint64_t>> ch;  // conv channels follow qkv's rows
       for (auto &r : qkv_rows) ch.push_back(r);
@@ -541,18 +584,12 @@ void Model::load_card(Card &card) {
       L.q = mat(card, src(blk(l, "attn_q.weight")), {{2 * Q_ATT_D * q0, 2 * Q_ATT_D * card.nq}});
       L.k = mat(card, src(blk(l, "attn_k.weight")), {{Q_ATT_D * kv0, Q_ATT_D * card.nkv}});
       L.v = mat(card, src(blk(l, "attn_v.weight")), {{Q_ATT_D * kv0, Q_ATT_D * card.nkv}});
-      L.o = mat(card, src(blk(l, "attn_output.weight")), {{0, Q_EMBD}}, {{q0, card.nq}});
+      L.o = mat(card, src(blk(l, "attn_output.weight")), {{0, Q_EMBD}}, {{Q_ATT_D * q0, Q_ATT_D * card.nq}});
       L.qn = f32(blk(l, "attn_q_norm.weight"));
       L.kn = f32(blk(l, "attn_k_norm.weight"));
       L.iqn = f32(blk(l, "indexer.q_norm.weight"));
       L.ikn = f32(blk(l, "indexer.k_norm.weight"));
-      {
-        const GgufTensor &tq = src(blk(l, "indexer.q_proj.weight")),
-                         &tk = src(blk(l, "indexer.k_proj.weight"));
-        std::vector<uint8_t> v(tq.data, tq.data + tq.bytes);
-        v.insert(v.end(), tk.data, tk.data + tk.bytes);
-        L.idx_w = upload<uint16_t>(card, v.data(), v.size());
-      }
+      L.idx_w = bf16_pair(blk(l, "indexer.q_proj.weight"), blk(l, "indexer.k_proj.weight"));
       // The pool of pages (layout.h); the indexer's keys of this card's pages only (split by position: DESIGN.md,
       // section 4).
       const uint64_t cells = (uint64_t)kv_pages_ * KV_PAGE_CELLS, own = (uint64_t)kv_pages_ / C;
@@ -608,18 +645,10 @@ void Model::load_card(Card &card) {
         L.pooled = upload<float>(card, nullptr, own * Q_IDX_D * 4);
       }
     }
-    {
-      const GgufTensor &tr = src(blk(l, "ffn_gate_inp.weight")),
-                       &ts = src(blk(l, "ffn_gate_inp_shexp.weight"));
-      std::vector<uint8_t> v(tr.data, tr.data + tr.bytes);
-      v.insert(v.end(), ts.data, ts.data + ts.bytes);
-      L.router = upload<uint16_t>(card, v.data(), v.size());
-    }
+    L.router = bf16_pair(blk(l, "ffn_gate_inp.weight"), blk(l, "ffn_gate_inp_shexp.weight"));
     L.sh_gate = mat(card, src(blk(l, "ffn_gate_shexp.weight")), {{f0, card.ff}});
     L.sh_up = mat(card, src(blk(l, "ffn_up_shexp.weight")), {{f0, card.ff}});
-    const GgufTensor &sd = src(blk(l, "ffn_down_shexp.weight"));
-    uint32_t sqk = quant_block_values(sd.type);
-    L.sh_down = mat(card, sd, {{0, Q_EMBD}}, {{f0 / sqk, card.ff / sqk}});
+    L.sh_down = mat(card, src(blk(l, "ffn_down_shexp.weight")), {{0, Q_EMBD}}, {{f0, card.ff}});
     unstage();
   }
 
@@ -633,6 +662,9 @@ void Model::load_card(Card &card) {
   card.ple_gq = f32("blk.1.ple_norm_query.weight");
   card.ple_gc = f32("blk.1.ple_norm_conv.weight");
   card.ple_conv = f32("blk.1.ple_conv1d.weight");
+  if (c == 0 && f32_values)
+    std::fprintf(stderr, "engine: F32 tensors read as BF16: %llu of %llu values rounded\n",
+                 (unsigned long long)f32_inexact, (unsigned long long)f32_values);
   {
     // Each slot's own run of pages while they fit in the pool; page 0 past it, until set_pages.
     std::vector<uint32_t> t((size_t)S * npp_);
