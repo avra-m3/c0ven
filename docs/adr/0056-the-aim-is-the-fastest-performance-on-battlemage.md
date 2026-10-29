@@ -3,7 +3,7 @@
 **Status:** draft, 2026-10-29; not accepted. Would supersede [ADR-0019](0019-performance-target.md), item 1 of
 [ADR-0006](0006-scope.md) in part (one machine), and item 2 of ADR-0006 (one model family, from ISTA-DASLab's files).
 **Revisit when:** another engine runs this model faster than C0ven on the same Battlemage cards with the same file;
-Qwen releases the Qwen4 models; Intel ships a card generation after Battlemage.
+Qwen releases the Qwen4 models; the test machine gains cards; Intel ships a card generation after Battlemage.
 
 ## Context
 
@@ -40,8 +40,9 @@ Qwen releases the Qwen4 models; Intel ships a card generation after Battlemage.
    for the Qwen4 models is planned for their release.
 6. **Any quant of a built architecture may load, from any publisher, without an ADR of its own.** A pull request adds
    the file's tensor table, the kernels for any type the engine does not yet read, and the file's `kl_test` and speed
-   figures. IQ3_S stays the default and the file the README's figures are taken with. Every speed figure names its
-   file.
+   figures. Every speed figure names its file.
+7. **Benchmarks and tests stay on IQ3_S** until the primary target changes or the test machine gains cards. IQ3_S
+   stays the default, and the README's figures, the references and the tests' gates are taken with it.
 
 ## Options not chosen
 
