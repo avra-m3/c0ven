@@ -267,7 +267,7 @@ def test_a_long_prompt_alone_takes_whole_chunks():
     run.add(1, prompt(5000), 2)
     run.until_idle()
     spans = [s.count for p in run.engine.plans for s in p.prompt]
-    assert spans == [2048, 2048, 904]
+    assert spans == [4352, 648]
 
 
 def marks_at(*positions: int) -> CheckpointRule:
@@ -312,7 +312,7 @@ def test_prompt_spans_end_at_checkpoints():
     run.add(1, prompt(5000), 1)
     run.until_idle()
     spans = [(s.first, s.count) for p in run.engine.plans for s in p.prompt]
-    assert spans == [(0, 100), (100, 2048), (2148, 852), (3000, 2000)]
+    assert spans == [(0, 100), (100, 2900), (3000, 2000)]
     assert [c[0] for c in run.engine.calls] == ["checkpoint", "checkpoint"]
 
 

@@ -68,7 +68,10 @@ class SchedulerOptions:
     """What a prompt step aims at while others write (Splash's value, ADR-0017)."""
     decode_share: float = 0.5
     """Decode is owed this share of each prompt step's time (Splash's value)."""
-    chunk_rows: int = 2048
+    chunk_rows: int = 4352
+    """Prompt rows a plan carries at most: the core's chunk (`prompt_chunk`, model.h), so a prompt alone fills whole
+    chunks (ADR-0017). At 2,048 every chunk ran half full and paid its fixed part twice: a 255k prompt 155 s against
+    133 s."""
     max_passes: int = 4
     decode_lookahead: int = 64
     """Cells assigned ahead of a decoding slot, so the core never waits for the host."""

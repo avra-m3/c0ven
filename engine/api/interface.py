@@ -33,7 +33,10 @@ path's staging of the layers' uncached experts."""
 PROMPT_RUNS = 4
 """The longer pieces of each four prompt spans of a plan, in order, are read as one chunk, the experts staged once for
 all their rows (the core's PROMPT_MAX_RUNS and pieces a plan)."""
-MAX_PAGE_CHANGES = 1024
+MAX_PAGE_CHANGES = 2048
+"""Page changes a plan carries at most: a whole 4,352-row chunk's 1,088 pages with room for the writing slots'
+batches (SchedulerOptions.decode_batch). The core copies any count; each plan's changes cost it one write of the
+page tables (ADR-0033)."""
 MAX_EOS = 4
 MAX_BATCH_WIDTHS = 8
 MAX_SHARDS = 4
