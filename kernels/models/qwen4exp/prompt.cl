@@ -65,6 +65,24 @@ static inline void q8_0_store(__local const float *x, __global uchar *dst) {
   for (uint i = 0; i < 32; i++) ((__global char *)dst)[2 + i] = (char)round(x[i] * id);
 }
 
+static inline void q8_0_store_local(__local const float *x, __local uchar *dst) {
+  float amax = 0.0f;
+  for (uint i = 0; i < 32; i++) amax = fmax(amax, fabs(x[i]));
+  float d = amax / 127.0f, id = d != 0.0f ? 1.0f / d : 0.0f;
+  vstore_half(d, 0, (__local half *)dst);
+  for (uint i = 0; i < 32; i++) ((__local char *)dst)[2 + i] = (char)round(x[i] * id);
+}
+
+// The same block from 8 lanes at once (lane d < 8 quantises x + 32 d), written as 17 16-byte words by lanes d < 17:
+// over PCIe (the streamed host copy) each byte of q8_0_store is a transaction of its own, 122 ms a 4,352-row chunk
+// against 14 ms. All 256 lanes of the group call it; scratch holds the head's KV_HEAD_BYTES.
+static inline void q8_0_store_head(__local const float *x, __local uint4 *scratch, __global uchar *dst, uint d) {
+  if (d < Q_ATT_D / 32) q8_0_store_local(x + 32 * d, (__local uchar *)scratch + d * Q8_BLOCK);
+  barrier(CLK_LOCAL_MEM_FENCE);
+  if (d < KV_HEAD_BYTES / 16) ((__global uint4 *)dst)[d] = scratch[d];
+  barrier(CLK_LOCAL_MEM_FENCE);
+}
+
 static inline float q8_0_load(__global const uchar *row, uint d) {
   __global const uchar *b = row + (d / 32) * Q8_BLOCK;
   return vload_half(0, (__global const half *)b) * (float)((__global const char *)b)[2 + d % 32];
@@ -319,6 +337,7 @@ __kernel void p_attn_prep(__global float *Q, __global const float *K, __global c
                           __global const uint *ppos_all, uint pstride, __global half *qt, uint hp,
                           __global half *q16, __global uchar *kh, __global uchar *vh, __global const uint *where) {
   __local float x[Q_ATT_D], y[Q_ATT_D], red[64];
+  __local uint4 blk[KV_HEAD_BYTES / 16];
   uint g = get_group_id(0), t = get_group_id(1), d = get_local_id(0);
   RUN_OF_ROW(t)
   __global const uint *ppos = ppos_all + (ulong)ri * pstride;
@@ -351,16 +370,20 @@ __kernel void p_attn_prep(__global float *Q, __global const float *K, __global c
   __global uchar *k1 = (kh ? kh : kc) + cell, *v1 = (kh ? vh : vc) + cell;
   y[d] = r;
   barrier(CLK_LOCAL_MEM_FENCE);
-  if (d < Q_ATT_D / 32) {
+  if (kh) {
+    q8_0_store_head(y, blk, k1, d);
+    if (rs != KV_NO_PAGE && d < KV_HEAD_BYTES / 16) ((__global uint4 *)(kc + rcell))[d] = blk[d];
+  } else if (d < Q_ATT_D / 32) {
     q8_0_store(y + 32 * d, k1 + d * Q8_BLOCK);
-    if (rs != KV_NO_PAGE) q8_0_store(y + 32 * d, kc + rcell + d * Q8_BLOCK);
   }
   barrier(CLK_LOCAL_MEM_FENCE);
   y[d] = V[((ulong)t * nkv + c) * Q_ATT_D + d];
   barrier(CLK_LOCAL_MEM_FENCE);
-  if (d < Q_ATT_D / 32) {
+  if (kh) {
+    q8_0_store_head(y, blk, v1, d);
+    if (rs != KV_NO_PAGE && d < KV_HEAD_BYTES / 16) ((__global uint4 *)(vc + rcell))[d] = blk[d];
+  } else if (d < Q_ATT_D / 32) {
     q8_0_store(y + 32 * d, v1 + d * Q8_BLOCK);
-    if (rs != KV_NO_PAGE) q8_0_store(y + 32 * d, vc + rcell + d * Q8_BLOCK);
   }
 }
 
