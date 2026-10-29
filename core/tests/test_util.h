@@ -5,9 +5,11 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <random>
 #include <string>
 #include <vector>
 
+#include "ggml.h"
 #include "ze/ze.h"
 
 #define EXPECT(cond, ...)                                       \
@@ -39,6 +41,18 @@ inline std::string model_path() {
 inline int skip(const std::string &why) {
   std::printf("SKIP: %s\n", why.c_str());
   return 77;
+}
+
+// rows x cols weights drawn from a normal distribution and quantised to Q8_0 by ggml, as a file stores them: for the
+// expert kernels' Q8_0 paths when the file has no experts of the type.
+inline std::vector<uint8_t> random_q8_0(uint32_t rows, uint32_t cols, uint32_t seed) {
+  std::mt19937 rng(seed);
+  std::normal_distribution<float> normal(0.0f, 1.0f);
+  std::vector<float> f((size_t)rows * cols);
+  for (auto &v : f) v = normal(rng);
+  std::vector<uint8_t> q(ggml_row_size(GGML_TYPE_Q8_0, cols) * rows);
+  ggml_quantize_chunk(GGML_TYPE_Q8_0, f.data(), q.data(), 0, rows, cols, nullptr);
+  return q;
 }
 
 // The GPUs Level Zero lists, counted as ze::Runtime counts them: the first driver that has any.

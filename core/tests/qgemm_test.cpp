@@ -1,8 +1,9 @@
 // Level 3 (docs/TESTING.md): the prompt path's quantised products of kernels/quant/qgemm.cl, on real weights of the
 // file, against ggml's CPU dequantisation of the same blocks multiplied in double precision by the same fp16
 // activations. dequant_f16 for every type the dense weights use; moe_gate_up_t and moe_down_t for every expert type,
-// in the runs layout (cached experts) and the file's (streamed experts), for card 1's half of an expert, so the
-// slices start mid-row. Tolerance 2e-3 of the largest |reference| (TESTING.md, "Tolerances": fp16 products).
+// and Q8_0 down on random weights when the file has none, in the runs layout (cached experts) and the file's (streamed
+// experts), for card 1's half of an expert, so the slices start mid-row. Tolerance 2e-3 of the largest |reference|
+// (TESTING.md, "Tolerances": fp16 products).
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -129,7 +130,8 @@ int main() {
   L.copy(dHp, Hp.data(), Hh.size() * 2);
   L.synchronize();
 
-  // One layer per gate type, and one per down type.
+  // One layer per gate type, and one per down type; Q8_0 down, which the IQ3_S file has none of, on a random expert
+  // in the file's shape (2,560 rows of 640) when the file has none.
   std::vector<uint32_t> gate_layers, down_layers;
   std::vector<uint32_t> seen_g, seen_d;
   for (uint32_t l = 0; l < 48; l++) {
@@ -138,6 +140,8 @@ int main() {
     if (std::find(seen_g.begin(), seen_g.end(), gt) == seen_g.end()) seen_g.push_back(gt), gate_layers.push_back(l);
     if (std::find(seen_d.begin(), seen_d.end(), dt) == seen_d.end()) seen_d.push_back(dt), down_layers.push_back(l);
   }
+  std::vector<uint8_t> random_down;
+  if (std::find(seen_d.begin(), seen_d.end(), QT_Q8_0) == seen_d.end()) random_down = test::random_q8_0(E, F, 5);
   for (bool file : {false, true}) {
     for (uint32_t l : gate_layers) {
       const GgufTensor &g = model.tensor("blk." + std::to_string(l) + ".ffn_gate_exps.weight");
@@ -191,24 +195,27 @@ int main() {
       }
       rt.free(dW);
     }
-    for (uint32_t l : down_layers) {
-      const GgufTensor &d = model.tensor("blk." + std::to_string(l) + ".ffn_down_exps.weight");
-      const uint32_t type = d.type, qk = quant_block_values(type);
-      const uint64_t eb = d.bytes / 512, rb = d.row_bytes();
+    std::vector<int32_t> downs(down_layers.begin(), down_layers.end());
+    if (!random_down.empty()) downs.push_back(-1);  // the random Q8_0 expert
+    for (int32_t l : downs) {
+      const GgufTensor *d = l >= 0 ? &model.tensor("blk." + std::to_string(l) + ".ffn_down_exps.weight") : nullptr;
+      const uint32_t type = d ? d->type : QT_Q8_0, qk = quant_block_values(type);
+      const uint64_t eb = d ? d->bytes / 512 : random_down.size(), rb = eb / E;
+      const uint8_t *ed = d ? d->data + e * eb : random_down.data();
       std::vector<uint8_t> buf;
       uint32_t bpr, b0;
       if (file) {
-        buf.assign(d.data + e * eb, d.data + (e + 1) * eb);
+        buf.assign(ed, ed + eb);
         bpr = F / qk;
         b0 = f0 / qk;
       } else {
         bpr = half / qk;
         b0 = 0;
         buf.assign(runs_bytes(type, (uint64_t)E * bpr), 0);
-        to_runs(type, {{d.data + e * eb, rb, 0, E, f0 / qk, bpr}}, buf.data());
+        to_runs(type, {{ed, rb, 0, E, f0 / qk, bpr}}, buf.data());
       }
       std::vector<float> dw((size_t)E * F);
-      ggml_get_type_traits((ggml_type)type)->to_float(d.data + e * eb, dw.data(), (int64_t)dw.size());
+      ggml_get_type_traits((ggml_type)type)->to_float(ed, dw.data(), (int64_t)dw.size());
       std::vector<double> ref((size_t)nasg * E);
       for (uint32_t a = 0; a < nasg; a++)
         for (uint32_t r = 0; r < E; r++) {
@@ -225,8 +232,8 @@ int main() {
                {dW, slot_bytes, down_off, dTiles, dN, E, bpr, b0, quant_pairs_sigma(type) ? dHp : dH, half, dOut, grids},
                E / 64, 2, 1, 64);
       L.synchronize();
-      std::string what = std::string("moe_down_t ") + ggml_type_label(type) + (file ? " file" : " runs") + " blk." +
-                         std::to_string(l);
+      std::string what = std::string("moe_down_t ") + ggml_type_label(type) + (file ? " file" : " runs") +
+                         (l >= 0 ? " blk." + std::to_string(l) : std::string(" random"));
       ck.check(what.c_str(), ref, dOut);
       rt.free(dW);
     }
