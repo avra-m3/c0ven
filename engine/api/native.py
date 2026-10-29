@@ -334,6 +334,7 @@ class NativeEngine:
         c.cpu_threads = config.cpu_workers
         c.checkpoints = config.checkpoints
         c.kv_pages = config.pages
+        c.kv_resident_cells = config.kv_resident_cells
         # Adaptive swaps but with ADR-0016's switches; drafting when the draft layer is given (ADR-0029).
         if not config.deterministic:
             c.flags |= abi.ConfigFlag.SWAPS | abi.ConfigFlag.SHARE_KV

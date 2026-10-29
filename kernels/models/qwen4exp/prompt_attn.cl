@@ -269,7 +269,10 @@ static inline __global const PromptPlan *short_row(__global const PromptPlan *ru
 
 REQD_SG __kernel void p_attn_rows(__global const float *Q, __global const uchar *kc, __global const uchar *vc,
                                   __global const uint *pt, uint npp, uint nq, uint nkv, __global const uint *cells_all,
-                                  __global const uint *ncells, __global const PromptPlan *runs, __global float *part) {
+                                  __global const uint *ncells, __global const PromptPlan *runs, __global float *part,
+                                  __global const uchar *hk, __global const uchar *hv) {
+  // Streamed (hk, hv given): the cells are read in place from the host copy, which holds every page; the 8-bit
+  // cache then holds only the resident pages, and a page index into it would read past its end.
   __local float q[ATT_GQA][Q_ATT_D], p[ATT_GQA][ATT_SPLIT];
   __local uint cl[ATT_SPLIT];
   uint c = get_group_id(0), y = get_group_id(1), s = get_group_id(2), d = get_local_id(0);
@@ -286,8 +289,8 @@ REQD_SG __kernel void p_attn_rows(__global const float *Q, __global const uchar 
     cl[d] = (uint)kv_cell(kv_page(pt, npp, pp->slot, pos), pos);
   }
   barrier(CLK_LOCAL_MEM_FENCE);
-  __global const uchar *K = kc + c * KV_HEAD_BYTES;
-  __global const uchar *V = vc + c * KV_HEAD_BYTES;
+  __global const uchar *K = (hk ? hk : kc) + c * KV_HEAD_BYTES;
+  __global const uchar *V = (hv ? hv : vc) + c * KV_HEAD_BYTES;
   ulong cell_bytes = (ulong)nkv * KV_HEAD_BYTES;
   uint lane = get_sub_group_local_id(), sg = get_sub_group_id(), nsg = get_num_sub_groups();
   for (uint i = sg; i < m; i += nsg) {

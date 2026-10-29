@@ -134,6 +134,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=0,
         help="the KV pool the slots share, in tokens (512k = 524,288), at least --context; default: slots x context",
     )
+    p.add_argument(
+        "--kv-stream",
+        action="store_true",
+        help="stream the KV cache: 32,768 cells of K and V per slot stay in VRAM, the rest in host memory, and the "
+        "room caches experts (ADR-0008 item 3)",
+    )
     p.add_argument("--table-cache", type=Path, help="a directory that keeps the model's tensor table between starts")
     p.add_argument(
         "--swapout-limit-mib",
@@ -371,7 +377,11 @@ def main(argv: list[str] | None = None) -> int:
     arch = args.arch or architecture(args.model)  # the front end passes --arch, so the GGUF is read once
     model = model_module(arch)
     options = PlanOptions(
-        slots=args.slots, context=args.context, checkpoints=args.checkpoints, kv_tokens=args.kv_tokens
+        slots=args.slots,
+        context=args.context,
+        checkpoints=args.checkpoints,
+        kv_tokens=args.kv_tokens,
+        kv_stream=args.kv_stream,
     )
     native = args.backend == "native"
     draft: Path | None = None

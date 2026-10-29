@@ -66,7 +66,7 @@ def open_config(
         max_context=options.context,
         pages=mp.pages,
         checkpoints=options.checkpoints,
-        kv_resident_cells=mp.kv_resident_cells,
+        kv_resident_cells=mp.kv_resident_cells if options.kv_stream else 0,
         experts_cached=mp.experts_cached,
         arena_bytes=mp.arena_bytes,
         working_bytes=mp.working_per_card,

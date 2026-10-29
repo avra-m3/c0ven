@@ -20,7 +20,7 @@ extern "C" {
 #define ENGINE_API
 #endif
 
-#define ENGINE_API_VERSION 9
+#define ENGINE_API_VERSION 10
 
 typedef enum {
   ENGINE_OK = 0,
@@ -53,6 +53,8 @@ typedef struct {
   const char *vision_path;     /* the image encoder's file (the mmproj GGUF); null: no images. Needs the prompt path */
   uint32_t kv_pages;           /* the KV cache's pages of 4 cells, on each card, rounded up to a multiple of the cards;
                                   default: slots x the context's */
+  uint32_t kv_resident_cells;  /* K and V cells per slot kept in VRAM, the rest in host memory (ADR-0008 item 3);
+                                  0: every cell */
 } engine_config;
 
 #define ENGINE_CONFIG_EXPERTS_SET 1u  /* experts_per_layer is meaningful, 0 included */

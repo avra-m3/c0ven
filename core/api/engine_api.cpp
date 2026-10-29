@@ -1143,6 +1143,7 @@ engine_status engine_open(const engine_config *config, engine_info *info, engine
     if (config->mtp_dir) opt.mtp_dir = config->mtp_dir;
     if (config->vision_path) opt.vision_path = config->vision_path;
     opt.kv_pages = config->kv_pages;
+    opt.kv_resident = config->kv_resident_cells;
     opt.adapt_swaps = (config->flags & ENGINE_CONFIG_SWAPS) != 0;
     opt.share_kv = (config->flags & ENGINE_CONFIG_SHARE_KV) != 0;
     auto e = std::make_unique<engine_ctx>();
@@ -1485,7 +1486,7 @@ uint32_t engine_abi_layout(engine_abi_row *table, uint32_t cap) {
       ROW(engine_config, flags), ROW(engine_config, reserve_bytes), ROW(engine_config, prompt_chunk),
       ROW(engine_config, checkpoints), ROW(engine_config, routing_profile), ROW(engine_config, mtp_dir),
       ROW(engine_config, draft_max), ROW(engine_config, draft_min_p), ROW(engine_config, vision_path),
-      ROW(engine_config, kv_pages), SIZE(engine_config),
+      ROW(engine_config, kv_pages), ROW(engine_config, kv_resident_cells), SIZE(engine_config),
       ROW(engine_info, api_version), ROW(engine_info, cards), ROW(engine_info, slots), ROW(engine_info, max_ctx),
       ROW(engine_info, experts_per_layer), ROW(engine_info, vocab), ROW(engine_info, device_bytes),
       ROW(engine_info, arena_bytes), ROW(engine_info, load_seconds), ROW(engine_info, prompt_chunk),

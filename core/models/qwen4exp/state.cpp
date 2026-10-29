@@ -74,13 +74,20 @@ void Model::copy_cells(uint32_t from, uint32_t to, uint32_t cells) {
   if (from >= kv_pages_ || to >= kv_pages_ || from % ncards_ != to % ncards_ || cells >= KV_PAGE_CELLS)
     throw std::runtime_error("copy between pages out of range");
   if (cells == 0 || from == to) return;
+  const uint32_t none = KV_NO_PAGE;
   for (auto &card : cards_) {
     const uint32_t C = card->C;
     const uint64_t kvb = (uint64_t)card->nkv * KV_HEAD_BYTES;
     for (auto &L : card->layers) {
       if (!L.attn) continue;
-      card->up->copy(L.kc + kv_cell(to, 0) * kvb, L.kc + kv_cell(from, 0) * kvb, cells * kvb);
-      card->up->copy(L.vc + kv_cell(to, 0) * kvb, L.vc + kv_cell(from, 0) * kvb, cells * kvb);
+      if (kv_res_) {  // streamed: the host copies; the resident copy of `to`, if any, is stale from here
+        card->up->copy(L.khost + kv_cell(to, 0) * kvb, L.khost + kv_cell(from, 0) * kvb, cells * kvb);
+        card->up->copy(L.vhost + kv_cell(to, 0) * kvb, L.vhost + kv_cell(from, 0) * kvb, cells * kvb);
+        card->up->copy(L.where + to, &none, 4);
+      } else {
+        card->up->copy(L.kc + kv_cell(to, 0) * kvb, L.kc + kv_cell(from, 0) * kvb, cells * kvb);
+        card->up->copy(L.vc + kv_cell(to, 0) * kvb, L.vc + kv_cell(from, 0) * kvb, cells * kvb);
+      }
       // The raw indexer keys live on the page's card. A part of a page has no pooled key.
       if (from % C == card->c)
         card->up->copy(L.raw + kv_cell(to / C, 0) * IDX_KEY_BYTES, L.raw + kv_cell(from / C, 0) * IDX_KEY_BYTES,

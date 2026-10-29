@@ -1,6 +1,7 @@
 // qwen4exp's loading, its arena of uncached experts, and the decode step (model.h).
 #include "model_impl.h"
 
+#include <array>
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
@@ -125,6 +126,12 @@ Model::Model(const std::string &path, const Options &opt) : opt_(opt), gguf_(pat
                  rt_->cards()[c].shared_system);
   npp_ = (opt_.max_ctx / KV_PAGE_CELLS + ncards_ - 1) / ncards_ * ncards_;
   kv_pages_ = opt_.kv_pages ? (opt_.kv_pages + ncards_ - 1) / ncards_ * ncards_ : opt_.slots * npp_;
+  if (opt_.kv_resident) {
+    const uint64_t r = (uint64_t)opt_.slots * ((opt_.kv_resident + KV_PAGE_CELLS - 1) / KV_PAGE_CELLS);
+    kv_res_ = r < kv_pages_ ? (uint32_t)r : 0;  // a pool no larger than the resident pages is not streamed
+    if (kv_res_ && kv_res_ <= kKvsMaxMiss)
+      throw std::runtime_error("kv_resident must leave more than " + std::to_string(kKvsMaxMiss * KV_PAGE_CELLS / opt_.slots) + " cells a slot resident");
+  }
   // Sharing moves experts in and out of the cache, so it needs the swaps, and a cache the engine sizes.
   share_ = opt_.share_kv && opt_.adapt_swaps && opt_.experts_per_layer < 0;
   if (share_) blk_ = rt_->vm_block(0);
@@ -543,15 +550,43 @@ void Model::load_card(Card &card) {
       // The pool of pages (layout.h); the indexer's keys of this card's pages only (split by position: DESIGN.md,
       // section 4).
       const uint64_t cells = (uint64_t)kv_pages_ * KV_PAGE_CELLS, own = (uint64_t)kv_pages_ / C;
-      if (share_) {  // backed as pages come into use (kv_share.cpp)
-        const uint32_t x = 4 * L.idx;
-        L.kc = kv_region(card, x, KV_PAGE_CELLS * card.nkv * KV_HEAD_BYTES, 1);
-        L.vc = kv_region(card, x + 1, KV_PAGE_CELLS * card.nkv * KV_HEAD_BYTES, 1);
-        L.raw = kv_region(card, x + 2, KV_PAGE_CELLS * IDX_KEY_BYTES, C);
-        L.pooled = reinterpret_cast<float *>(kv_region(card, x + 3, Q_IDX_D * 4, C));
+      const uint64_t page_bytes = (uint64_t)KV_PAGE_CELLS * card.nkv * KV_HEAD_BYTES;
+      if (kv_res_) {
+        // Streamed (ADR-0008 item 3): kc and vc hold kv_res_ pages; the host copies, allocated once, hold every page.
+        L.kc = upload<uint8_t>(card, nullptr, kv_res_ * page_bytes);
+        L.vc = upload<uint8_t>(card, nullptr, kv_res_ * page_bytes);
+        const size_t h = ((size_t)card.c * kAttn + L.idx) * 2;
+        if (kv_host_.size() < (size_t)ncards_ * kAttn * 2) kv_host_.resize((size_t)ncards_ * kAttn * 2, nullptr);
+        if (!kv_host_[h]) {
+          kv_host_[h] = static_cast<uint8_t *>(rt_->alloc_host(kv_pages_ * page_bytes));
+          kv_host_[h + 1] = static_cast<uint8_t *>(rt_->alloc_host(kv_pages_ * page_bytes));
+        }
+        L.khost = kv_host_[h];
+        L.vhost = kv_host_[h + 1];
+        std::vector<uint32_t> none(std::max<size_t>(kv_pages_, kv_res_), KV_NO_PAGE), zero(none.size(), 0);
+        L.where = upload<uint32_t>(card, none.data(), (size_t)kv_pages_ * 4);
+        L.spage = upload<uint32_t>(card, none.data(), (size_t)kv_res_ * 4);
+        L.ref = upload<uint32_t>(card, zero.data(), (size_t)kv_res_ * 4);
+        L.mark = upload<uint32_t>(card, zero.data(), (size_t)kv_pages_ * 4);
+        // kst: {hand, epoch, misses}. The epoch starts at 1 so the first step's (2) takes a 0 stamp as free, not as
+        // referenced last step (CLOCK's second chance), which would leave it no victim.
+        std::array<uint32_t, 4> kst0{0, 1, 0, 0};
+        L.kst = upload<uint32_t>(card, kst0.data(), 16);
+        L.miss = upload<uint32_t>(card, nullptr, (size_t)2 * kKvsMaxMiss * 4);
+      }
+      if (share_) {  // backed as pages come into use (kv_share.cpp); streamed, only the indexer's keys are regions
+        const uint32_t x = (kv_res_ ? 2 : 4) * L.idx;
+        if (!kv_res_) {
+          L.kc = kv_region(card, x, page_bytes, 1);
+          L.vc = kv_region(card, x + 1, page_bytes, 1);
+        }
+        L.raw = kv_region(card, x + (kv_res_ ? 0 : 2), KV_PAGE_CELLS * IDX_KEY_BYTES, C);
+        L.pooled = reinterpret_cast<float *>(kv_region(card, x + (kv_res_ ? 1 : 3), Q_IDX_D * 4, C));
       } else {
-        L.kc = upload<uint8_t>(card, nullptr, cells * card.nkv * KV_HEAD_BYTES);
-        L.vc = upload<uint8_t>(card, nullptr, cells * card.nkv * KV_HEAD_BYTES);
+        if (!kv_res_) {
+          L.kc = upload<uint8_t>(card, nullptr, cells * card.nkv * KV_HEAD_BYTES);
+          L.vc = upload<uint8_t>(card, nullptr, cells * card.nkv * KV_HEAD_BYTES);
+        }
         L.raw = upload<uint8_t>(card, nullptr, own * KV_PAGE_CELLS * IDX_KEY_BYTES);
         L.pooled = upload<float>(card, nullptr, own * Q_IDX_D * 4);
       }
@@ -1028,7 +1063,7 @@ void Model::record(Card &card, uint32_t W) {
       L.together(false);
       L.together(true);
       L.launch(q4("attn_prep"), {card.Q, card.Kt, card.Vt, Ly.qn, Ly.kn, card.nq, card.nkv, Ly.kc, Ly.vc, card.ptab,
-                                 npp_, plan, rope_}, card.nq + card.nkv, W, 1, Q_ATT_D);
+                                 npp_, plan, rope_, Ly.khost, Ly.vhost, Ly.where}, card.nq + card.nkv, W, 1, Q_ATT_D);
       // The indexer, split by position: each card scores its own blocks and sends its best; both merge the same.
       L.launch(q4("idx_prep"), {card.idxq, Ly.iqn, Ly.raw, card.ptab, npp_, plan, rope_, c, C}, Q_IDX_H + 1, W, 1,
                Q_IDX_D);
@@ -1047,8 +1082,14 @@ void Model::record(Card &card, uint32_t W) {
       const uint32_t rows_apart_c = STEP_MAX_ROWS;
       L.launch(q4("idx_merge"), {cand, C, rows_apart_c, plan, card.merged, card.blocks, card.bscores, card.cells,
                                  card.ncells}, W, 1, 1, 1024);
+      if (kv_res_) {  // streamed: every page the rows read gets a resident copy before the attention reads it
+        L.launch(q4("kvs_claim"), {card.ptab, npp_, card.cells, card.ncells, plan, Ly.where, Ly.spage, Ly.ref, Ly.mark,
+                                   Ly.kst, kv_res_, Ly.miss, kKvsMaxMiss}, 1, 1, 1, 1024);
+        L.launch(q4("kvs_gather"), {Ly.khost, Ly.vhost, Ly.kc, Ly.vc, card.nkv, Ly.kst, Ly.miss, kKvsMaxMiss}, 1024,
+                 1, 1, 64);
+      }
       L.launch(q4("attn_split"), {card.Q, Ly.kc, Ly.vc, card.ptab, npp_, card.nq, card.nkv, card.cells, card.ncells,
-                                  plan, card.att}, card.nkv, W, kAttSplits, Q_ATT_D);
+                                  plan, card.att, Ly.where}, card.nkv, W, kAttSplits, Q_ATT_D);
       L.launch(q4("attn_merge"), {card.Q, card.nq, card.ncells, plan, card.att, card.o, card.oa8}, card.nq, W, 1,
                Q_ATT_D);
       out_product(Ly.o, p1, l);

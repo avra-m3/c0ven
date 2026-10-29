@@ -77,6 +77,12 @@ int main(int argc, char **argv) {
   // FLASH_SWAPS=1: adaptive swaps on, a round every 16 steps (and after each prompt), as the engine runs them.
   const bool swaps = std::getenv("FLASH_SWAPS") != nullptr;
   opt.adapt_swaps = swaps;
+  // FLASH_KV_RESIDENT=<cells>: KV streaming (ADR-0008, item 3) with that many cells a slot resident, in a context
+  // twice that, so the decode path claims and gathers every page it reads.
+  if (const char *kr = std::getenv("FLASH_KV_RESIDENT")) {
+    opt.kv_resident = (uint32_t)std::stoul(kr);
+    opt.max_ctx = std::max(opt.max_ctx, 2 * opt.kv_resident);
+  }
   qwen4exp::Model model(path, opt);
   const auto &info = model.info();
   std::printf("loaded in %.1f s: %u card(s), %u experts per layer cached, %.2f / %.2f GiB on the cards, %.2f GiB arena\n",

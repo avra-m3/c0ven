@@ -35,6 +35,8 @@ struct Options {
   uint32_t max_ctx = 32768;                 // positions per sequence, a multiple of 4
   uint32_t kv_pages = 0;                    // the KV cache's pool, in pages of 4 cells (layout.h); 0: every slot's
                                             // whole context
+  uint32_t kv_resident = 0;                 // K and V cells per slot kept in VRAM, the rest in host memory (ADR-0008
+                                            // item 3, kv_share.cpp's note); 0: every cell
   uint32_t max_cards = 2;                   // 1 runs the whole model on card 0
   uint64_t reserve_bytes = 512ull << 20;    // device memory left free on each card, beyond what the engine counts
   int32_t experts_per_layer = -1;           // experts cached per layer; -1: as many as fit
@@ -400,6 +402,8 @@ class Model {
   uint32_t ncards_ = 1;
   uint32_t npp_ = 0;       // pages per slot's row of the table: the context's, rounded up to a multiple of the cards
   uint32_t kv_pages_ = 0;  // pages in the pool
+  uint32_t kv_res_ = 0;    // streamed (Options::kv_resident): K and V pages a layer resident on each card; 0: all
+  std::vector<uint8_t *> kv_host_;  // the host copies of K and V, [card][attention layer][K, V]; kept across sleeps
   uint32_t nslots_cached_ = 0;
   bool asleep_ = false;
   struct StagedTensor {

@@ -317,7 +317,7 @@ __kernel void p_attn_prep(__global float *Q, __global const float *K, __global c
                           __global const float *qn, __global const float *kn, uint nq, uint nkv, __global uchar *kc,
                           __global uchar *vc, __global const uint *pt, uint npp, __global const PromptPlan *runs,
                           __global const uint *ppos_all, uint pstride, __global half *qt, uint hp,
-                          __global half *q16) {
+                          __global half *q16, __global uchar *kh, __global uchar *vh, __global const uint *where) {
   __local float x[Q_ATT_D], y[Q_ATT_D], red[64];
   uint g = get_group_id(0), t = get_group_id(1), d = get_local_id(0);
   RUN_OF_ROW(t)
@@ -343,14 +343,25 @@ __kernel void p_attn_prep(__global float *Q, __global const float *K, __global c
     return;
   }
   uint c = g - nq;
-  ulong cell = (kv_cell(kv_page(pt, npp, pp->slot, pos), pos) * nkv + c) * KV_HEAD_BYTES;
+  const uint page = kv_page(pt, npp, pp->slot, pos);
+  ulong cell = (kv_cell(page, pos) * nkv + c) * KV_HEAD_BYTES;
+  // Streamed (kh given): the host copy, and the resident copy where the page has one (layer.cl, kvs_claim).
+  const uint rs = kh ? where[page] : KV_NO_PAGE;
+  ulong rcell = rs != KV_NO_PAGE ? (kv_cell(rs, pos) * nkv + c) * KV_HEAD_BYTES : 0;
+  __global uchar *k1 = (kh ? kh : kc) + cell, *v1 = (kh ? vh : vc) + cell;
   y[d] = r;
   barrier(CLK_LOCAL_MEM_FENCE);
-  if (d < Q_ATT_D / 32) q8_0_store(y + 32 * d, kc + cell + d * Q8_BLOCK);
+  if (d < Q_ATT_D / 32) {
+    q8_0_store(y + 32 * d, k1 + d * Q8_BLOCK);
+    if (rs != KV_NO_PAGE) q8_0_store(y + 32 * d, kc + rcell + d * Q8_BLOCK);
+  }
   barrier(CLK_LOCAL_MEM_FENCE);
   y[d] = V[((ulong)t * nkv + c) * Q_ATT_D + d];
   barrier(CLK_LOCAL_MEM_FENCE);
-  if (d < Q_ATT_D / 32) q8_0_store(y + 32 * d, vc + cell + d * Q8_BLOCK);
+  if (d < Q_ATT_D / 32) {
+    q8_0_store(y + 32 * d, v1 + d * Q8_BLOCK);
+    if (rs != KV_NO_PAGE) q8_0_store(y + 32 * d, vc + rcell + d * Q8_BLOCK);
+  }
 }
 
 // The indexer's keys are split by position between the cards as in the decode step (layer.cl): block b belongs to
@@ -577,13 +588,45 @@ __kernel void p_idx_merge(__global const uint *c0, __global const uint *c1, __gl
 // which attends from the 8-bit cache (p_attn_rows). Groups (nkv * Q_ATT_D / 32, any), 64: one work-item per Q8_0 block
 // of K or V, group y taking positions y, y + groups, and so on.
 __kernel void p_kv16(__global const uchar *kc, __global const uchar *vc, __global const uint *pt, uint npp, uint nkv,
-                     __global const PromptPlan *pp, __global half *kh, __global half *vh) {
+                     __global const PromptPlan *pp, __global half *kh, __global half *vh,
+                     __global const uchar *hk, __global const uchar *hv) {
   const uint g = get_global_id(0), end = pp->pos0 + pp->n;
-  if (pp->n <= PROMPT_SHORT_RUN || g >= 2 * nkv * (Q_ATT_D / 32)) return;
+  __local uint4 buf[2 * KV_PAGE_CELLS * Q_ATT_KV * KV_HEAD_BYTES / 16];  // the streamed path's page, K then V
+  if (pp->n <= PROMPT_SHORT_RUN) return;
+  if (hk) {
+    // Streamed: the prefix is read from the host copy a page at a time, the group's lanes reading 16-byte words
+    // into local memory and converting from there. A lane reading its block's bytes one by one made each byte a
+    // PCIe transaction: 0.6 GB/s, a 255k prompt 150 to 227 s.
+    const uint lid = get_local_id(0), W = get_local_size(0);
+    const uint words = KV_PAGE_CELLS * nkv * KV_HEAD_BYTES / 16, nb = KV_PAGE_CELLS * nkv * (Q_ATT_D / 32);
+    const uint gid = get_group_id(0) * get_num_groups(1) + get_group_id(1), ng = get_num_groups(0) * get_num_groups(1);
+    for (uint pi = gid; pi * KV_PAGE_CELLS < end; pi += ng) {
+      const uint pos = pi * KV_PAGE_CELLS, page = kv_page(pt, npp, pp->slot, pos);
+      __global const uint4 *sk = (__global const uint4 *)hk + (ulong)page * words;
+      __global const uint4 *sv = (__global const uint4 *)hv + (ulong)page * words;
+      for (uint i = lid; i < words; i += W) buf[i] = sk[i], buf[words + i] = sv[i];
+      barrier(CLK_LOCAL_MEM_FENCE);
+      for (uint j = lid; j < 2 * nb; j += W) {
+        const bool is_v = j >= nb;
+        const uint b = is_v ? j - nb : j, per = nkv * (Q_ATT_D / 32), c = b / per, h = (b % per) / (Q_ATT_D / 32),
+                   blk = b % (Q_ATT_D / 32);
+        if (pos + c >= end) continue;
+        __local const uchar *lb = (__local const uchar *)(buf + (is_v ? words : 0)) + (c * nkv + h) * KV_HEAD_BYTES +
+                                  blk * Q8_BLOCK;
+        const float d = vload_half(0, (__local const half *)lb);
+        __global half *out = (is_v ? vh : kh) + ((ulong)(pos + c) * nkv + h) * Q_ATT_D + 32 * blk;
+        for (uint i = 0; i < 32; i++) out[i] = convert_half(d * (float)((__local const char *)lb)[2 + i]);
+      }
+      barrier(CLK_LOCAL_MEM_FENCE);
+    }
+    return;
+  }
+  if (g >= 2 * nkv * (Q_ATT_D / 32)) return;
   bool is_v = g >= nkv * (Q_ATT_D / 32);
   uint b = is_v ? g - nkv * (Q_ATT_D / 32) : g;  // block within the position's nkv heads
   for (uint pos = get_group_id(1); pos < end; pos += get_num_groups(1)) {
-    __global const uchar *blk = (is_v ? vc : kc) + kv_cell(kv_page(pt, npp, pp->slot, pos), pos) * nkv * KV_HEAD_BYTES +
+    __global const uchar *blk = (is_v ? vc : kc) +
+                                kv_cell(kv_page(pt, npp, pp->slot, pos), pos) * nkv * KV_HEAD_BYTES +
                                 (b / (Q_ATT_D / 32)) * KV_HEAD_BYTES + (b % (Q_ATT_D / 32)) * Q8_BLOCK;
     float d = vload_half(0, (__global const half *)blk);
     __global half *out = (is_v ? vh : kh) + ((ulong)pos * nkv) * Q_ATT_D + 32 * b;

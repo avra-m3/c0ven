@@ -381,12 +381,13 @@ void Model::record_mtp(Card &card, uint32_t W, uint32_t Wr, bool chain) {
   bf16mv(M.v, card.nkv * Q_ATT_D, E, card.xbf16, nrows, card.Vt);
   // The draft layer's KV is not paged: no table, and each slot's own run of pages (layout.h).
   const uint32_t *no_table = nullptr, mnpp = opt_.max_ctx / KV_PAGE_CELLS;
+  const uint8_t *no_kv = nullptr;  // the draft layer's KV is not streamed
   L.launch(q4("attn_prep"), {card.Q, card.Kt, card.Vt, M.qn, M.kn, card.nq, card.nkv, M.kc, M.vc, no_table, mnpp, pl,
-                             rope_}, card.nq + card.nkv, W, 1, Q_ATT_D);
+                             rope_, no_kv, no_kv, no_table}, card.nq + card.nkv, W, 1, Q_ATT_D);
   if (Wr > 0) {
     L.launch(q4("mtp_cells"), {M.first, pr, card.cells, card.ncells}, Wr, 1, 1, 256);
     L.launch(q4("attn_split"), {card.Q, M.kc, M.vc, no_table, mnpp, card.nq, card.nkv, card.cells, card.ncells, pr,
-                                card.att}, card.nkv, Wr, kAttSplits, Q_ATT_D);
+                                card.att, no_table}, card.nkv, Wr, kAttSplits, Q_ATT_D);
     uint8_t *no_a8 = nullptr;
     L.launch(q4("attn_merge"), {card.Q, card.nq, card.ncells, pr, card.att, card.o, no_a8}, card.nq, Wr, 1, Q_ATT_D);
     float *p1 = mex1_ + (size_t)c * STEP_MAX_ROWS * E;

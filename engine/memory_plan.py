@@ -54,6 +54,9 @@ class PlanOptions:
     usable_vram: int = 24_385_683_456
     working_per_card: int = 1_600_663_296
     checkpoints: int = 8
+    kv_stream: bool = False
+    """Stream the KV (ADR-0008 item 3): the core keeps `resident_cells` of K and V per slot in VRAM and the rest in
+    host memory. The plan's sizes assume it either way; without it the core keeps every cell in VRAM."""
     kv_tokens: int = 0
     """The KV pool the slots share, in tokens; 0: every slot's own context, plus cached_prefix_pages. It is
     independent of the slot count, and at least one context: a request waits until the pool can reserve its pages
