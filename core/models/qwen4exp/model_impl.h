@@ -277,6 +277,7 @@ struct Model::PromptCard {
   uint32_t *cand = nullptr, *cand_peer = nullptr;  // the indexer's candidates: this card's, and the other card's
   float *merged = nullptr;
   uint16_t *kh = nullptr, *vh = nullptr;  // the layer's K and V as fp16, every position
+  uint8_t *kvst = nullptr;  // streamed: p_attn_prep's new K then V cells, [row][nkv] (p_kv_flush)
   float *apart = nullptr;                 // the short runs' attention splits (p_attn_rows)
   uint16_t *qt = nullptr;                 // the queries as fp16, dimension-major (p_attn_xmx)
   uint16_t *q16 = nullptr;                // the queries as fp16, row-major (p_attn_tiled)

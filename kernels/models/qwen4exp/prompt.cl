@@ -73,9 +73,9 @@ static inline void q8_0_store_local(__local const float *x, __local uchar *dst) 
   for (uint i = 0; i < 32; i++) ((__local char *)dst)[2 + i] = (char)round(x[i] * id);
 }
 
-// The same block from 8 lanes at once (lane d < 8 quantises x + 32 d), written as 17 16-byte words by lanes d < 17:
-// over PCIe (the streamed host copy) each byte of q8_0_store is a transaction of its own, 122 ms a 4,352-row chunk
-// against 14 ms. All 256 lanes of the group call it; scratch holds the head's KV_HEAD_BYTES.
+// The same block from 8 lanes at once (lane d < 8 quantises x + 32 d), written as 17 16-byte words by lanes d < 17
+// (the streamed path's staging and resident copy, p_attn_prep). All 256 lanes of the group call it; scratch holds
+// the head's KV_HEAD_BYTES.
 static inline void q8_0_store_head(__local const float *x, __local uint4 *scratch, __global uchar *dst, uint d) {
   if (d < Q_ATT_D / 32) q8_0_store_local(x + 32 * d, (__local uchar *)scratch + d * Q8_BLOCK);
   barrier(CLK_LOCAL_MEM_FENCE);
@@ -364,9 +364,11 @@ __kernel void p_attn_prep(__global float *Q, __global const float *K, __global c
   uint c = g - nq;
   const uint page = kv_page(pt, npp, pp->slot, pos);
   ulong cell = (kv_cell(page, pos) * nkv + c) * KV_HEAD_BYTES;
-  // Streamed (kh given): the host copy, and the resident copy where the page has one (layer.cl, kvs_claim).
+  // Streamed (kh given): kh and vh are the chunk's staging, [row][nkv] (p_kv_flush copies it to the host copy), and
+  // the resident copy is written where the page has one (layer.cl, kvs_claim).
   const uint rs = kh ? where[page] : KV_NO_PAGE;
   ulong rcell = rs != KV_NO_PAGE ? (kv_cell(rs, pos) * nkv + c) * KV_HEAD_BYTES : 0;
+  if (kh) cell = ((r0 + t) * nkv + c) * KV_HEAD_BYTES;
   __global uchar *k1 = (kh ? kh : kc) + cell, *v1 = (kh ? vh : vc) + cell;
   y[d] = r;
   barrier(CLK_LOCAL_MEM_FENCE);
@@ -384,6 +386,27 @@ __kernel void p_attn_prep(__global float *Q, __global const float *K, __global c
     if (rs != KV_NO_PAGE && d < KV_HEAD_BYTES / 16) ((__global uint4 *)(vc + rcell))[d] = blk[d];
   } else if (d < Q_ATT_D / 32) {
     q8_0_store(y + 32 * d, v1 + d * Q8_BLOCK);
+  }
+}
+
+// Streamed: the chunk's new K and V cells from p_attn_prep's staging (sk, sv: [row][nkv] heads) to the host copies.
+// p_attn_prep writing each head's 272 bytes to host memory itself, in bytes or in 16-byte words, took 7.2-8.0 s of a
+// 255k prompt (122-135 ms a 4,352-row chunk against 23 ms on main); through the staging, p_attn_prep and this
+// kernel take 1.2 s and 0.08 s. Each group writes 16 rows, its lanes' 16-byte words in order, so a page's cells go
+// out as runs of whole lines. Groups (rows / 16), 256.
+__kernel void p_kv_flush(__global const uint4 *sk, __global const uint4 *sv, __global uchar *hk, __global uchar *hv,
+                         __global const uint *pt, uint npp, uint nkv, __global const PromptPlan *runs) {
+  const uint W = nkv * KV_HEAD_BYTES / 16, t0 = get_group_id(0) * 16;
+  for (uint i = get_local_id(0); i < 2 * 16 * W; i += get_local_size(0)) {
+    const bool is_v = i >= 16 * W;
+    const uint j = is_v ? i - 16 * W : i, t = t0 + j / W, w = j % W;
+    uint ri = 0;
+    while (ri + 1 < PROMPT_MAX_RUNS && t >= runs[ri].row0 + runs[ri].n) ri++;
+    __global const PromptPlan *pp = runs + ri;
+    if (t < pp->row0 || t - pp->row0 >= pp->n) continue;
+    const uint pos = pp->pos0 + (t - pp->row0);
+    const ulong cell = kv_cell(kv_page(pt, npp, pp->slot, pos), pos) * nkv * KV_HEAD_BYTES;
+    ((__global uint4 *)((is_v ? hv : hk) + cell))[w] = (is_v ? sv : sk)[(ulong)t * W + w];
   }
 }
 

@@ -122,6 +122,7 @@ void Model::load_prompt(Card &card) {
   P.nbw = (opt_.max_ctx / Q_IDX_BLOCK + 31) / 32;
   P.sel = u32(T * P.nbw);
   P.wbx = u32(T);
+  if (kv_res_) P.kvst = dev((uint64_t)2 * T * card.nkv * KV_HEAD_BYTES);  // p_attn_prep's staging, K then V
   card.up->fill(P.qt, &zero16, 2, T * Q_ATT_D * P.hp * 2);
   P.rl = f32(T * (Q_EXPERTS + 1));
   P.ids = reinterpret_cast<int32_t *>(u32(T * Q_USED));
@@ -434,8 +435,12 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
       dense(Ly.v, P.x16, Q_EMBD, P.V, card.nkv * Q_ATT_D, false);
       gemm(true, Ly.idx_w, (Q_IDX_H + 1) * Q_IDX_D, Q_EMBD, P.xb, Q_EMBD, P.iq, (Q_IDX_H + 1) * Q_IDX_D, false, 0, one);
       L.launch(q4("p_attn_prep"), {P.Q, P.K, P.V, Ly.qn, Ly.kn, card.nq, card.nkv, Ly.kc, Ly.vc, card.ptab, npp_,
-                                   runs_p, ppos_, pstride, P.qt, P.hp, P.q16, Ly.khost, Ly.vhost, Ly.where},
+                                   runs_p, ppos_, pstride, P.qt, P.hp, P.q16, kv_res_ ? P.kvst : nullptr,
+                                   kv_res_ ? P.kvst + (uint64_t)T * card.nkv * KV_HEAD_BYTES : nullptr, Ly.where},
                card.nq + card.nkv, T, 1, Q_ATT_D);
+      if (kv_res_)
+        L.launch(q4("p_kv_flush"), {P.kvst, P.kvst + (uint64_t)T * card.nkv * KV_HEAD_BYTES, Ly.khost, Ly.vhost,
+                                    card.ptab, npp_, card.nkv, runs_p}, (T + 15) / 16, 1, 1, 256);
       // The indexer, split by position: each card scores its own blocks, the cards swap their best, both merge.
       const uint32_t nbl = (nb_max + C - 1) / C;
       L.launch(q4("p_idx_prep"), {P.iq, Ly.iqn, Ly.raw, card.ptab, npp_, runs_p, ppos_, pstride, c, C}, Q_IDX_H + 1,
