@@ -19,9 +19,6 @@ engine_add_kernel_module(qwen4exp_prompt SOURCE kernels/models/qwen4exp/prompt.c
                          OPTIONS -I${CMAKE_SOURCE_DIR}/core/models/qwen4exp -I${CMAKE_SOURCE_DIR}/kernels/models/qwen4exp)
 engine_add_kernel_module(qwen4exp_attn SOURCE kernels/models/qwen4exp/prompt_attn.cl
                          OPTIONS -cl-intel-256-GRF-per-thread -I${CMAKE_SOURCE_DIR}/core/models/qwen4exp)
-# For attn_test: p_attn_xmx at any context.
-engine_add_kernel_module(qwen4exp_attn_any SOURCE kernels/models/qwen4exp/prompt_attn.cl
-                         OPTIONS -DATT_TILED_MAX=0 -cl-intel-256-GRF-per-thread -I${CMAKE_SOURCE_DIR}/core/models/qwen4exp)
 engine_add_kernel_module(qwen4exp_gdn SOURCE kernels/models/qwen4exp/prompt_gdn.cl
                          OPTIONS -I${CMAKE_SOURCE_DIR}/core/models/qwen4exp)
 # The DFlash 2 drafter's kernels between its products (core/models/qwen4exp/dflash.cpp).

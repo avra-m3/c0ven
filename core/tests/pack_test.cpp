@@ -1,7 +1,7 @@
 // Level 6 (docs/TESTING.md): a prompt chunk of several sequences gives each what it gets alone, bit for bit: each
 // sequence's 64 candidates after its prompt and after each of 16 greedy tokens. The chunks: the four gpqa prompts;
 // three of them, one from position 101; and four runs whose later ones hold an image's block (the encoder's file is
-// FLASH_MODEL_DIR's mmproj) or start deep, past the indexer's 2,051 cells and past p_attn_tiled's 12,288 positions.
+// FLASH_MODEL_DIR's mmproj) or start deep, past the indexer's 2,051 cells.
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>

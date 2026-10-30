@@ -329,13 +329,12 @@ __kernel void p_gdn_out(__global const float *raw, __global const float *z, __gl
 // Per row: groups [0, nq) norm and rotate the queries in place; [nq, nq + nkv) norm and rotate the keys and store keys
 // and values in the 8-bit cache at the row's position, in the page the table pt gives it (layout.h).
 // Groups (nq + nkv, T), 256.
-// The queries also go out as fp16 scaled by 1/16: to qt, dimension-major with hp heads per dimension (p_attn_xmx),
-// and to q16, [row][nq][256] (p_attn_tiled).
+// The queries also go out as fp16 scaled by 1/16 to qt, dimension-major with hp heads per dimension (p_attn_xmx).
 __kernel void p_attn_prep(__global float *Q, __global const float *K, __global const float *V,
                           __global const float *qn, __global const float *kn, uint nq, uint nkv, __global uchar *kc,
                           __global uchar *vc, __global const uint *pt, uint npp, __global const PromptPlan *runs,
                           __global const uint *ppos_all, uint pstride, __global half *qt, uint hp,
-                          __global half *q16, __global uchar *kh, __global uchar *vh, __global const uint *where) {
+                          __global uchar *kh, __global uchar *vh, __global const uint *where) {
   __local float x[Q_ATT_D], y[Q_ATT_D], red[64];
   __local uint4 blk[KV_HEAD_BYTES / 16];
   uint g = get_group_id(0), t = get_group_id(1), d = get_local_id(0);
@@ -346,7 +345,6 @@ __kernel void p_attn_prep(__global float *Q, __global const float *K, __global c
   K += r0 * nkv * Q_ATT_D;
   V += r0 * nkv * Q_ATT_D;
   qt += r0 * Q_ATT_D * hp;
-  q16 += r0 * nq * Q_ATT_D;
   uint pos = pp->pos0 + t;
   bool is_q = g < nq;
   __global float *q = Q + (ulong)t * nq * 2 * Q_ATT_D;
@@ -358,7 +356,6 @@ __kernel void p_attn_prep(__global float *Q, __global const float *K, __global c
   if (is_q) {
     q[g * 2 * Q_ATT_D + d] = r;
     qt[((ulong)t * Q_ATT_D + d) * hp + g] = convert_half(r * (1.0f / 16.0f));
-    q16[((ulong)t * nq + g) * Q_ATT_D + d] = convert_half(r * (1.0f / 16.0f));
     return;
   }
   uint c = g - nq;
@@ -576,13 +573,12 @@ __kernel void p_idx_cand(__global const float *scores, uint nb_max, __global con
 }
 
 // The cells row t attends to, merged from the two cards' candidates (c0: card 0's, c1: card 1's or null) as
-// layer.cl's idx_merge does, into cells[t] (Q_IDX_CELLS apart) and ncells[t]; also as a mask for p_attn_tiled: one
-// bit per chosen block in sel[t] (nbw words), and wbx[t] = the partial block | its cells << 24 (0xffffff: none).
+// layer.cl's idx_merge does, into cells[t] (Q_IDX_CELLS apart) and ncells[t]. The whole blocks come first, in block
+// order, each at a multiple of 4 (p_attn_xmx reads them as runs of 4); then the partial block's cells, then the tail.
 // merged, blocks and bscores are per-row scratch. Groups (T), TOPK_WG.
 __kernel void p_idx_merge(__global const uint *c0, __global const uint *c1, __global const PromptPlan *runs,
                           __global float *merged_all, __global uint *blocks_all, __global float *bscores_all,
-                          __global uint *cells_all, __global uint *ncells, __global uint *sel_all, uint nbw,
-                          __global uint *wbx) {
+                          __global uint *cells_all, __global uint *ncells) {
   __local uint hist[TOPK_HIST];
   __local uint scan[TOPK_WG];
   __local uint mb[2 * (Q_IDX_BLOCKS + 1)];
@@ -593,10 +589,7 @@ __kernel void p_idx_merge(__global const uint *c0, __global const uint *c1, __gl
   __global uint *cells = cells_all + (ulong)t * Q_IDX_CELLS;
   if (nkv <= Q_IDX_CELLS) {
     for (uint i = lid; i < nkv; i += TOPK_WG) cells[i] = i;
-    if (lid == 0) {
-      ncells[t] = nkv;
-      wbx[t] = 0xffffffu;
-    }
+    if (lid == 0) ncells[t] = nkv;
     return;
   }
   __global const uint *lists[2] = {c0 + (ulong)t * IDX_CAND, c1 ? c1 + (ulong)t * IDX_CAND : 0};
@@ -623,8 +616,6 @@ __kernel void p_idx_merge(__global const uint *c0, __global const uint *c1, __gl
     }
   }
   barrier(CLK_LOCAL_MEM_FENCE | CLK_GLOBAL_MEM_FENCE);
-  __global uint *sel = sel_all + (ulong)t * nbw;
-  for (uint i = lid; i < nbw; i += TOPK_WG) sel[i] = 0;
   __global uint *blocks = blocks_all + (ulong)t * (Q_IDX_BLOCKS + 1);
   __global float *bscores = bscores_all + (ulong)t * (Q_IDX_BLOCKS + 1);
   uint nb = nkv / Q_IDX_BLOCK, tail = nkv - nb * Q_IDX_BLOCK;
@@ -641,14 +632,12 @@ __kernel void p_idx_merge(__global const uint *c0, __global const uint *c1, __gl
     const float least = work_group_reduce_min(s);
     worst = work_group_reduce_max(lid < want && s == least ? lid : 0u);
   }
-  if (lid == 0) wbx[t] = extra > 0 ? blocks[worst] | (extra << 24) : 0xffffffu;
   for (uint i = lid; i < want; i += TOPK_WG) {
     uint b = blocks[i];
-    atomic_or(&sel[b / 32], 1u << (b % 32));
     if (i == worst) {
-      for (uint k = 0; k < extra; k++) cells[4 * i + k] = 4 * b + k;
+      for (uint k = 0; k < extra; k++) cells[Q_IDX_TOPK + k] = 4 * b + k;
     } else {
-      uint at = i < worst ? 4 * i : 4 * (i - 1) + extra;
+      uint at = i < worst ? 4 * i : 4 * (i - 1);
       for (uint k = 0; k < Q_IDX_BLOCK; k++) cells[at + k] = 4 * b + k;
     }
   }
@@ -656,10 +645,10 @@ __kernel void p_idx_merge(__global const uint *c0, __global const uint *c1, __gl
   if (lid == 0) ncells[t] = Q_IDX_CELLS;
 }
 
-// The 8-bit K and V of every cached position (up to the run's end) as fp16, for p_attn_xmx and p_attn_tiled
-// (prompt_attn.cl): kh and vh hold [position][nkv][256], each found through the page table pt. Not for a short run,
-// which attends from the 8-bit cache (p_attn_rows). Groups (nkv * Q_ATT_D / 32, any), 64: one work-item per Q8_0 block
-// of K or V, group y taking positions y, y + groups, and so on.
+// The 8-bit K and V of every cached position (up to the run's end) as fp16, for p_attn_xmx (prompt_attn.cl): kh and
+// vh hold [position][nkv][256], each found through the page table pt. Not for a short run, which attends from the
+// 8-bit cache (p_attn_rows). Groups (nkv * Q_ATT_D / 32, any), 64: one work-item per Q8_0 block of K or V, group y
+// taking positions y, y + groups, and so on.
 __kernel void p_kv16(__global const uchar *kc, __global const uchar *vc, __global const uint *pt, uint npp, uint nkv,
                      __global const PromptPlan *pp, __global half *kh, __global half *vh,
                      __global const uchar *hk, __global const uchar *hv) {
