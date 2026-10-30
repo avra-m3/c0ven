@@ -53,7 +53,7 @@ docker exec engine-dev bash -c 'cd /src/build && ENGINE_EXPECT_GPUS=2 ctest -L g
 | `gemm_test` | 2, 3 | the prompt path's fp16 and bf16 products on the XMX units, and the DPAS register layout, 2e-3 |
 | `qgemm_test` | 3 | the prompt path's quantised products: dense weights dequantised to fp16, the experts decoded on the fly in both layouts, 2e-3 |
 | `kl_test` | 5 | the engine's distribution against the BF16 checkpoint's on the KL set, teacher-forced one token a step: mean KL at most 0.170, top-1 agreement at least 83.5%. Needs `$FLASH_REF_DIR/kl-base-bf16.bin` |
-| `attn_test` | 3 | the prompt path's two attention kernels against double precision, dense and sparse rows, 2e-3 |
+| `attn_test` | 3 | the prompt path's attention kernel against double precision: dense and sparse rows, rows past 12,288 positions, keys that grow along the positions; 2e-3 |
 | `vision_test` | 3 | the image encoder's kernels against double precision: 1e-5 for f32 outputs, 2e-3 for fp16, 1e-2 for bf16 |
 | `encoder_test` | 4 | the image encoder against llama.cpp's rows for the same images and video frame pairs ([images](measurements/MEASUREMENTS.md#2026-10-17-encoder-reference), [pairs](measurements/MEASUREMENTS.md#2026-10-17-video-pair-reference)): mean cosine at least 0.999, least at least 0.95. Needs `$FLASH_REF_DIR/vision` and the `mmproj` file |
 | `batch_test` | 6 | a decode step of several rows (several sequences, a window of one, or windows of several in one step, each committed alone) gives each row exactly its single-row result |

@@ -118,10 +118,6 @@ void Model::load_prompt(Card &card) {
   P.apart = f32((uint64_t)PROMPT_MAX_RUNS * PROMPT_SHORT_RUN * card.nq * kAttSplits * (Q_ATT_D + 2));
   P.hp = (card.nq + 7) / 8 * 8;
   P.qt = u16(T * Q_ATT_D * P.hp);
-  P.q16 = u16(T * card.nq * Q_ATT_D);
-  P.nbw = (opt_.max_ctx / Q_IDX_BLOCK + 31) / 32;
-  P.sel = u32(T * P.nbw);
-  P.wbx = u32(T);
   P.ikh = u16((uint64_t)kv_pages_ / ncards_ * Q_IDX_D);  // the pooled keys split for p_idx_score_xmx (p_idx_ksplit)
   P.ikl = u16((uint64_t)kv_pages_ / ncards_ * Q_IDX_D);
   P.iqh = u16(T * Q_IDX_D * Q_IDX_H);  // and the queries (p_idx_qsplit)
@@ -439,7 +435,7 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
       dense(Ly.v, P.x16, Q_EMBD, P.V, card.nkv * Q_ATT_D, false);
       gemm(true, Ly.idx_w, (Q_IDX_H + 1) * Q_IDX_D, Q_EMBD, P.xb, Q_EMBD, P.iq, (Q_IDX_H + 1) * Q_IDX_D, false, 0, one);
       L.launch(q4("p_attn_prep"), {P.Q, P.K, P.V, Ly.qn, Ly.kn, card.nq, card.nkv, Ly.kc, Ly.vc, card.ptab, npp_,
-                                   runs_p, ppos_, pstride, P.qt, P.hp, P.q16, kv_res_ ? P.kvst : nullptr,
+                                   runs_p, ppos_, pstride, P.qt, P.hp, kv_res_ ? P.kvst : nullptr,
                                    kv_res_ ? P.kvst + (uint64_t)T * card.nkv * KV_HEAD_BYTES : nullptr, Ly.where},
                card.nq + card.nkv, T, 1, Q_ATT_D);
       if (kv_res_)
@@ -466,7 +462,7 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
         c1 = c == 0 ? P.cand_peer : P.cand;
       }
       L.launch(q4("p_idx_merge"),
-               {c0, c1, runs_p, P.merged, P.blocks, P.bscores, P.cells, P.ncells, P.sel, P.nbw, P.wbx}, T, 1, 1, 1024);
+               {c0, c1, runs_p, P.merged, P.blocks, P.bscores, P.cells, P.ncells}, T, 1, 1, 1024);
       // The short runs attend from the 8-bit cache, all in one launch.
       L.launch(kernel(c, "qwen4exp_attn", "p_attn_rows"),
                {P.Q, Ly.kc, Ly.vc, card.ptab, npp_, card.nq, card.nkv, P.cells, P.ncells, runs_p, P.apart, Ly.khost,
@@ -482,9 +478,6 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
         L.launch(kernel(c, "qwen4exp_attn", "p_attn_xmx"),
                  {P.qt, P.Q, P.kh, P.vh, card.nq, P.hp, card.nkv, P.cells, P.ncells, run(r), P.o16}, 1,
                  (T + kAttXmxRows - 1) / kAttXmxRows, 1, 16 * (P.hp / 8) * kAttXmxRows);
-        L.launch(kernel(c, "qwen4exp_attn", "p_attn_tiled"),
-                 {P.q16, P.Q, P.kh, P.vh, card.nq, card.nkv, P.sel, P.nbw, P.wbx, run(r), P.o16}, card.nq, (T + 7) / 8,
-                 1, 16);
       }
       dense(Ly.o, P.o16, nqo, P.part, Q_EMBD, true, peer_part(0), sent(0));
     }
