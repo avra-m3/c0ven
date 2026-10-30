@@ -1,8 +1,8 @@
-// Level 3 (docs/TESTING.md): the prompt path's two attention kernels (kernels/models/qwen4exp/prompt_attn.cl),
-// p_attn_tiled and p_attn_xmx, against attention in double precision over the same fp16 inputs and the same cells.
-// Rows past 2,051 positions attend to the indexer's choice: here 512 random blocks, one of them partial, and the
-// tail, given to the kernels both as cell lists and as the block mask. Tolerance 2e-3 of the largest |reference|
-// (TESTING.md, "Tolerances": fp16 products).
+// Level 3 (docs/TESTING.md): the prompt path's attention kernel, p_attn_xmx (kernels/models/qwen4exp/prompt_attn.cl),
+// against attention in double precision over the same fp16 inputs and the same cells. Rows past 2,051 positions
+// attend to the indexer's choice: here 512 random blocks, one of them partial, and the tail, laid out as p_idx_merge
+// lays them out. One case's keys grow along the positions, so that the online softmax's maximum rises many times.
+// Tolerance 2e-3 of the largest |reference| (TESTING.md, "Tolerances": fp16 products).
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -20,18 +20,28 @@ int main() {
   if (test::gpus() == 0) return test::no_gpu();
   ze::Runtime rt;
   ze::Library lib(rt);
-  const uint32_t card = 0, nq = 12, nkv = 1, hp = 16, n = 40;
+  const uint32_t card = 0, n = 40;
   ze::List L(rt, card, ze::List::immediate);
   std::mt19937 rng(5);
   std::normal_distribution<float> normal(0.0f, 1.0f);
   int failures = 0;
-  for (uint32_t pos0 : {0u, 1500u, 2100u, 4000u}) {
-    const uint32_t ctx = pos0 + n, nbw = (ctx / 4 + 31) / 32;
-    // K and V for every position, the queries (scaled by 1/16 as the kernels take them) and the gates.
-    std::vector<uint16_t> kh((size_t)ctx * Q_ATT_D), vh(kh.size()), q16((size_t)n * nq * Q_ATT_D),
+  // cards: the heads of one card when the model runs on that many (2: 12 query heads and 1 KV head; 1: 24 and 2).
+  struct Case {
+    uint32_t pos0;
+    bool rising;
+    uint32_t cards;
+  };
+  for (Case cs : {Case{0, false, 2}, Case{1500, false, 2}, Case{2100, false, 2}, Case{4000, false, 2},
+                  Case{20000, false, 2}, Case{1000, true, 2}, Case{20000, true, 2}, Case{2100, false, 1},
+                  Case{20000, true, 1}}) {
+    const uint32_t pos0 = cs.pos0, ctx = pos0 + n;
+    const uint32_t nq = Q_ATT_H / cs.cards, nkv = Q_ATT_KV / cs.cards, hp = nkv * Q_ATT_SLOTS;
+    // K and V for every position, the queries (scaled by 1/16 as the kernel takes them) and the gates.
+    std::vector<uint16_t> kh((size_t)ctx * nkv * Q_ATT_D), vh(kh.size()), q16((size_t)n * nq * Q_ATT_D),
         qt((size_t)n * Q_ATT_D * hp, 0);
     std::vector<float> Q((size_t)n * nq * 2 * Q_ATT_D);
-    for (auto &x : kh) x = ggml_fp32_to_fp16(normal(rng));
+    for (size_t i = 0; i < kh.size(); i++)
+      kh[i] = ggml_fp32_to_fp16(normal(rng) * (cs.rising ? 1.0f + 3.0f * (float)(i / (nkv * Q_ATT_D)) / ctx : 1.0f));
     for (auto &x : vh) x = ggml_fp32_to_fp16(normal(rng));
     for (auto &x : Q) x = normal(rng) * 2.0f;
     for (uint32_t t = 0; t < n; t++)
@@ -39,11 +49,11 @@ int main() {
         for (uint32_t d = 0; d < Q_ATT_D; d++) {
           uint16_t v = ggml_fp32_to_fp16(Q[((size_t)t * nq + h) * 2 * Q_ATT_D + d] / 16.0f);
           q16[((size_t)t * nq + h) * Q_ATT_D + d] = v;
-          qt[((size_t)t * Q_ATT_D + d) * hp + h] = v;
+          qt[((size_t)t * Q_ATT_D + d) * hp + h / (Q_ATT_H / Q_ATT_KV) * Q_ATT_SLOTS + h % (Q_ATT_H / Q_ATT_KV)] = v;
         }
-    // Each row's cells, as idx_select lays them out (increasing blocks, the partial one with `extra` cells), and its
-    // mask.
-    std::vector<uint32_t> cells((size_t)n * Q_IDX_CELLS), ncells(n), sel((size_t)n * nbw, 0), wbx(n, 0xffffff);
+    // Each row's cells, as p_idx_merge lays them out: the whole blocks in increasing order, then the partial one's
+    // `extra` cells, then the tail.
+    std::vector<uint32_t> cells((size_t)n * Q_IDX_CELLS), ncells(n);
     for (uint32_t t = 0; t < n; t++) {
       uint32_t nkv_t = pos0 + t + 1;
       uint32_t *c = &cells[(size_t)t * Q_IDX_CELLS];
@@ -60,13 +70,10 @@ int main() {
       std::vector<uint32_t> chosen(all.begin(), all.begin() + want);
       std::sort(chosen.begin(), chosen.end());
       uint32_t worst = extra > 0 ? (uint32_t)(rng() % want) : want, at = 0;
-      for (uint32_t i = 0; i < want; i++) {
-        uint32_t b = chosen[i];
-        sel[(size_t)t * nbw + b / 32] |= 1u << (b % 32);
-        uint32_t take = i == worst ? extra : 4;
-        for (uint32_t k = 0; k < take; k++) c[at++] = 4 * b + k;
-      }
-      if (extra > 0) wbx[t] = chosen[worst] | (extra << 24);
+      for (uint32_t i = 0; i < want; i++)
+        if (i != worst)
+          for (uint32_t k = 0; k < 4; k++) c[at++] = 4 * chosen[i] + k;
+      for (uint32_t k = 0; k < extra; k++) c[at++] = 4 * chosen[worst] + k;
       for (uint32_t k = 0; k < tail; k++) c[at++] = 4 * nb + k;
       ncells[t] = at;
     }
@@ -74,14 +81,14 @@ int main() {
     std::vector<double> ref((size_t)n * nq * Q_ATT_D);
     for (uint32_t t = 0; t < n; t++)
       for (uint32_t h = 0; h < nq; h++) {
-        const uint32_t *c = &cells[(size_t)t * Q_IDX_CELLS];
+        const uint32_t *c = &cells[(size_t)t * Q_IDX_CELLS], kv = h / (Q_ATT_H / Q_ATT_KV);
         std::vector<double> s(ncells[t]);
         double mx = -INFINITY;
         for (uint32_t i = 0; i < ncells[t]; i++) {
           double dot = 0;
           for (uint32_t d = 0; d < Q_ATT_D; d++)
             dot += (double)ggml_fp16_to_fp32(q16[((size_t)t * nq + h) * Q_ATT_D + d]) *
-                   ggml_fp16_to_fp32(kh[(size_t)c[i] * Q_ATT_D + d]);
+                   ggml_fp16_to_fp32(kh[((size_t)c[i] * nkv + kv) * Q_ATT_D + d]);
           s[i] = dot;
           mx = std::max(mx, dot);
         }
@@ -89,7 +96,7 @@ int main() {
         for (auto &v : s) sum += v = std::exp(v - mx);
         for (uint32_t d = 0; d < Q_ATT_D; d++) {
           double acc = 0;
-          for (uint32_t i = 0; i < ncells[t]; i++) acc += s[i] * ggml_fp16_to_fp32(vh[(size_t)c[i] * Q_ATT_D + d]);
+          for (uint32_t i = 0; i < ncells[t]; i++) acc += s[i] * ggml_fp16_to_fp32(vh[((size_t)c[i] * nkv + kv) * Q_ATT_D + d]);
           double gate = Q[((size_t)t * nq + h) * 2 * Q_ATT_D + Q_ATT_D + d];
           ref[((size_t)t * nq + h) * Q_ATT_D + d] = acc / sum / (1 + std::exp(-gate));
         }
@@ -99,38 +106,29 @@ int main() {
       L.copy(p, src, bytes);
       return p;
     };
-    void *dkh = dev(kh.data(), kh.size() * 2), *dvh = dev(vh.data(), vh.size() * 2), *dq16 = dev(q16.data(), q16.size() * 2),
-         *dqt = dev(qt.data(), qt.size() * 2), *dQ = dev(Q.data(), Q.size() * 4), *dcells = dev(cells.data(), cells.size() * 4),
-         *dn = dev(ncells.data(), n * 4), *dsel = dev(sel.data(), sel.size() * 4), *dwbx = dev(wbx.data(), n * 4);
+    void *dkh = dev(kh.data(), kh.size() * 2), *dvh = dev(vh.data(), vh.size() * 2), *dqt = dev(qt.data(), qt.size() * 2),
+         *dQ = dev(Q.data(), Q.size() * 4), *dcells = dev(cells.data(), cells.size() * 4), *dn = dev(ncells.data(), n * 4);
     auto *pp = static_cast<PromptPlan *>(rt.alloc_host(sizeof(PromptPlan)));
     *pp = {n, pos0, 0, 0};
     auto *o16 = static_cast<uint16_t *>(rt.alloc_host((size_t)n * nq * Q_ATT_D * 2));
+    std::fill(o16, o16 + (size_t)n * nq * Q_ATT_D, 0x7e00);
     L.synchronize();
-    for (int which = 0; which < 2; which++) {
-      // Each kernel takes its own range of context: p_attn_tiled up to ATT_TILED_MAX (12,288), p_attn_xmx past it.
-      // The test runs p_attn_xmx through a plan whose end lies past it, with the same rows.
-      std::fill(o16, o16 + (size_t)n * nq * Q_ATT_D, 0x7e00);
-      if (which == 0) {
-        L.launch(lib.get(card, "qwen4exp_attn", "p_attn_tiled"), {dq16, dQ, dkh, dvh, nq, nkv, dsel, nbw, dwbx, pp, o16}, nq,
-                 (n + 7) / 8, 1, 16);
-      } else {
-        L.launch(lib.get(card, "qwen4exp_attn_any", "p_attn_xmx"), {dqt, dQ, dkh, dvh, nq, hp, nkv, dcells, dn, pp, o16},
-                 1, (n + 3) / 4, 1, 16 * (hp / 8) * 4);
-      }
-      L.synchronize();
-      double maxerr = 0, maxref = 0;
-      for (size_t i = 0; i < ref.size(); i++) {
-        maxref = std::max(maxref, std::fabs(ref[i]));
-        double e = std::fabs(ref[i] - ggml_fp16_to_fp32(o16[i]));
-        maxerr = std::isnan(e) ? INFINITY : std::max(maxerr, e);
-      }
-      double rel = maxerr / maxref;
-      bool ok = rel <= 2e-3;
-      failures += !ok;
-      std::printf("%s, rows %u-%u: max error %.2e %s\n", which ? "p_attn_xmx  " : "p_attn_tiled", pos0, pos0 + n - 1, rel,
-                  ok ? "ok" : "FAIL");
+    const uint32_t rows = 16 / (hp / 8);  // 16 sub-groups a work-group, as prompt.cpp launches it
+    L.launch(lib.get(card, "qwen4exp_attn", "p_attn_xmx"), {dqt, dQ, dkh, dvh, nq, hp, nkv, dcells, dn, pp, o16}, 1,
+             (n + rows - 1) / rows, 1, 16 * 16);
+    L.synchronize();
+    double maxerr = 0, maxref = 0;
+    for (size_t i = 0; i < ref.size(); i++) {
+      maxref = std::max(maxref, std::fabs(ref[i]));
+      double e = std::fabs(ref[i] - ggml_fp16_to_fp32(o16[i]));
+      maxerr = std::isnan(e) ? INFINITY : std::max(maxerr, e);
     }
-    for (void *p : {dkh, dvh, dq16, dqt, dQ, dcells, dn, dsel, dwbx}) rt.free(p);
+    double rel = maxerr / maxref;
+    bool ok = rel <= 2e-3;
+    failures += !ok;
+    std::printf("p_attn_xmx, %u query heads, rows %u-%u%s: max error %.2e %s\n", nq, pos0, pos0 + n - 1,
+                cs.rising ? ", rising keys" : "", rel, ok ? "ok" : "FAIL");
+    for (void *p : {dkh, dvh, dqt, dQ, dcells, dn}) rt.free(p);
     rt.free(pp);
     rt.free(o16);
   }
