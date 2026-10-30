@@ -20,24 +20,28 @@ int main() {
   if (test::gpus() == 0) return test::no_gpu();
   ze::Runtime rt;
   ze::Library lib(rt);
-  const uint32_t card = 0, nq = 12, nkv = 1, hp = 16, n = 40;
+  const uint32_t card = 0, n = 40;
   ze::List L(rt, card, ze::List::immediate);
   std::mt19937 rng(5);
   std::normal_distribution<float> normal(0.0f, 1.0f);
   int failures = 0;
+  // cards: the heads of one card when the model runs on that many (2: 12 query heads and 1 KV head; 1: 24 and 2).
   struct Case {
     uint32_t pos0;
     bool rising;
+    uint32_t cards;
   };
-  for (Case cs : {Case{0, false}, Case{1500, false}, Case{2100, false}, Case{4000, false}, Case{20000, false},
-                  Case{1000, true}, Case{20000, true}}) {
+  for (Case cs : {Case{0, false, 2}, Case{1500, false, 2}, Case{2100, false, 2}, Case{4000, false, 2},
+                  Case{20000, false, 2}, Case{1000, true, 2}, Case{20000, true, 2}, Case{2100, false, 1},
+                  Case{20000, true, 1}}) {
     const uint32_t pos0 = cs.pos0, ctx = pos0 + n;
+    const uint32_t nq = Q_ATT_H / cs.cards, nkv = Q_ATT_KV / cs.cards, hp = (nq + 7) / 8 * 8;
     // K and V for every position, the queries (scaled by 1/16 as the kernel takes them) and the gates.
-    std::vector<uint16_t> kh((size_t)ctx * Q_ATT_D), vh(kh.size()), q16((size_t)n * nq * Q_ATT_D),
+    std::vector<uint16_t> kh((size_t)ctx * nkv * Q_ATT_D), vh(kh.size()), q16((size_t)n * nq * Q_ATT_D),
         qt((size_t)n * Q_ATT_D * hp, 0);
     std::vector<float> Q((size_t)n * nq * 2 * Q_ATT_D);
     for (size_t i = 0; i < kh.size(); i++)
-      kh[i] = ggml_fp32_to_fp16(normal(rng) * (cs.rising ? 1.0f + 3.0f * (float)(i / Q_ATT_D) / ctx : 1.0f));
+      kh[i] = ggml_fp32_to_fp16(normal(rng) * (cs.rising ? 1.0f + 3.0f * (float)(i / (nkv * Q_ATT_D)) / ctx : 1.0f));
     for (auto &x : vh) x = ggml_fp32_to_fp16(normal(rng));
     for (auto &x : Q) x = normal(rng) * 2.0f;
     for (uint32_t t = 0; t < n; t++)
@@ -77,14 +81,14 @@ int main() {
     std::vector<double> ref((size_t)n * nq * Q_ATT_D);
     for (uint32_t t = 0; t < n; t++)
       for (uint32_t h = 0; h < nq; h++) {
-        const uint32_t *c = &cells[(size_t)t * Q_IDX_CELLS];
+        const uint32_t *c = &cells[(size_t)t * Q_IDX_CELLS], kv = h / (Q_ATT_H / Q_ATT_KV);
         std::vector<double> s(ncells[t]);
         double mx = -INFINITY;
         for (uint32_t i = 0; i < ncells[t]; i++) {
           double dot = 0;
           for (uint32_t d = 0; d < Q_ATT_D; d++)
             dot += (double)ggml_fp16_to_fp32(q16[((size_t)t * nq + h) * Q_ATT_D + d]) *
-                   ggml_fp16_to_fp32(kh[(size_t)c[i] * Q_ATT_D + d]);
+                   ggml_fp16_to_fp32(kh[((size_t)c[i] * nkv + kv) * Q_ATT_D + d]);
           s[i] = dot;
           mx = std::max(mx, dot);
         }
@@ -92,7 +96,7 @@ int main() {
         for (auto &v : s) sum += v = std::exp(v - mx);
         for (uint32_t d = 0; d < Q_ATT_D; d++) {
           double acc = 0;
-          for (uint32_t i = 0; i < ncells[t]; i++) acc += s[i] * ggml_fp16_to_fp32(vh[(size_t)c[i] * Q_ATT_D + d]);
+          for (uint32_t i = 0; i < ncells[t]; i++) acc += s[i] * ggml_fp16_to_fp32(vh[((size_t)c[i] * nkv + kv) * Q_ATT_D + d]);
           double gate = Q[((size_t)t * nq + h) * 2 * Q_ATT_D + Q_ATT_D + d];
           ref[((size_t)t * nq + h) * Q_ATT_D + d] = acc / sum / (1 + std::exp(-gate));
         }
@@ -122,8 +126,8 @@ int main() {
     double rel = maxerr / maxref;
     bool ok = rel <= 2e-3;
     failures += !ok;
-    std::printf("p_attn_xmx, rows %u-%u%s: max error %.2e %s\n", pos0, pos0 + n - 1, cs.rising ? ", rising keys" : "", rel,
-                ok ? "ok" : "FAIL");
+    std::printf("p_attn_xmx, %u query heads, rows %u-%u%s: max error %.2e %s\n", nq, pos0, pos0 + n - 1,
+                cs.rising ? ", rising keys" : "", rel, ok ? "ok" : "FAIL");
     for (void *p : {dkh, dvh, dqt, dQ, dcells, dn}) rt.free(p);
     rt.free(pp);
     rt.free(o16);
