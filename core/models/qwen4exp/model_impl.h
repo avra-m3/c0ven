@@ -20,7 +20,7 @@ using Ranges = std::vector<std::pair<uint64_t, uint64_t>>;  // [start, start + c
 inline constexpr uint32_t kRecFloats = 2 * Q_USED + Q_EMBD;  // the router's record: ids, weights, x
 inline constexpr uint32_t kGdn = 36, kAttn = 12;
 inline constexpr uint32_t kSgSize = 16;  // the kernels' SG_SIZE
-inline constexpr uint32_t kAttXmxRows = 8;  // prompt_attn.cl's ATT_XMX_ROWS
+inline constexpr uint32_t kAttXmxSubGroups = 16;  // p_attn_xmx's sub-groups a work-group (prompt_attn.cl)
 inline constexpr uint32_t kIdxScoreRows = 8;  // prompt.cl's IDX_SCORE_ROWS
 // The fewest rows of a prompt chunk at which the two cards split the hyper-connections
 // (docs/measurements/MEASUREMENTS.md#2026-10-17-hc-split).
@@ -289,7 +289,7 @@ struct Model::PromptCard {
   uint8_t *kvst = nullptr;  // streamed: p_attn_prep's new K then V cells, [row][nkv] (p_kv_flush)
   float *apart = nullptr;                 // the short runs' attention splits (p_attn_rows)
   uint16_t *qt = nullptr;                 // the queries as fp16, dimension-major (p_attn_xmx)
-  uint32_t hp = 0;                        // heads per dimension in qt
+  uint32_t hp = 0;                        // query slots per dimension in qt (nkv Q_ATT_SLOTS)
   // The experts' routing and the shared expert.
   float *rl = nullptr, *w = nullptr, *shg = nullptr, *shu = nullptr, *s = nullptr;
   uint16_t *part = nullptr;     // this card's fp16 partial sum, before one copy takes it to the other card

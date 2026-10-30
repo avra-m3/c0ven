@@ -35,7 +35,7 @@ int main() {
                   Case{20000, false, 2}, Case{1000, true, 2}, Case{20000, true, 2}, Case{2100, false, 1},
                   Case{20000, true, 1}}) {
     const uint32_t pos0 = cs.pos0, ctx = pos0 + n;
-    const uint32_t nq = Q_ATT_H / cs.cards, nkv = Q_ATT_KV / cs.cards, hp = (nq + 7) / 8 * 8;
+    const uint32_t nq = Q_ATT_H / cs.cards, nkv = Q_ATT_KV / cs.cards, hp = nkv * Q_ATT_SLOTS;
     // K and V for every position, the queries (scaled by 1/16 as the kernel takes them) and the gates.
     std::vector<uint16_t> kh((size_t)ctx * nkv * Q_ATT_D), vh(kh.size()), q16((size_t)n * nq * Q_ATT_D),
         qt((size_t)n * Q_ATT_D * hp, 0);
@@ -49,7 +49,7 @@ int main() {
         for (uint32_t d = 0; d < Q_ATT_D; d++) {
           uint16_t v = ggml_fp32_to_fp16(Q[((size_t)t * nq + h) * 2 * Q_ATT_D + d] / 16.0f);
           q16[((size_t)t * nq + h) * Q_ATT_D + d] = v;
-          qt[((size_t)t * Q_ATT_D + d) * hp + h] = v;
+          qt[((size_t)t * Q_ATT_D + d) * hp + h / (Q_ATT_H / Q_ATT_KV) * Q_ATT_SLOTS + h % (Q_ATT_H / Q_ATT_KV)] = v;
         }
     // Each row's cells, as p_idx_merge lays them out: the whole blocks in increasing order, then the partial one's
     // `extra` cells, then the tail.
@@ -113,9 +113,9 @@ int main() {
     auto *o16 = static_cast<uint16_t *>(rt.alloc_host((size_t)n * nq * Q_ATT_D * 2));
     std::fill(o16, o16 + (size_t)n * nq * Q_ATT_D, 0x7e00);
     L.synchronize();
-    const uint32_t rows = 8;  // prompt_attn.cl's ATT_XMX_ROWS
+    const uint32_t rows = 16 / (hp / 8);  // 16 sub-groups a work-group, as prompt.cpp launches it
     L.launch(lib.get(card, "qwen4exp_attn", "p_attn_xmx"), {dqt, dQ, dkh, dvh, nq, hp, nkv, dcells, dn, pp, o16}, 1,
-             (n + rows - 1) / rows, 1, 16 * (hp / 8) * rows);
+             (n + rows - 1) / rows, 1, 16 * 16);
     L.synchronize();
     double maxerr = 0, maxref = 0;
     for (size_t i = 0; i < ref.size(); i++) {

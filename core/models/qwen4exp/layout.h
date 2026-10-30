@@ -21,6 +21,7 @@
 #define Q_ATT_H 24                  // query heads
 #define Q_ATT_KV 2                  // KV heads; query head h reads KV head h / 12
 #define Q_ATT_D 256
+#define Q_ATT_SLOTS 16  // p_attn_xmx's query slots a KV head: its 12 heads, rounded up to 8 (prompt_attn.cl)
 #define Q_ROT 64                    // rotated dimensions per head, NeoX pairs (i, i + 32)
 #define Q_ROPE_BASE 10000000.0f
 

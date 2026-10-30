@@ -329,7 +329,8 @@ __kernel void p_gdn_out(__global const float *raw, __global const float *z, __gl
 // Per row: groups [0, nq) norm and rotate the queries in place; [nq, nq + nkv) norm and rotate the keys and store keys
 // and values in the 8-bit cache at the row's position, in the page the table pt gives it (layout.h).
 // Groups (nq + nkv, T), 256.
-// The queries also go out as fp16 scaled by 1/16 to qt, dimension-major with hp heads per dimension (p_attn_xmx).
+// The queries also go out as fp16 scaled by 1/16 to qt, dimension-major with hp slots per dimension, Q_ATT_SLOTS a KV
+// head (p_attn_xmx).
 __kernel void p_attn_prep(__global float *Q, __global const float *K, __global const float *V,
                           __global const float *qn, __global const float *kn, uint nq, uint nkv, __global uchar *kc,
                           __global uchar *vc, __global const uint *pt, uint npp, __global const PromptPlan *runs,
@@ -355,7 +356,8 @@ __kernel void p_attn_prep(__global float *Q, __global const float *K, __global c
   float r = rope_at(x, d, ppos, pos_entry(pp, t));
   if (is_q) {
     q[g * 2 * Q_ATT_D + d] = r;
-    qt[((ulong)t * Q_ATT_D + d) * hp + g] = convert_half(r * (1.0f / 16.0f));
+    const uint slot = g / (Q_ATT_H / Q_ATT_KV) * Q_ATT_SLOTS + g % (Q_ATT_H / Q_ATT_KV);
+    qt[((ulong)t * Q_ATT_D + d) * hp + slot] = convert_half(r * (1.0f / 16.0f));
     return;
   }
   uint c = g - nq;
