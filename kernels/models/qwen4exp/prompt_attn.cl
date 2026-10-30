@@ -9,8 +9,6 @@
 
 static inline float sigmoid(float x) { return 1.0f / (1.0f + exp(-x)); }
 
-// Rows a work-group (prompt.cpp's kAttXmxRows).
-#define ATT_XMX_ROWS 8
 // The online softmax keeps the maximum it scales by until a score passes it by more than this, so P stays under
 // e^8 in fp16 and the sub-group skips the maximum over its lanes and the rescaling of O on most steps.
 #define ATT_MAX_SLACK 8.0f
@@ -18,17 +16,21 @@ static inline float sigmoid(float x) { return 1.0f / (1.0f + exp(-x)); }
 #if Q_IDX_BLOCK != 4
 #error "p_attn_xmx reads V in runs of 4 cells"
 #endif
+#if Q_ATT_SLOTS % 8 || Q_ATT_SLOTS < Q_ATT_H / Q_ATT_KV
+#error "Q_ATT_SLOTS holds a KV head's query heads in whole sub-groups of 8"
+#endif
 
-// qt: each row's queries as fp16 scaled by 1/16, dimension-major, qt[t][d][h], hp heads a dimension (nq rounded up to
-// 8, the extra heads zero). kh, vh: p_kv16's fp16 K and V, [position][nkv][256]. cells: p_idx_merge's, whose first
+// qt: each row's queries as fp16 scaled by 1/16, dimension-major, qt[t][d][slot], hp = nkv Q_ATT_SLOTS slots a
+// dimension: KV head c's heads in slots c Q_ATT_SLOTS on, the slots past its 12 heads zero. So a sub-group's 8 slots
+// never span two KV heads. kh, vh: p_kv16's fp16 K and V, [position][nkv][256]. cells: p_idx_merge's, whose first
 // 2,048 cells are 512 whole blocks of 4 (the dense rows' cells are 0, 1, 2, ...), so a tile of 16 cells is mostly 4
-// runs of 4 positions. A work-group holds ATT_XMX_ROWS consecutive rows of hp / 8 sub-groups each, which share many
-// cells through the core's cache. Groups (1, ceil(T / ATT_XMX_ROWS)), 16 hp / 8 ATT_XMX_ROWS work-items.
+// runs of 4 positions. A work-group holds `rows` consecutive rows of hp / 8 sub-groups each, which share many cells
+// through the core's cache. Groups (1, ceil(T / rows)), 16 hp / 8 rows work-items (prompt.cpp: 16 sub-groups).
 REQD_SG __kernel void p_attn_xmx(__global const half *qt, __global const float *Q, __global const half *kh,
                                  __global const half *vh, uint nq, uint hp, uint nkv, __global const uint *cells_all,
                                  __global const uint *ncells, __global const PromptPlan *pp, __global half *o16) {
-  const uint hg = hp / 8, sg = get_sub_group_id();
-  const uint t = ATT_XMX_ROWS * get_group_id(1) + sg / hg, h0 = 8 * (sg % hg), lane = sg_lane();
+  const uint hg = hp / 8, sg = get_sub_group_id(), rows = get_num_sub_groups() / hg;
+  const uint t = rows * get_group_id(1) + sg / hg, h0 = 8 * (sg % hg), lane = sg_lane();
   if (t >= pp->n || pp->n <= PROMPT_SHORT_RUN) return;
   const ulong r0 = pp->row0;
   qt += r0 * Q_ATT_D * hp;
@@ -36,7 +38,8 @@ REQD_SG __kernel void p_attn_xmx(__global const half *qt, __global const float *
   cells_all += r0 * Q_IDX_CELLS;
   ncells += r0;
   o16 += r0 * nq * Q_ATT_D;
-  const uint c = h0 / (Q_ATT_H / Q_ATT_KV);
+  // KV head c; the sub-group's slots are its heads hk0 .. hk0 + 7, those under 12 real.
+  const uint c = h0 / Q_ATT_SLOTS, hk0 = h0 % Q_ATT_SLOTS;
   const uint n = ncells[t];
   __global const uint *cells = cells_all + (ulong)t * Q_IDX_CELLS;
   __global const ushort *q = (__global const ushort *)qt + (ulong)t * Q_ATT_D * hp + h0;
@@ -128,7 +131,7 @@ REQD_SG __kernel void p_attn_xmx(__global const half *qt, __global const float *
       }
     }
   }
-  // Out: head h0 + m, dimension 64 (j / 4) + 16 (j % 4) + lane.
+  // Out: head c 12 + hk0 + m, dimension 64 (j / 4) + 16 (j % 4) + lane.
   for (uint x = 1; x < 16; x *= 2) lrow += intel_sub_group_shuffle_xor(lrow, x);
   float lr[8];
   vstore8(lrow, 0, lr);
@@ -137,8 +140,8 @@ REQD_SG __kernel void p_attn_xmx(__global const half *qt, __global const float *
     vstore8(o[j], 0, ov);
     uint d = 64 * (j / 4) + 16 * (j % 4) + lane;
     for (uint m = 0; m < 8; m++) {
-      uint h = h0 + m;
-      if (h >= nq) break;
+      if (hk0 + m >= Q_ATT_H / Q_ATT_KV) break;
+      uint h = c * (Q_ATT_H / Q_ATT_KV) + hk0 + m;
       float gate = Q[((ulong)t * nq + h) * 2 * Q_ATT_D + Q_ATT_D + d];
       o16[((ulong)t * nq + h) * Q_ATT_D + d] = convert_half(ov[m] / lr[m] * sigmoid(gate));
     }
