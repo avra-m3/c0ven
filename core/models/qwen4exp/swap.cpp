@@ -45,11 +45,23 @@ uint32_t Model::swap_round(uint32_t max_swaps) {
   const uint32_t applied = apply_round();
   bool chosen = false;
   if (share_) {
-    if (kv_own_ < std::min(kv_pages_, kv_want_ + kv_margin_)) {
-      plan_evict(std::min(kv_pages_, kv_want_ + 2 * kv_margin_), true);
+    const uint32_t m = kv_margin_;
+    if (kv_own_ < std::min(kv_pages_, kv_want_ + m) || (kv_res_ && ring_own_ < std::min(kv_res_, ring_want_ + m))) {
+      plan_evict(std::min(kv_pages_, kv_want_ + 2 * m), std::min(kv_res_, ring_want_ + 2 * m), true);
       chosen = true;
     } else {
-      if (kv_own_ > kv_want_ + 4 * kv_margin_) shrink_kv(kv_want_ + 2 * kv_margin_);
+      // The ring gives memory back only once it has been over for kRingIdle: the next request may read as much, and
+      // the experts the memory refills would leave again (the idle slots' pages left it already, kvs_drop).
+      uint32_t pool = kv_own_, ring = ring_own_;
+      if (kv_own_ > kv_want_ + 4 * m) pool = kv_want_ + 2 * m;
+      const auto now = std::chrono::steady_clock::now();
+      if (kv_res_ && ring_own_ > ring_want_ + 4 * m) {
+        if (ring_over_ == std::chrono::steady_clock::time_point{}) ring_over_ = now;
+        if (now - ring_over_ >= kRingIdle) ring = ring_want_ + 2 * m;
+      } else {
+        ring_over_ = {};
+      }
+      if (pool != kv_own_ || ring != ring_own_) shrink_kv(pool, ring);
       plan_refills(max_swaps);
       chosen = !swap_next_.empty();
     }

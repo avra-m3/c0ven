@@ -371,7 +371,10 @@ def main(argv: list[str] | None = None) -> int:
     arch = args.arch or architecture(args.model)  # the front end passes --arch, so the GGUF is read once
     model = model_module(arch)
     options = PlanOptions(
-        slots=args.slots, context=args.context, checkpoints=args.checkpoints, kv_tokens=args.kv_tokens
+        slots=args.slots,
+        context=args.context,
+        checkpoints=args.checkpoints,
+        kv_tokens=args.kv_tokens,
     )
     native = args.backend == "native"
     draft: Path | None = None

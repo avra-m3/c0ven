@@ -69,7 +69,13 @@ struct Slot {
   engine::DraftOdds odds;
   bool lookup_round = false;    // drafts holds the lookup's drafts
   engine_slot_stats stats{};
+  uint64_t last_ns = 0;         // when a plan last computed it
+  bool resident = false;        // its pages count for the streamed pool's ring (kv_resident)
 };
+
+// A used slot no plan has computed for this long leaves the streamed pool's resident ring (kv_resident): the cards'
+// memory goes to the experts the requests in progress need.
+constexpr uint64_t kIdleResident = 300ull * 1000000000ull;
 
 // A prompt piece of at most this many tokens is read as decode windows of forced rows: a prompt chunk stages every
 // uncached expert whatever its size, so a short piece is faster as windows
@@ -215,6 +221,41 @@ struct engine_ctx {
     for (uint32_t i = 0; i < plan.nslots && i < ENGINE_MAX_STEP_SLOTS; i++) n = std::max(n, top[plan.slots[i]]);
     for (uint32_t i = 0; i < plan.npieces && i < ENGINE_MAX_PROMPT_PIECES; i++) n = std::max(n, top[plan.pieces[i].slot]);
     return std::min(n, P);
+  }
+
+  // The pages the streamed pool's ring keeps resident (Model::kv_need): what the plan's slots and the slots a plan
+  // computed within kIdleResident have mapped, with this plan's changes. A used slot idle longer leaves the ring
+  // (drops: the slot and its mapped pages, for Model::kvs_drop) and no longer counts; a released one only stops
+  // counting, as its pages may be another slot's by now.
+  uint32_t kv_resident(const engine_step_plan &plan, const std::vector<engine_page_change> &changes, uint64_t now,
+                       std::vector<std::pair<uint32_t, uint32_t>> &drops) {
+    std::lock_guard<std::mutex> lk(mu);
+    std::vector<bool> in(slots.size(), false);
+    for (uint32_t i = 0; i < plan.nslots && i < ENGINE_MAX_STEP_SLOTS; i++)
+      if (plan.slots[i] < slots.size()) in[plan.slots[i]] = true;
+    for (uint32_t i = 0; i < plan.npieces && i < ENGINE_MAX_PROMPT_PIECES; i++)
+      if (plan.pieces[i].slot < slots.size()) in[plan.pieces[i].slot] = true;
+    for (const engine_page_change &c : changes)
+      if (c.slot < slots.size() && c.page != ENGINE_NO_PAGE) in[c.slot] = true;
+    uint32_t n = 0;
+    for (uint32_t s = 0; s < slots.size(); s++) {
+      Slot &sl = slots[s];
+      if (in[s]) {
+        sl.last_ns = now;
+        sl.resident = true;
+      } else if (!sl.used) {
+        sl.resident = false;
+      } else if (sl.resident && now - sl.last_ns > kIdleResident) {
+        drops.push_back({s, mapped[s]});
+        sl.resident = false;
+      }
+      if (!sl.resident) continue;
+      uint32_t m = mapped[s];
+      for (const engine_page_change &c : changes)
+        if (c.slot == s && c.page != ENGINE_NO_PAGE) m = std::max(m, c.logical + 1);
+      n += m;
+    }
+    return n;
   }
 
   // Emits tok, the slot's token for position pos, and ends the request if it must. Returns whether it ended. Under
@@ -1048,7 +1089,10 @@ struct engine_ctx {
       }
       const uint64_t t_plan = now_ns();
       try {
-        model->kv_need(kv_in_use(plan, pages));
+        std::vector<std::pair<uint32_t, uint32_t>> drops;
+        const uint32_t resident = kv_resident(plan, pages, t_plan, drops);
+        for (auto [s, n] : drops) model->kvs_drop(s, n);
+        model->kv_need(kv_in_use(plan, pages), resident);
         apply_pages(pages);
         prompt_pieces(seq, plan);
         decode(seq, plan);
@@ -1143,6 +1187,7 @@ engine_status engine_open(const engine_config *config, engine_info *info, engine
     if (config->mtp_dir) opt.mtp_dir = config->mtp_dir;
     if (config->vision_path) opt.vision_path = config->vision_path;
     opt.kv_pages = config->kv_pages;
+    opt.kv_resident = config->kv_resident_cells;
     opt.adapt_swaps = (config->flags & ENGINE_CONFIG_SWAPS) != 0;
     opt.share_kv = (config->flags & ENGINE_CONFIG_SHARE_KV) != 0;
     auto e = std::make_unique<engine_ctx>();
@@ -1485,7 +1530,7 @@ uint32_t engine_abi_layout(engine_abi_row *table, uint32_t cap) {
       ROW(engine_config, flags), ROW(engine_config, reserve_bytes), ROW(engine_config, prompt_chunk),
       ROW(engine_config, checkpoints), ROW(engine_config, routing_profile), ROW(engine_config, mtp_dir),
       ROW(engine_config, draft_max), ROW(engine_config, draft_min_p), ROW(engine_config, vision_path),
-      ROW(engine_config, kv_pages), SIZE(engine_config),
+      ROW(engine_config, kv_pages), ROW(engine_config, kv_resident_cells), SIZE(engine_config),
       ROW(engine_info, api_version), ROW(engine_info, cards), ROW(engine_info, slots), ROW(engine_info, max_ctx),
       ROW(engine_info, experts_per_layer), ROW(engine_info, vocab), ROW(engine_info, device_bytes),
       ROW(engine_info, arena_bytes), ROW(engine_info, load_seconds), ROW(engine_info, prompt_chunk),

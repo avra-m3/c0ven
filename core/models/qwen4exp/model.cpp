@@ -1,6 +1,7 @@
 // qwen4exp's loading, its arena of uncached experts, and the decode step (model.h).
 #include "model_impl.h"
 
+#include <array>
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
@@ -125,6 +126,12 @@ Model::Model(const std::string &path, const Options &opt) : opt_(opt), gguf_(pat
                  rt_->cards()[c].shared_system);
   npp_ = (opt_.max_ctx / KV_PAGE_CELLS + ncards_ - 1) / ncards_ * ncards_;
   kv_pages_ = opt_.kv_pages ? (opt_.kv_pages + ncards_ - 1) / ncards_ * ncards_ : opt_.slots * npp_;
+  if (opt_.kv_resident) {
+    const uint64_t r = (uint64_t)opt_.slots * ((opt_.kv_resident + KV_PAGE_CELLS - 1) / KV_PAGE_CELLS);
+    kv_res_ = r < kv_pages_ ? (uint32_t)r : 0;  // a pool no larger than the resident pages is not streamed
+    if (kv_res_ && kv_res_ <= kKvsMaxMiss)
+      throw std::runtime_error("kv_resident must leave more than " + std::to_string(kKvsMaxMiss * KV_PAGE_CELLS / opt_.slots) + " cells a slot resident");
+  }
   // Sharing moves experts in and out of the cache, so it needs the swaps, and a cache the engine sizes.
   share_ = opt_.share_kv && opt_.adapt_swaps && opt_.experts_per_layer < 0;
   if (share_) blk_ = rt_->vm_block(0);
@@ -160,6 +167,7 @@ Model::Model(const std::string &path, const Options &opt) : opt_(opt), gguf_(pat
   images_.resize(opt_.slots);
   blocks_.resize(opt_.slots);
   slot_gen_.assign(opt_.slots, 0);
+  kvs_to_.assign(opt_.slots, 0);
 
   tmax_ = std::min(opt_.prompt_chunk, opt_.max_ctx / 64 * 64);
   kv_margin_ = std::max<uint32_t>(2048, 2 * tmax_ / KV_PAGE_CELLS);  // two prompt chunks, or 8,192 positions
@@ -216,6 +224,7 @@ void Model::load_cards(bool first) {
     card->up = std::make_unique<ze::List>(*rt_, c, ze::List::immediate);
     cards_.push_back(std::move(card));
   }
+  std::fill(kvs_to_.begin(), kvs_to_.end(), 0);  // the ring starts empty
   for (auto &card : cards_) load_card(*card);
   if (tmax_)
     for (auto &card : cards_) load_prompt(*card);
@@ -225,13 +234,17 @@ void Model::load_cards(bool first) {
   if (df_on_)
     for (auto &card : cards_) load_dflash(*card);
   load_experts(first);
+  ring_sync();
   std::fprintf(stderr, "engine: read %.2f GB of weights with O_DIRECT in %.2f s%s\n", reader_->bytes_read() / 1e9,
                std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(),
                first ? ", the arena with them" : "");
   reader_.reset();
   if (first && opt_.anon_arena) settle_arena();
   for (auto &card : cards_) {
-    for (uint32_t W : kStepWidths) record(*card, W);
+    for (uint32_t W : kStepWidths) {
+      record(*card, W);
+      if (kv_res_) record(*card, W, false);  // the steps whose pages are claimed already
+    }
     record_commit(*card);
     if (mtp_on_) {
       for (uint32_t W = 1; W <= STEP_MAX_ROWS; W *= 2) {
@@ -543,15 +556,54 @@ void Model::load_card(Card &card) {
       // The pool of pages (layout.h); the indexer's keys of this card's pages only (split by position: DESIGN.md,
       // section 4).
       const uint64_t cells = (uint64_t)kv_pages_ * KV_PAGE_CELLS, own = (uint64_t)kv_pages_ / C;
+      const uint64_t page_bytes = (uint64_t)KV_PAGE_CELLS * card.nkv * KV_HEAD_BYTES;
+      if (kv_res_) {
+        // Streamed (ADR-0008 item 3): kc and vc hold a ring of up to kv_res_ pages, backed as the ring grows where the
+        // pool shares the cards' memory (kv_share.cpp), from a part that holds a step's claims at least; the host
+        // copies, allocated once, hold every page.
+        uint32_t R0 = kv_res_;
+        if (share_) {
+          const uint32_t x = 4 * L.idx;
+          L.kc = kv_region(card, x, page_bytes, 1, kv_res_, kKvsMaxMiss + 1);
+          L.vc = kv_region(card, x + 1, page_bytes, 1, kv_res_, kKvsMaxMiss + 1);
+          R0 = kv_pages_of(x, 0);
+        } else {
+          L.kc = upload<uint8_t>(card, nullptr, kv_res_ * page_bytes);
+          L.vc = upload<uint8_t>(card, nullptr, kv_res_ * page_bytes);
+        }
+        ring_level_ = R0;
+        const size_t h = ((size_t)card.c * kAttn + L.idx) * 2;
+        if (kv_host_.size() < (size_t)ncards_ * kAttn * 2) kv_host_.resize((size_t)ncards_ * kAttn * 2, nullptr);
+        if (!kv_host_[h]) {
+          kv_host_[h] = static_cast<uint8_t *>(rt_->alloc_host(kv_pages_ * page_bytes));
+          kv_host_[h + 1] = static_cast<uint8_t *>(rt_->alloc_host(kv_pages_ * page_bytes));
+        }
+        L.khost = kv_host_[h];
+        L.vhost = kv_host_[h + 1];
+        std::vector<uint32_t> none(std::max<size_t>(kv_pages_, kv_res_), KV_NO_PAGE), zero(none.size(), 0);
+        L.where = upload<uint32_t>(card, none.data(), (size_t)kv_pages_ * 4);
+        L.spage = upload<uint32_t>(card, none.data(), (size_t)kv_res_ * 4);
+        L.ref = upload<uint32_t>(card, zero.data(), (size_t)kv_res_ * 4);
+        L.mark = upload<uint32_t>(card, zero.data(), (size_t)kv_pages_ * 4);
+        // kst: {hand, epoch, misses, 0, R}. The epoch starts at 1 so the first step's (2) takes a 0 stamp as free,
+        // not as referenced last step (CLOCK's second chance), which would leave it no victim.
+        std::array<uint32_t, 8> kst0{0, 1, 0, 0, R0, 0, 0, 0};
+        L.kst = upload<uint32_t>(card, kst0.data(), 32);
+        L.miss = upload<uint32_t>(card, nullptr, (size_t)2 * kKvsMaxMiss * 4);
+      }
       if (share_) {  // backed as pages come into use (kv_share.cpp)
         const uint32_t x = 4 * L.idx;
-        L.kc = kv_region(card, x, KV_PAGE_CELLS * card.nkv * KV_HEAD_BYTES, 1);
-        L.vc = kv_region(card, x + 1, KV_PAGE_CELLS * card.nkv * KV_HEAD_BYTES, 1);
+        if (!kv_res_) {
+          L.kc = kv_region(card, x, page_bytes, 1);
+          L.vc = kv_region(card, x + 1, page_bytes, 1);
+        }
         L.raw = kv_region(card, x + 2, KV_PAGE_CELLS * IDX_KEY_BYTES, C);
         L.pooled = reinterpret_cast<float *>(kv_region(card, x + 3, Q_IDX_D * 4, C));
       } else {
-        L.kc = upload<uint8_t>(card, nullptr, cells * card.nkv * KV_HEAD_BYTES);
-        L.vc = upload<uint8_t>(card, nullptr, cells * card.nkv * KV_HEAD_BYTES);
+        if (!kv_res_) {
+          L.kc = upload<uint8_t>(card, nullptr, cells * card.nkv * KV_HEAD_BYTES);
+          L.vc = upload<uint8_t>(card, nullptr, cells * card.nkv * KV_HEAD_BYTES);
+        }
         L.raw = upload<uint8_t>(card, nullptr, own * KV_PAGE_CELLS * IDX_KEY_BYTES);
         L.pooled = upload<float>(card, nullptr, own * Q_IDX_D * 4);
       }
@@ -905,8 +957,10 @@ void Model::matvec(ze::List &list, Card &card, const Mat &m, const uint8_t *act,
 
 // The decode step for up to W rows, recorded once per card and width (kStepWidths): the kernels read the step plan
 // in host memory, so a list serves any step of up to W rows. Products run for all W rows (their weights are read
-// once whatever the count); row-wise kernels skip the rows past the plan's.
-void Model::record(Card &card, uint32_t W) {
+// once whatever the count); row-wise kernels skip the rows past the plan's. Streamed, a second list a width leaves
+// out the claim (kvs: false, key W + kKvsSkipList), for the steps whose pages are claimed already (step).
+void Model::record(Card &card, uint32_t W, bool kvs) {
+  const uint32_t key = kvs ? W : W + kKvsSkipList;
   // Not in order: the launches between L.together(true) and L.together(false) read the same inputs and write their
   // own outputs, so they may run side by side; each other command waits for those before it.
   auto list = std::make_unique<ze::List>(*rt_, card.c, ze::List::regular, false, false);
@@ -922,8 +976,8 @@ void Model::record(Card &card, uint32_t W) {
   const uint32_t *nrows = &plan->nrows;
 
   if (opt_.trace) {
-    card.trace[W] = static_cast<uint64_t *>(rt_->alloc_host(8192 * 8));
-    L.trace(card.trace[W], 8192);
+    card.trace[key] = static_cast<uint64_t *>(rt_->alloc_host(8192 * 8));
+    L.trace(card.trace[key], 8192);
   }
   L.copy(card.plan, plan_, sizeof(StepPlan));
   // The BF16 products, on the XMX units with bf16 activations (xb: 8 rows of K), as the reference rounds a BF16
@@ -1028,7 +1082,7 @@ void Model::record(Card &card, uint32_t W) {
       L.together(false);
       L.together(true);
       L.launch(q4("attn_prep"), {card.Q, card.Kt, card.Vt, Ly.qn, Ly.kn, card.nq, card.nkv, Ly.kc, Ly.vc, card.ptab,
-                                 npp_, plan, rope_}, card.nq + card.nkv, W, 1, Q_ATT_D);
+                                 npp_, plan, rope_, Ly.khost, Ly.vhost, Ly.where}, card.nq + card.nkv, W, 1, Q_ATT_D);
       // The indexer, split by position: each card scores its own blocks and sends its best; both merge the same.
       L.launch(q4("idx_prep"), {card.idxq, Ly.iqn, Ly.raw, card.ptab, npp_, plan, rope_, c, C}, Q_IDX_H + 1, W, 1,
                Q_IDX_D);
@@ -1047,8 +1101,14 @@ void Model::record(Card &card, uint32_t W) {
       const uint32_t rows_apart_c = STEP_MAX_ROWS;
       L.launch(q4("idx_merge"), {cand, C, rows_apart_c, plan, card.merged, card.blocks, card.bscores, card.cells,
                                  card.ncells}, W, 1, 1, 1024);
+      if (kv_res_ && kvs) {  // streamed: every page the rows read gets a resident copy before the attention reads it
+        L.launch(q4("kvs_claim"), {card.ptab, npp_, kv_pages_, card.cells, card.ncells, plan, Ly.where, Ly.spage,
+                                   Ly.ref, Ly.mark, Ly.kst, kKvsAhead, Ly.miss, kKvsMaxMiss}, 1, 1, 1, 1024);
+        L.launch(q4("kvs_gather"), {Ly.khost, Ly.vhost, Ly.kc, Ly.vc, card.nkv, Ly.kst, Ly.miss, kKvsMaxMiss}, 1024,
+                 1, 1, 64);
+      }
       L.launch(q4("attn_split"), {card.Q, Ly.kc, Ly.vc, card.ptab, npp_, card.nq, card.nkv, card.cells, card.ncells,
-                                  plan, card.att}, card.nkv, W, kAttSplits, Q_ATT_D);
+                                  plan, card.att, Ly.where}, card.nkv, W, kAttSplits, Q_ATT_D);
       L.launch(q4("attn_merge"), {card.Q, card.nq, card.ncells, plan, card.att, card.o, card.oa8}, card.nq, W, 1,
                Q_ATT_D);
       out_product(Ly.o, p1, l);
@@ -1131,7 +1191,7 @@ void Model::record(Card &card, uint32_t W) {
   }
   record_head(L, card, plan, W);
   L.close();
-  card.lists[W] = std::move(list);
+  card.lists[key] = std::move(list);
 }
 
 // A window's commit (CommitPlan): the accepted rows' recurrent state, replayed from what the window kept.
@@ -1248,7 +1308,13 @@ std::vector<std::vector<Candidate>> Model::step(const StepIn *rows, uint32_t n, 
   }
   wait_commit();
   const uint32_t W = step_width(n);
-  last_width_ = W;
+  // Streamed: the claim runs unless every row's pages are claimed already (kvs_to_), which only the rows that read
+  // every cell (a context within the indexer's width) can be.
+  bool kvs = false;
+  for (uint32_t r = 0; kv_res_ && r < n && !kvs; r++)
+    kvs = rows[r].pos + 1 > Q_IDX_CELLS || kvs_to_[rows[r].slot] <= rows[r].pos;
+  const uint32_t key = kv_res_ && !kvs ? W + kKvsSkipList : W;
+  last_width_ = key;
   plan_->nrows = n;
   plan_->window = window ? 1 : 0;
   plan_->step++;
@@ -1262,7 +1328,7 @@ std::vector<std::vector<Candidate>> Model::step(const StepIn *rows, uint32_t n, 
     if (first) set_rope(rows[r].slot, rows[r].pos, true);
   }
   for (uint32_t i = 0; i < events_->size(); i++) ZE_CHECK(zeEventHostReset((*events_)[i]));
-  for (uint32_t c = ncards_; c-- > 0;) cards_[c]->lists.at(W)->execute();
+  for (uint32_t c = ncards_; c-- > 0;) cards_[c]->lists.at(key)->execute();
   // The n-gram rows, all read at once while the cards run layer 0 (ADR-0015); they wait for the event before layer 1.
   {
     int32_t t[STEP_MAX_ROWS], p1[STEP_MAX_ROWS], p2[STEP_MAX_ROWS];
@@ -1301,8 +1367,18 @@ std::vector<std::vector<Candidate>> Model::step(const StepIn *rows, uint32_t n, 
     cpu_->compute_many(hl.shape, jobs, n, xs.data(), Q_EMBD, cpu_y_ + (size_t)l * STEP_MAX_ROWS * Q_EMBD, Q_EMBD);
     std::atomic_ref<uint32_t>(ans_seq_[16 * l]).store(step, std::memory_order_release);
   }
-  for (auto &card : cards_) card->lists.at(W)->synchronize();
+  for (auto &card : cards_) card->lists.at(key)->synchronize();
   if (*stuck_) throw std::runtime_error("card 0 gave up waiting for the CPU's experts");
+  if (kvs) {
+    // The claim may have taken any other slot's pages; a step's slot that read every cell is claimed through its
+    // position and kKvsAhead pages past it (one past the indexer's width claimed only the cells it chose).
+    std::fill(kvs_to_.begin(), kvs_to_.end(), 0);
+    for (uint32_t r = 0; r < n; r++) {
+      uint32_t &to = kvs_to_[rows[r].slot];
+      if (rows[r].pos + 1 <= Q_IDX_CELLS)
+        to = std::max(to, std::min(npp_ * KV_PAGE_CELLS, (rows[r].pos / KV_PAGE_CELLS + 1 + kKvsAhead) * KV_PAGE_CELLS));
+    }
+  }
 
   std::vector<std::vector<Candidate>> out(n);
   for (uint32_t r = 0; r < n; r++) {

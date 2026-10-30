@@ -213,7 +213,7 @@ layers, whose state has a fixed size.
 
 | State of one sequence | Size | How it is kept |
 | --- | ---: | --- |
-| K, V and indexer keys of the 12 attention layers, 8-bit ([ADR-0008](adr/0008-kv-cache.md)) | 14,688 B per token ([measurements/MEMORY_BUDGET.md](measurements/MEMORY_BUDGET.md#kv-computed)) | In pages of 4 cells, in VRAM. Grows with the context. Can be shared with another request that starts the same way |
+| K, V and indexer keys of the 12 attention layers, 8-bit ([ADR-0008](adr/0008-kv-cache.md)) | 14,688 B per token ([measurements/MEMORY_BUDGET.md](measurements/MEMORY_BUDGET.md#kv-computed)) | In pages of 4 cells. K and V in pinned host memory, with a resident copy of the pages the steps read in VRAM; the indexer keys in VRAM. Grows with the context. Can be shared with another request that starts the same way |
 | The 36 DeltaNet layers' state and the n-gram embedding's history ([MODEL_LAYER.md, 2.7](spec/MODEL_LAYER.md#27-state-per-sequence)) | 118,038,528 B | Fixed size, overwritten by every token. Copied only into a checkpoint |
 | The draft layer's KV | [measurements/MEMORY_BUDGET.md](measurements/MEMORY_BUDGET.md#state-and-the-rest-computed) | Each slot's own run of cells, not paged ([ADR-0033](adr/0033-paged-kv-kept-by-python.md), item 8) |
 
@@ -328,7 +328,7 @@ No card is kept busy to hold its clock up. In decode both cards stay at 2,400 MH
 | Where | What it holds |
 | --- | --- |
 | Each card's VRAM (`zeMemAllocDevice`) | The card's half of every layer's weights and of each cached expert, its KV pages and state heads, its buffers and recorded lists |
-| Pinned host memory (`zeMemAllocHost`) | What both cards or the CPU read: step plans, the misses' jobs and answers, the one-row exchanges, the step's n-gram rows, the cards' candidates, the checkpoints, the image encoder's weights |
+| Pinned host memory (`zeMemAllocHost`) | Each card's K and V of every KV page. What both cards or the CPU read: step plans, the misses' jobs and answers, the one-row exchanges, the step's n-gram rows, the cards' candidates, the checkpoints, the image encoder's weights |
 | The expert arena: the engine's own memory, from `mmap` in 1 GiB pieces with huge pages | Every expert no card caches, each in one place. The CPU reads it for misses and copies from it for short prompt chunks, and the copy engines read it in place for longer chunks and swaps. The driver cannot move this memory under the host's reclaim, and it counts against the engine's cgroup ([ADR-0035](adr/0035-the-arena-in-the-engines-own-memory.md); [known limits](../README.md#known-limits)) |
 | RAM | The n-gram rows already read, in a cache |
 | The SSD | The n-gram table, 28.8 GB, read with `O_DIRECT` past the page cache ([ADR-0015](adr/0015-ngram-table-on-the-ssd.md)) |
@@ -360,6 +360,14 @@ chunk waits for it. When the pool and the cache share the cards, the staged set 
 round that changes it records the prompt path's next list behind the steps, and frees the one before behind the next
 round. The engine thread chooses those rounds, and a round that refills the cache first ends the moves of the round
 before.
+
+The KV cache streams ([ADR-0008](adr/0008-kv-cache.md), item 3). Each card keeps its K and V of every page in pinned
+host memory, and a ring of resident pages a layer in VRAM, up to 32,768 cells a slot. The prompt path writes the host
+copy and the resident copy where a page has one. Before a decode step's attention, `kvs_claim` gives every page the
+rows read a slot in the ring (by CLOCK: a slot read this step is never taken), and `kvs_gather` copies the missed
+pages in from host memory. A slot whose pages are claimed through its position skips both, through a second recorded
+list. The ring is backed as the slots need it and shares the cards with the expert cache like the pool. A slot no plan
+has computed for 5 minutes leaves the ring.
 
 Asleep, the engine frees everything on the cards and the checkpoints, and keeps the arena and the image encoder's
 weights in RAM, so a wake reads only the cards' part of the model again

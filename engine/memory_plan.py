@@ -59,9 +59,9 @@ class PlanOptions:
     independent of the slot count, and at least one context: a request waits until the pool can reserve its pages
     (seqstate/pages.py)."""
     cached_prefix_pages: int = 0
-    """Pages beyond the slots' own, for prefixes that checkpoints keep after their requests end. The core keeps every
-    page in VRAM on both cards (ADR-0033), so each costs experts; with none, prefixes share the pages of the slots
-    that are not full."""
+    """Pages beyond the slots' own, for prefixes that checkpoints keep after their requests end. Every page's indexer
+    keys stay in VRAM on both cards (ADR-0033), so each costs experts; with none, prefixes share the pages of the
+    slots that are not full."""
     pinned_clean: int = 12 * GIB
     pinned_limit: int = 25 * GIB
 

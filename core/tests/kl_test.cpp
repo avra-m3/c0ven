@@ -235,6 +235,12 @@ int main(int argc, char **argv) {
   opt.max_cards = argc > 3 ? (uint32_t)std::stoul(argv[3]) : 2;
   opt.max_ctx = 4096;
   opt.prompt_chunk = prompt ? 512 : 0;
+  // FLASH_KV_RESIDENT=<cells>: KV streaming (ADR-0008, item 3) with that many cells a slot resident, in a context
+  // twice that, so the decode path claims and gathers every page it reads.
+  if (const char *kr = std::getenv("FLASH_KV_RESIDENT")) {
+    opt.kv_resident = (uint32_t)std::stoul(kr);
+    opt.max_ctx = std::max(opt.max_ctx, 2 * opt.kv_resident);
+  }
   qwen4exp::Model model(path, opt);
   std::printf("loaded in %.1f s: %u card(s), %u experts per layer cached\n", model.info().seconds, model.info().cards,
               model.info().experts_per_layer);

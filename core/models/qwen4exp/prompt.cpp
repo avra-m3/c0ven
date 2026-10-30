@@ -122,6 +122,11 @@ void Model::load_prompt(Card &card) {
   P.nbw = (opt_.max_ctx / Q_IDX_BLOCK + 31) / 32;
   P.sel = u32(T * P.nbw);
   P.wbx = u32(T);
+  P.ikh = u16((uint64_t)kv_pages_ / ncards_ * Q_IDX_D);  // the pooled keys split for p_idx_score_xmx (p_idx_ksplit)
+  P.ikl = u16((uint64_t)kv_pages_ / ncards_ * Q_IDX_D);
+  P.iqh = u16(T * Q_IDX_D * Q_IDX_H);  // and the queries (p_idx_qsplit)
+  P.iql = u16(T * Q_IDX_D * Q_IDX_H);
+  if (kv_res_) P.kvst = dev((uint64_t)2 * T * card.nkv * KV_HEAD_BYTES);  // p_attn_prep's staging, K then V
   card.up->fill(P.qt, &zero16, 2, T * Q_ATT_D * P.hp * 2);
   P.rl = f32(T * (Q_EXPERTS + 1));
   P.ids = reinterpret_cast<int32_t *>(u32(T * Q_USED));
@@ -434,16 +439,24 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
       dense(Ly.v, P.x16, Q_EMBD, P.V, card.nkv * Q_ATT_D, false);
       gemm(true, Ly.idx_w, (Q_IDX_H + 1) * Q_IDX_D, Q_EMBD, P.xb, Q_EMBD, P.iq, (Q_IDX_H + 1) * Q_IDX_D, false, 0, one);
       L.launch(q4("p_attn_prep"), {P.Q, P.K, P.V, Ly.qn, Ly.kn, card.nq, card.nkv, Ly.kc, Ly.vc, card.ptab, npp_,
-                                   runs_p, ppos_, pstride, P.qt, P.hp, P.q16},
+                                   runs_p, ppos_, pstride, P.qt, P.hp, P.q16, kv_res_ ? P.kvst : nullptr,
+                                   kv_res_ ? P.kvst + (uint64_t)T * card.nkv * KV_HEAD_BYTES : nullptr, Ly.where},
                card.nq + card.nkv, T, 1, Q_ATT_D);
+      if (kv_res_)
+        L.launch(q4("p_kv_flush"), {P.kvst, P.kvst + (uint64_t)T * card.nkv * KV_HEAD_BYTES, Ly.khost, Ly.vhost,
+                                    card.ptab, npp_, card.nkv, runs_p}, (T + 15) / 16, 1, 1, 256);
       // The indexer, split by position: each card scores its own blocks, the cards swap their best, both merge.
       const uint32_t nbl = (nb_max + C - 1) / C;
       L.launch(q4("p_idx_prep"), {P.iq, Ly.iqn, Ly.raw, card.ptab, npp_, runs_p, ppos_, pstride, c, C}, Q_IDX_H + 1,
                T, 1, Q_IDX_D);
       L.launch(q4("p_idx_pool"), {Ly.raw, card.ptab, npp_, Ly.ikn, Ly.pooled, runs_p, ppos_, pstride, c, C},
                T / 4 + 1, 1, runs, Q_IDX_D);
-      L.launch(q4("p_idx_score"), {P.iq, Ly.pooled, card.ptab, npp_, nbl, runs_p, P.scores, c, C}, (nbl + 63) / 64,
-               (T + kIdxScoreRows - 1) / kIdxScoreRows, runs, 64);
+      L.launch(q4("p_idx_ksplit"), {Ly.pooled, card.ptab, npp_, nbl, runs_p, P.ikh, P.ikl, c, C}, nbl, 1, runs,
+               Q_IDX_D);
+      L.launch(q4("p_idx_qsplit"), {P.iq, P.iqh, P.iql}, T, 1, 1, Q_IDX_D);
+      L.launch(kernel(c, "qwen4exp_attn", "p_idx_score_xmx"),
+               {P.iqh, P.iql, P.ikh, P.ikl, card.ptab, npp_, nbl, runs_p, P.scores, c, C}, (nbl + kIdxXmxBlocks - 1) / kIdxXmxBlocks,
+               (T + kIdxXmxRows - 1) / kIdxXmxRows, runs, 16 * kIdxXmxSg);
       L.launch(q4("p_idx_cand"), {P.scores, nbl, runs_p, P.blocks, P.bscores, P.cand, c, C}, T, 1, 1, 1024);
       const uint32_t *c0 = P.cand, *c1 = nullptr;
       if (C > 1) {
@@ -456,13 +469,15 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
                {c0, c1, runs_p, P.merged, P.blocks, P.bscores, P.cells, P.ncells, P.sel, P.nbw, P.wbx}, T, 1, 1, 1024);
       // The short runs attend from the 8-bit cache, all in one launch.
       L.launch(kernel(c, "qwen4exp_attn", "p_attn_rows"),
-               {P.Q, Ly.kc, Ly.vc, card.ptab, npp_, card.nq, card.nkv, P.cells, P.ncells, runs_p, P.apart}, card.nkv,
+               {P.Q, Ly.kc, Ly.vc, card.ptab, npp_, card.nq, card.nkv, P.cells, P.ncells, runs_p, P.apart, Ly.khost,
+                Ly.vhost},
+               card.nkv,
                runs * PROMPT_SHORT_RUN, kAttSplits, 256);
       L.launch(kernel(c, "qwen4exp_attn", "p_attn_rows_merge"), {P.Q, card.nq, P.ncells, runs_p, P.apart, P.o16},
                card.nq, runs * PROMPT_SHORT_RUN, 1, 256);
       // kh and vh hold one sequence: each long run converts its own, then attends.
       for (uint32_t r = 0; r < runs; r++) {
-        L.launch(q4("p_kv16"), {Ly.kc, Ly.vc, card.ptab, npp_, card.nkv, run(r), P.kh, P.vh},
+        L.launch(q4("p_kv16"), {Ly.kc, Ly.vc, card.ptab, npp_, card.nkv, run(r), P.kh, P.vh, Ly.khost, Ly.vhost},
                  (2 * card.nkv * Q_ATT_D / 32 + 63) / 64, kKv16Groups, 1, 64);
         L.launch(kernel(c, "qwen4exp_attn", "p_attn_xmx"),
                  {P.qt, P.Q, P.kh, P.vh, card.nq, P.hp, card.nkv, P.cells, P.ncells, run(r), P.o16}, 1,

@@ -154,6 +154,10 @@ rest of the context, so with a shared cache set `--default-max-tokens` too: with
 --default-max-tokens 32k`, short requests without `max_tokens` run four at once. One that reaches the limit ends with
 the finish reason `length`.
 
+The KV cache streams: each request keeps up to 32,768 tokens of K and V in VRAM, the cells its steps read, and the
+whole of it in host memory, and the VRAM the rest would take caches experts. The host copy is
+pinned at load: 13,056 bytes a token of the KV cache, 13.7 GB for four 262,144-token slots.
+
 `ZE_AFFINITY_MASK` limits which cards the engine sees. Useful engine flags through `--engine-arg`: `--no-draft`,
 `--no-vision`, `--deterministic` and `--checkpoints N` (`python -m engine --help` lists them all).
 
