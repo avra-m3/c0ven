@@ -22,7 +22,7 @@ import ctypes
 from dataclasses import dataclass
 from enum import IntEnum
 
-ABI_VERSION = 9
+ABI_VERSION = 10
 
 MAX_STOP = 8
 MAX_STEP_SLOTS = 8
@@ -95,6 +95,7 @@ class CConfig(ctypes.Structure):
         ("draft_min_p", ctypes.c_float),
         ("vision_path", ctypes.c_char_p),
         ("kv_pages", ctypes.c_uint32),
+        ("kv_resident_cells", ctypes.c_uint32),
     )
 
 

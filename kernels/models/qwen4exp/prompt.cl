@@ -65,6 +65,24 @@ static inline void q8_0_store(__local const float *x, __global uchar *dst) {
   for (uint i = 0; i < 32; i++) ((__global char *)dst)[2 + i] = (char)round(x[i] * id);
 }
 
+static inline void q8_0_store_local(__local const float *x, __local uchar *dst) {
+  float amax = 0.0f;
+  for (uint i = 0; i < 32; i++) amax = fmax(amax, fabs(x[i]));
+  float d = amax / 127.0f, id = d != 0.0f ? 1.0f / d : 0.0f;
+  vstore_half(d, 0, (__local half *)dst);
+  for (uint i = 0; i < 32; i++) ((__local char *)dst)[2 + i] = (char)round(x[i] * id);
+}
+
+// The same block from 8 lanes at once (lane d < 8 quantises x + 32 d), written as 17 16-byte words by lanes d < 17
+// (the streamed path's staging and resident copy, p_attn_prep). All 256 lanes of the group call it; scratch holds
+// the head's KV_HEAD_BYTES.
+static inline void q8_0_store_head(__local const float *x, __local uint4 *scratch, __global uchar *dst, uint d) {
+  if (d < Q_ATT_D / 32) q8_0_store_local(x + 32 * d, (__local uchar *)scratch + d * Q8_BLOCK);
+  barrier(CLK_LOCAL_MEM_FENCE);
+  if (d < KV_HEAD_BYTES / 16) ((__global uint4 *)dst)[d] = scratch[d];
+  barrier(CLK_LOCAL_MEM_FENCE);
+}
+
 static inline float q8_0_load(__global const uchar *row, uint d) {
   __global const uchar *b = row + (d / 32) * Q8_BLOCK;
   return vload_half(0, (__global const half *)b) * (float)((__global const char *)b)[2 + d % 32];
@@ -311,14 +329,15 @@ __kernel void p_gdn_out(__global const float *raw, __global const float *z, __gl
 // Per row: groups [0, nq) norm and rotate the queries in place; [nq, nq + nkv) norm and rotate the keys and store keys
 // and values in the 8-bit cache at the row's position, in the page the table pt gives it (layout.h).
 // Groups (nq + nkv, T), 256.
-// The queries also go out as fp16 scaled by 1/16: to qt, dimension-major with hp heads per dimension (p_attn_xmx),
-// and to q16, [row][nq][256] (p_attn_tiled).
+// The queries also go out as fp16 scaled by 1/16 to qt, dimension-major with hp slots per dimension, Q_ATT_SLOTS a KV
+// head (p_attn_xmx).
 __kernel void p_attn_prep(__global float *Q, __global const float *K, __global const float *V,
                           __global const float *qn, __global const float *kn, uint nq, uint nkv, __global uchar *kc,
                           __global uchar *vc, __global const uint *pt, uint npp, __global const PromptPlan *runs,
                           __global const uint *ppos_all, uint pstride, __global half *qt, uint hp,
-                          __global half *q16) {
+                          __global uchar *kh, __global uchar *vh, __global const uint *where) {
   __local float x[Q_ATT_D], y[Q_ATT_D], red[64];
+  __local uint4 blk[KV_HEAD_BYTES / 16];
   uint g = get_group_id(0), t = get_group_id(1), d = get_local_id(0);
   RUN_OF_ROW(t)
   __global const uint *ppos = ppos_all + (ulong)ri * pstride;
@@ -327,7 +346,6 @@ __kernel void p_attn_prep(__global float *Q, __global const float *K, __global c
   K += r0 * nkv * Q_ATT_D;
   V += r0 * nkv * Q_ATT_D;
   qt += r0 * Q_ATT_D * hp;
-  q16 += r0 * nq * Q_ATT_D;
   uint pos = pp->pos0 + t;
   bool is_q = g < nq;
   __global float *q = Q + (ulong)t * nq * 2 * Q_ATT_D;
@@ -338,19 +356,57 @@ __kernel void p_attn_prep(__global float *Q, __global const float *K, __global c
   float r = rope_at(x, d, ppos, pos_entry(pp, t));
   if (is_q) {
     q[g * 2 * Q_ATT_D + d] = r;
-    qt[((ulong)t * Q_ATT_D + d) * hp + g] = convert_half(r * (1.0f / 16.0f));
-    q16[((ulong)t * nq + g) * Q_ATT_D + d] = convert_half(r * (1.0f / 16.0f));
+    const uint slot = g / (Q_ATT_H / Q_ATT_KV) * Q_ATT_SLOTS + g % (Q_ATT_H / Q_ATT_KV);
+    qt[((ulong)t * Q_ATT_D + d) * hp + slot] = convert_half(r * (1.0f / 16.0f));
     return;
   }
   uint c = g - nq;
-  ulong cell = (kv_cell(kv_page(pt, npp, pp->slot, pos), pos) * nkv + c) * KV_HEAD_BYTES;
+  const uint page = kv_page(pt, npp, pp->slot, pos);
+  ulong cell = (kv_cell(page, pos) * nkv + c) * KV_HEAD_BYTES;
+  // Streamed (kh given): kh and vh are the chunk's staging, [row][nkv] (p_kv_flush copies it to the host copy), and
+  // the resident copy is written where the page has one (layer.cl, kvs_claim).
+  const uint rs = kh ? where[page] : KV_NO_PAGE;
+  ulong rcell = rs != KV_NO_PAGE ? (kv_cell(rs, pos) * nkv + c) * KV_HEAD_BYTES : 0;
+  if (kh) cell = ((r0 + t) * nkv + c) * KV_HEAD_BYTES;
+  __global uchar *k1 = (kh ? kh : kc) + cell, *v1 = (kh ? vh : vc) + cell;
   y[d] = r;
   barrier(CLK_LOCAL_MEM_FENCE);
-  if (d < Q_ATT_D / 32) q8_0_store(y + 32 * d, kc + cell + d * Q8_BLOCK);
+  if (kh) {
+    q8_0_store_head(y, blk, k1, d);
+    if (rs != KV_NO_PAGE && d < KV_HEAD_BYTES / 16) ((__global uint4 *)(kc + rcell))[d] = blk[d];
+  } else if (d < Q_ATT_D / 32) {
+    q8_0_store(y + 32 * d, k1 + d * Q8_BLOCK);
+  }
   barrier(CLK_LOCAL_MEM_FENCE);
   y[d] = V[((ulong)t * nkv + c) * Q_ATT_D + d];
   barrier(CLK_LOCAL_MEM_FENCE);
-  if (d < Q_ATT_D / 32) q8_0_store(y + 32 * d, vc + cell + d * Q8_BLOCK);
+  if (kh) {
+    q8_0_store_head(y, blk, v1, d);
+    if (rs != KV_NO_PAGE && d < KV_HEAD_BYTES / 16) ((__global uint4 *)(vc + rcell))[d] = blk[d];
+  } else if (d < Q_ATT_D / 32) {
+    q8_0_store(y + 32 * d, v1 + d * Q8_BLOCK);
+  }
+}
+
+// Streamed: the chunk's new K and V cells from p_attn_prep's staging (sk, sv: [row][nkv] heads) to the host copies.
+// p_attn_prep writing each head's 272 bytes to host memory itself, in bytes or in 16-byte words, took 7.2-8.0 s of a
+// 255k prompt (122-135 ms a 4,352-row chunk against 23 ms on main); through the staging, p_attn_prep and this
+// kernel take 1.2 s and 0.08 s. Each group writes 16 rows, its lanes' 16-byte words in order, so a page's cells go
+// out as runs of whole lines. Groups (rows / 16), 256.
+__kernel void p_kv_flush(__global const uint4 *sk, __global const uint4 *sv, __global uchar *hk, __global uchar *hv,
+                         __global const uint *pt, uint npp, uint nkv, __global const PromptPlan *runs) {
+  const uint W = nkv * KV_HEAD_BYTES / 16, t0 = get_group_id(0) * 16;
+  for (uint i = get_local_id(0); i < 2 * 16 * W; i += get_local_size(0)) {
+    const bool is_v = i >= 16 * W;
+    const uint j = is_v ? i - 16 * W : i, t = t0 + j / W, w = j % W;
+    uint ri = 0;
+    while (ri + 1 < PROMPT_MAX_RUNS && t >= runs[ri].row0 + runs[ri].n) ri++;
+    __global const PromptPlan *pp = runs + ri;
+    if (t < pp->row0 || t - pp->row0 >= pp->n) continue;
+    const uint pos = pp->pos0 + (t - pp->row0);
+    const ulong cell = kv_cell(kv_page(pt, npp, pp->slot, pos), pos) * nkv * KV_HEAD_BYTES;
+    ((__global uint4 *)((is_v ? hv : hk) + cell))[w] = (is_v ? sv : sk)[(ulong)t * W + w];
+  }
 }
 
 // The indexer's keys are split by position between the cards as in the decode step (layer.cl): block b belongs to
@@ -407,7 +463,8 @@ __kernel void p_idx_pool(__global const uchar *raw, __global const uint *pt, uin
 static inline uint idx_own(uint nb, uint c, uint C) { return nb > c ? (nb - c + C - 1) / C : 0; }
 
 // scores[t][lb] = sum_h relu(iq_h . K_b) for this card's blocks complete at row t's position, by local index lb
-// (block lb C + c). A work-item takes one block for IDX_SCORE_ROWS consecutive rows, reading its key once; each sum
+// (block lb C + c). The prompt runs p_idx_score_xmx (prompt_attn.cl) instead; this is its f32 reference, the decode
+// step's sums (layer.cl). A work-item takes one block for IDX_SCORE_ROWS consecutive rows, reading its key once; each sum
 // is the one-row expression in the same order, so the same bits. Groups (ceil(nb_max / 64), ceil(T / IDX_SCORE_ROWS)),
 // 64; rows nb_max apart.
 #define IDX_SCORE_ROWS 8
@@ -462,6 +519,32 @@ __kernel void p_idx_score(__global const float *iq, __global const float *pooled
   }
 }
 
+// The pooled keys of the blocks the runs' rows score, each split in two fp16 terms, x = hi + lo (p_idx_score_xmx):
+// kh, kl at the key's local page, as pooled. Groups (nb_max, 1, runs), Q_IDX_D.
+__kernel void p_idx_ksplit(__global const float *pooled, __global const uint *pt, uint npp, uint nb_max,
+                           __global const PromptPlan *runs, __global half *kh, __global half *kl, uint c, uint C) {
+  RUN_OF_GROUP()
+  const uint lb = get_group_id(0), d = get_local_id(0);
+  if (pp->n == 0 || lb >= idx_own((pp->pos0 + pp->n) / Q_IDX_BLOCK, c, C)) return;
+  const ulong at = (ulong)(kv_page(pt, npp, pp->slot, (lb * C + c) * Q_IDX_BLOCK) / C) * Q_IDX_D + d;
+  const float x = pooled[at];
+  const half h = convert_half(x);
+  kh[at] = h;
+  kl[at] = convert_half(x - (float)h);
+}
+
+// The chunk's indexer queries (iq, [row][Q_IDX_H + 1][Q_IDX_D]: the heads, then the raw key) split in two fp16 terms
+// for p_idx_score_xmx: qh, ql [row][Q_IDX_D][Q_IDX_H]. Groups (T), Q_IDX_D.
+__kernel void p_idx_qsplit(__global const float *iq, __global half *qh, __global half *ql) {
+  const uint t = get_group_id(0), d = get_local_id(0);
+  for (uint h = 0; h < Q_IDX_H; h++) {
+    const float x = iq[((ulong)t * (Q_IDX_H + 1) + h) * Q_IDX_D + d];
+    const half hi = convert_half(x);
+    qh[((ulong)t * Q_IDX_D + d) * Q_IDX_H + h] = hi;
+    ql[((ulong)t * Q_IDX_D + d) * Q_IDX_H + h] = convert_half(x - (float)hi);
+  }
+}
+
 // Row t's candidates on this card: its best Q_IDX_BLOCKS + 1 blocks in block order as (block, score) pairs, after their
 // count; rows IDX_CAND words apart. Groups (T), TOPK_WG.
 #define IDX_CAND (2 * (Q_IDX_BLOCKS + 1) + 2)
@@ -492,13 +575,12 @@ __kernel void p_idx_cand(__global const float *scores, uint nb_max, __global con
 }
 
 // The cells row t attends to, merged from the two cards' candidates (c0: card 0's, c1: card 1's or null) as
-// layer.cl's idx_merge does, into cells[t] (Q_IDX_CELLS apart) and ncells[t]; also as a mask for p_attn_tiled: one
-// bit per chosen block in sel[t] (nbw words), and wbx[t] = the partial block | its cells << 24 (0xffffff: none).
+// layer.cl's idx_merge does, into cells[t] (Q_IDX_CELLS apart) and ncells[t]. The whole blocks come first, in block
+// order, each at a multiple of 4 (p_attn_xmx reads them as runs of 4); then the partial block's cells, then the tail.
 // merged, blocks and bscores are per-row scratch. Groups (T), TOPK_WG.
 __kernel void p_idx_merge(__global const uint *c0, __global const uint *c1, __global const PromptPlan *runs,
                           __global float *merged_all, __global uint *blocks_all, __global float *bscores_all,
-                          __global uint *cells_all, __global uint *ncells, __global uint *sel_all, uint nbw,
-                          __global uint *wbx) {
+                          __global uint *cells_all, __global uint *ncells) {
   __local uint hist[TOPK_HIST];
   __local uint scan[TOPK_WG];
   __local uint mb[2 * (Q_IDX_BLOCKS + 1)];
@@ -509,10 +591,7 @@ __kernel void p_idx_merge(__global const uint *c0, __global const uint *c1, __gl
   __global uint *cells = cells_all + (ulong)t * Q_IDX_CELLS;
   if (nkv <= Q_IDX_CELLS) {
     for (uint i = lid; i < nkv; i += TOPK_WG) cells[i] = i;
-    if (lid == 0) {
-      ncells[t] = nkv;
-      wbx[t] = 0xffffffu;
-    }
+    if (lid == 0) ncells[t] = nkv;
     return;
   }
   __global const uint *lists[2] = {c0 + (ulong)t * IDX_CAND, c1 ? c1 + (ulong)t * IDX_CAND : 0};
@@ -539,8 +618,6 @@ __kernel void p_idx_merge(__global const uint *c0, __global const uint *c1, __gl
     }
   }
   barrier(CLK_LOCAL_MEM_FENCE | CLK_GLOBAL_MEM_FENCE);
-  __global uint *sel = sel_all + (ulong)t * nbw;
-  for (uint i = lid; i < nbw; i += TOPK_WG) sel[i] = 0;
   __global uint *blocks = blocks_all + (ulong)t * (Q_IDX_BLOCKS + 1);
   __global float *bscores = bscores_all + (ulong)t * (Q_IDX_BLOCKS + 1);
   uint nb = nkv / Q_IDX_BLOCK, tail = nkv - nb * Q_IDX_BLOCK;
@@ -557,14 +634,12 @@ __kernel void p_idx_merge(__global const uint *c0, __global const uint *c1, __gl
     const float least = work_group_reduce_min(s);
     worst = work_group_reduce_max(lid < want && s == least ? lid : 0u);
   }
-  if (lid == 0) wbx[t] = extra > 0 ? blocks[worst] | (extra << 24) : 0xffffffu;
   for (uint i = lid; i < want; i += TOPK_WG) {
     uint b = blocks[i];
-    atomic_or(&sel[b / 32], 1u << (b % 32));
     if (i == worst) {
-      for (uint k = 0; k < extra; k++) cells[4 * i + k] = 4 * b + k;
+      for (uint k = 0; k < extra; k++) cells[Q_IDX_TOPK + k] = 4 * b + k;
     } else {
-      uint at = i < worst ? 4 * i : 4 * (i - 1) + extra;
+      uint at = i < worst ? 4 * i : 4 * (i - 1);
       for (uint k = 0; k < Q_IDX_BLOCK; k++) cells[at + k] = 4 * b + k;
     }
   }
@@ -572,18 +647,50 @@ __kernel void p_idx_merge(__global const uint *c0, __global const uint *c1, __gl
   if (lid == 0) ncells[t] = Q_IDX_CELLS;
 }
 
-// The 8-bit K and V of every cached position (up to the run's end) as fp16, for p_attn_xmx and p_attn_tiled
-// (prompt_attn.cl): kh and vh hold [position][nkv][256], each found through the page table pt. Not for a short run,
-// which attends from the 8-bit cache (p_attn_rows). Groups (nkv * Q_ATT_D / 32, any), 64: one work-item per Q8_0 block
-// of K or V, group y taking positions y, y + groups, and so on.
+// The 8-bit K and V of every cached position (up to the run's end) as fp16, for p_attn_xmx (prompt_attn.cl): kh and
+// vh hold [position][nkv][256], each found through the page table pt. Not for a short run, which attends from the
+// 8-bit cache (p_attn_rows). Groups (nkv * Q_ATT_D / 32, any), 64: one work-item per Q8_0 block of K or V, group y
+// taking positions y, y + groups, and so on.
 __kernel void p_kv16(__global const uchar *kc, __global const uchar *vc, __global const uint *pt, uint npp, uint nkv,
-                     __global const PromptPlan *pp, __global half *kh, __global half *vh) {
+                     __global const PromptPlan *pp, __global half *kh, __global half *vh,
+                     __global const uchar *hk, __global const uchar *hv) {
   const uint g = get_global_id(0), end = pp->pos0 + pp->n;
-  if (pp->n <= PROMPT_SHORT_RUN || g >= 2 * nkv * (Q_ATT_D / 32)) return;
+  __local uint4 buf[2 * KV_PAGE_CELLS * Q_ATT_KV * KV_HEAD_BYTES / 16];  // the streamed path's page, K then V
+  if (pp->n <= PROMPT_SHORT_RUN) return;
+  if (hk) {
+    // Streamed: the prefix is read from the host copy a page at a time, the group's lanes reading 16-byte words
+    // into local memory and converting from there. A lane reading its block's bytes one by one made each byte a
+    // PCIe transaction: 0.6 GB/s, a 255k prompt 150 to 227 s.
+    const uint lid = get_local_id(0), W = get_local_size(0);
+    const uint words = KV_PAGE_CELLS * nkv * KV_HEAD_BYTES / 16, nb = KV_PAGE_CELLS * nkv * (Q_ATT_D / 32);
+    const uint gid = get_group_id(0) * get_num_groups(1) + get_group_id(1), ng = get_num_groups(0) * get_num_groups(1);
+    for (uint pi = gid; pi * KV_PAGE_CELLS < end; pi += ng) {
+      const uint pos = pi * KV_PAGE_CELLS, page = kv_page(pt, npp, pp->slot, pos);
+      __global const uint4 *sk = (__global const uint4 *)hk + (ulong)page * words;
+      __global const uint4 *sv = (__global const uint4 *)hv + (ulong)page * words;
+      for (uint i = lid; i < words; i += W) buf[i] = sk[i], buf[words + i] = sv[i];
+      barrier(CLK_LOCAL_MEM_FENCE);
+      for (uint j = lid; j < 2 * nb; j += W) {
+        const bool is_v = j >= nb;
+        const uint b = is_v ? j - nb : j, per = nkv * (Q_ATT_D / 32), c = b / per, h = (b % per) / (Q_ATT_D / 32),
+                   blk = b % (Q_ATT_D / 32);
+        if (pos + c >= end) continue;
+        __local const uchar *lb = (__local const uchar *)(buf + (is_v ? words : 0)) + (c * nkv + h) * KV_HEAD_BYTES +
+                                  blk * Q8_BLOCK;
+        const float d = vload_half(0, (__local const half *)lb);
+        __global half *out = (is_v ? vh : kh) + ((ulong)(pos + c) * nkv + h) * Q_ATT_D + 32 * blk;
+        for (uint i = 0; i < 32; i++) out[i] = convert_half(d * (float)((__local const char *)lb)[2 + i]);
+      }
+      barrier(CLK_LOCAL_MEM_FENCE);
+    }
+    return;
+  }
+  if (g >= 2 * nkv * (Q_ATT_D / 32)) return;
   bool is_v = g >= nkv * (Q_ATT_D / 32);
   uint b = is_v ? g - nkv * (Q_ATT_D / 32) : g;  // block within the position's nkv heads
   for (uint pos = get_group_id(1); pos < end; pos += get_num_groups(1)) {
-    __global const uchar *blk = (is_v ? vc : kc) + kv_cell(kv_page(pt, npp, pp->slot, pos), pos) * nkv * KV_HEAD_BYTES +
+    __global const uchar *blk = (is_v ? vc : kc) +
+                                kv_cell(kv_page(pt, npp, pp->slot, pos), pos) * nkv * KV_HEAD_BYTES +
                                 (b / (Q_ATT_D / 32)) * KV_HEAD_BYTES + (b % (Q_ATT_D / 32)) * Q8_BLOCK;
     float d = vload_half(0, (__global const half *)blk);
     __global half *out = (is_v ? vh : kh) + ((ulong)pos * nkv) * Q_ATT_D + 32 * b;

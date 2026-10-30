@@ -35,6 +35,8 @@ struct Options {
   uint32_t max_ctx = 32768;                 // positions per sequence, a multiple of 4
   uint32_t kv_pages = 0;                    // the KV cache's pool, in pages of 4 cells (layout.h); 0: every slot's
                                             // whole context
+  uint32_t kv_resident = 0;                 // K and V cells per slot kept in VRAM, the rest in host memory (ADR-0008
+                                            // item 3, kv_share.cpp's note); 0: every cell
   uint32_t max_cards = 2;                   // 1 runs the whole model on card 0
   uint64_t reserve_bytes = 512ull << 20;    // device memory left free on each card, beyond what the engine counts
   int32_t experts_per_layer = -1;           // experts cached per layer; -1: as many as fit
@@ -237,9 +239,13 @@ class Model {
   // With Options::share_kv (kv_share.cpp), the pool's pages from in_use up hold nothing to read again, and the
   // expert cache may take their memory. kv_need backs every page below in_use before it returns, taking memory back
   // from the cache if it must; kv_ahead chooses what the cache gives up for the next pages, behind the steps. Call
-  // both between steps.
-  void kv_need(uint32_t in_use);
+  // both between steps. Streamed (Options::kv_resident), the ring of resident K and V pages is sized the same way:
+  // resident is the pages the slots in use read, and the ring holds at most that many (up to its size) once the
+  // steps have claimed them. kvs_drop takes a slot's first `pages` logical pages out of the ring: an idle slot's,
+  // so they no longer count. Between steps.
+  void kv_need(uint32_t in_use, uint32_t resident = UINT32_MAX);
   void kv_ahead();
+  void kvs_drop(uint32_t slot, uint32_t pages);
 
   // Adaptive swaps (swap.cpp): adds the last prompt chunk's routing to the counts, and makes up to max_swaps swaps
   // where the counts say so, the clearest first. Returns the swaps made. Call between steps.
@@ -286,7 +292,7 @@ class Model {
   void load_experts(bool first);
   std::unique_ptr<HostLayer> host_layer(uint32_t l, uint64_t n, const std::vector<uint64_t> &profile,
                                         uint64_t stg_bytes, uint32_t positions);
-  void record(Card &card, uint32_t width);
+  void record(Card &card, uint32_t width, bool kvs = true);  // kvs: with the streamed pool's claim
   void record_head(ze::List &L, Card &card, const StepPlan *plan, uint32_t width);
   void record_commit(Card &card);
   uint64_t mtp_bytes() const;
@@ -351,15 +357,19 @@ class Model {
     uint32_t first;                // the staging position of the first victim
     std::vector<uint32_t> victims; // the experts that leave the cards
   };
-  uint8_t *kv_region(Card &card, uint32_t x, uint64_t unit, uint32_t div);
+  uint8_t *kv_region(Card &card, uint32_t x, uint64_t unit, uint32_t div, uint32_t cap = 0, uint32_t min_units = 0);
   uint32_t kv_pages_of(uint32_t x, size_t blocks) const;
   size_t kv_blocks_for(uint32_t x, uint32_t pages) const;
+  uint32_t kv_level(uint32_t x, uint32_t pool, uint32_t ring) const { return kv_ring_[x] ? ring : pool; }
+  void ring_resize(uint32_t R);
+  void ring_sync();
+  void own_levels();
   uint32_t cache_slots(uint32_t l, size_t blocks) const;
   void share_cards(bool first, uint64_t budget, const std::vector<uint64_t> &stg_bytes, std::vector<uint32_t> &count);
   void map_cache(Card &card, uint32_t l, size_t blocks);
-  void grow_kv(uint32_t pages);
-  void shrink_kv(uint32_t pages);
-  void plan_evict(uint32_t pages, bool beside);
+  void grow_kv(uint32_t pages, uint32_t ring);
+  void shrink_kv(uint32_t pages, uint32_t ring);
+  void plan_evict(uint32_t pages, uint32_t ring, bool beside);
   void fill_evict(Pool &pool);
   void apply_evict(std::chrono::steady_clock::time_point t0, bool beside);
   // The blocks' maps and unmaps that map_cache, grow_kv and shrink_kv queued: made now, or on a thread beside the
@@ -402,6 +412,11 @@ class Model {
   uint32_t ncards_ = 1;
   uint32_t npp_ = 0;       // pages per slot's row of the table: the context's, rounded up to a multiple of the cards
   uint32_t kv_pages_ = 0;  // pages in the pool
+  uint32_t kv_res_ = 0;    // streamed (Options::kv_resident): the ring of resident K and V pages a layer on each
+                           // card, at most; 0: every page resident
+  std::vector<uint8_t *> kv_host_;  // the host copies of K and V, [card][attention layer][K, V]; kept across sleeps
+  std::vector<uint32_t> kvs_to_;    // [slot] the position its pages are claimed through (kvs_claim), 0: not settled
+  uint32_t ring_level_ = 0;         // the ring's size on the cards (kst[4])
   uint32_t nslots_cached_ = 0;
   bool asleep_ = false;
   struct StagedTensor {
@@ -466,15 +481,23 @@ class Model {
   uint32_t kv_mapped_ = 0;        // pages [0, kv_mapped_) backed on every card now
   uint32_t kv_want_ = 0;          // the pages the last plan had in use
   uint32_t kv_margin_ = 0;        // pages backed ahead of use
+  // The ring regions (streamed: K and V) are counted in ring pages, as the pool regions in pool pages.
+  uint32_t ring_own_ = 0, ring_mapped_ = 0, ring_want_ = 0;
+  std::chrono::steady_clock::time_point ring_over_{};  // since when the ring holds more than wanted (swap_round)
+  static constexpr std::chrono::seconds kRingIdle{300};
   std::vector<uint64_t> kv_unit_; // per KV region: bytes a page, or a local page (kv_div_ = the cards)
   std::vector<uint32_t> kv_div_;
+  std::vector<uint32_t> kv_cap_;  // per KV region: its pages at most (the pool's, or the ring's)
+  std::vector<bool> kv_ring_;     // per KV region: a ring region
   std::vector<Evict> evict_next_;
   uint32_t evict_to_ = 0;         // the pages evict_next_ backs
+  uint32_t ring_to_ = 0;          // and the ring pages
   std::vector<VmOp> vm_ops_;      // queued, in order
   std::thread remap_bg_;          // making a batch of them beside the steps
   std::atomic<bool> remap_end_{false};
   std::string remap_err_;
   uint32_t remap_to_ = 0;         // kv_own_ when the batch began: kv_mapped_ once it ends
+  uint32_t ring_remap_to_ = 0;    // and ring_own_
   uint32_t copy_count_ = 0;  // the copies of the prompt path's staging list
   std::vector<std::unique_ptr<ze::List>> next_copies_;  // a card each: recorded behind a round, for the staging after it
   uint32_t next_copy_count_ = 0;

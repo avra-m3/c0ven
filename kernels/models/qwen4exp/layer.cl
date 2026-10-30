@@ -435,7 +435,8 @@ REQD_SG __kernel void gdn_commit(__global const float *u, uint nch, __global con
 __kernel void attn_prep(__global float *Q, __global const float *K, __global const float *V, __global const float *qn,
                         __global const float *kn, uint nq, uint nkv, __global uchar *kc, __global uchar *vc,
                         __global const uint *pt, uint npp, __global const StepPlan *plan,
-                        __global const SlotRope *sr) {
+                        __global const SlotRope *sr, __global uchar *kh, __global uchar *vh,
+                        __global const uint *where) {
   __local float x[Q_ATT_D], y[Q_ATT_D], red[64];
   uint g = get_group_id(0), r = get_group_id(1), d = get_local_id(0);
   ROW_OR_RETURN(r)
@@ -452,14 +453,26 @@ __kernel void attn_prep(__global float *Q, __global const float *K, __global con
     return;
   }
   uint c = g - nq;
-  ulong cell = (kv_cell(kv_page(pt, npp, plan->rows[r].slot, pos), pos) * nkv + c) * KV_HEAD_BYTES;
+  const uint page = kv_page(pt, npp, plan->rows[r].slot, pos);
+  ulong cell = (kv_cell(page, pos) * nkv + c) * KV_HEAD_BYTES;
+  // Streamed (kh given): the host copy holds every page, and the resident copy is kept the same where the page has
+  // one (kvs_claim).
+  const uint rs = kh ? where[page] : KV_NO_PAGE;
+  ulong rcell = rs != KV_NO_PAGE ? (kv_cell(rs, pos) * nkv + c) * KV_HEAD_BYTES : 0;
+  __global uchar *k1 = (kh ? kh : kc) + cell, *v1 = (kh ? vh : vc) + cell;
   y[d] = rv;
   barrier(CLK_LOCAL_MEM_FENCE);
-  if (d < Q_ATT_D / 32) q8_0_store(y + 32 * d, kc + cell + d * Q8_BLOCK);
+  if (d < Q_ATT_D / 32) {
+    q8_0_store(y + 32 * d, k1 + d * Q8_BLOCK);
+    if (rs != KV_NO_PAGE) q8_0_store(y + 32 * d, kc + rcell + d * Q8_BLOCK);
+  }
   barrier(CLK_LOCAL_MEM_FENCE);
   y[d] = V[((ulong)r * nkv + c) * Q_ATT_D + d];
   barrier(CLK_LOCAL_MEM_FENCE);
-  if (d < Q_ATT_D / 32) q8_0_store(y + 32 * d, vc + cell + d * Q8_BLOCK);
+  if (d < Q_ATT_D / 32) {
+    q8_0_store(y + 32 * d, v1 + d * Q8_BLOCK);
+    if (rs != KV_NO_PAGE) q8_0_store(y + 32 * d, vc + rcell + d * Q8_BLOCK);
+  }
 }
 
 // The indexer's keys are split by position between the cards (docs/DESIGN.md, section 4): block b belongs to card
@@ -660,7 +673,8 @@ __kernel void idx_merge(__global const uint *cand_all, uint C, uint width, __glo
 #define ATT_GQA (Q_ATT_H / Q_ATT_KV)
 REQD_SG __kernel void attn_split(__global const float *Q, __global const uchar *kc, __global const uchar *vc,
                                  __global const uint *pt, uint npp, uint nq, uint nkv, __global const uint *cells_all,
-                                 __global const uint *ncells, __global const StepPlan *plan, __global float *part) {
+                                 __global const uint *ncells, __global const StepPlan *plan, __global float *part,
+                                 __global const uint *where) {
   __local float q[ATT_GQA][Q_ATT_D], p[ATT_GQA][ATT_SPLIT];
   __local uint cl[ATT_SPLIT];
   uint c = get_group_id(0), r = get_group_id(1), s = get_group_id(2), d = get_local_id(0);
@@ -671,8 +685,8 @@ REQD_SG __kernel void attn_split(__global const float *Q, __global const uchar *
   for (uint h = 0; h < ATT_GQA; h++) q[h][d] = Q[((ulong)r * nq + c * ATT_GQA + h) * 2 * Q_ATT_D + d];
   __global const uint *cells = cells_all + (ulong)r * Q_IDX_CELLS + i0;
   if (d < m) {
-    const uint pos = cells[d];
-    cl[d] = (uint)kv_cell(kv_page(pt, npp, plan->rows[r].slot, pos), pos);
+    const uint pos = cells[d], page = kv_page(pt, npp, plan->rows[r].slot, pos);
+    cl[d] = (uint)kv_cell(where ? where[page] : page, pos);  // streamed: the page's resident copy (kvs_claim)
   }
   barrier(CLK_LOCAL_MEM_FENCE);
   __global const uchar *K = kc + c * KV_HEAD_BYTES;
@@ -1159,4 +1173,121 @@ __kernel void mtp_cells(__global const uint *first, __global const StepPlan *pla
   __global uint *cells = cells_all + (ulong)r * Q_IDX_CELLS;
   for (uint i = get_local_id(0); i < n; i += get_local_size(0)) cells[i] = pos + 1 - n + i;
   if (get_local_id(0) == 0) ncells[r] = n;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// KV streaming (ADR-0008 item 3, Options::kv_resident): kc and vc hold a ring of resident pages a layer; the host
+// copies kh and vh hold every page of the pool. where[p] is page p's resident slot or KV_NO_PAGE, spage[s] the page
+// in slot s, ref[s] the epoch (step of this layer) the slot was last read in, mark[p] the epoch page p was last
+// claimed in. kst holds {hand, epoch, misses, 0, R}: the ring is slots [0, R), and R moves between steps
+// (kvs_trim). Before attn_split, kvs_claim gives every page the rows read a resident slot, and the `ahead` logical
+// pages after each row's, so that steps that open those pages need no claim (Model::step skips the claim while a
+// slot's pages are claimed through its position): by CLOCK, a slot read this step is never taken, one read the
+// step before gets a second chance, any other is taken. The missed pages' (page, slot) pairs go to miss;
+// kvs_gather copies them in. One work-group of 1024.
+__kernel void kvs_claim(__global const uint *pt, uint npp, uint npages, __global const uint *cells_all,
+                        __global const uint *ncells, __global const StepPlan *plan, __global uint *where,
+                        __global uint *spage, __global uint *ref, __global uint *mark, __global uint *kst,
+                        uint ahead, __global uint *miss, uint maxmiss) {
+  __local uint nm;
+  const uint lid = get_local_id(0), W = get_local_size(0), epoch = kst[1] + 1, R = kst[4];
+  if (lid == 0) nm = 0;
+  barrier(CLK_LOCAL_MEM_FENCE);
+  for (uint r = 0; r < plan->nrows; r++) {
+    const uint n = ncells[r], slot = plan->rows[r].slot, pos0 = plan->rows[r].pos;
+    __global const uint *cells = cells_all + (ulong)r * Q_IDX_CELLS;
+    for (uint i = lid; i < n + ahead; i += W) {
+      uint p;
+      if (i < n) {
+        const uint pos = cells[i];
+        if (pos % KV_PAGE_CELLS != 0 && i > 0 && cells[i - 1] == pos - 1) continue;  // the page's first cell claims it
+        p = kv_page(pt, npp, slot, pos);
+      } else {  // the logical pages after the row's
+        const uint lp = pos0 / KV_PAGE_CELLS + 1 + (i - n);
+        if (lp >= npp) continue;
+        p = pt ? pt[slot * npp + lp] : slot * npp + lp;
+      }
+      if (p >= npages) continue;
+      if (atomic_xchg(&mark[p], epoch) == epoch) continue;  // claimed already this step
+      const uint s = where[p];
+      if (s != KV_NO_PAGE) {
+        ref[s] = epoch;
+        continue;
+      }
+      const uint k = atomic_inc(&nm);
+      if (k < maxmiss) miss[2 * k] = p;
+    }
+  }
+  barrier(CLK_LOCAL_MEM_FENCE | CLK_GLOBAL_MEM_FENCE);
+  if (lid != 0) return;
+  const uint n = min(nm, maxmiss);
+  uint hand = kst[0] < R ? kst[0] : 0;
+  for (uint k = 0; k < n; k++) {
+    const uint p = miss[2 * k];
+    for (;;) {
+      const uint e = ref[hand];
+      if (e != epoch && e + 1 != epoch) break;
+      if (e + 1 == epoch) ref[hand] = 0;
+      hand = hand + 1 < R ? hand + 1 : 0;
+    }
+    const uint old = spage[hand];
+    if (old != KV_NO_PAGE && where[old] == hand) where[old] = KV_NO_PAGE;
+    spage[hand] = p;
+    where[p] = hand;
+    ref[hand] = epoch;
+    miss[2 * k + 1] = hand;
+    hand = hand + 1 < R ? hand + 1 : 0;
+  }
+  kst[0] = hand;
+  kst[1] = epoch;
+  kst[2] = n;
+}
+
+// The ring's size set to R: the slots from R up give up their pages, and the hand comes back inside. Between steps.
+// One work-group of 1024.
+__kernel void kvs_trim(__global uint *where, __global uint *spage, __global uint *ref, __global uint *kst, uint R) {
+  const uint old = kst[4];
+  for (uint s = R + get_local_id(0); s < old; s += get_local_size(0)) {
+    const uint p = spage[s];
+    if (p != KV_NO_PAGE && where[p] == s) where[p] = KV_NO_PAGE;
+    spage[s] = KV_NO_PAGE;
+    ref[s] = 0;
+  }
+  barrier(CLK_GLOBAL_MEM_FENCE);  // every lane has read the old size
+  if (get_local_id(0) == 0) {
+    if (kst[0] >= R) kst[0] = 0;
+    kst[4] = R;
+  }
+}
+
+// A slot's first `pages` logical pages leave the ring: their slots are free for the next claims. Between steps.
+// Groups (any), 256.
+__kernel void kvs_drop(__global const uint *pt, uint npp, uint npages, uint slot, uint pages, __global uint *where,
+                       __global uint *spage, __global uint *ref) {
+  for (uint lp = get_global_id(0); lp < pages && lp < npp; lp += get_global_size(0)) {
+    const uint p = pt[slot * npp + lp];
+    if (p >= npages) continue;
+    const uint s = where[p];
+    if (s == KV_NO_PAGE) continue;
+    where[p] = KV_NO_PAGE;
+    spage[s] = KV_NO_PAGE;
+    ref[s] = 0;
+  }
+}
+
+// The missed pages' K and V from the host copies into their resident slots. Groups (any), 64; group g copies misses
+// g, g + groups, ...
+__kernel void kvs_gather(__global const uchar *kh, __global const uchar *vh, __global uchar *kc, __global uchar *vc,
+                         uint nkv, __global const uint *kst, __global const uint *miss, uint maxmiss) {
+  const uint lid = get_local_id(0), W = get_local_size(0), n = min(kst[2], maxmiss);
+  const ulong words = (ulong)KV_PAGE_CELLS * nkv * KV_HEAD_BYTES / 16;
+  for (uint k = get_group_id(0); k < n; k += get_num_groups(0)) {
+    const ulong p = miss[2 * k], s = miss[2 * k + 1];
+    __global const uint4 *sk = (__global const uint4 *)kh + p * words, *sv = (__global const uint4 *)vh + p * words;
+    __global uint4 *dk = (__global uint4 *)kc + s * words, *dv = (__global uint4 *)vc + s * words;
+    for (ulong i = lid; i < words; i += W) {
+      dk[i] = sk[i];
+      dv[i] = sv[i];
+    }
+  }
 }

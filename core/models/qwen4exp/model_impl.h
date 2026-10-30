@@ -20,7 +20,7 @@ using Ranges = std::vector<std::pair<uint64_t, uint64_t>>;  // [start, start + c
 inline constexpr uint32_t kRecFloats = 2 * Q_USED + Q_EMBD;  // the router's record: ids, weights, x
 inline constexpr uint32_t kGdn = 36, kAttn = 12;
 inline constexpr uint32_t kSgSize = 16;  // the kernels' SG_SIZE
-inline constexpr uint32_t kAttXmxRows = 4;  // prompt_attn.cl's ATT_XMX_ROWS
+inline constexpr uint32_t kAttXmxSubGroups = 16;  // p_attn_xmx's sub-groups a work-group (prompt_attn.cl)
 inline constexpr uint32_t kIdxScoreRows = 8;  // prompt.cl's IDX_SCORE_ROWS
 // The fewest rows of a prompt chunk at which the two cards split the hyper-connections
 // (docs/measurements/MEASUREMENTS.md#2026-10-17-hc-split).
@@ -28,8 +28,16 @@ inline constexpr uint32_t kHcSplitRows = 2048;
 // The largest prompt chunk whose uncached experts are fetched as its router picks them (prompt.cpp, fetch_experts)
 // instead of all staged by the recorded copy list.
 inline constexpr uint32_t kFetchRows = 1024;
+// p_idx_score_xmx's work-group (prompt_attn.cl): IDX_XMX_ROWS rows by IDX_XMX_SG sub-groups of 16 IDX_XMX_TB blocks.
+inline constexpr uint32_t kIdxXmxRows = 16, kIdxXmxSg = 4, kIdxXmxBlocks = 16 * 2 * kIdxXmxSg;
 inline constexpr uint32_t kAttSplits = (Q_IDX_CELLS + 63) / 64;  // attn_split's ATT_SPLITS
 inline constexpr uint32_t kIdxCand = 2 * (Q_IDX_BLOCKS + 1) + 2;  // words per row of the indexer's candidates
+// The streamed pool (kvs_claim): the logical pages a claim takes past each row's, so the steps that open them need
+// no claim; the pages a step's rows can claim at most, its miss list; and what a width's list without the claim adds
+// to its key (Model::record).
+inline constexpr uint32_t kKvsAhead = 32;
+inline constexpr uint32_t kKvsMaxMiss = STEP_MAX_ROWS * (Q_IDX_BLOCKS + 2 + kKvsAhead);
+inline constexpr uint32_t kKvsSkipList = 16;
 inline constexpr uint32_t kMvKsRows = 512;  // dense products of up to this many rows split K (matvec_ks)
 // The decode step's widths, each with its own lists: a step runs the smallest of at least its rows, and its products
 // and expert kernels compute that many.
@@ -134,6 +142,11 @@ struct Model::Layer {
   // pages only, at local page p / C.
   uint8_t *kc = nullptr, *vc = nullptr, *raw = nullptr;
   float *pooled = nullptr;
+  // Streamed (Options::kv_resident, layer.cl's kvs_claim): kc and vc hold a ring of up to kv_res_ resident pages,
+  // kst[4] its size now; khost and vhost in host memory hold every page; where, spage, ref, mark, kst and miss are
+  // the residency's state.
+  uint8_t *khost = nullptr, *vhost = nullptr;
+  uint32_t *where = nullptr, *spage = nullptr, *ref = nullptr, *mark = nullptr, *kst = nullptr, *miss = nullptr;
 };
 
 // The draft (MTP) layer on one card (mtp.cpp).
@@ -271,12 +284,12 @@ struct Model::PromptCard {
   uint32_t *cand = nullptr, *cand_peer = nullptr;  // the indexer's candidates: this card's, and the other card's
   float *merged = nullptr;
   uint16_t *kh = nullptr, *vh = nullptr;  // the layer's K and V as fp16, every position
+  uint16_t *iqh = nullptr, *iql = nullptr;  // the chunk's indexer queries as two fp16 terms (p_idx_qsplit)
+  uint16_t *ikh = nullptr, *ikl = nullptr;  // the pooled keys as two fp16 terms, at their local page (p_idx_ksplit)
+  uint8_t *kvst = nullptr;  // streamed: p_attn_prep's new K then V cells, [row][nkv] (p_kv_flush)
   float *apart = nullptr;                 // the short runs' attention splits (p_attn_rows)
   uint16_t *qt = nullptr;                 // the queries as fp16, dimension-major (p_attn_xmx)
-  uint16_t *q16 = nullptr;                // the queries as fp16, row-major (p_attn_tiled)
-  uint32_t *sel = nullptr, *wbx = nullptr;  // the indexer's choice as a mask (p_attn_tiled)
-  uint32_t nbw = 0;                       // words of sel per row
-  uint32_t hp = 0;                        // heads per dimension in qt
+  uint32_t hp = 0;                        // query slots per dimension in qt (nkv Q_ATT_SLOTS)
   // The experts' routing and the shared expert.
   float *rl = nullptr, *w = nullptr, *shg = nullptr, *shu = nullptr, *s = nullptr;
   uint16_t *part = nullptr;     // this card's fp16 partial sum, before one copy takes it to the other card
