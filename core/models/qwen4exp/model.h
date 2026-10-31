@@ -81,6 +81,7 @@ struct LoadInfo {
   uint64_t arena_bytes = 0;  // host memory holding the experts not on the cards
   bool arena_anon = false;   // the arena is the process's own memory (Options::anon_arena)
   double seconds = 0;
+  double host_read_bytes_per_s = 0;  // the CPU workers' read of the arena at the first load; 0: not measured
 };
 
 // One row of a decode step: a token of a sequence at its position; p1 and p2 are the two tokens before it (kNoToken
@@ -395,6 +396,7 @@ class Model {
   void release_expert(uint32_t l, uint32_t e);               // its pages of the file back to the host
   uint8_t *spare_piece(uint64_t need);
   uint8_t *arena_piece(uint64_t need);
+  double measure_host_read();
   void settle_arena();
   uint32_t ngram_ev() const;  // the event the host signals when a decode step's n-gram rows are in
   uint32_t idx_ev(uint32_t attn, uint32_t c) const;  // card c's indexer candidates of attention layer attn are out

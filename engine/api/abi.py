@@ -14,7 +14,8 @@ encoder's file to the config, its limit to the info, and `engine_admit_images`. 
 changes in each plan, a slot without a page for its next position stalls, and a checkpoint holds only the fixed state.
 Version 6 adds `engine_image.frames` for video (ADR-0034). Version 7 adds min-p and the penalties to
 `engine_settings`. Version 9 adds the counters: `engine_read_stats` and `engine_read_slot_stats` (ADR-0049).
-Version 11 adds `engine_cards`, the cards listed before open (ADR-0057).
+Version 11 adds `engine_cards`, the cards listed before open (ADR-0057); version 12 the workers' read rate of the
+arena to `engine_info`.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ import ctypes
 from dataclasses import dataclass
 from enum import IntEnum
 
-ABI_VERSION = 11
+ABI_VERSION = 12
 
 MAX_STOP = 8
 MAX_STEP_SLOTS = 8
@@ -118,6 +119,7 @@ class CInfo(ctypes.Structure):
         ("image_tokens_max", ctypes.c_uint32),
         ("kv_pages", ctypes.c_uint32),
         ("pages_per_slot", ctypes.c_uint32),
+        ("host_read_bytes_per_s", ctypes.c_double),
     )
 
 

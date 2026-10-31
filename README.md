@@ -20,12 +20,14 @@ Use C0ven if you have:
 - one or two Intel Battlemage cards in one Linux machine, with the `xe` kernel driver. The engine is tested on Arc
   Pro B60 cards (24 GB each); other Battlemage cards likely work but are untested
   ([help test them](https://github.com/avra-m3/c0ven/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22)),
-- a CPU with AVX-512 (VNNI, VBMI and BF16 among it), which computes the experts the cards do not hold,
+- a CPU with AVX-512 (VNNI, VBMI and BF16 among it), which computes the experts the cards do not hold; the engine
+  refuses to start on a CPU without them,
 - enough RAM to hold the model (the test machine has 96 GiB),
 - one person, or a few requests at once, using the model.
 
-At start the engine reads each card's memory and chip, the host's available memory and the cgroup's limits, and
-refuses a configuration that does not fit before it loads, with options that do. Kernels are built for the B60's chip
+At start the engine reads each card's memory and chip, the host's available memory and the cgroup's limits, and the
+CPUs it may use, and refuses a configuration that does not fit before it loads, with options that do. It runs one CPU
+worker per core its CPU quota allows. Kernels are built for the B60's chip
 and the B70's; another Battlemage chip compiles them at load. Each load prints a fit report: what it read, beside what it planned and
 what it took ([ADR-0057](docs/adr/0057-the-engine-reads-the-host-it-runs-on.md)).
 

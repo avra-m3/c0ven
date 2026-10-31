@@ -15,6 +15,7 @@
 #include <exception>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <utility>
@@ -22,6 +23,7 @@
 
 #include "api/lookup.h"
 #include "api/sampling.h"
+#include "cpu/features.h"
 #include "models/qwen4exp/model.h"
 
 using engine::penalised;
@@ -1176,6 +1178,9 @@ extern "C" {
 engine_status engine_open(const engine_config *config, engine_info *info, engine_ctx **out) {
   if (!config || !config->model_path || !out) return ENGINE_BAD_ARGUMENT;
   try {
+    if (const std::string missing = engine::missing_cpu_features(); !missing.empty())
+      throw std::runtime_error("this CPU lacks " + missing + ", which the engine's ggml build uses for the experts the "
+                               "cards do not hold (cmake/ggml.cmake); it needs a CPU with AVX-512");
     engine::qwen4exp::Options opt;
     if (config->slots) opt.slots = config->slots;
     if (config->max_ctx) opt.max_ctx = config->max_ctx;
@@ -1204,6 +1209,7 @@ engine_status engine_open(const engine_config *config, engine_info *info, engine
     e->info.device_bytes[1] = li.device_bytes[1];
     e->info.arena_bytes = li.arena_bytes;
     e->info.load_seconds = li.seconds;
+    e->info.host_read_bytes_per_s = li.host_read_bytes_per_s;
     e->info.prompt_chunk = e->model->prompt_chunk();
     e->info.max_step_rows = ENGINE_MAX_STEP_SLOTS;
     e->info.drafting = e->model->drafting() ? 1 : 0;
@@ -1564,7 +1570,7 @@ uint32_t engine_abi_layout(engine_abi_row *table, uint32_t cap) {
       ROW(engine_info, arena_bytes), ROW(engine_info, load_seconds), ROW(engine_info, prompt_chunk),
       ROW(engine_info, checkpoints), ROW(engine_info, max_step_rows), ROW(engine_info, drafting),
       ROW(engine_info, image_tokens_max), ROW(engine_info, kv_pages), ROW(engine_info, pages_per_slot),
-      SIZE(engine_info),
+      ROW(engine_info, host_read_bytes_per_s), SIZE(engine_info),
       ROW(engine_settings, temperature), ROW(engine_settings, top_k), ROW(engine_settings, top_p),
       ROW(engine_settings, max_tokens), ROW(engine_settings, seed), ROW(engine_settings, n_stop),
       ROW(engine_settings, stop), ROW(engine_settings, min_p), ROW(engine_settings, penalty_last_n),

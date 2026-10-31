@@ -19,6 +19,10 @@ foreach(opt GGML_NATIVE GGML_OPENMP GGML_BUILD_TESTS GGML_BUILD_EXAMPLES GGML_SY
             GGML_BLAS GGML_LLAMAFILE)
   set(${opt} OFF CACHE BOOL "" FORCE)
 endforeach()
+# The features those flags compile ggml for (its ggml-cpu/CMakeLists.txt, GCC's -m flags), in
+# __builtin_cpu_supports's names: the core refuses to open on a CPU without one (core/cpu/features.h).
+set(ENGINE_CPU_FEATURES "avx,avx2,fma,f16c,bmi2,avx512f,avx512cd,avx512vl,avx512dq,avx512bw,avx512vbmi,avx512vnni,avx512bf16"
+    CACHE INTERNAL "")
 add_subdirectory(${ENGINE_GGML_DIR}/ggml ${CMAKE_BINARY_DIR}/ggml EXCLUDE_FROM_ALL SYSTEM)
 
 # ggml-common.h holds the i-quant codebooks; the core reads them from there and uploads them to the cards.
