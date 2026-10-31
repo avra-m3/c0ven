@@ -185,6 +185,8 @@ class EngineFacts:
     """One 4 KiB row read from the file, microseconds; 0 with the table in RAM."""
     copy_bytes_per_s: tuple[float, ...] = ()
     """Each card's copy engine reading pinned host memory, bytes a second."""
+    expert_budget: tuple[int, ...] = ()
+    """Per card, the device memory the core had left for the expert cache at load; empty without cards."""
 
 
 IMAGE_PATCH_BYTES = 768
