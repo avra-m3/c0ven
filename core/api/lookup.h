@@ -43,12 +43,13 @@ class WindowTimes {
 };
 
 // What one slot's rounds have accepted lately: the lookup's drafts accepted and its rounds that stopped at a draft,
-// and the draft layer's drafts accepted and offered a round, each decayed by 0.9 a round.
+// and the draft layer's drafts accepted and checked a round (up to the first one rejected), each decayed by 0.9 a
+// round.
 struct DraftOdds {
   double lookup_accepted = 9.0, lookup_failed = 1.0, layer_accepted = 2.0, layer_offered = 3.0;
   void lookup_round(uint32_t accepted, uint32_t drafts);
   void layer_round(uint32_t accepted, uint32_t drafts);
-  // The draft layer's drafts accepted in a round of k: its acceptance a draft, accepted over offered, to the powers
+  // The draft layer's drafts accepted in a round of k: its acceptance a draft, accepted over checked, to the powers
   // 1 to k added (a draft counts only when those before it do).
   double layer_expected(uint32_t k) const;
 };
