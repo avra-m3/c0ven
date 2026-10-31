@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import json
 import mmap
 
 import numpy as np
@@ -35,6 +36,35 @@ def test_cost_model_splits_a_chunk_into_fixed_and_per_row_parts():
     assert cost.row_ms == pytest.approx(0.07, rel=1e-6)
     assert cost.prompt_ms(1000) == pytest.approx(670.0)
     assert cost.prompt_ms(64) == pytest.approx(64 * 0.07), "a piece read as windows pays no staging"
+
+
+def test_cost_model_round_trips_through_a_dict_and_keeps_fitting():
+    cost = CostModel.initial(decode_ms=10.0)
+    for rows in (300, 2048, 300, 1024):
+        cost.observe(decoded=1, rows=rows, ms=10.0 + 600.0 + 0.07 * rows)
+    back = CostModel.from_dict(json.loads(json.dumps(cost.to_dict())))
+    assert back.to_dict() == cost.to_dict()
+    assert back.chunks_seen == 4
+    assert back.decode_ms.samples == 0, "the first step replaces the saved decode time"
+    for model in (cost, back):
+        model.observe(decoded=1, rows=500, ms=10.0 + 600.0 + 0.07 * 500)
+    assert back.row_ms == pytest.approx(cost.row_ms)
+    assert back.chunk_ms == pytest.approx(cost.chunk_ms)
+
+
+@pytest.mark.parametrize(
+    "broken",
+    [
+        {},
+        {"decode_ms": 1.0, "chunk_ms": 0.0, "row_ms": 0.1, "s": [0.0] * 4, "chunks_seen": 0},
+        {"decode_ms": 1.0, "chunk_ms": 0.0, "row_ms": float("nan"), "s": [0.0] * 5, "chunks_seen": 0},
+        {"decode_ms": 1.0, "chunk_ms": -1.0, "row_ms": 0.1, "s": [0.0] * 5, "chunks_seen": 0},
+        {"decode_ms": 1.0, "chunk_ms": 0.0, "row_ms": 0.1, "s": [0.0] * 5, "chunks_seen": "x"},
+    ],
+)
+def test_a_cost_model_dict_that_is_wrong_is_refused(broken: dict):
+    with pytest.raises((ValueError, KeyError, TypeError)):
+        CostModel.from_dict(broken)
 
 
 def test_a_short_prompt_is_one_piece_and_a_long_one_is_cut():

@@ -134,6 +134,8 @@ class Scheduler:
         options: SchedulerOptions | None = None,
         checkpoint_rule: CheckpointRule = every_16k,
         clock: Callable[[], float] = time.monotonic,
+        *,
+        cost: CostModel | None = None,
     ) -> None:
         self.engine = engine
         self.facts = facts
@@ -141,7 +143,7 @@ class Scheduler:
         self.rule = checkpoint_rule
         self.clock = clock
         self.state = SeqState(facts.slots, facts.pages, facts.checkpoints, classes=max(1, facts.cards))
-        self.cost = CostModel.initial()
+        self.cost = cost or CostModel.initial()
         self.waiting: list[Request] = []
         self.by_rid: dict[int, Request] = {}
         self.by_slot: dict[int, Request] = {}

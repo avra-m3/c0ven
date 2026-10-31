@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from typing import Any
 
 import numpy as np
 
@@ -46,10 +47,34 @@ class CostModel:
     decay: float = 0.8
     _s: list[float] = field(default_factory=lambda: [0.0] * 5)
     """The decayed sums: chunks², chunks x rows, rows², chunks x ms, rows x ms."""
+    chunks_seen: int = 0
 
     @classmethod
     def initial(cls, decode_ms: float = 11.0, row_ms: float = 0.46, chunk_ms: float = 0.0) -> CostModel:
         return cls(Ewma(decode_ms), chunk_ms, row_ms)
+
+    def to_dict(self) -> dict[str, float | int | list[float]]:
+        """The parts that carry from one run to the next, as JSON values."""
+        return {
+            "decode_ms": self.decode_ms.value,
+            "chunk_ms": self.chunk_ms,
+            "row_ms": self.row_ms,
+            "s": list(self._s),
+            "chunks_seen": self.chunks_seen,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> CostModel:
+        """A model from `to_dict`'s output. Raises ValueError, KeyError or TypeError when it is not that. The decode
+        time is a start value: the first step replaces it."""
+        s = [float(x) for x in data["s"]]
+        model = cls.initial(float(data["decode_ms"]), float(data["row_ms"]), float(data["chunk_ms"]))
+        model._s = s
+        model.chunks_seen = int(data["chunks_seen"])
+        values = [model.decode_ms.value, model.chunk_ms, model.row_ms, *s]
+        if len(s) != 5 or model.chunks_seen < 0 or not all(math.isfinite(v) and v >= 0 for v in values):
+            raise ValueError("the cost model has a wrong size or a value that is not a finite, non-negative number")
+        return model
 
     def observe(self, decoded: int, rows: int, ms: float, chunks: int = 1) -> None:
         """A plan's time: `decoded` decode rows and `rows` prompt rows in `chunks` chunks (pieces read by the prompt
@@ -60,6 +85,7 @@ class CostModel:
             return
         if chunks == 0:
             return
+        self.chunks_seen += chunks
         y = max(0.0, ms - (self.decode_ms.value if decoded else 0.0))
         s, d = self._s, self.decay
         for i, v in enumerate((chunks * chunks, chunks * rows, rows * rows, chunks * y, rows * y)):
