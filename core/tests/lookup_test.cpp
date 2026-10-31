@@ -134,10 +134,11 @@ int main() {
     EXPECT(choose_drafts(sure, 3, 3, 7, 8, WindowTimes{}) == 0, "no times");
   }
 
-  // The draft layer's acceptance a draft: accepted over offered, to the powers 1 to k.
+  // The draft layer's acceptance a draft: accepted over checked, to the powers 1 to k. A round of 4 that accepts 1
+  // checked 2.
   {
     DraftOdds o;
-    for (int i = 0; i < 200; i++) o.layer_round(2, 4);  // 0.5 a draft
+    for (int i = 0; i < 200; i++) o.layer_round(1, 4);  // 0.5 a draft
     EXPECT(o.layer_expected(0) == 0, "k 0");
     EXPECT(std::fabs(o.layer_expected(1) - 0.5) < 1e-6 && std::fabs(o.layer_expected(3) - 0.875) < 1e-6, "k 1, 3: %g %g",
            o.layer_expected(1), o.layer_expected(3));
@@ -147,7 +148,7 @@ int main() {
   }
 
   // Drafts a slot for several slots, with times like the cards' (1 row 15.5 ms, 2 19.25, 3 21.9, 4 25.6, 6 34.5,
-  // 8 42.3) and the draft layer's acceptance given as accepted over offered.
+  // 8 42.3) and the draft layer's acceptance given as accepted over checked.
   {
     WindowTimes w;
     const double t[] = {0, 15.5, 19.25, 21.9, 25.6, 0, 34.5, 0, 42.3};

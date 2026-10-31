@@ -65,7 +65,8 @@ void DraftOdds::lookup_round(uint32_t accepted, uint32_t drafts) {
 
 void DraftOdds::layer_round(uint32_t accepted, uint32_t drafts) {
   layer_accepted = 0.9 * layer_accepted + 0.1 * accepted;
-  layer_offered = 0.9 * layer_offered + 0.1 * drafts;
+  // The drafts checked: those accepted and the first one rejected; the ones after it say nothing of the acceptance.
+  layer_offered = 0.9 * layer_offered + 0.1 * std::min(drafts, accepted + 1);
 }
 
 double DraftOdds::layer_expected(uint32_t k) const {
