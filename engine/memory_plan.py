@@ -1,16 +1,16 @@
 """The memory plan: what each card and the host hold, computed before `open` (DESIGN.md, section 6).
 
 Everything is planned, then allocated, at load. Python computes the plan from the tensor table and the options and
-checks it against the host's limits; `open` allocates it, and nothing is allocated on the token path. The method is
-MEMORY_BUDGET.md's for the tensor split: per card, the fixed rows, then a reserve per sequence, then experts in
-what is left; in the host, the arena of the experts the cards do not hold and the streamed KV.
+checks it against the host's memory (engine/host.py); `open` allocates it, and nothing is allocated on the token
+path. The method is MEMORY_BUDGET.md's for the tensor split: per card, the fixed rows, then a reserve per sequence,
+then experts in what is left; in the host, the arena of the experts the cards do not hold and the streamed KV.
 
 The model supplies its numbers as a `ModelMemory` (models/<arch>/memory.py).
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, replace
 
 from engine.api.interface import PAGE_CELLS
 
@@ -62,8 +62,13 @@ class PlanOptions:
     """Pages beyond the slots' own, for prefixes that checkpoints keep after their requests end. Every page's indexer
     keys stay in VRAM on both cards (ADR-0033), so each costs experts; with none, prefixes share the pages of the
     slots that are not full."""
-    pinned_clean: int = 12 * GIB
-    pinned_limit: int = 25 * GIB
+    host_working: int = 3 * GIB
+    """*Estimate*: the engine process's host memory outside the pinned total: staging and step buffers, the n-gram
+    cache, the front end."""
+    host_memory: int | None = None
+    """The most host memory the engine can take, read from the host (engine/host.py); None: no limit known."""
+    ram_max: int | None = None
+    """`--ram-max`: a limit the user sets on the host memory the plan may take; None: none."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,12 +87,16 @@ class MemoryPlan:
     checkpoint_bytes: int
     pages: int
     kv_resident_cells: int
-    warnings: tuple[str, ...] = field(default=())
 
     @property
     def pinned_bytes(self) -> int:
         """Everything `open` pins in host memory, which a wake pins again after a sleep but for the arena."""
         return self.arena_bytes + self.streamed_kv_bytes + self.checkpoint_bytes
+
+    @property
+    def host_bytes(self) -> int:
+        """The host memory the engine takes: the pinned total and the working estimate."""
+        return self.pinned_bytes + self.options.host_working
 
     def rows(self) -> list[tuple[str, str]]:
         def gib(n: int) -> str:
@@ -107,6 +116,7 @@ class MemoryPlan:
             ("streamed KV", gib(self.streamed_kv_bytes)),
             ("checkpoints", f"{o.checkpoints} x {self.checkpoint_bytes // o.checkpoints if o.checkpoints else 0:,} B"),
             ("pinned host memory", gib(self.pinned_bytes)),
+            ("host memory with working set (estimate)", gib(self.host_bytes)),
             ("KV pages", f"{self.pages:,} of {PAGE_CELLS} cells"),
         ]
 
@@ -122,6 +132,60 @@ def reserve_per_sequence(m: ModelMemory, context: int) -> int:
 
 
 def plan(m: ModelMemory, o: PlanOptions) -> MemoryPlan:
+    """The plan for the options. Raises PlanError, with options that fit where there are some, when the cards or the
+    host's memory are too small."""
+    p = _plan(m, o)
+    limit = host_limit(o)
+    if limit is not None and p.host_bytes > limit:
+        raise PlanError(
+            f"the engine needs {p.host_bytes / GIB:.1f} GiB of host memory ({p.pinned_bytes / GIB:.1f} GiB pinned: "
+            f"arena {p.arena_bytes / GIB:.1f}, streamed KV {p.streamed_kv_bytes / GIB:.1f}, checkpoints "
+            f"{p.checkpoint_bytes / GIB:.1f}; working set {o.host_working / GIB:.1f}, an estimate), over the "
+            f"{limit / GIB:.1f} GiB {_limit_name(o)}. {_what_fits(m, o, limit)}"
+        )
+    return p
+
+
+def host_limit(o: PlanOptions) -> int | None:
+    known = [v for v in (o.host_memory, o.ram_max) if v is not None]
+    return min(known) if known else None
+
+
+def _limit_name(o: PlanOptions) -> str:
+    if o.ram_max is not None and (o.host_memory is None or o.ram_max <= o.host_memory):
+        return "--ram-max allows"
+    return "the host can give (MemAvailable, or the cgroup's memory.max)"
+
+
+def _what_fits(m: ModelMemory, o: PlanOptions, limit: int) -> str:
+    """The largest options under the limit: fewer slots first, then a shorter context; or what to change when none
+    does. The arena holds every expert the cards leave out, so a smaller model file is the remaining way."""
+    fits: list[str] = []
+    for slots in range(o.slots - 1, 0, -1):
+        if _fits(m, replace(o, slots=slots, kv_tokens=0 if o.kv_tokens < o.context else o.kv_tokens), limit):
+            fits.append(f"--slots {slots}")
+            break
+    context = o.context
+    while context > 4096:
+        context //= 2
+        if _fits(m, replace(o, context=context, kv_tokens=0), limit):
+            fits.append(f"--context {context} (with --slots {o.slots})")
+            break
+    if o.checkpoints and _fits(m, replace(o, checkpoints=0), limit):
+        fits.append("--checkpoints 0")
+    if not fits:
+        return "No slot count or context fits: free host memory, or use a smaller model file."
+    return "Options that fit: " + "; ".join(fits) + "; or a smaller model file."
+
+
+def _fits(m: ModelMemory, o: PlanOptions, limit: int) -> bool:
+    try:
+        return _plan(m, o).host_bytes <= limit
+    except PlanError:
+        return False
+
+
+def _plan(m: ModelMemory, o: PlanOptions) -> MemoryPlan:
     if o.slots < 1:
         raise PlanError("at least one slot")
     if not 0 < o.context <= m.max_context:
@@ -135,26 +199,13 @@ def plan(m: ModelMemory, o: PlanOptions) -> MemoryPlan:
     half = -(-m.expert_bytes // 2)
     cached = min(m.experts, free // half)
     arena = (m.experts - cached) * m.expert_bytes
-    streamed = o.slots * (m.kv_cell_host * o.context + m.draft_kv_host)
     pages_per_slot = -(-o.context // PAGE_CELLS)
     if 0 < o.kv_tokens < o.context:
         raise PlanError(f"a KV pool of {o.kv_tokens:,} tokens holds no sequence of {o.context:,}")
     pages = -(-o.kv_tokens // PAGE_CELLS) if o.kv_tokens else o.slots * pages_per_slot + o.cached_prefix_pages
+    # The host holds every page's K and V (the core's kv_host), and each slot's draft ring.
+    streamed = pages * PAGE_CELLS * m.kv_cell_host + o.slots * m.draft_kv_host
     checkpoints = o.checkpoints * m.checkpoint_bytes
-    pinned = arena + streamed + checkpoints
-    warnings: list[str] = []
-    # Both limits are warnings: what the host gives depends on how fragmented its memory is (MEMORY_BUDGET.md, "RAM
-    # for the tensor split"). `open` is the test that counts.
-    if pinned > o.pinned_limit:
-        warnings.append(
-            f"pinned host memory {pinned / GIB:.1f} GiB is over {o.pinned_limit / GIB:.1f} GiB, where the test host "
-            "began to swap"
-        )
-    elif pinned > o.pinned_clean:
-        warnings.append(
-            f"pinned host memory {pinned / GIB:.1f} GiB is over {o.pinned_clean / GIB:.1f} GiB: the host will compact "
-            "memory and reclaim its page cache while the engine loads"
-        )
     return MemoryPlan(
         options=o,
         weights_per_card=m.weights_per_card,
@@ -170,5 +221,4 @@ def plan(m: ModelMemory, o: PlanOptions) -> MemoryPlan:
         checkpoint_bytes=checkpoints,
         pages=pages,
         kv_resident_cells=min(o.context, m.resident_cells),
-        warnings=tuple(warnings),
     )
