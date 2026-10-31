@@ -280,3 +280,5 @@ def test_the_core_far_from_the_plan_is_noted():
     p = plan(model_memory(from_tsv()), PlanOptions())
     assert fit.card_notes(p, p.experts_per_layer + 3) == []
     assert "the core caches" in fit.card_notes(p, p.experts_per_layer + 60)[0]
+    assert fit.card_notes(p, p.experts_per_layer, p.working_per_card + 2**20) == []
+    assert "working memory" in fit.card_notes(p, p.experts_per_layer, p.working_per_card + 2**30)[0]

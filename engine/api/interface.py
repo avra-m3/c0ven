@@ -174,6 +174,8 @@ class EngineFacts:
     version: str
     image_tokens_max: int = 0
     """The most tokens an image may have; 0: no images."""
+    expert_budget: tuple[int, ...] = ()
+    """Per card, the device memory the core had left for the expert cache at load; empty without cards."""
 
 
 IMAGE_PATCH_BYTES = 768

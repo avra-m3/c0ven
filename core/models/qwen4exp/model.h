@@ -79,6 +79,7 @@ struct LoadInfo {
   uint32_t vocab = 0;
   uint64_t device_bytes[2] = {0, 0};
   uint64_t arena_bytes = 0;  // host memory holding the experts not on the cards
+  uint64_t expert_budget[2] = {0, 0};  // device memory each card had left for the expert cache (load_experts)
   bool arena_anon = false;   // the arena is the process's own memory (Options::anon_arena)
   double seconds = 0;
 };

@@ -20,7 +20,7 @@ extern "C" {
 #define ENGINE_API
 #endif
 
-#define ENGINE_API_VERSION 11
+#define ENGINE_API_VERSION 12
 
 typedef enum {
   ENGINE_OK = 0,
@@ -84,6 +84,8 @@ typedef struct {
   uint32_t image_tokens_max;   /* the most tokens an image may have; 0: no images */
   uint32_t kv_pages;           /* the KV cache's pages */
   uint32_t pages_per_slot;     /* logical pages a slot can map: the context's, rounded up to a multiple of the cards */
+  uint64_t expert_budget[2];   /* per card: the device memory left for the expert cache at load, once everything else
+                                  is allocated and reserve_bytes kept free */
 } engine_info;
 
 /* A request's sampling and stopping, copied once by admit. The core samples in llama.cpp's order: penalties, top-k,

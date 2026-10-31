@@ -779,6 +779,7 @@ void Model::load_experts(bool first) {
     uint64_t total = rt_->cards()[card->c].memory,
              used = rt_->device_bytes(card->c) + 2 * Q_LAYERS * Q_EXPERTS * 4;
     uint64_t free = total > used + opt_.reserve_bytes ? total - used - opt_.reserve_bytes : 0;
+    info_.expert_budget[card->c] = free;
     budget = std::min(budget, free);
   }
   uint64_t n = nslots_cached_;

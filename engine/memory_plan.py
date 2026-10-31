@@ -10,7 +10,11 @@ The model supplies its numbers as a `ModelMemory` (models/<arch>/memory.py).
 
 from __future__ import annotations
 
+import hashlib
+import json
+import os
 from dataclasses import dataclass, replace
+from pathlib import Path
 
 from engine.api.interface import PAGE_CELLS
 
@@ -62,6 +66,8 @@ class PlanOptions:
     draft: bool = True
     """The draft layer is loaded, and takes its share of each card."""
     working_per_card: int = 1_600_663_296
+    """Each card's memory outside the weights, the draft layer, the sequences' reserve and the expert cache: the
+    core's figure from an earlier load when `--table-cache` keeps one (working_file), else an estimate."""
     checkpoints: int = 8
     kv_tokens: int = 0
     """The KV pool the slots share, in tokens; 0: every slot's own context, plus cached_prefix_pages. It is
@@ -115,6 +121,12 @@ class MemoryPlan:
         """The host memory the engine takes: the pinned total and the working estimate."""
         return self.pinned_bytes + self.options.host_working
 
+    def working_from(self, expert_budget: int) -> int:
+        """The working memory per card that the core's load shows: the plan's figure, and the part of the plan's free
+        memory the core did not have for experts. `expert_budget` is the core's, its smallest card's
+        (EngineFacts.expert_budget)."""
+        return self.working_per_card + self.free_per_card - expert_budget
+
     def rows(self) -> list[tuple[str, str]]:
         def gib(n: int) -> str:
             return f"{n:,} B ({n / GIB:.2f} GiB)"
@@ -137,6 +149,40 @@ class MemoryPlan:
             ("host memory with working set (estimate)", gib(self.host_bytes)),
             ("KV pages", f"{self.pages:,} of {PAGE_CELLS} cells"),
         ]
+
+
+def working_file(cache: Path, model: Path, o: PlanOptions, more: str) -> Path:
+    """Where the core's working memory per card is kept between starts, in the `--table-cache` directory: a file for
+    each model file, engine version, and set of options that changes what the core allocates before its experts.
+    `more` names the rest of those options (the draft layer, the vision encoder, ...)."""
+    st = model.stat()
+    version = (Path(__file__).resolve().parents[1] / "VERSION").read_text().strip()
+    key = "\n".join(
+        (
+            f"{model.resolve()} {st.st_size} {st.st_mtime_ns}",
+            version,
+            f"cards={o.cards} vram={o.usable_vram} slots={o.slots} context={o.context} kv_tokens={o.kv_tokens} "
+            f"prefix_pages={o.cached_prefix_pages}",
+            more,
+        )
+    )
+    return cache / f"working-{hashlib.sha256(key.encode()).hexdigest()[:16]}.json"
+
+
+def read_working(file: Path) -> int | None:
+    """The working memory per card kept in `file`, or None if there is none to use."""
+    try:
+        n = json.loads(file.read_text())["working_per_card"]
+    except OSError, ValueError, KeyError, TypeError:
+        return None
+    return n if isinstance(n, int) and n > 0 else None
+
+
+def write_working(file: Path, n: int) -> None:
+    file.parent.mkdir(parents=True, exist_ok=True)
+    tmp = file.with_name(f"{file.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps({"working_per_card": n}) + "\n")
+    tmp.replace(file)
 
 
 def reserve_per_sequence(m: ModelMemory, context: int) -> int:

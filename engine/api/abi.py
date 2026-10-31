@@ -23,7 +23,7 @@ import ctypes
 from dataclasses import dataclass
 from enum import IntEnum
 
-ABI_VERSION = 11
+ABI_VERSION = 12
 
 MAX_STOP = 8
 MAX_STEP_SLOTS = 8
@@ -118,6 +118,7 @@ class CInfo(ctypes.Structure):
         ("image_tokens_max", ctypes.c_uint32),
         ("kv_pages", ctypes.c_uint32),
         ("pages_per_slot", ctypes.c_uint32),
+        ("expert_budget", ctypes.c_uint64 * 2),
     )
 
 
