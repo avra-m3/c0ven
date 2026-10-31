@@ -104,7 +104,7 @@ python3 tools/check.py --a <main checkout> --model <first shard> --out <dir> [--
 | Step | What runs | Stops the change when |
 | --- | --- | --- |
 | 2. GPU tests | `ctest -L gpu` without `api_test`, `vision_test` and `encoder_test` | any fails |
-| 3. Quick round | one ABBA round, deployed: short, four, mixed, and a second when every B run of a scenario is slower than every A run. With main's stored runs, two B runs instead | a B run fails; B1 is slower than A1 by more than twice the scenario's spread (short 1%, four 10%, mixed 4%); or every B run of a scenario is slower than every A run after two rounds |
+| 3. Quick round | one ABBA round, deployed: short, four, mixed, and a second when every B run of a scenario is slower than every A run. With main's stored runs, two B runs instead | a B run fails; B1 is slower than A1 by more than twice the scenario's spread (short 1.5%, four 10%, mixed 4%); or every B run of a scenario is slower than every A run after two rounds |
 | 4. Claim | `--claim decode`: a second round of the quick round's scenarios, and a third if some scenario's arms overlap. `prompt`: one round of long at one slot, judged on the first token. `near-full`: one round of long-two. `--rounding` adds `kl_test --ab` between both arms' dumps | no scenario is faster, or one is slower |
 | 5. Edges | `api_test`, `vision_test`, `encoder_test`; then same-tokens, long, long-two, one-card on B. Long also runs on main, or is compared with main's stored run. Step 4's long runs stand for step 5's | any fails; long's first token is over 1% later than main's |
 

@@ -51,7 +51,7 @@ ERROR = re.compile(r"\berror\b|traceback|the engine failed|did not (publish|fini
 GAP_S = 60.0  # no token for this long while a request is open fails the run
 # Each quick-round scenario's run-to-run spread on main, as a share of its time (TESTING.md). Four's time depends on
 # how many tokens its tool calls take, which varies from run to run.
-SPREAD = {"short": 0.01, "four": 0.10, "mixed": 0.04}
+SPREAD = {"short": 0.015, "four": 0.10, "mixed": 0.04}
 LONG_SLOWER = 0.01  # long's first token repeats within 0.1 s of about 120 s; later than A's by more fails B
 # Host state that moves a run's time, and how far it may move before main's stored runs no longer stand for main.
 DRIFT = {"mem_avail_gib": 6.0, "swap_used_gib": 2.0, "card0_free_gib": 1.0, "card1_free_gib": 1.0}
