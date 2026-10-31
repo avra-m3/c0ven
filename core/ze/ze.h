@@ -33,6 +33,12 @@ struct Card {
   uint64_t timer_hz = 0;          // the global timestamp's ticks per second
   uint64_t timestamp_mask = 0;    // its valid bits
   uint32_t shared_system = 0;     // sharedSystemAllocCapabilities: how the card reaches the host's own memory
+  uint32_t device_id = 0;
+  uint32_t ip_version = 0;        // ze_device_ip_version_ext_t: architecture << 22 | release << 14 | revision
+  std::string ip() const;         // "20.1.0", as ocloc names it; "" when not reported
+  uint32_t xe_cores = 0;          // slices x subslices per slice
+  int32_t pcie_gen = -1, pcie_width = -1;  // the link's most, as the driver reports it; -1: unknown
+  int64_t pcie_bytes_per_s = -1;
 };
 
 class Runtime {
@@ -81,10 +87,11 @@ class Runtime {
 
 class Kernel;
 
-// A module built ahead of time by ocloc, loaded on one card.
+// A module built ahead of time by ocloc, loaded on one card: its native binary, or with spirv_options its SPIR-V,
+// which the driver compiles with those build options.
 class Module {
  public:
-  Module(Runtime &rt, uint32_t card, const std::string &path);
+  Module(Runtime &rt, uint32_t card, const std::string &path, const std::string *spirv_options = nullptr);
   ~Module();
   Module(const Module &) = delete;
   Module &operator=(const Module &) = delete;

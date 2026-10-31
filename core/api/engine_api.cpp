@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <condition_variable>
 #include <cstddef>
 #include <cstring>
@@ -1521,6 +1522,33 @@ void engine_close(engine_ctx *e) {
   delete e;
 }
 
+engine_status engine_cards(engine_card *cards, uint32_t cap, uint32_t *n) {
+  if (!n) return ENGINE_BAD_ARGUMENT;
+  try {
+    engine::ze::Runtime rt(1);
+    const auto &found = rt.cards();
+    *n = (uint32_t)found.size();
+    for (uint32_t i = 0; cards && i < cap && i < found.size(); i++) {
+      const auto &c = found[i];
+      engine_card &o = cards[i];
+      o = engine_card{};
+      std::snprintf(o.name, sizeof o.name, "%s", c.name.c_str());
+      std::snprintf(o.pci, sizeof o.pci, "%s", c.pci.c_str());
+      o.memory = c.memory;
+      o.device_id = c.device_id;
+      o.ip_version = c.ip_version;
+      o.xe_cores = c.xe_cores;
+      o.pcie_gen = c.pcie_gen;
+      o.pcie_width = c.pcie_width;
+      o.pcie_bytes_per_s = c.pcie_bytes_per_s;
+    }
+    return ENGINE_OK;
+  } catch (const std::exception &ex) {
+    open_error = ex.what();
+    return ENGINE_ERROR;
+  }
+}
+
 uint32_t engine_abi_layout(engine_abi_row *table, uint32_t cap) {
 #define ROW(s, f) {#s "." #f, (uint32_t)offsetof(s, f), (uint32_t)sizeof(((s *)nullptr)->f)}
 #define SIZE(s) {#s, 0, (uint32_t)sizeof(s)}
@@ -1570,6 +1598,9 @@ uint32_t engine_abi_layout(engine_abi_row *table, uint32_t cap) {
       ROW(engine_slot_stats, steps), ROW(engine_slot_stats, rounds), ROW(engine_slot_stats, drafts),
       ROW(engine_slot_stats, accepted), ROW(engine_slot_stats, lookup_rounds), ROW(engine_slot_stats, lookup_drafts),
       ROW(engine_slot_stats, lookup_accepted), SIZE(engine_slot_stats),
+      ROW(engine_card, name), ROW(engine_card, pci), ROW(engine_card, memory), ROW(engine_card, device_id),
+      ROW(engine_card, ip_version), ROW(engine_card, xe_cores), ROW(engine_card, pcie_gen),
+      ROW(engine_card, pcie_width), ROW(engine_card, reserved), ROW(engine_card, pcie_bytes_per_s), SIZE(engine_card),
       ROW(engine_abi_row, name), ROW(engine_abi_row, offset), ROW(engine_abi_row, size), SIZE(engine_abi_row),
   };
 #undef ROW

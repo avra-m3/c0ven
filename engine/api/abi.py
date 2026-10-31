@@ -14,6 +14,7 @@ encoder's file to the config, its limit to the info, and `engine_admit_images`. 
 changes in each plan, a slot without a page for its next position stalls, and a checkpoint holds only the fixed state.
 Version 6 adds `engine_image.frames` for video (ADR-0034). Version 7 adds min-p and the penalties to
 `engine_settings`. Version 9 adds the counters: `engine_read_stats` and `engine_read_slot_stats` (ADR-0049).
+Version 11 adds `engine_cards`, the cards listed before open (ADR-0057).
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ import ctypes
 from dataclasses import dataclass
 from enum import IntEnum
 
-ABI_VERSION = 10
+ABI_VERSION = 11
 
 MAX_STOP = 8
 MAX_STEP_SLOTS = 8
@@ -259,6 +260,23 @@ class CSlotStats(ctypes.Structure):
     _fields_ = tuple((name, ctypes.c_uint64) for name in SLOT_STATS_FIELDS)
 
 
+class CCard(ctypes.Structure):
+    """`engine_card`: one card the engine can use."""
+
+    _fields_ = (
+        ("name", ctypes.c_char * 64),
+        ("pci", ctypes.c_char * 16),
+        ("memory", ctypes.c_uint64),
+        ("device_id", ctypes.c_uint32),
+        ("ip_version", ctypes.c_uint32),
+        ("xe_cores", ctypes.c_uint32),
+        ("pcie_gen", ctypes.c_int32),
+        ("pcie_width", ctypes.c_int32),
+        ("reserved", ctypes.c_uint32),
+        ("pcie_bytes_per_s", ctypes.c_int64),
+    )
+
+
 class CAbiRow(ctypes.Structure):
     """One row of the table `engine_abi_layout` fills: "struct.field" with its offset and size, or "struct" with
     offset 0 and its size."""
@@ -282,6 +300,7 @@ STRUCTS: dict[str, type[ctypes.Structure]] = {
     "engine_image": CImage,
     "engine_stats": CStats,
     "engine_slot_stats": CSlotStats,
+    "engine_card": CCard,
     "engine_abi_row": CAbiRow,
 }
 
