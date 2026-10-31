@@ -1,7 +1,8 @@
 // The n-gram embedding's rows (docs/spec/MODEL_IO.md, 1.2 and 1.4): the hash of a token and the two before it, and
 // the 16 rows of the table it names. The table stays on the SSD (ADR-0015), read with O_DIRECT 4 KiB reads past the
 // page cache by a pool of reader threads, many because the SSD needs many reads in flight
-// (docs/measurements/MEASUREMENTS.md#2026-10-15-ngram-gather). Rows already read are cached in RAM.
+// (docs/measurements/MEASUREMENTS.md#2026-10-15-ngram-gather), and rows already read are cached in RAM. Where the host
+// has room, the control plane asks for the whole table in RAM instead (ADR-0057).
 #pragma once
 
 #include <array>
@@ -26,8 +27,10 @@ struct NgramStats {
 
 class Ngram {
  public:
-  // cache_rows: rows the cache holds (raw, ~100 B each); readers: threads reading the SSD.
-  Ngram(const GgufModel &model, uint32_t cache_rows = 1u << 20, unsigned readers = 128);
+  // cache_rows: rows the cache holds (raw, ~100 B each); readers: threads reading the SSD. in_ram: read the whole
+  // table into the process's memory now, with loader_threads threads, and serve every row from it.
+  Ngram(const GgufModel &model, uint32_t cache_rows = 1u << 20, unsigned readers = 128, bool in_ram = false,
+        unsigned loader_threads = 8);
   ~Ngram();
 
   // The 16 row ids for token t at a position whose two predecessors are p1 (just before) and p2 (kNoToken when
@@ -45,11 +48,17 @@ class Ngram {
   void gather_rows(const int32_t *t, const int32_t *p1, const int32_t *p2, uint32_t n, float *u);
 
   const NgramStats &stats() const { return stats_; }
+  bool in_ram() const { return ram_ != nullptr; }
+  // The mean time of one 4 KiB row read from the SSD, from 256 reads at random rows one at a time, microseconds.
+  double read_latency_us();
 
  private:
   void read_rows(const std::vector<uint64_t> &ids, uint8_t *out);
   void fill(const std::vector<uint64_t> &ids, uint32_t n, float *u);  // ids: 16 a token
 
+  uint8_t *ram_ = nullptr;  // the whole table's rows, when in RAM
+  size_t ram_bytes_ = 0;
+  uint64_t rows_ = 0;
   uint64_t mult_[3];
   uint64_t vocab_[16], offset_[16];
   int64_t reset_;

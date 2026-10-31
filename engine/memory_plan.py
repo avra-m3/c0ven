@@ -47,6 +47,8 @@ class ModelMemory:
     checkpoint_bytes: int
     """A checkpoint: the running state only; the KV of its positions stays in its pages (ADR-0033)."""
     max_context: int
+    ngram_bytes: int
+    """The n-gram table, which stays in the file unless the plan holds it in RAM."""
     reference_vram: int
     """One test-machine card's memory, bytes: the plan's card when none is read (the mock and the reference)."""
 
@@ -78,6 +80,8 @@ class PlanOptions:
     """The most host memory the engine can take, read from the host (engine/host.py); None: no limit known."""
     ram_max: int | None = None
     """`--ram-max`: a limit the user sets on the host memory the plan may take; None: none."""
+    ngram_in_ram: bool = False
+    """The whole n-gram table in RAM, counted in the host total."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +103,7 @@ class MemoryPlan:
     checkpoint_bytes: int
     pages: int
     kv_resident_cells: int
+    ngram_bytes: int
 
     @property
     def pinned_bytes(self) -> int:
@@ -112,8 +117,9 @@ class MemoryPlan:
 
     @property
     def host_bytes(self) -> int:
-        """The host memory the engine takes: the pinned total and the working estimate."""
-        return self.pinned_bytes + self.options.host_working
+        """The host memory the engine takes: the pinned total, the working estimate, and the n-gram table when it is
+        in RAM."""
+        return self.pinned_bytes + self.options.host_working + (self.ngram_bytes if self.options.ngram_in_ram else 0)
 
     def rows(self) -> list[tuple[str, str]]:
         def gib(n: int) -> str:
@@ -134,6 +140,7 @@ class MemoryPlan:
             ("streamed KV", gib(self.streamed_kv_bytes)),
             ("checkpoints", f"{o.checkpoints} x {self.checkpoint_bytes // o.checkpoints if o.checkpoints else 0:,} B"),
             ("pinned host memory", gib(self.pinned_bytes)),
+            ("n-gram table", f"{gib(self.ngram_bytes)}, {'in RAM' if o.ngram_in_ram else 'read from the file'}"),
             ("host memory with working set (estimate)", gib(self.host_bytes)),
             ("KV pages", f"{self.pages:,} of {PAGE_CELLS} cells"),
         ]
@@ -167,6 +174,20 @@ def plan(m: ModelMemory, o: PlanOptions) -> MemoryPlan:
             f"{limit / GIB:.1f} GiB {_limit_name(o)}. {_what_fits(m, o, limit)}"
         )
     return p
+
+
+NGRAM_MARGIN_SHARE = 0.25
+"""The share of the host's memory, at least 8 GiB, left free after the n-gram table moves into RAM: the table is the
+first thing the host would want back."""
+
+
+def ngram_fits(p: MemoryPlan, mem_total: int | None) -> bool:
+    """Whether the host has room for the n-gram table in RAM beside the plan (the plan's own table not counted)."""
+    limit = host_limit(p.options)
+    if limit is None or mem_total is None:
+        return False
+    total = p.host_bytes - (p.ngram_bytes if p.options.ngram_in_ram else 0)
+    return limit - total - p.ngram_bytes >= max(8 * GIB, NGRAM_MARGIN_SHARE * mem_total)
 
 
 def host_limit(o: PlanOptions) -> int | None:
@@ -256,4 +277,5 @@ def _plan(m: ModelMemory, o: PlanOptions) -> MemoryPlan:
         checkpoint_bytes=checkpoints,
         pages=pages,
         kv_resident_cells=min(o.context, m.resident_cells),
+        ngram_bytes=m.ngram_bytes,
     )

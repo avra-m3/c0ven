@@ -1,7 +1,9 @@
 # ADR-0015: the n-gram table stays on the SSD, read row by row
 
 **Status:** accepted, 2026-10-09. Item 6 superseded by [ADR-0018](0018-one-file-iq3s.md) on 2026-10-10: the engine
-runs IQ3_S only, so the table in RAM is no longer a standing A/B arm.
+runs IQ3_S only, so the table in RAM is no longer a standing A/B arm. Superseded in part by
+[ADR-0057](0057-the-engine-reads-the-host-it-runs-on.md) (draft): the table is read into RAM when the host has room
+for it.
 **Revisit when:**
 
 - the SSD's 4 KiB random reads are too slow, or too uneven, to hide behind layer 0;

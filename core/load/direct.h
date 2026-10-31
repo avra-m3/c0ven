@@ -1,8 +1,8 @@
 // Reads of the model's files past the page cache (ADR-0032): O_DIRECT, so a load never
-// fills the host's RAM with the file's pages. A range is read whole into an aligned buffer, in pieces of 1 MiB by
-// 8 threads, which read the T500 fastest (docs/measurements/MEASUREMENTS.md#2026-10-16-load-read-rates); the caller gets a pointer
-// to its first byte inside the buffer. A filesystem that refuses O_DIRECT stops the engine, as for the n-gram table
-// (ADR-0015).
+// fills the host's RAM with the file's pages. A range is read whole into an aligned buffer, in pieces of 1 MiB by a
+// pool of threads, as many as probe_threads finds fastest on the file's disk (8 on the test machine's T500:
+// docs/measurements/MEASUREMENTS.md#2026-10-16-load-read-rates); the caller gets a pointer to its first byte inside the
+// buffer. A filesystem that refuses O_DIRECT stops the engine, as for the n-gram table (ADR-0015).
 #pragma once
 
 #include <atomic>
@@ -24,6 +24,10 @@ class DirectReader {
   ~DirectReader();
   DirectReader(const DirectReader &) = delete;
   DirectReader &operator=(const DirectReader &) = delete;
+
+  // The thread count of 4, 8 and 16 that reads the file fastest: 256 MiB each, from different places so the disk's
+  // own cache does not serve them. rate: that count's bytes a second.
+  static unsigned probe_threads(const std::string &path, double *rate);
 
   // Bytes a buffer needs to hold the read of [offset, offset + bytes): the range widened to kAlign at both ends.
   static uint64_t span(uint64_t offset, uint64_t bytes);
