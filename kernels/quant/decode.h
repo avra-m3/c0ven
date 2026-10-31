@@ -45,7 +45,7 @@ static inline uint dec_u32(__global const uchar *p) { return ld_u32(p); }
 #elif QTYPE == QT_IQ2_XS
 #define GRID_OFF QGRID_IQ2XS
 #define GRID_BYTES 4096
-#elif QTYPE == QT_IQ1_M
+#elif QTYPE == QT_IQ1_S || QTYPE == QT_IQ1_M
 #define GRID_OFF QGRID_IQ1S
 #define GRID_BYTES 16384
 #else
@@ -94,7 +94,7 @@ static inline uint q2_byte(uint x) {
   return sub_bytes(t, 0x01010101u);
 }
 
-// Q4_0 / Q5_0: 4 bits of 4 values (one per byte) into the low bits of their bytes.
+// Q4_0 / Q5_0 / Q5_1: 4 bits of 4 values (one per byte) into the low bits of their bytes.
 static inline uint spread4(uint x) {
   return (x & 1u) | ((x & 2u) << 7) | ((x & 4u) << 14) | ((x & 8u) << 21);
 }
@@ -106,7 +106,7 @@ static inline int q3k_scale(__global const uchar *sc, uint i) {
   return (int)(lo4 | (hi2 << 4)) - 32;
 }
 
-// IQ1_M: a grid word (4 values of -1, 0 or 1) times 8, plus or minus 1: 8 (g + delta) with delta = +-1/8.
+// IQ1_S / IQ1_M: a grid word (4 values of -1, 0 or 1) times 8, plus or minus 1: 8 (g + delta) with delta = +-1/8.
 static inline uint iq1_word(uint g, uint neg) {
   uint x = (g << 3) & 0xf8f8f8f8u;
   return neg ? sub_bytes(x, 0x01010101u) : x | 0x01010101u;
@@ -140,6 +140,18 @@ static inline void decode_unit(__global const uchar *W, ulong n, ulong k, uint s
   }
   *lo = *hi = ld_half(FIELD(1, k));
 #endif
+#elif QTYPE == QT_Q5_1
+  // Q5_1: Q5_0's bits without the offset of 16, and a min; y = d * q + m.
+  __global const uchar *qs = FIELD(0, k);
+  uint qh = dec_u32(FIELD(1, k));
+  for (uint i = 0; i < 4; i++) {
+    uint x = dec_u32(qs + 4 * i);
+    w[i] = (x & 0x0f0f0f0fu) | (spread4(qh >> (4 * i)) << 4);
+    w[4 + i] = ((x >> 4) & 0x0f0f0f0fu) | (spread4(qh >> (16 + 4 * i)) << 4);
+  }
+  __global const uchar *dm = FIELD(2, k);
+  *lo = *hi = ld_half(dm);
+  *mn = -ld_half(dm + 2);
 #elif QTYPE == QT_Q3_K
   // Q3_K: y = d * (scale - 32) * (q - 4 * !h); unit s takes bits 2(s mod 4) of qs bytes 32(s / 4) .. + 31, and bit
   // s of the hmask bytes; its two halves of 16 have scales 2s and 2s + 1.
@@ -182,6 +194,17 @@ static inline void decode_unit(__global const uchar *W, ulong n, ulong k, uint s
   float d = ld_half(FIELD(2, k)) * 0.25f;
   *lo = d * (0.5f + (float)(sc & 15));
   *hi = d * (0.5f + (float)(sc >> 4));
+#elif QTYPE == QT_IQ1_S
+  // IQ1_S: as IQ1_M, with one 3-bit scale and one delta sign a unit, in bits 12-14 and 15 of its 16-bit qh word, whose
+  // bits 3l .. 3l + 2 are the high bits of index l; d is a field of its own.
+  __global const uchar *qs = FIELD(0, k) + 4 * s;
+  uint qh = ld_u16(FIELD(1, k) + 2 * s);
+  for (uint l = 0; l < 4; l++) {
+    uint2 e = *(__local const uint2 *)(grid + 8 * (qs[l] | (((qh >> (3 * l)) & 7) << 8)));
+    w[2 * l] = iq1_word(e.x, qh & 0x8000);
+    w[2 * l + 1] = iq1_word(e.y, qh & 0x8000);
+  }
+  *lo = *hi = ld_half(FIELD(2, k)) * (float)(2 * ((qh >> 12) & 7) + 1) * 0.125f;
 #elif QTYPE == QT_IQ1_M
   // IQ1_M: y = dl * (grid value + delta), delta +-1/8 per 8 values, grid values -1, 0 or 1; so y = dl / 8 * (8 g +- 1),
   // whole numbers. Indices are 8 bits of qs and 3 of qh; d is the top nibbles of the 4 scale words, and the unit's

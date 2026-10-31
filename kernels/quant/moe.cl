@@ -28,10 +28,10 @@ static inline float act_unit(__global const uchar *a, uint K, uint u, uint q[8])
 // Gate and up: 256 values a block, 8 units. Lane l takes unit l & 7 of blocks (l >> 3), (l >> 3) + 2, ...
 
 #if QTYPE == QT_IQ2_S || QTYPE == QT_IQ3_XXS || QTYPE == QT_IQ3_S || QTYPE == QT_IQ4_XS || QTYPE == QT_IQ2_XXS || \
-    QTYPE == QT_IQ2_XS || QTYPE == QT_IQ1_M
+    QTYPE == QT_IQ2_XS || QTYPE == QT_IQ1_S || QTYPE == QT_IQ1_M
 
-// Unit s of block k as 8 magnitude words g and 8 nibbles of sign bits (bit j: byte j negative), or for IQ4_XS and
-// IQ1_M as 8 signed words and no signs; lo and hi as decode_unit gives them.
+// Unit s of block k as 8 magnitude words g and 8 nibbles of sign bits (bit j: byte j negative), or for IQ4_XS, IQ1_S
+// and IQ1_M as 8 signed words and no signs; lo and hi as decode_unit gives them.
 static inline void gu_decode(__global const uchar *W, uint n, uint k, uint s, uint g[8], uint sg[8], float *lo,
                              float *hi GRID_PARAM) {
 #if QTYPE == QT_IQ3_XXS
@@ -104,6 +104,16 @@ static inline void gu_decode(__global const uchar *W, uint n, uint k, uint s, ui
   *lo = d * (0.5f + (float)(sc & 15));
   *hi = d * (0.5f + (float)(sc >> 4));
 #endif
+#elif QTYPE == QT_IQ1_S
+  uint qs4 = ld_u32x(W + RUN(0) + k * 32 + 4 * s);
+  uint qh = *(__global const ushort *)(W + RUN(1) + k * 16 + 2 * s);
+  for (uint l = 0; l < 4; l++) {
+    uint2 e = *(__local const uint2 *)(grid + 8 * (((qs4 >> (8 * l)) & 255u) | (((qh >> (3 * l)) & 7u) << 8)));
+    g[2 * l] = iq1_word(e.s0, qh & 0x8000u);
+    g[2 * l + 1] = iq1_word(e.s1, qh & 0x8000u);
+    sg[2 * l] = sg[2 * l + 1] = 0;
+  }
+  *lo = *hi = vload_half(0, (__global const half *)(W + RUN(2) + k * 2)) * (float)(2 * ((qh >> 12) & 7u) + 1) * 0.125f;
 #elif QTYPE == QT_IQ1_M
   uint qs4 = ld_u32x(W + RUN(0) + k * 32 + 4 * s);
   uint qh2 = *(__global const ushort *)(W + RUN(1) + k * 16 + 2 * s);
@@ -140,7 +150,7 @@ static inline void gu_decode(__global const uchar *W, uint n, uint k, uint s, ui
 #endif
 }
 
-#if QTYPE == QT_IQ4_XS || QTYPE == QT_IQ1_M
+#if QTYPE == QT_IQ4_XS || QTYPE == QT_IQ1_S || QTYPE == QT_IQ1_M
 #define SIGNED_GRID 0
 #else
 #define SIGNED_GRID 1

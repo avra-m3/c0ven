@@ -2,7 +2,7 @@
 // file, against ggml's CPU dequantisation of the same blocks multiplied in double precision by the same fp16
 // activations. dequant_f16 for every type the dense weights use; moe_gate_up_t and moe_down_t for every expert type,
 // in the runs layout (cached experts) and the file's (streamed experts), for card 1's half of an expert, so the
-// slices start mid-row. Tolerance 2e-3 of the largest |reference| (TESTING.md, "Tolerances": fp16 products).
+// slices start mid-row; it names the expert types the file has none of. Tolerance 2e-3 of the largest |reference|.
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -231,6 +231,15 @@ int main() {
       rt.free(dW);
     }
   }
+  // Any type may be a gate type; a down type's blocks must divide a card's 320 values.
+  std::string untested_g, untested_d;
+  for (uint32_t t : test::quant_types()) {
+    if (std::find(seen_g.begin(), seen_g.end(), t) == seen_g.end()) untested_g += std::string(" ") + ggml_type_label(t);
+    if (half % quant_block_values(t) == 0 && std::find(seen_d.begin(), seen_d.end(), t) == seen_d.end())
+      untested_d += std::string(" ") + ggml_type_label(t);
+  }
+  std::printf("no experts of these types in this file, so not tested: gate and up%s; down%s\n",
+              untested_g.empty() ? " none" : untested_g.c_str(), untested_d.empty() ? " none" : untested_d.c_str());
   EXPECT(ck.failures == 0, "%d case(s) over tolerance", ck.failures);
   std::printf("PASS\n");
   return 0;

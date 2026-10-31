@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "quant.h"
 #include "ze/ze.h"
 
 #define EXPECT(cond, ...)                                       \
@@ -39,6 +40,15 @@ inline std::string model_path() {
 inline int skip(const std::string &why) {
   std::printf("SKIP: %s\n", why.c_str());
   return 77;
+}
+
+// Every quantised weight type the engine reads, as kernels/CMakeLists.txt's ENGINE_QUANT_TYPES lists them: the kernel
+// tests name the ones a file has none of, which only a run on another file (FLASH_MODEL) checks.
+inline const std::vector<uint32_t> &quant_types() {
+  static const std::vector<uint32_t> t = {QT_Q8_0, QT_Q4_0, QT_Q5_0, QT_Q5_1, QT_Q2_0, QT_IQ4_NL,
+                                          QT_IQ4_XS, QT_Q3_K, QT_Q4_K, QT_Q5_K, QT_Q6_K, QT_IQ1_S,
+                                          QT_IQ1_M, QT_IQ2_XXS, QT_IQ2_XS, QT_IQ2_S, QT_IQ3_XXS, QT_IQ3_S};
+  return t;
 }
 
 // The GPUs Level Zero lists, counted as ze::Runtime counts them: the first driver that has any.

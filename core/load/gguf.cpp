@@ -105,11 +105,13 @@ const char *ggml_type_label(uint32_t type) {
     case QT_BF16: return "BF16";
     case QT_Q4_0: return "Q4_0";
     case QT_Q5_0: return "Q5_0";
+    case QT_Q5_1: return "Q5_1";
     case QT_Q8_0: return "Q8_0";
     case QT_Q3_K: return "Q3_K";
     case QT_Q4_K: return "Q4_K";
     case QT_Q5_K: return "Q5_K";
     case QT_Q6_K: return "Q6_K";
+    case QT_IQ1_S: return "IQ1_S";
     case QT_IQ1_M: return "IQ1_M";
     case QT_IQ2_XXS: return "IQ2_XXS";
     case QT_IQ2_XS: return "IQ2_XS";

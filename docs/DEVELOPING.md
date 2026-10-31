@@ -47,11 +47,11 @@ docker exec engine-dev bash -c 'cd /src/build && ENGINE_EXPECT_GPUS=2 ctest -L g
 | `gguf_test` | 1 | the GGUF reader against the census of the IQ3_S file |
 | `mrope_test` | 1 | the M-RoPE positions an image gives a prompt's cells, against transformers' rule; no card |
 | `ze_smoke_test` | 2 | a kernel runs on every card, and one card waits on another's event |
-| `matvec_test` | 3 | the weight products of all ten quantised types against ggml's dequantisation, 1e-5 |
+| `matvec_test` | 3 | the weight products of every quantised type the file holds against ggml's dequantisation, 1e-5; names the types the engine reads that the file has none of |
 | `moe_test` | 3 | the decode step's grouped expert products of `moe.cl` equal `matvec.cl`'s bit for bit, for every expert type the file holds and every group size |
 | `topk_test` | 2 | `topk_rows` against the host: the k largest of rows of up to 248,320 values, ties to the lower indices, both of its paths |
 | `gemm_test` | 2, 3 | the prompt path's fp16 and bf16 products on the XMX units, and the DPAS register layout, 2e-3 |
-| `qgemm_test` | 3 | the prompt path's quantised products: dense weights dequantised to fp16, the experts decoded on the fly in both layouts, 2e-3 |
+| `qgemm_test` | 3 | the prompt path's quantised products: dense weights dequantised to fp16, the experts decoded on the fly in both layouts, 2e-3; names the expert types the file has none of |
 | `kl_test` | 5 | the engine's distribution against the BF16 checkpoint's on the KL set, teacher-forced one token a step: mean KL at most 0.170, top-1 agreement at least 83.5%. Needs `$FLASH_REF_DIR/kl-base-bf16.bin` |
 | `attn_test` | 3 | the prompt path's attention kernel against double precision: dense and sparse rows, rows past 12,288 positions, keys that grow along the positions, both cards' head layouts; 2e-3 |
 | `vision_test` | 3 | the image encoder's kernels against double precision: 1e-5 for f32 outputs, 2e-3 for fp16, 1e-2 for bf16 |
@@ -64,7 +64,8 @@ A test whose model is missing skips (exit code 77). Tests find the model at `FLA
 `/models`; ctest gives `api_test` the path `/models/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf`.
 `FLASH_MODEL` names another file's first shard instead: `matvec_test`, `qgemm_test` and `moe_test` then check the
 kernels of every quantised type that file has (`gguf_test` and `kl_test` hold the IQ3_S file's own numbers). The
-Q8_0 down experts' kernels need a file with such experts, such as UD-IQ4_XS: IQ3_S has none.
+kernels of a type the IQ3_S file lacks need a file that has it, such as UD-IQ4_XS for the Q8_0 down experts
+([MODEL_FILES.md](MODEL_FILES.md#unsloths-other-files) lists the expert types of Unsloth's files).
 A GPU test also skips when Level Zero lists no GPU, unless `ENGINE_EXPECT_GPUS` is set; then it fails. `api_test`
 checks only for the model, since the C ABI does not say why `engine_open` failed.
 

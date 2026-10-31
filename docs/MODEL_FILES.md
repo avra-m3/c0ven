@@ -104,7 +104,8 @@ Their speed and agreement with IQ3_S are in [measurements/MEASUREMENTS.md](measu
 [`unsloth/Qwen3.8-Flash-Next-GGUF`](https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF) at revision
 `766911a6b7369840a91dbcd95f9f997acaab6cd6`, the three shards in `UD-IQ4_XS/`. It is 10.1 GB larger than IQ3_S and
 closer to the BF16 checkpoint ([CHOOSING_A_MODEL.md](CHOOSING_A_MODEL.md)). The engine's tests, references and the
-README's figures stay on IQ3_S. No other file from that repository has been tried. Put the
+README's figures stay on IQ3_S. No other file from that repository has been loaded
+([below](#unsloths-other-files)). Put the
 image encoder's file, `dflash/` and `mtp/` beside it as for IQ3_S; Unsloth's own MTP files are not read.
 
 ```bash
@@ -121,6 +122,29 @@ sha256sum Qwen3.8-Flash-Next-UD-IQ4_XS-0000*-of-00003.gguf
 
 Together the shards are 93,682,584,224 B (93.7 GB). Every tensor and its type is in
 [tensors-UD-IQ4_XS.tsv](model/tensors-UD-IQ4_XS.tsv).
+
+#### Unsloth's other files
+
+The engine has kernels for every type in the repository's other folders at the same revision, but none of the files
+has been loaded. The kernels for the expert types only these files use (IQ1_S and Q5_1, and Q4_K, Q5_K, Q6_K and Q8_0
+for gate and up) are not yet tested. The experts' types, read from the files' headers, with the number of layers
+(gate and up have the same type in each layer):
+
+| Folder | Gate and up | Down |
+| --- | --- | --- |
+| `UD-IQ1_S/` | IQ1_S 34, IQ2_XXS 14 | IQ4_NL |
+| `UD-IQ1_M/` | IQ1_M 24, IQ2_XXS 24 | IQ4_NL |
+| `UD-Q2_K_XL/` | IQ2_XS 47, IQ3_XXS 1 | IQ4_NL |
+| `UD-IQ3_XXS/` | IQ2_S 47, IQ3_S 1 | IQ4_NL |
+| `UD-Q3_K_XL/` | IQ3_XXS 47, IQ4_XS 1 | IQ4_NL 43, Q8_0 5 |
+| `UD-Q4_K_XL/` | Q4_K 47, Q5_K 1 | Q5_1 43, Q8_0 5 |
+| `UD-Q5_K_XL/` | Q5_K 47, Q6_K 1 | Q8_0 |
+| `UD-Q6_K_XL/` | Q6_K 47, Q8_0 1 | Q8_0 |
+| `Q8_0/` | Q8_0 | Q8_0 |
+
+Their other tensors are Q4_K, Q5_K, Q6_K, Q8_0, IQ4_NL, BF16 and F32, which the engine reads. `Q8_0/` also stores
+`ssm_alpha`, `ssm_beta` and the hyper-connections' inject weights as Q8_0, where the other files have F32; the engine
+holds those weights as BF16 and converts them from either type.
 
 ### The image encoder
 
