@@ -24,6 +24,10 @@ Use C0ven if you have:
 - enough RAM to hold the model (the test machine has 96 GiB),
 - one person, or a few requests at once, using the model.
 
+At start the engine reads the host's available memory and the cgroup's limits, and refuses a configuration that does
+not fit before it loads, with options that do. Each load prints a fit report: what it read, beside what it planned and
+what it took ([ADR-0057](docs/adr/0057-the-engine-reads-the-host-it-runs-on.md)).
+
 C0ven is the wrong tool if you want to run other models, use other GPUs, or serve many users. Use llama.cpp or vLLM
 for those.
 
@@ -159,7 +163,8 @@ whole of it in host memory, and the VRAM the rest would take caches experts. The
 pinned at load: 13,056 bytes a token of the KV cache, 13.7 GB for four 262,144-token slots.
 
 `ZE_AFFINITY_MASK` limits which cards the engine sees. Useful engine flags through `--engine-arg`: `--no-draft`,
-`--no-vision`, `--deterministic` and `--checkpoints N` (`python -m engine --help` lists them all).
+`--no-vision`, `--deterministic`, `--checkpoints N` and `--ram-max GiB`, which refuses a configuration that would take
+more host memory (`python -m engine --help` lists them all).
 
 ## API
 

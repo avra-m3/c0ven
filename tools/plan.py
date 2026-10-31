@@ -40,8 +40,6 @@ def main(argv: list[str] | None = None) -> int:
     width = max(len(name) for name, _ in plan.rows())
     for name, value in plan.rows():
         print(f"{name:<{width}}  {value}")
-    for warning in plan.warnings:
-        print(f"warning: {warning}")
     return 0
 
 
