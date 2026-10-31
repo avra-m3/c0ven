@@ -1,7 +1,8 @@
 # Model files
 
-C0ven runs one model, Qwen3.8-Flash-Next, from ISTA-DASLab's GSQ-RCO IQ3_S GGUF
-([ADR-0006](adr/0006-scope.md), [ADR-0018](adr/0018-one-file-iq3s.md)). This page says which files to get, how to
+C0ven runs one model, Qwen3.8-Flash-Next, from ISTA-DASLab's GSQ-RCO IQ3_S GGUF by default
+([ADR-0006](adr/0006-scope.md), [ADR-0018](adr/0018-one-file-iq3s.md)), or from
+[another file](#the-other-quants) of the same model. This page says which files to get, how to
 check them, how to lay them out, and how to point the engine at them.
 
 | Part | Files | Size | Needed for |
@@ -26,7 +27,7 @@ Put every file in one directory:
     ... (one file per tensor, 31 in all)
 ```
 
-Keep the shards' names: the engine finds each shard from the other by the `-0000N-of-00002` suffix. Keep the
+Keep the shards' names: the engine finds each shard from the others by the `-0000N-of-0000M` suffix. Keep the
 directory on a filesystem that allows `O_DIRECT` reads, such as ext4 or xfs. The engine reads the weights and the
 n-gram table that way, and a filesystem that refuses them stops it ([ADR-0015](adr/0015-ngram-table-on-the-ssd.md),
 [ADR-0032](adr/0032-sleep-the-front-end-stays-the-engine-keeps-the-arena.md)). The engine only reads the directory, so
@@ -34,11 +35,11 @@ it can be mounted read-only.
 
 ## Pointing the engine at the files
 
-`--model` takes the path of either shard. From that path the engine finds the rest:
+`--model` takes the path of any shard. From that path the engine finds the rest:
 
 | Part | Where the engine looks | To change it |
 | --- | --- | --- |
-| The other shard | beside it, by name | - |
+| The other shards | beside it, by name | - |
 | The drafter | `dflash/` beside the model when it holds `dflash-manifest.json`, else `mtp/` when it holds `mtp-manifest.json` | `--engine-arg=--draft-dir=<dir>`; `--engine-arg=--no-draft` decodes without it |
 | The image encoder | the one `mmproj-*.gguf` beside the model; with two or more, none | `--engine-arg=--vision=<file>`; `--engine-arg=--no-vision` reads no images |
 | The tokenizer and chat template | the GGUF's metadata | `--tokenizer <tokenizer.json>`, `--chat-template <chat_template.jinja>` |
@@ -97,6 +98,29 @@ Their speed and agreement with IQ3_S are in [measurements/MEASUREMENTS.md](measu
 | `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf` | 47,039,860,096 | `219ea929900dfa9ef091f3aa473fdba6874b65fcb36526d7d851ac9e95856d15` |
 | `Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf` | 39,225,954,592 | `92cee27ae5bbadcd732416a0f7a7f0acc092399dbbe8f5a5efa707c2ec0a49d7` |
 | `Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf` | 37,623,740,192 | `69820c02ec7d0b45ef2ebb19d6620299db749fe2aded7f39f93c6b88b199b720` |
+
+#### Unsloth's UD-IQ4_XS
+
+[`unsloth/Qwen3.8-Flash-Next-GGUF`](https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF) at revision
+`766911a6b7369840a91dbcd95f9f997acaab6cd6`, the three shards in `UD-IQ4_XS/`. It is 10.1 GB larger than IQ3_S and
+closer to the BF16 checkpoint ([CHOOSING_A_MODEL.md](CHOOSING_A_MODEL.md)). The engine's tests, references and the
+README's figures stay on IQ3_S. No other file from that repository has been tried. Put the
+image encoder's file, `dflash/` and `mtp/` beside it as for IQ3_S; Unsloth's own MTP files are not read.
+
+```bash
+base=https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/766911a6b7369840a91dbcd95f9f997acaab6cd6/UD-IQ4_XS
+wget -c "$base/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf" "$base/Qwen3.8-Flash-Next-UD-IQ4_XS-00002-of-00003.gguf" "$base/Qwen3.8-Flash-Next-UD-IQ4_XS-00003-of-00003.gguf"
+sha256sum Qwen3.8-Flash-Next-UD-IQ4_XS-0000*-of-00003.gguf
+```
+
+| Shard | Bytes | sha256 (= the Hub's LFS oid) |
+| --- | ---: | --- |
+| `Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf` | 10,946,624 | `5ce89370720f8bf90890f439361282104c1aa1482d4013bb9a50923e758e71a4` |
+| `Qwen3.8-Flash-Next-UD-IQ4_XS-00002-of-00003.gguf` | 49,835,229,856 | `577a38a2392b40ca2193cea502e1d92f60b8cd370675d308e0ec21885d9daaa7` |
+| `Qwen3.8-Flash-Next-UD-IQ4_XS-00003-of-00003.gguf` | 43,836,407,744 | `d4634e6d84f0ebb0940be15c90d3790bf6464e3dea3a1cddc567dc0e83ad8833` |
+
+Together the shards are 93,682,584,224 B (93.7 GB). Every tensor and its type is in
+[tensors-UD-IQ4_XS.tsv](model/tensors-UD-IQ4_XS.tsv).
 
 ### The image encoder
 

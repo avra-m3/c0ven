@@ -49,7 +49,7 @@ commit [MODEL_LAYER.md](MODEL_LAYER.md) uses and the build the reference outputs
 | [Q4_K](#q4_k) | 12 | 47 dense | 256 | 144 | 4.5 | none | q8_1, DP4A | q8_K |
 | [Q5_K](#q5_k) | 13 | 35 dense | 256 | 176 | 5.5 | none | q8_1, DP4A | q8_K |
 | [Q6_K](#q6_k) | 14 | 128 dense, the head | 256 | 210 | 6.5625 | none | q8_1, DP4A | q8_K |
-| [Q8_0](#q8_0) | 8 | 1 dense (`blk.47.ffn_down_shexp`); the KV cache | 32 | 34 | 8.5 | none | q8_1, DP4A | q8_0 |
+| [Q8_0](#q8_0) | 8 | 1 dense (`blk.47.ffn_down_shexp`); the KV cache; in Unsloth's UD-IQ4_XS file, experts down (5 layers) and most dense tensors | 32 | 34 | 8.5 | none | q8_1, DP4A | q8_0 |
 | [Q4_0](#q4_0-and-q5_0) | 2 | not in the IQ3_S file; 16 dense in the Q2_0 file | 32 | 18 | 4.5 | none | - | q8_0 |
 | [Q5_0](#q4_0-and-q5_0) | 6 | not in the IQ3_S file; 7 dense in the Q2_0 file | 32 | 22 | 5.5 | none | - | q8_0 |
 | [BF16](#bf16-f16-f32) | 30 | 484 (dense, head, PLE) | 1 | 2 | 16 | none | float kernels | bf16 |
@@ -404,7 +404,10 @@ word, subtract 32 from each byte (`vecdotq.cuh:641`), DP4A, multiply by the int8
 ### Q8_0
 
 32 values in 34 B, 8.5 bpw (`block_q8_0`, `common.h:251-256`). One tensor in the file
-(`blk.47.ffn_down_shexp.weight`) and the format of the 8-bit KV cache ([ADR-0008](../adr/0008-kv-cache.md)).
+(`blk.47.ffn_down_shexp.weight`) and the format of the 8-bit KV cache ([ADR-0008](../adr/0008-kv-cache.md)). In
+Unsloth's UD-IQ4_XS file ([tensors-UD-IQ4_XS.tsv](../model/tensors-UD-IQ4_XS.tsv)) it is the type of 502 tensors:
+the down experts of layers 2, 4, 30, 46 and 47, the dense matrices, the token embedding, and the hyper-connections' and
+PLE's matrices.
 
 | Offset | Bytes | Field | Meaning |
 | ---: | ---: | --- | --- |
@@ -444,6 +447,13 @@ One value per "block": 2, 2 and 4 bytes, little-endian. BF16 widens to f32 by a 
 (`ggml-impl.h:606-613`). These are not dot-producted against q8_1. On the GPU, llama.cpp runs them through its float
 kernels (`ggml/src/ggml-cuda/mmvf.cu`) or BLAS. On the CPU the activation is converted to the weight's own type
 (`ggml-cpu.c:222`, `:395`). F16 appears once, `blk.1.ple_conv1d.weight` (4 x 10240).
+
+The engine reads some small tensors as BF16 whatever their type in the file: the router, `ssm_alpha` and `ssm_beta`,
+the indexer's projections, the hyper-connections' matrices and the PLE's key and value. UD-IQ4_XS stores
+some of them as F32 and some as Q8_0. The loader narrows F32 to BF16 by rounding to nearest, ties to even, as the
+kernels' `f32_to_bf16` does; on that file every F32 value it narrows has zero low 16 bits, so nothing is rounded. A
+quantised tensor is dequantised by ggml's `to_float` and rounded the same way; a Q8_0 value d · q can need 18 bits of
+significand, so this rounds.
 
 ## The activation formats
 
@@ -520,7 +530,8 @@ ones as words (`get_int_b4`, `:27-29`). A 16- or 32-byte load of quants crosses 
 | IQ4_XS | 136 | 8 | 10 blocks | 1,360 | 0 |
 | IQ4_NL | 18 | 2 | 640 values, 20 blocks | 360 | 8 |
 | Q2_0 | 18 | 2 | 640 values, 10 blocks | 180 | 4 |
-| Q4_K / Q5_K / Q6_K / Q8_0 | 144 / 176 / 210 / 34 | 16 / 16 / 2 / 2 | (dense) | | |
+| Q8_0 | 34 | 2 | 640 values, 20 blocks | 680 | 8 |
+| Q4_K / Q5_K / Q6_K | 144 / 176 / 210 | 16 / 16 / 2 | (dense) | | |
 
 **llama.cpp's SYCL "reorder".** At first use, SYCL rewrites a tensor in place as separate runs: all blocks' quants,
 then all scales (`reorder_qw`, `ggml-sycl.cpp:4619-4659`). For Q4_0 it is `qs` then `d` (`:4163-4200`); for Q8_0 the
@@ -542,6 +553,7 @@ values (6,400 super-blocks), down is 2,560 rows x 640 values.
 | IQ4_XS | `qs` 128, `scales_l` 4, `scales_h` 2, `d` 2 | 819,200 + 25,600 + 12,800 + 12,800 | 870,400 |
 | IQ4_NL (down) | `qs` 16, `d` 2 | 819,200 + 102,400 | 921,600 |
 | Q2_0 (down) | `qs` 16, `d` 2 | 409,600 + 51,200 | 460,800 |
+| Q8_0 (down) | `qs` 32, `d` 2 | 1,638,400 + 102,400 | 1,740,800 |
 
 Every run length is a multiple of 256 B, so if a slice starts on a 256-B boundary every run does, with no padding.
 Within a run, block k's piece sits at k x its size: the 64- and 128-byte quant pieces are 64- and 128-byte aligned, and

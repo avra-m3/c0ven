@@ -48,7 +48,7 @@ docker exec engine-dev bash -c 'cd /src/build && ENGINE_EXPECT_GPUS=2 ctest -L g
 | `mrope_test` | 1 | the M-RoPE positions an image gives a prompt's cells, against transformers' rule; no card |
 | `ze_smoke_test` | 2 | a kernel runs on every card, and one card waits on another's event |
 | `matvec_test` | 3 | the weight products of all ten quantised types against ggml's dequantisation, 1e-5 |
-| `moe_test` | 3 | the decode step's grouped expert products of `moe.cl` equal `matvec.cl`'s bit for bit, for every expert type and group size |
+| `moe_test` | 3 | the decode step's grouped expert products of `moe.cl` equal `matvec.cl`'s bit for bit, for every expert type the file holds and every group size |
 | `topk_test` | 2 | `topk_rows` against the host: the k largest of rows of up to 248,320 values, ties to the lower indices, both of its paths |
 | `gemm_test` | 2, 3 | the prompt path's fp16 and bf16 products on the XMX units, and the DPAS register layout, 2e-3 |
 | `qgemm_test` | 3 | the prompt path's quantised products: dense weights dequantised to fp16, the experts decoded on the fly in both layouts, 2e-3 |
@@ -63,7 +63,8 @@ docker exec engine-dev bash -c 'cd /src/build && ENGINE_EXPECT_GPUS=2 ctest -L g
 A test whose model is missing skips (exit code 77). Tests find the model at `FLASH_MODEL_DIR`, by default
 `/models`; ctest gives `api_test` the path `/models/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf`.
 `FLASH_MODEL` names another file's first shard instead: `matvec_test`, `qgemm_test` and `moe_test` then check the
-kernels of every quantised type that file has (`gguf_test` and `kl_test` hold the IQ3_S file's own numbers).
+kernels of every quantised type that file has (`gguf_test` and `kl_test` hold the IQ3_S file's own numbers). The
+Q8_0 down experts' kernels need a file with such experts, such as UD-IQ4_XS: IQ3_S has none.
 A GPU test also skips when Level Zero lists no GPU, unless `ENGINE_EXPECT_GPUS` is set; then it fails. `api_test`
 checks only for the model, since the C ABI does not say why `engine_open` failed.
 

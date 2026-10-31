@@ -87,7 +87,7 @@ inline std::string mv_module(uint32_t type, uint32_t lanes) {
 // kernels/quant/moe.cl's module for an expert type and groups of up to W assignments (W: kStepWidths), or "" when it
 // has no kernel for the type (matvec.cl's then).
 inline std::string moe_module(uint32_t type, uint32_t W, bool down) {
-  bool has = down ? type == QT_IQ4_NL || type == QT_Q2_0
+  bool has = down ? type == QT_IQ4_NL || type == QT_Q2_0 || type == QT_Q8_0
                   : type == QT_IQ2_S || type == QT_IQ3_XXS || type == QT_IQ3_S || type == QT_IQ4_XS ||
                         type == QT_IQ2_XXS || type == QT_IQ2_XS || type == QT_IQ1_M;
   if (!has) return "";

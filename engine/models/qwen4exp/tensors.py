@@ -1,7 +1,8 @@
 """The GGUF tensor table: every tensor's name, type, shard, offset and size (ADR-0004: read with llama.cpp's `gguf`).
 
 The control plane reads the table and passes offsets and types to the core in `open`; the core never parses the
-file. The committed docs/model/tensors-IQ3_S.tsv holds the same rows for the IQ3_S file, so tests run without it.
+file. The committed docs/model/tensors-IQ3_S.tsv holds the same rows for the IQ3_S file, so tests run without it;
+tensors-UD-IQ4_XS.tsv holds them for Unsloth's UD-IQ4_XS file, an experiment: `from_tsv(TSV_UD_IQ4_XS)`.
 """
 
 from __future__ import annotations
@@ -18,7 +19,9 @@ import gguf
 
 from engine.models.qwen4exp import numbers
 
-TSV = Path(__file__).resolve().parents[3] / "docs" / "model" / "tensors-IQ3_S.tsv"
+TABLES = Path(__file__).resolve().parents[3] / "docs" / "model"
+TSV = TABLES / "tensors-IQ3_S.tsv"
+TSV_UD_IQ4_XS = TABLES / "tensors-UD-IQ4_XS.tsv"
 _LAYER = re.compile(r"^blk\.(\d+)\.")
 _SHARD = re.compile(r"^(?P<stem>.*)-(?P<no>\d{5})-of-(?P<count>\d{5})\.gguf$")
 
