@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import subprocess
 import sys
 import time
@@ -11,6 +12,8 @@ from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
 from typing import TextIO, cast
+
+import pytest
 
 import protocol
 from engine import layout
@@ -21,9 +24,10 @@ from engine.memory_plan import PlanOptions
 from engine.models.qwen4exp.memory import model_memory
 from engine.models.qwen4exp.steps import checked_terms, measured_terms, model_steps
 from engine.models.qwen4exp.tensors import from_tsv
-from engine.process import Chooser, serve
+from engine.process import COST_FILE, Chooser, cost_key, load_cost, serve
 from engine.scheduler import SchedulerOptions, every_16k
-from tests.helpers import load_check, open_config
+from engine.timing import CostModel
+from tests.helpers import facts_of, load_check, open_config
 
 
 def run_engine(lines: list[str], *args: str) -> list[protocol.Event]:
@@ -225,6 +229,59 @@ def test_steps_are_answered_and_written_at_sleep_and_exit(tmp_path: Path):
     assert e.quit() == 0
     after = json.loads((tmp_path / "steps.json").read_text())["steps"]
     assert len(after) > len(saved), "the steps since open, across the sleep"
+
+
+def fitted_cost() -> CostModel:
+    cost = CostModel.initial(decode_ms=9.0)
+    for rows in (300, 2048, 300, 1024):
+        cost.observe(decoded=1, rows=rows, ms=9.0 + 500.0 + 0.07 * rows)
+    return cost
+
+
+def test_the_cost_model_is_written_at_sleep_and_exit_and_read_at_start(tmp_path: Path):
+    e = Pipe("--context", "1024", "--state-dir", str(tmp_path))
+    e.until(protocol.Ready)
+    e.send(protocol.Sleep())
+    e.until(protocol.Asleep)
+    saved = json.loads((tmp_path / COST_FILE).read_text())
+    assert {"model", "version", "cost"} <= saved.keys()
+    saved["cost"] = fitted_cost().to_dict()
+    (tmp_path / COST_FILE).write_text(json.dumps(saved))
+    e.send(protocol.Wake())
+    e.until(protocol.Ready)
+    e.send(protocol.Stats())
+    stats = e.until(protocol.StatsReport)[-1]
+    assert isinstance(stats, protocol.StatsReport)
+    assert float(stats.counts["row_ms"]) == pytest.approx(0.07)
+    assert e.quit() == 0
+    assert (tmp_path / COST_FILE).exists()
+
+
+def test_a_cost_model_file_that_does_not_fit_is_ignored(tmp_path: Path, caplog: pytest.LogCaptureFixture):
+    caplog.set_level(logging.INFO, logger="engine")
+    facts = facts_of(open_config())
+    key = cost_key(open_config(), facts)
+    path = tmp_path / COST_FILE
+    assert load_cost(None, key) is None
+    assert load_cost(tmp_path, key) is None, "no file: no log line"
+    assert not caplog.records
+    good = {**key, "cost": fitted_cost().to_dict()}
+    path.write_text(json.dumps(good))
+    loaded = load_cost(tmp_path, key)
+    assert loaded is not None
+    assert loaded.row_ms == pytest.approx(0.07)
+    cases = [
+        json.dumps({**good, "model": "other.gguf"}),
+        json.dumps({**good, "version": "0.0.0"}),
+        json.dumps({**good, "cost": {"decode_ms": 1.0}}),
+        json.dumps([1, 2]),
+        "{not json",
+    ]
+    for text in cases:
+        caplog.clear()
+        path.write_text(text)
+        assert load_cost(tmp_path, key) is None, text
+        assert len(caplog.records) == 1, text
 
 
 def test_the_load_facts_are_in_the_info_line():

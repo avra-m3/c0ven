@@ -4,7 +4,7 @@ The front end starts it as its child. One thread reads commands, one writes even
 I/O (vLLM's engine core does the same). The loop admits, plans and polls through the scheduler. On `SLEEP` it
 drains the scheduler and gives the cards back; on `WAKE` it loads them again with a new scheduler (ADR-0032). `STATS`
 is answered from the counters the core and the scheduler keep, and `STEPS` from the engine's last steps, awake or
-asleep. With `--state-dir`, the last steps are written there at each sleep and at exit.
+asleep. With `--state-dir`, the last steps and the cost model are written there at each sleep and at exit.
 
 At open the engine runs the load check, or takes it from the state directory when it was run there on the same cards,
 driver and kernels, and chooses the layout (engine/layout.py). Every 256 steps it logs the predicted step against
@@ -50,6 +50,7 @@ from engine.layout import LAYOUTS, StepLog
 from engine.memory_plan import MemoryPlan, ModelMemory, PlanError, PlanOptions
 from engine.scheduler import CheckpointRule, Scheduler, SchedulerOptions
 from engine.step_time import ModelSteps, Terms
+from engine.timing import CostModel
 
 log = logging.getLogger("engine")
 
@@ -64,6 +65,10 @@ STEPS_FILE = "steps.json"
 
 CHECK_FILE = "load-check.json"
 """In the state directory: the last load check and the cards, driver and kernels it holds for."""
+
+COST_FILE = "cost.json"
+"""In the state directory: the scheduler's cost model when the engine last slept or exited, and the model files and
+engine version it was fitted on."""
 
 LOG_EVERY_S = 1.0
 """How often the loop gives the step log the engine's last steps."""
@@ -100,6 +105,48 @@ def write_steps(state_dir: Path, engine: Engine) -> None:
         part.replace(state_dir / STEPS_FILE)
     except (EngineError, OSError) as exc:
         log.warning("the steps were not written to %s: %s", state_dir, exc)
+
+
+def cost_key(config: OpenConfig, facts: EngineFacts) -> dict[str, str]:
+    return {"model": "\n".join(config.shard_paths), "version": facts.version}
+
+
+def write_cost(state_dir: Path, key: dict[str, str], cost: CostModel) -> None:
+    """The cost model as JSON in the state directory, the file replaced whole. A failure is logged only."""
+    try:
+        state_dir.mkdir(parents=True, exist_ok=True)
+        part = state_dir / f"{COST_FILE}.part"
+        part.write_text(json.dumps({**key, "cost": cost.to_dict()}))
+        part.replace(state_dir / COST_FILE)
+    except OSError as exc:
+        log.warning("the cost model was not written to %s: %s", state_dir, exc)
+
+
+def load_cost(state_dir: Path | None, key: dict[str, str]) -> CostModel | None:
+    """The state directory's cost model, when it holds one for this model and engine version; otherwise None, with a
+    log line when a file is there."""
+    if state_dir is None:
+        return None
+    path = state_dir / COST_FILE
+    try:
+        saved = json.loads(path.read_text())
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        log.info("the cost model in %s is not used: %s", path, exc)
+        return None
+    try:
+        if not isinstance(saved, dict):
+            raise TypeError("not an object")
+        if any(saved.get(k) != v for k, v in key.items()):
+            log.info("the cost model in %s is not used: it was written for another model or engine version", path)
+            return None
+        cost = CostModel.from_dict(saved["cost"])
+    except (ValueError, KeyError, TypeError) as exc:
+        log.info("the cost model in %s is not used: %s", path, exc)
+        return None
+    log.info("cost model from %s: %.2f ms a row, %.1f ms a chunk", path, cost.row_ms, cost.chunk_ms)
+    return cost
 
 
 def load_check(engine: Engine, facts: EngineFacts, state_dir: Path | None) -> LoadCheck | None:
@@ -216,7 +263,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     p.add_argument("--table-cache", type=Path, help="a directory that keeps the model's tensor table between starts")
     p.add_argument(
-        "--state-dir", type=Path, help="a directory the engine keeps its last steps and load check in, between starts"
+        "--state-dir",
+        type=Path,
+        help="a directory the engine keeps its last steps, cost model and load check in, between starts",
     )
     p.add_argument("--layout", default="auto", help=f"how the cards share the model: {LAYOUTS}")
     p.add_argument(
@@ -357,7 +406,8 @@ def serve(
     next_log = time.monotonic() + LOG_EVERY_S
     reader = threading.Thread(target=_reader, args=(stdin, commands), name="protocol-reader", daemon=True)
     reader.start()
-    scheduler = Scheduler(engine, facts, options, rule)
+    cost_id = cost_key(config, facts)
+    scheduler = Scheduler(engine, facts, options, rule, cost=load_cost(state_dir, cost_id))
     images: dict[int, list[Image]] = {}
     """Each request's images from its IMG lines, until its GEN."""
     bad_images: dict[int, str] = {}
@@ -437,6 +487,7 @@ def serve(
                     engine.sleep()
                     if state_dir is not None:
                         write_steps(state_dir, engine)
+                        write_cost(state_dir, cost_id, scheduler.cost)
                     state = State.ASLEEP
                     events.put(protocol.Asleep((time.monotonic() - sleep_t0) * 1e3))
                     wake_now = wake_after
@@ -445,7 +496,7 @@ def serve(
                 facts = engine.wake()
                 if (failure := loaded(facts, load, steplog)) is not None:
                     raise RuntimeError(failure)
-                scheduler = Scheduler(engine, facts, options, rule)
+                scheduler = Scheduler(engine, facts, options, rule, cost=load_cost(state_dir, cost_id))
                 state = State.AWAKE
             if not scheduler.idle:
                 for e in scheduler.tick(0.002):
@@ -461,6 +512,7 @@ def serve(
     finally:
         if state_dir is not None:
             write_steps(state_dir, engine)
+            write_cost(state_dir, cost_id, scheduler.cost)
         try:
             engine.close()
         except EngineError:

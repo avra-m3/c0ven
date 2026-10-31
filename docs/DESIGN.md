@@ -438,7 +438,10 @@ drafts. `/metrics` reports both, and the ratios read from the counters (`fronten
 round's time, misses per decode row, tokens per second of card time in plain steps and in rounds by draft source,
 drafts accepted per run, the engine thread's busy share and the swap rounds' part of it. The engine process answers
 `STEPS` with the last 256 steps' records, and `/stats` reports them. With `--state-dir` the engine process writes
-them to `steps.json` there at each sleep and at exit, for the next life's layout.
+them to `steps.json` there at each sleep and at exit, for the next life's layout. It writes the scheduler's cost model
+(`cost.json`: the decode time, the chunk's fixed and per-row parts and the sums they are fitted from) at the same
+points, and the next start and wake begin from it when it was written for the same model files and engine version;
+otherwise they begin from the estimates above.
 
 The load check (`engine_run_check`) times the decode kernels on card 0 at each card's share of a layer the cards
 allow: `moe_gate_up_g` and `moe_down_g` at 1, 2 and 4 rows on 64 experts of the file's first IQ3_S gate-and-up layer
