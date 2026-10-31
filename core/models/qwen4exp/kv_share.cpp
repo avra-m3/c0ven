@@ -198,15 +198,20 @@ void Model::own_levels() {
 
 // The blocks of the pool's pages from `pages` up and the ring's from `ring` up back to the spare ones: the caller has
 // nothing in the pool's, and the ring is trimmed first, so no list reads them, and the unmaps run beside the steps.
+// Pages that the fixed parts or the last block hold give nothing back: then nothing runs and nothing is logged.
 void Model::shrink_kv(uint32_t pages, uint32_t ring) {
   const auto t0 = std::chrono::steady_clock::now();
   pages = std::min(pages, kv_pages_);
   ring = std::min(ring, kv_res_);
+  bool gave = false;
   if (kv_res_) {
     uint32_t R = kv_res_;
     for (uint32_t x = 0; x < cards_[0]->kv.size(); x++)
       if (kv_ring_[x]) R = std::min(R, kv_pages_of(x, kv_blocks_for(x, ring)));
-    if (R < ring_level_) ring_resize(R);
+    if (R < ring_level_) {
+      ring_resize(R);
+      gave = true;
+    }
   }
   for (auto &card : cards_)
     for (uint32_t x = 0; x < card->kv.size(); x++) {
@@ -215,8 +220,10 @@ void Model::shrink_kv(uint32_t pages, uint32_t ring) {
         vm_ops_.push_back({r.va + r.fixed + (r.blocks.size() - 1) * blk_, nullptr});
         card->spare.push_back(r.blocks.back());
         r.blocks.pop_back();
+        gave = true;
       }
     }
+  if (!gave) return;
   own_levels();
   run_vm(true);
   log_share("the KV gave memory back", t0);
