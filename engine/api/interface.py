@@ -174,6 +174,8 @@ class EngineFacts:
     version: str
     image_tokens_max: int = 0
     """The most tokens an image may have; 0: no images."""
+    host_read_bytes_per_s: float = 0.0
+    """The CPU workers' read of the host's expert arena at the load, bytes a second; 0: not measured."""
 
 
 IMAGE_PATCH_BYTES = 768

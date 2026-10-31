@@ -21,7 +21,8 @@ from engine.models.qwen4exp.turns import checkpoint_positions
 __all__ = ["checkpoint_positions", "draft_dir", "memory_plan", "open_config"]
 
 CPU_WORKERS = 16
-"""One per core of the 7945HX (DESIGN.md, section 9)."""
+"""One per core of the test machine's 7945HX (DESIGN.md, section 9): the count when the host is not read (the mock and
+the reference)."""
 NGRAM_CACHE_ROWS = 1 << 20
 TIMING_RECORDS = 1 << 16
 
@@ -46,10 +47,13 @@ def open_config(
     deterministic: bool = False,
     draft: Path | None = None,
     table_cache: Path | None = None,
+    *,
+    cpu_workers: int = CPU_WORKERS,
 ) -> tuple[OpenConfig, MemoryPlan]:
     """The config for `open`. Without a model file the tensor table is the committed IQ3_S one and no tensors are
     passed: enough for the mock and the reference. draft: the draft layer's directory, or None for no drafting.
-    table_cache: a directory keeping the model's tensor table between starts, or None."""
+    table_cache: a directory keeping the model's tensor table between starts, or None. cpu_workers: the CPU's expert
+    workers, which `ENGINE_CPU_WORKERS` overrides."""
     table = from_gguf_cached(model, table_cache) if model is not None else from_tsv()
     if model is not None:
         options = replace(options, draft=draft is not None)
@@ -73,7 +77,7 @@ def open_config(
         experts_cached=mp.experts_cached,
         arena_bytes=mp.arena_bytes,
         working_bytes=mp.working_per_card,
-        cpu_workers=int(os.environ.get("ENGINE_CPU_WORKERS", CPU_WORKERS)),
+        cpu_workers=int(os.environ.get("ENGINE_CPU_WORKERS", cpu_workers)),
         ngram_cache_rows=NGRAM_CACHE_ROWS,
         timing_records=TIMING_RECORDS,
         eos_ids=numbers.EOS_IDS,

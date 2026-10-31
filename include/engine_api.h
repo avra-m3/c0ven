@@ -20,7 +20,7 @@ extern "C" {
 #define ENGINE_API
 #endif
 
-#define ENGINE_API_VERSION 11
+#define ENGINE_API_VERSION 12
 
 typedef enum {
   ENGINE_OK = 0,
@@ -39,7 +39,7 @@ typedef struct {
   uint32_t max_ctx;            /* positions per sequence, a multiple of 4; default 32768 */
   uint32_t max_cards;          /* 1 or 2; default 2 */
   int32_t experts_per_layer;   /* experts cached on the cards per layer; negative or 0 with the flag: as many as fit */
-  uint32_t cpu_threads;        /* the CPU's expert workers; default 16 */
+  uint32_t cpu_threads;        /* the CPU's expert workers, the engine thread among them; default 16 */
   uint32_t flags;              /* ENGINE_CONFIG_* */
   uint64_t reserve_bytes;      /* device memory left free per card; default 512 MiB */
   uint32_t prompt_chunk;       /* tokens per prompt pass at most, a multiple of 64; default 4352; with the flag, 0
@@ -84,6 +84,7 @@ typedef struct {
   uint32_t image_tokens_max;   /* the most tokens an image may have; 0: no images */
   uint32_t kv_pages;           /* the KV cache's pages */
   uint32_t pages_per_slot;     /* logical pages a slot can map: the context's, rounded up to a multiple of the cards */
+  double host_read_bytes_per_s; /* the CPU workers' read of the arena at open, bytes a second; 0: not measured */
 } engine_info;
 
 /* A request's sampling and stopping, copied once by admit. The core samples in llama.cpp's order: penalties, top-k,
