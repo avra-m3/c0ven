@@ -25,7 +25,7 @@ import ctypes
 from dataclasses import dataclass
 from enum import IntEnum
 
-ABI_VERSION = 15
+ABI_VERSION = 16
 
 MAX_STOP = 8
 MAX_STEP_SLOTS = 8
@@ -176,6 +176,7 @@ class CStepPlan(ctypes.Structure):
         ("npages", ctypes.c_uint32),
         ("pages", ctypes.POINTER(CPageChange)),
         ("kv_free", ctypes.c_uint32),
+        ("window_rows", ctypes.c_uint32),
     )
 
 
