@@ -76,3 +76,17 @@ def test_a_cards_ip_version_and_link():
     assert card.ip == "20.1.0"
     assert card.link == "PCIe 5.0 x8"
     assert Card("x", "", 0, 0, 0, 0, -1, -1, -1).ip == "unknown"
+
+
+def test_workers_one_per_core_the_quota_allows(tmp_path: Path):
+    assert read(make_root(tmp_path), affinity=set(range(32))).cpu_workers() == (16, "cores")
+
+
+def test_workers_under_a_quota(tmp_path: Path):
+    assert read(make_root(tmp_path, cpu_max="800000 100000"), affinity=set(range(32))).cpu_workers() == (8, "cpu.max")
+    h = read(make_root(tmp_path / "half", cpu_max="350000 100000"), affinity=set(range(32)))
+    assert h.cpu_workers() == (4, "cpu.max")
+
+
+def test_workers_on_one_thread_of_eight_cores(tmp_path: Path):
+    assert read(make_root(tmp_path), affinity=set(range(8))).cpu_workers() == (8, "cores")

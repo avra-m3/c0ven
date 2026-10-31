@@ -46,6 +46,14 @@ class Host:
         known = [v for v in (self.mem_available, self.cgroup_memory_max) if v is not None]
         return min(known) if known else None
 
+    def cpu_workers(self) -> tuple[int, str]:
+        """The CPU's expert workers, the engine thread among them: one per core the process can keep busy, so none
+        waits for its quota or shares a core (`ENGINE_CPU_WORKERS` overrides it); with what bounds the count."""
+        n = min(self.usable_cpus, self.physical_cores)
+        if n == self.physical_cores:
+            return n, "cores"
+        return n, "cpu.max" if self.cpu_quota is not None and n == self.usable_cpus < self.cpus else "affinity"
+
     @property
     def usable_cpus(self) -> int:
         """CPUs the process can keep busy at once: its affinity, cut to the cgroup's quota."""

@@ -29,11 +29,15 @@ depends on the host and is not read.
    directory named for the chip's IP version, and the core loads the set that matches each card. A card with no set
    compiles the modules' SPIR-V at load and logs that its chip is untested. `ENGINE_KERNEL_TARGET=spirv` forces that
    path on any card, for testing.
-4. **A plan that does not fit is refused before the load.** The message names the figure that does not fit and gives
+4. **The CPU's expert workers are one per core the process can keep busy:** the CPUs it may run on, cut to the
+   cgroup's `cpu.max` and to their physical cores. `ENGINE_CPU_WORKERS` overrides the count. The core refuses to open
+   on a CPU without a feature the ggml build uses, and names it. At the first load the workers read the arena once,
+   and the fit report gives the rate.
+5. **A plan that does not fit is refused before the load.** The message names the figure that does not fit and gives
    options that do. `--ram-max` sets a host memory limit of the user's own.
-5. **Each load prints a fit report** beside its plan figures and the core's figures after the load, and sends it in
+6. **Each load prints a fit report** beside its plan figures and the core's figures after the load, and sends it in
    INFO, so `/metrics` carries it.
-6. **The test machine's constants stay as test fixtures** for the mock and the reference backends, which run without a
+7. **The test machine's constants stay as test fixtures** for the mock and the reference backends, which run without a
    card. The two B60s remain the machine every measurement is taken on.
 
 ## Options not chosen
@@ -51,5 +55,6 @@ depends on the host and is not read.
 - A build compiles every kernel once for each chip, and the image holds each set.
 - The plan's card figures for the draft layer and working memory remain estimates. The fit report notes a core
   expert count more than 5% from the plan's.
-- The slices that follow add their rows to the fit report: the CPU, and storage and links
-  ([#23](https://github.com/avra-m3/c0ven/issues/23), [#25](https://github.com/avra-m3/c0ven/issues/25)).
+- A worker past the CPU quota waits for it, so under a quota the default is the quota's CPUs. The ggml build stays AVX-512 only;
+  an AVX2 build chosen at run time would be a decision of its own.
+- The storage and links slice adds its rows to the fit report ([#25](https://github.com/avra-m3/c0ven/issues/25)).

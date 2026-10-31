@@ -413,10 +413,17 @@ def main(argv: list[str] | None = None) -> int:
     draft: Path | None = None
     if native and not args.no_draft and args.model is not None:
         draft = args.draft_dir or cast("Callable[[Path], Path | None]", model.draft_dir)(args.model)
+    workers: dict[str, int] = {}
+    if the_host is not None:
+        n, source = the_host.cpu_workers()
+        workers["cpu_workers"] = n
+        log.info("CPU workers: %d, bounded by %s (ENGINE_CPU_WORKERS overrides)", n, source)
     try:
         config, plan = cast(
             "tuple[OpenConfig, MemoryPlan]",
-            model.open_config(args.model if native else None, options, args.deterministic, draft, args.table_cache),
+            model.open_config(
+                args.model if native else None, options, args.deterministic, draft, args.table_cache, **workers
+            ),
         )
     except PlanError as exc:
         print(protocol.Error(None, f"memory plan: {exc}").encode(), flush=True)
@@ -437,16 +444,20 @@ def main(argv: list[str] | None = None) -> int:
         stdout=sys.stdout,
         info=lambda: {"backend": args.backend, "arch": arch, "experts_planned": str(plan.experts_per_layer)},
         swapout_limit_mib=args.swapout_limit_mib,
-        fit_report=(lambda facts: report(the_host, cards, plan, facts)) if the_host is not None else None,
+        fit_report=(lambda facts: report(the_host, cards, plan, config.cpu_workers, facts))
+        if the_host is not None
+        else None,
     )
 
 
 def report(
-    the_host: host.Host, cards: list[host.Card], plan: MemoryPlan, facts: EngineFacts
+    the_host: host.Host, cards: list[host.Card], plan: MemoryPlan, workers: int, facts: EngineFacts
 ) -> tuple[list[fit.Row], list[str]]:
-    """The fit report after a load: the cards and the host, with the core's figures."""
-    rows = fit.card_rows(cards, plan, facts.experts_cached) + fit.host_rows(
-        the_host, plan, facts.host_pinned, fit.rss()
+    """The fit report after a load: the cards, the host and the CPU, with the core's figures."""
+    rows = (
+        fit.card_rows(cards, plan, facts.experts_cached)
+        + fit.host_rows(the_host, plan, facts.host_pinned, fit.rss())
+        + fit.cpu_rows(the_host, workers, facts.host_read_bytes_per_s)
     )
     notes = fit.card_notes(plan, facts.experts_cached) + fit.notes(
         the_host, bool(os.environ.get("ENGINE_UNLOCKED_ARENA"))
