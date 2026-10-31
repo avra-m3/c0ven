@@ -80,7 +80,8 @@ struct LoadInfo {
   uint32_t vocab = 0;
   uint64_t device_bytes[2] = {0, 0};
   uint64_t arena_bytes = 0;  // host memory holding the experts not on the cards
-  uint64_t expert_budget[2] = {0, 0};  // device memory each card had left for the expert cache (load_experts)
+  uint64_t expert_budget[2] = {0, 0};  // device memory each card had left for the expert cache with the whole KV pool
+                                       // backed (load_experts, share_cards)
   bool arena_anon = false;   // the arena is the process's own memory (Options::anon_arena)
   double seconds = 0;
   double host_read_bytes_per_s = 0;  // the CPU workers' read of the arena at the first load; 0: not measured

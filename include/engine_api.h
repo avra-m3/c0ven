@@ -93,7 +93,7 @@ typedef struct {
   double ngram_read_us;        /* one 4 KiB row read from the file at open, microseconds; 0 with the table in RAM */
   double copy_bytes_per_s[2];  /* each card's copy engine reading pinned host memory at open, bytes a second */
   uint64_t expert_budget[2];   /* per card: the device memory left for the expert cache at load, once everything else
-                                  is allocated and reserve_bytes kept free */
+                                  is allocated, the whole KV pool backed and reserve_bytes kept free */
 } engine_info;
 
 /* A request's sampling and stopping, copied once by admit. The core samples in llama.cpp's order: penalties, top-k,
