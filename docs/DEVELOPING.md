@@ -144,8 +144,9 @@ consecutive tokens of up to four sequences (`Model::prompt_runs`):
   ([the record](measurements/MEASUREMENTS.md#2026-10-15-prompt-exchange-stores)).
 - `Options::trace` times every kernel of the chunk's lists; `Model::prompt_trace` sums them per kernel.
 
-The C ABI reads a prompt piece of up to 64 tokens with no image in it as decode windows instead: up to 8 forced
-rows a window, each committed whole, with the draft layer reading every row (`prompt_windows` in
+The C ABI reads a prompt piece of up to the plan's `window_rows` tokens (64 when it says 0) with no image in it as
+decode windows instead: up to 8
+forced rows a window, each committed whole, with the draft layer reading every row (`prompt_windows` in
 [`core/api/engine_api.cpp`](../core/api/engine_api.cpp)). Such a piece is faster as windows than as a chunk that
 stages every uncached expert ([the record](measurements/MEASUREMENTS.md#2026-10-17-prompt-windows)); against a chunk that fetches
 its experts, as above, it is not measured. The other pieces of a plan, of different slots, go as one chunk, up to

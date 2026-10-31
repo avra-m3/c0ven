@@ -20,7 +20,7 @@ extern "C" {
 #define ENGINE_API
 #endif
 
-#define ENGINE_API_VERSION 10
+#define ENGINE_API_VERSION 11
 
 typedef enum {
   ENGINE_OK = 0,
@@ -123,8 +123,8 @@ typedef struct {
                                   page of a shared prefix); source and page alike modulo the cards */
 } engine_page_change;
 
-/* One plan: page changes, applied in order before anything else; some slots' prompt pieces, each of up to 64 tokens
- * with no image as decode windows, a longer one through the prompt path; then one decode step for the decode slots,
+/* One plan: page changes, applied in order before anything else; some slots' prompt pieces, each of up to window_rows
+ * tokens with no image as decode windows, a longer one through the prompt path; then one decode step for the decode slots,
  * batched (up to max_step_rows). A slot still reading its prompt may be in decode: it then reads its next prompt token
  * in the step. The scheduler decides the mix and the pieces' sizes (ADR-0017). With drafting, a plan whose decode
  * slots are all writing runs a round: each slot's drafts verified in one window, and up to draft_max + 1 tokens out
@@ -148,6 +148,8 @@ typedef struct {
   uint32_t kv_free;            /* the pages at the top of the pool the caller holds nothing in, after the changes:
                                   ids kv_pages - kv_free and up; 0 says none. With ENGINE_CONFIG_SHARE_KV their memory
                                   may serve the expert cache until a plan maps them again */
+  uint32_t window_rows;        /* prompt pieces of at most this many tokens, with no image, are read as decode windows;
+                                  0: 64 */
 } engine_step_plan;
 
 typedef enum {

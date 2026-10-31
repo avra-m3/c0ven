@@ -7,8 +7,8 @@ import numpy as np
 import pytest
 
 from engine.api import abi
-from engine.api.interface import TIMING_DTYPE, TimingStage
-from engine.timing import WHOLE_ROWS, CostModel, summarise
+from engine.api.interface import TIMING_DTYPE, WINDOW_ROWS, TimingStage
+from engine.timing import WHOLE_ROWS, WINDOW_ROWS_RANGE, CostModel, summarise
 from tools.attach import HEADER, RING, Reader, Region, trace_events
 
 
@@ -52,6 +52,40 @@ def test_a_short_prompt_is_one_piece_and_a_long_one_is_cut():
     assert cheaper.rows_within(500.0, WHOLE_ROWS + 40) == WHOLE_ROWS + 40, "fewer than a window's rows left: they join"
     per_row = CostModel.initial(row_ms=0.46)
     assert per_row.rows_within(100.0, 3000) == 217, "without a fixed part, pieces fit the budget"
+
+
+def test_window_rows_is_where_a_chunk_costs_less_than_windows():
+    cost = CostModel.initial(decode_ms=10.0, row_ms=0.46, chunk_ms=466.0)
+    assert cost.window_rows() == WINDOW_ROWS, "no window plan seen yet"
+    cost.observe(decoded=0, rows=64, ms=330.5, chunks=0)
+    assert cost.window_row_ms.value == pytest.approx(330.5 / 64)
+    assert cost.window_rows() == int(466.0 / (330.5 / 64 - 0.46))
+    cost.observe(decoded=1, rows=16, ms=10.0 + 16 * 5.0, chunks=0)
+    assert cost.window_row_ms.value == pytest.approx(0.8 * 330.5 / 64 + 0.2 * 5.0), "decode time is taken off"
+    assert cost.window_row_ms.samples == 2
+
+
+def test_window_rows_needs_a_chunk_and_stays_in_range():
+    no_chunk = CostModel.initial(row_ms=0.46)
+    no_chunk.observe(decoded=0, rows=64, ms=330.5, chunks=0)
+    assert no_chunk.window_rows() == WINDOW_ROWS, "no chunk fitted: the fixed part is unknown"
+    low, high = WINDOW_ROWS_RANGE
+    dear = CostModel.initial(row_ms=0.46, chunk_ms=10.0)
+    dear.observe(decoded=0, rows=10, ms=50.0, chunks=0)
+    assert dear.window_rows() == low
+    cheap = CostModel.initial(row_ms=0.46, chunk_ms=5000.0)
+    cheap.observe(decoded=0, rows=10, ms=10.0, chunks=0)
+    assert cheap.window_rows() == high, "windows no dearer per row than a chunk: always windows"
+
+
+def test_the_threshold_decides_which_pieces_pay_the_fixed_part():
+    cost = CostModel.initial(row_ms=0.07, chunk_ms=100.0)
+    cost.observe(decoded=0, rows=10, ms=10.7, chunks=0)
+    assert cost.window_rows() == 100
+    assert cost.prompt_ms(100) == pytest.approx(100 * 0.07)
+    assert cost.prompt_ms(101) == pytest.approx(100.0 + 101 * 0.07)
+    assert cost.rows_within(500.0, WHOLE_ROWS + 99) == WHOLE_ROWS + 99, "fewer than window_rows() left: they join"
+    assert cost.rows_within(500.0, WHOLE_ROWS + 100) == WHOLE_ROWS
 
 
 def test_summarise():

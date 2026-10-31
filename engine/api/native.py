@@ -17,7 +17,7 @@ Two parts. `CtypesCore` is the header's calls, one method each, raising `EngineE
 - `checkpoint` and `restore` block until the queued plans have run, and the adapter answers CHECKPOINT_DONE itself.
 - A slot is admitted again only after every queued plan that named it has run.
 - STEP_DONE's rows and time come from the core's timing records, and so do its chunks: the prompt records of more
-  than WINDOW_ROWS rows.
+  than the plan's window_rows rows (WINDOW_ROWS when it says 0).
 
 ctypes releases the GIL for every call through a CDLL, so `engine_wait` never holds up the protocol threads.
 """
@@ -282,6 +282,7 @@ class _Queued:
     slots: frozenset[int]
     prompt_rows: int
     decode_rows: int
+    window_rows: int
 
 
 TIMING_KEPT = 1 << 16
@@ -306,6 +307,8 @@ class NativeEngine:
         self._serial = -1
         self._kv_free = 0
         """The last plan's kv_free, for the plans the adapter queues itself."""
+        self._window_rows = 0
+        """The last plan's window_rows, likewise."""
         self._events: deque[Event] = deque()
         self._plan_ns: dict[int, int] = {}
         self._plan_chunks: dict[int, int] = {}
@@ -444,6 +447,7 @@ class NativeEngine:
             raise EngineError(ErrorCode.INVALID_ARGUMENT, f"plan serial {plan.serial} after {self._serial}")
         self._serial = plan.serial
         self._kv_free = plan.kv_free
+        self._window_rows = plan.window_rows
         for slot in plan.stop:
             s = self._slot(slot)
             if not s.finished:
@@ -566,6 +570,7 @@ class NativeEngine:
         for i, slot in enumerate(decode):
             c.slots[i] = slot
         c.kv_free = self._kv_free
+        c.window_rows = self._window_rows
         while not self._core.submit(c):
             self._core.wait(100)
             self._collect(pump=False)
@@ -574,6 +579,7 @@ class NativeEngine:
             frozenset(decode) | {slot for slot, _ in pieces} | {p.slot for p in pages},
             sum(t for _, t in pieces),
             len(decode),
+            self._window_rows or WINDOW_ROWS,
         )
 
     def _pump(self) -> None:
@@ -592,7 +598,8 @@ class NativeEngine:
             duration = int(t.end_ns - t.start_ns)
             self._plan_ns[t.plan] = self._plan_ns.get(t.plan, 0) + duration
             rows = int(t.rows) if t.kind == abi.CTimingKind.PROMPT else 0
-            if rows > WINDOW_ROWS:
+            q = self._queued.get(t.plan)
+            if rows > (q.window_rows if q else WINDOW_ROWS):  # a piece read as windows has at most that many
                 self._plan_chunks[t.plan] = self._plan_chunks.get(t.plan, 0) + 1
             self._timing.append((int(t.start_ns), duration, int(t.plan), rows))
 
