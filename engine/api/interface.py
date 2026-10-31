@@ -155,6 +155,8 @@ class OpenConfig:
     vision_path: str = ""
     ngram_in_ram: bool = False
     """Read the whole n-gram table into RAM at open, and serve every row from it."""
+    reserve_bytes: int = 0
+    """Device memory each card leaves free beyond what the engine counts; 0: the core's default, CORE_RESERVE."""
     """The image encoder's file (the mmproj GGUF, spec/MODEL_VISION.md); empty: no images."""
 
 
@@ -190,6 +192,9 @@ class EngineFacts:
 
 
 IMAGE_PATCH_BYTES = 768
+
+CORE_RESERVE = 512 * 2**20
+"""The device memory the core leaves free on each card by default (engine_config.reserve_bytes)."""
 """One frame of a patch: 16 x 16 pixels, 8-bit RGB, channel, row, column (spec/MODEL_VISION.md, section 2.2)."""
 
 

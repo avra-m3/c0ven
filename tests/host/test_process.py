@@ -100,6 +100,41 @@ def test_a_plan_over_ram_max_is_refused_with_options_that_fit():
     assert "--context" in p.stdout
 
 
+def test_card_memory_lowers_the_cards_memory_and_never_raises_it():
+    from engine.process import card_memory  # noqa: PLC0415
+
+    assert card_memory([], None) is None
+    assert card_memory([], 10) == 10 * 2**30
+    assert card_memory([24 * 2**30, 23 * 2**30], None) == 23 * 2**30
+    assert card_memory([24 * 2**30], 11.5) == round(11.5 * 2**30)
+    assert card_memory([12 * 2**30], 16) == 12 * 2**30
+
+
+def test_the_core_leaves_free_what_card_memory_takes_off():
+    from engine.api.interface import CORE_RESERVE  # noqa: PLC0415
+    from engine.process import card_reserve  # noqa: PLC0415
+
+    assert card_reserve([24 * 2**30], None) == 0
+    assert card_reserve([], 10) == 0
+    assert card_reserve([12 * 2**30], 16) == 0
+    assert card_reserve([24 * 2**30, 24 * 2**30], 20) == CORE_RESERVE + 4 * 2**30
+    assert card_reserve([24 * 2**30, 23 * 2**30], 20) == CORE_RESERVE + 4 * 2**30
+
+
+def test_a_card_memory_too_small_is_refused_with_what_fits():
+    p = subprocess.run(
+        [sys.executable, "-m", "engine", "--backend", "mock", "--arch", "qwen4exp", "--card-memory", "4"],
+        input="",
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert p.returncode == 1
+    assert p.stdout.startswith("ERR - memory plan:")
+    assert "each has 4.00 GiB" in p.stdout
+
+
 class Pipe:
     """The engine process, one line at a time."""
 
