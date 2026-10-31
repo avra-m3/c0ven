@@ -25,6 +25,7 @@ target_include_directories(engine_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${CMAK
 target_include_directories(engine_core PRIVATE ${ENGINE_GGML_SRC_DIR})
 target_link_libraries(engine_core PUBLIC PkgConfig::LEVEL_ZERO Threads::Threads ggml PRIVATE engine_warnings)
 target_compile_definitions(engine_core PUBLIC ENGINE_KERNEL_DIR="${ENGINE_KERNEL_DIR}"
+                           ENGINE_KERNEL_SPIRV_DIR="${ENGINE_KERNEL_SPIRV_DIR}"
                            ENGINE_ROUTING_PROFILE="${CMAKE_CURRENT_SOURCE_DIR}/models/qwen4exp/routing_profile.tsv")
 
 # The multi-row dots copy ggml's AVX2 paths; multirow.cpp checks the CPU before using them.
