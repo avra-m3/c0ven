@@ -10,6 +10,7 @@ from collections.abc import Iterator
 from typing import TextIO, cast
 
 import protocol
+from engine import fit
 from engine.api.interface import StepPlan
 from engine.api.mock import MockEngine
 from engine.process import serve
@@ -77,6 +78,21 @@ def test_a_plan_that_does_not_fit_is_refused():
     )
     assert p.returncode == 1
     assert p.stdout.startswith("ERR - memory plan:")
+
+
+def test_a_plan_over_ram_max_is_refused_with_options_that_fit():
+    p = subprocess.run(
+        [sys.executable, "-m", "engine", "--backend", "mock", "--arch", "qwen4exp", "--ram-max", "15"],
+        input="",
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert p.returncode == 1
+    assert p.stdout.startswith("ERR - memory plan:")
+    assert "--ram-max allows" in p.stdout
+    assert "--context" in p.stdout
 
 
 class Pipe:
@@ -182,6 +198,7 @@ def test_stats_are_answered_awake_and_asleep():
     assert int(report.counts["plans"]) > 0
     assert int(report.counts["steps"]) >= 2
     assert report.counts["writing"] == "0"
+    assert int(report.counts["major_faults"]) >= 0
     e.send(protocol.Sleep())
     e.until(protocol.Asleep)
     e.send(protocol.Stats())
@@ -234,3 +251,22 @@ def test_requests_sent_together_read_their_prompts_in_one_plan():
     assert status == 0
     first = next(p for p in engine.plans if p.prompt)
     assert sorted(span.slot for span in first.prompt) == [0, 1, 2, 3]
+
+
+def test_the_fit_report_is_in_the_info_line():
+    rows = [fit.Row("arena", "arena", "", "1.00GiB", "0.98GiB"), fit.Row("swap", "swap", "8.00GiB,cgroup:-")]
+    out = io.StringIO()
+    status = serve(
+        MockEngine(),
+        open_config(),
+        rule=every_16k,
+        options=SchedulerOptions(),
+        stdin=io.StringIO("QUIT\n"),
+        stdout=out,
+        fit_rows=lambda _facts: rows,
+    )
+    assert status == 0
+    info = protocol.parse_event(out.getvalue().splitlines()[0])
+    assert isinstance(info, protocol.Info)
+    assert info.facts["fit_arena"] == "-/1.00GiB/0.98GiB"
+    assert info.facts["fit_swap"] == "8.00GiB,cgroup:-/-/-"
