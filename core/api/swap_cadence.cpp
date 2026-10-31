@@ -53,8 +53,9 @@ void SwapCadence::round(double ms) {
 }
 
 bool SwapCadence::due(uint32_t writers) const {
-  if (round_ms_ <= 0 || !fitted_) return plans_ >= (writers > 1 ? kMaxPlans : kMinPlans);
-  return plans_ >= kMaxPlans || (plans_ >= kMinPlans && missed_ms_ >= round_ms_);
+  const uint32_t least = writers > 1 ? kMaxPlans : kMinPlans;
+  if (round_ms_ <= 0 || !fitted_) return plans_ >= least;
+  return plans_ >= kMaxPlans || (plans_ >= least && missed_ms_ >= round_ms_);
 }
 
 }  // namespace engine

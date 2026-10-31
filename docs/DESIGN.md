@@ -552,7 +552,7 @@ for four): after a plan that ends a prompt, and otherwise once the time the CPU'
 round reaches that round's time, at least 4 plans and at most 16 after it, never while a slot is reading its prompt
 (`core/models/qwen4exp/swap.cpp`, `core/api/swap_cadence.h`). A missed layer's cost is a line through the decode steps'
 times against their missed layers, for each step width. Until a round is timed and a cost is fitted, a round follows
-every 4th plan while one slot writes and every 16th while several do. When the KV pool and the cache share the
+every 4th plan. While several slots write, a round follows every 16th plan. When the KV pool and the cache share the
 cards (section 6), a round also moves blocks between them: to the pool when the pages backed above those in use run
 low, and back to the cache, with the most used uncached experts, when many are free. A swap changes which experts the CPU computes, and so their rounding. Tokens repeat
 exactly from run to run only with `--deterministic`, which turns swaps off
