@@ -63,7 +63,18 @@ void DraftOdds::lookup_round(uint32_t accepted, uint32_t drafts) {
   lookup_failed = 0.9 * lookup_failed + (accepted < drafts ? 1 : 0);
 }
 
-void DraftOdds::layer_round(uint32_t accepted) { layer_accepted = 0.9 * layer_accepted + 0.1 * accepted; }
+void DraftOdds::layer_round(uint32_t accepted, uint32_t drafts) {
+  layer_accepted = 0.9 * layer_accepted + 0.1 * accepted;
+  // The drafts checked: those accepted and the first one rejected; the ones after it say nothing of the acceptance.
+  layer_offered = 0.9 * layer_offered + 0.1 * std::min(drafts, accepted + 1);
+}
+
+double DraftOdds::layer_expected(uint32_t k) const {
+  const double p = layer_offered > 0 ? std::min(1.0, layer_accepted / layer_offered) : 0.0;
+  double e = 0, pi = 1;
+  for (uint32_t i = 0; i < k; i++) e += (pi *= p);
+  return e;
+}
 
 uint32_t choose_drafts(const DraftOdds &odds, uint32_t layer_drafts, uint32_t draft_max, uint32_t lookup_drafts,
                        uint32_t max_rows, const WindowTimes &times) {
@@ -78,6 +89,23 @@ uint32_t choose_drafts(const DraftOdds &odds, uint32_t layer_drafts, uint32_t dr
     for (uint32_t i = 0; i < l; i++) e += (ql *= q);
     const double r = (1.0 + e) / times.ms(l + 1);
     if (l >= 2 && r > best) best = r, take = l;
+  }
+  return take;
+}
+
+uint32_t choose_shared_drafts(const std::vector<DraftOdds> &slots, uint32_t draft_max, uint32_t max_rows,
+                              const WindowTimes &times) {
+  const uint32_t n = (uint32_t)slots.size();
+  if (n == 0 || n >= max_rows) return 0;
+  const uint32_t most = std::min(draft_max, (max_rows - n) / n);
+  if (times.ms(n) == 0) return std::min(kSharedDrafts, most);
+  double best = 0;
+  uint32_t take = 0;
+  for (uint32_t k = 0; k <= most; k++) {
+    double tokens = 0;
+    for (const DraftOdds &o : slots) tokens += 1.0 + o.layer_expected(k);
+    const double r = tokens / times.ms(n * (k + 1));
+    if (r > best) best = r, take = k;
   }
   return take;
 }

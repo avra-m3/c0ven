@@ -43,11 +43,15 @@ class WindowTimes {
 };
 
 // What one slot's rounds have accepted lately: the lookup's drafts accepted and its rounds that stopped at a draft,
-// and the draft layer's drafts accepted a round, each decayed by 0.9 a round.
+// and the draft layer's drafts accepted and checked a round (up to the first one rejected), each decayed by 0.9 a
+// round.
 struct DraftOdds {
-  double lookup_accepted = 9.0, lookup_failed = 1.0, layer_accepted = 2.0;
+  double lookup_accepted = 9.0, lookup_failed = 1.0, layer_accepted = 2.0, layer_offered = 3.0;
   void lookup_round(uint32_t accepted, uint32_t drafts);
-  void layer_round(uint32_t accepted);
+  void layer_round(uint32_t accepted, uint32_t drafts);
+  // The draft layer's drafts accepted in a round of k: its acceptance a draft, accepted over checked, to the powers
+  // 1 to k added (a draft counts only when those before it do).
+  double layer_expected(uint32_t k) const;
 };
 
 // The drafts for a round of one slot: how many of the lookup's to take, 0 for the draft layer's. Each choice is worth
@@ -56,5 +60,14 @@ struct DraftOdds {
 // the draft layer makes and as many as a window holds.
 uint32_t choose_drafts(const DraftOdds &odds, uint32_t layer_drafts, uint32_t draft_max, uint32_t lookup_drafts,
                        uint32_t max_rows, const WindowTimes &times);
+
+// The drafts each of several writing slots makes while the window times are not known.
+constexpr uint32_t kSharedDrafts = 2;
+
+// The drafts each of the slots makes in a round of several (one count for all), 0 to the most the window's rows
+// hold: the count that gives the most tokens a millisecond, the slots' expected tokens (the row sampled last and the
+// draft layer's drafts accepted) over the time of their windows together. kSharedDrafts until a window's time is known.
+uint32_t choose_shared_drafts(const std::vector<DraftOdds> &slots, uint32_t draft_max, uint32_t max_rows,
+                              const WindowTimes &times);
 
 }  // namespace engine

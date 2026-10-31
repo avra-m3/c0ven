@@ -128,9 +128,9 @@ typedef struct {
  * batched (up to max_step_rows). A slot still reading its prompt may be in decode: it then reads its next prompt token
  * in the step. The scheduler decides the mix and the pieces' sizes (ADR-0017). With drafting, a plan whose decode
  * slots are all writing runs a round: each slot's drafts verified in one window, and up to draft_max + 1 tokens out
- * for a lone slot, 3 for each of several. The slots share the window's max_step_rows rows, so each drafts fewer as
- * there are more of them. Several slots run a round only while no slot has prompt left to read, and not for one's
- * second token. */
+ * for a lone slot, and for each of several as many as give the most tokens a millisecond (2 until the core has timed
+ * windows). The slots share the window's max_step_rows rows, so each drafts fewer as there are more of them. Several
+ * slots run a round only while no slot has prompt left to read, and not for one's second token. */
 #define ENGINE_MAX_STEP_SLOTS 8
 #define ENGINE_MAX_PROMPT_PIECES 4
 typedef struct {

@@ -82,9 +82,6 @@ constexpr uint64_t kIdleResident = 300ull * 1000000000ull;
 // (docs/measurements/MEASUREMENTS.md#2026-10-17-prompt-windows).
 constexpr uint32_t kWindowPrompt = 64;
 
-// The most drafts each of several writing slots makes (docs/measurements/MEASUREMENTS.md#2026-10-19-draft-rounds-several-writers).
-constexpr uint32_t kSharedDrafts = 2;
-
 struct Checkpoint {
   uint8_t *data = nullptr;      // pinned host memory: a slot's fixed state
   uint64_t bytes = 0;
@@ -146,7 +143,7 @@ struct engine_ctx {
   bool running = false;  // a plan is being run
   bool prompt_ended = false;  // the plan being run read some slot's last prompt token
   uint32_t writers = 0;  // the slots the plan being run decoded
-  engine::WindowTimes window_times;  // one slot's decode steps and rounds, by their rows
+  engine::WindowTimes window_times;  // decode steps of one slot and rounds of any number, by their rows
   engine_stats stats{};  // the counters (include/engine_api.h); the model's are copied in at each plan's end
   uint64_t t_open = 0;
   bool stop = false;
@@ -404,11 +401,19 @@ struct engine_ctx {
   }
 
   // The drafts the i-th of n writing slots may make: the window's rows (STEP_MAX_ROWS) shared out, each slot's row
-  // first, and at most draft_max, or kSharedDrafts with several slots.
-  uint32_t draft_share(uint32_t i, uint32_t n) const {
+  // first, and at most draft_max, or most with several slots (shared_most).
+  uint32_t draft_share(uint32_t i, uint32_t n, uint32_t most = ~0u) const {
     if (n >= STEP_MAX_ROWS) return 0;
-    const uint32_t spare = STEP_MAX_ROWS - n, most = n > 1 ? std::min(draft_max, kSharedDrafts) : draft_max;
-    return std::min(most, spare / n + (i < spare % n ? 1u : 0u));
+    const uint32_t spare = STEP_MAX_ROWS - n;
+    return std::min({draft_max, most, spare / n + (i < spare % n ? 1u : 0u)});
+  }
+
+  // The most drafts each of several writing slots makes, from their acceptance and the window times
+  // (docs/measurements/MEASUREMENTS.md#2026-10-19-draft-rounds-several-writers). Under mu.
+  uint32_t shared_most(const std::vector<StepIn> &rows) const {
+    std::vector<engine::DraftOdds> odds;
+    for (const StepIn &r : rows) odds.push_back(slots[r.slot].odds);
+    return engine::choose_shared_drafts(odds, draft_max, STEP_MAX_ROWS, window_times);
   }
 
   // A draft round's window of n rows that took ns, and a slot's run in it: k drafts verified, a accepted, from the
@@ -810,11 +815,12 @@ struct engine_ctx {
       std::vector<DfSeed> seeds;
       {
         std::lock_guard<std::mutex> lk(mu);
-        const uint32_t n = (uint32_t)mr.size();
+        const uint32_t n = (uint32_t)mr.size(), most = n > 1 ? shared_most(mr) : draft_max;
         for (uint32_t i = 0; i < n && (n == 1 || !reading()); i++) {
           const Slot &sl = slots[mr[i].slot];
           if (sl.used && !sl.done && sl.fed >= sl.prompt.size())
-            seeds.push_back({mr[i].slot, sl.settings, sl.fed + 1, sl.next, draft_share(i, n), draft_history(sl)});
+            seeds.push_back({mr[i].slot, sl.settings, sl.fed + 1, sl.next, draft_share(i, n, most),
+                             draft_history(sl)});
         }
       }
       auto d = df_drafts(mr.data(), (uint32_t)mr.size(), seeds);
@@ -840,12 +846,13 @@ struct engine_ctx {
       {
         std::lock_guard<std::mutex> lk(mu);
         if (reading()) return;
+        const uint32_t most = shared_most(mr);
         for (uint32_t j = 0; j < keep.size(); j++) {
           const uint32_t i = keep[j];
           const Slot &sl = slots[mr[i].slot];
           if (sl.used && !sl.done)
-            seeds.push_back({mr[i].slot, sl.settings, sl.fed + 1, dc[j], j, draft_share(i, (uint32_t)mr.size()),
-                             draft_history(sl)});
+            seeds.push_back({mr[i].slot, sl.settings, sl.fed + 1, dc[j], j,
+                             draft_share(i, (uint32_t)mr.size(), most), draft_history(sl)});
         }
       }
       auto d = make_drafts_many(seeds);
@@ -916,7 +923,7 @@ struct engine_ctx {
       if (sl.lookup_round)
         sl.odds.lookup_round(a, k);
       else if (k)
-        sl.odds.layer_round(a);
+        sl.odds.layer_round(a, k);
       sl.lookup_round = false;
       for (uint32_t j = 0; j <= a; j++) sl.tokens.push_back(rows[j].token);
       sl.fed = p + a + 1;
@@ -992,17 +999,20 @@ struct engine_ctx {
     }
     model->commit_runs(runs.data(), ns);
     std::vector<bool> live(ns, false);
+    uint32_t most;  // the drafts each slot may make next round
     {
       std::lock_guard<std::mutex> lk(mu);
       const uint64_t t1 = now_ns();
       const engine::qwen4exp::StepStats &ss = model->last_stats();
       record({ENGINE_TIMING_ROUND, plan, n, ss.misses, t0, t1});
+      window_times.add(n, (t1 - t0) * 1e-6);
       count_round(n, t1 - t0, ss);
       for (uint32_t i = 0; i < ns; i++) {
         const uint32_t s = row0[i].slot, p = row0[i].pos, a = acc[i];
         Slot &sl = slots[s];
         if (!sl.used) continue;
         count_run(sl, false, k[i], a);
+        if (k[i]) sl.odds.layer_round(a, k[i]);
         for (uint32_t j = 0; j <= a; j++) sl.tokens.push_back(rows[start[i] + j].token);
         sl.fed = p + a + 1;
         bool done = false;
@@ -1010,6 +1020,7 @@ struct engine_ctx {
         sl.drafts.clear();
         live[i] = !done;
       }
+      most = shared_most(row0);
     }
     std::vector<StepIn> mr;
     for (uint32_t i = 0; i < ns; i++)
@@ -1027,7 +1038,7 @@ struct engine_ctx {
       for (uint32_t i = 0; i < ns && !read; i++)
         if (live[i]) {
           if (penalised(settings[i])) hist[i].push_back(picks[i][acc[i]]);
-          seeds.push_back({row0[i].slot, settings[i], row0[i].pos + acc[i] + 2, picks[i][acc[i]], draft_share(i, ns),
+          seeds.push_back({row0[i].slot, settings[i], row0[i].pos + acc[i] + 2, picks[i][acc[i]], draft_share(i, ns, most),
                            std::move(hist[i])});
         }
       auto d = df_drafts(mr.data(), n, seeds);
@@ -1058,7 +1069,7 @@ struct engine_ctx {
     for (uint32_t i = 0, j = 0; i < ns; i++)
       if (live[i]) {
         if (penalised(settings[i])) hist[i].push_back(picks[i][acc[i]]);
-        seeds.push_back({row0[i].slot, settings[i], row0[i].pos + acc[i] + 2, dc[j], j, draft_share(i, ns),
+        seeds.push_back({row0[i].slot, settings[i], row0[i].pos + acc[i] + 2, dc[j], j, draft_share(i, ns, most),
                          std::move(hist[i])});
         j++;
       }

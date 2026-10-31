@@ -518,7 +518,8 @@ the next step starts ([ADR-0027](adr/0027-the-c-abi-as-the-core-was-optimised.md
 When the decoding slots all write, a step is a draft round
 ([ADR-0029](adr/0029-the-engine-process-drafts-and-swaps.md)). For each slot, the token sampled last and its drafts run
 as one window, and the windows of all slots run in one step. The slots share the step's 8 rows: a lone slot takes up to
-7 drafts with DFlash 2 and 3 with the MTP layer, and each of several up to 2, fewer as there are more of them. Each slot's window is accepted and committed on
+7 drafts with DFlash 2 and 3 with the MTP layer, and each of several as many as give the most tokens a millisecond, from the slots' acceptance and the times of
+windows of each width (2 until a window is timed), fewer as there are more of them. Each slot's window is accepted and committed on
 its own. A step of several slots runs no drafts while any slot has prompt left to read, or when it gives one of them its
 second token ([the record](measurements/MEASUREMENTS.md#2026-10-19-draft-rounds-several-writers)). A draft is accepted while it
 equals what the main model samples at its place, and the main model samples one more token after the accepted ones. The
