@@ -40,8 +40,9 @@ class SwapCadence {
   void plan() { plans_++; }
   // A swap round that took ms has run.
   void round(double ms);
-  // Whether a round is due. While no round has been timed or no cost is fitted: every kMinPlans plans, every
-  // kMaxPlans with several writers.
+  // Whether a round is due. With several writers, every kMaxPlans plans
+  // (docs/measurements/MEASUREMENTS.md#2026-10-28-swaps-every-4th-plan). With one, every kMinPlans plans while no
+  // round has been timed or no cost is fitted.
   bool due(uint32_t writers) const;
 
  private:

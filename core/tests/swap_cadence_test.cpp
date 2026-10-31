@@ -80,6 +80,8 @@ int main() {
     c.round(0.5);
     const uint32_t p = plans_until_due(c, 1, 30);
     EXPECT(p == 4, "cheap round, costly misses: %u plans", p);
+    c.round(0.5);
+    EXPECT(plans_until_due(c, 2, 30) == 16, "several writers: every 16th plan");
     SwapCadence s;
     steps(s, 200);
     s.round(29.0);
