@@ -61,7 +61,13 @@ EXPERTS_TOLERANCE = 0.05
 """A core's expert count further than this share from the plan's is noted: the plan's card figures are estimates."""
 
 
-def card_rows(cards: list[Card], plan: MemoryPlan, experts_core: int | None = None) -> list[Row]:
+WORKING_TOLERANCE = 256 * 2**20
+"""A core's working memory further than this from the plan's is noted."""
+
+
+def card_rows(
+    cards: list[Card], plan: MemoryPlan, experts_core: int | None = None, working_core: int | None = None
+) -> list[Row]:
     rows = [
         Row(
             f"card{i}",
@@ -80,18 +86,33 @@ def card_rows(cards: list[Card], plan: MemoryPlan, experts_core: int | None = No
             str(experts_core) if experts_core is not None else "",
         )
     )
+    rows.append(
+        Row(
+            "working",
+            "working memory per card",
+            "",
+            gib(plan.working_per_card),
+            gib(working_core) if working_core is not None else "",
+        )
+    )
     return rows
 
 
-def card_notes(plan: MemoryPlan, experts_core: int) -> list[str]:
+def card_notes(plan: MemoryPlan, experts_core: int, working_core: int | None = None) -> list[str]:
     """What the core's figures say about the plan's, after the load."""
+    out: list[str] = []
     p = plan.experts_per_layer
     if abs(experts_core - p) > max(8, EXPERTS_TOLERANCE * p):
-        return [
+        out.append(
             f"the core caches {experts_core} experts a layer and the plan {p}: the plan's figures for the cards, "
             "and the host memory planned from them, are off by that much"
-        ]
-    return []
+        )
+    if working_core is not None and abs(working_core - plan.working_per_card) > WORKING_TOLERANCE:
+        out.append(
+            f"the core's working memory per card is {gib(working_core)} and the plan's {gib(plan.working_per_card)}: "
+            "with --table-cache, the next start with these options plans with the core's"
+        )
+    return out
 
 
 def info(rows: list[Row]) -> dict[str, str]:

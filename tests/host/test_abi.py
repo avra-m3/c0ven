@@ -29,7 +29,7 @@ def test_fields_do_not_overlap():
 def test_sizes_from_the_header():
     """Sizes worked out by hand from engine_api.h, on x86-64."""
     assert ctypes.sizeof(abi.CConfig) == 88
-    assert ctypes.sizeof(abi.CInfo) == 88
+    assert ctypes.sizeof(abi.CInfo) == 104
     assert ctypes.sizeof(abi.CSettings) == 80
     assert ctypes.sizeof(abi.CPageChange) == 20
     assert (
