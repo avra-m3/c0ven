@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
 
+from engine.api.interface import EngineFacts
 from engine.host import Card, Host
 from engine.memory_plan import GIB, MemoryPlan
 
@@ -112,6 +113,44 @@ def cpu_rows(host: Host, workers: int, read_bytes_per_s: float) -> list[Row]:
             core=f"{read_bytes_per_s / 1e9:.1f}GB/s" if read_bytes_per_s else "",
         ),
     ]
+
+
+LOADER_REFERENCE_BYTES_PER_S = 6.5e9
+"""The test machine's load read rate (docs/measurements/MEASUREMENTS.md#2026-10-16-load-read-rates): a disk under half
+of it is noted."""
+
+
+def storage_rows(plan: MemoryPlan, facts: EngineFacts) -> list[Row]:
+    rows = [
+        Row(
+            "loader",
+            "model file read",
+            f"{facts.loader_bytes_per_s / 1e9:.2f}GB/s" if facts.loader_bytes_per_s else "",
+            "",
+            f"{facts.loader_threads}_threads" if facts.loader_threads else "",
+        ),
+        Row(
+            "ngram",
+            "n-gram table",
+            f"{facts.ngram_read_us:.0f}us_a_4KiB_read" if facts.ngram_read_us else "",
+            "RAM" if plan.options.ngram_in_ram else "file",
+            "RAM" if facts.ngram_in_ram else "file",
+        ),
+    ]
+    rows += [
+        Row(f"copy{i}", f"card {i} copy from host memory", "", "", f"{r / 1e9:.1f}GB/s")
+        for i, r in enumerate(facts.copy_bytes_per_s)
+    ]
+    return rows
+
+
+def storage_notes(facts: EngineFacts) -> list[str]:
+    if 0 < facts.loader_bytes_per_s < LOADER_REFERENCE_BYTES_PER_S / 2:
+        return [
+            f"the model file reads at {facts.loader_bytes_per_s / 1e9:.2f} GB/s, under half the test machine's: loads "
+            "and wakes take longer"
+        ]
+    return []
 
 
 def info(rows: list[Row]) -> dict[str, str]:

@@ -6,7 +6,7 @@ from dataclasses import replace
 
 import pytest
 
-from engine.memory_plan import PlanError, PlanOptions, plan, reserve_per_sequence
+from engine.memory_plan import PlanError, PlanOptions, ngram_fits, plan, reserve_per_sequence
 from engine.models.qwen4exp.memory import model_memory
 from engine.models.qwen4exp.tensors import Category, from_tsv
 
@@ -140,3 +140,19 @@ def test_without_the_draft_layer_the_cards_cache_more():
     assert (
         plan(MODEL, PlanOptions(slots=1, draft=False)).experts_cached > plan(MODEL, PlanOptions(slots=1)).experts_cached
     )
+
+
+def test_the_ngram_table_in_ram_counts_in_the_host_total():
+    off = plan(MODEL, PlanOptions(slots=1))
+    on = plan(MODEL, PlanOptions(slots=1, ngram_in_ram=True))
+    assert MODEL.ngram_bytes > 28 * 10**9
+    assert on.host_bytes == off.host_bytes + MODEL.ngram_bytes
+
+
+def test_the_ngram_table_moves_into_ram_only_with_room_to_spare():
+    gib = 2**30
+    p = plan(MODEL, PlanOptions(slots=1, host_memory=56 * gib))
+    assert not ngram_fits(p, mem_total=90 * gib)
+    roomy = plan(MODEL, PlanOptions(slots=1, host_memory=80 * gib))
+    assert ngram_fits(roomy, mem_total=90 * gib)
+    assert not ngram_fits(plan(MODEL, PlanOptions(slots=1)), mem_total=90 * gib)

@@ -13,6 +13,7 @@
 #include <exception>
 #include <stdexcept>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <thread>
 
 #include "ggml.h"
@@ -143,7 +144,11 @@ Model::Model(const std::string &path, const Options &opt) : opt_(opt), gguf_(pat
   if (share_) blk_ = rt_->vm_block(0);
   pool_ = std::make_unique<Pool>(opt_.cpu_threads > 1 ? opt_.cpu_threads - 1 : 0);
   cpu_ = std::make_unique<CpuExperts>(*pool_);
-  ngram_ = std::make_unique<Ngram>(gguf_);
+  info_.loader_threads = loader_threads();
+  ngram_ = std::make_unique<Ngram>(gguf_, 1u << 20, 128, opt_.ngram_in_ram, info_.loader_threads);
+  info_.ngram_in_ram = ngram_->in_ram();
+  if (!info_.ngram_in_ram) info_.ngram_read_us = ngram_->read_latency_us();
+  for (uint32_t c = 0; c < ncards_; c++) info_.copy_bytes_per_s[c] = measure_copy(c);
   events_ = std::make_unique<ze::EventPool>(*rt_, Q_LAYERS * (2 * ncards_ + 2) + 1 + kAttn * ncards_);
 
   plan_ = static_cast<StepPlan *>(rt_->alloc_host(sizeof(StepPlan)));
@@ -215,7 +220,7 @@ Model::Model(const std::string &path, const Options &opt) : opt_(opt), gguf_(pat
 // experts and fills the arena with the others; after a sleep, the cards cache the experts they cached when they slept.
 void Model::load_cards(bool first) {
   const auto t0 = std::chrono::steady_clock::now();
-  reader_ = std::make_unique<DirectReader>(gguf_.files());
+  reader_ = std::make_unique<DirectReader>(gguf_.files(), info_.loader_threads);
   struct Done {
     Model *m;
     ~Done() {
@@ -418,6 +423,64 @@ void Model::settle_arena() {
   std::fprintf(stderr, "engine: the arena: %llu of %llu 2 MiB ranges in huge pages, in %.2f s; %s\n",
                (unsigned long long)collapsed, (unsigned long long)ranges,
                std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(), lock.c_str());
+}
+
+// The loader's thread count: probed on the first shard, and kept in ENGINE_MTP_CACHE_DIR beside the draft layer's
+// cache, keyed by the file's device, inode, size and time, so a later start does not probe again. ENGINE_LOADER_THREADS
+// sets it.
+unsigned Model::loader_threads() {
+  if (const char *e = std::getenv("ENGINE_LOADER_THREADS")) return (unsigned)std::max(1, std::atoi(e));
+  const std::string &shard = gguf_.files().at(0);
+  struct stat st;
+  std::string cache;
+  if (const char *dir = std::getenv("ENGINE_MTP_CACHE_DIR"); dir && ::stat(shard.c_str(), &st) == 0) {
+    char name[96];
+    std::snprintf(name, sizeof name, "/loader-%llx-%llx-%llx-%llx.txt", (unsigned long long)st.st_dev,
+                  (unsigned long long)st.st_ino, (unsigned long long)st.st_size, (unsigned long long)st.st_mtime);
+    cache = std::string(dir) + name;
+    if (FILE *f = std::fopen(cache.c_str(), "r")) {
+      unsigned n = 0;
+      double rate = 0;
+      const bool ok = std::fscanf(f, "%u %lf", &n, &rate) == 2 && n > 0;
+      std::fclose(f);
+      if (ok) {
+        info_.loader_bytes_per_s = rate;
+        return n;
+      }
+    }
+  }
+  double rate = 0;
+  const unsigned n = DirectReader::probe_threads(shard, &rate);
+  info_.loader_bytes_per_s = rate;
+  std::fprintf(stderr, "engine: the loader reads the model file at %.2f GB/s with %u threads, the fastest of 4, 8 and 16\n",
+               rate / 1e9, n);
+  if (!cache.empty())
+    if (FILE *f = std::fopen(cache.c_str(), "w")) {
+      std::fprintf(f, "%u %.0f\n", n, rate);
+      std::fclose(f);
+    }
+  return n;
+}
+
+// One card's copy engine reading pinned host memory: 4 copies of 256 MiB into a buffer on the card, after one to warm
+// up, both freed before the load sizes anything.
+double Model::measure_copy(uint32_t card) {
+  constexpr size_t kBytes = 256ull << 20;
+  void *host = rt_->alloc_host(kBytes);
+  void *dev = rt_->alloc_device(card, kBytes);
+  std::memset(host, 1, kBytes);
+  ze::List l(*rt_, card, ze::List::immediate, true);
+  l.copy(dev, host, kBytes);
+  l.synchronize();
+  const auto t0 = std::chrono::steady_clock::now();
+  for (int i = 0; i < 4; i++) l.copy(dev, host, kBytes);
+  l.synchronize();
+  const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  rt_->free(dev);
+  rt_->free(host);
+  const double rate = 4.0 * kBytes / s;
+  std::fprintf(stderr, "engine: card %u's copy engine reads pinned host memory at %.1f GB/s\n", card, rate / 1e9);
+  return rate;
 }
 
 // The rate the CPU's expert workers read the arena, the bound on its misses: one pass over up to 4 GiB of its pieces by

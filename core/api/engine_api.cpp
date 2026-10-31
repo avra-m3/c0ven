@@ -1196,6 +1196,7 @@ engine_status engine_open(const engine_config *config, engine_info *info, engine
     opt.kv_resident = config->kv_resident_cells;
     opt.adapt_swaps = (config->flags & ENGINE_CONFIG_SWAPS) != 0;
     opt.share_kv = (config->flags & ENGINE_CONFIG_SHARE_KV) != 0;
+    opt.ngram_in_ram = (config->flags & ENGINE_CONFIG_NGRAM_RAM) != 0;
     auto e = std::make_unique<engine_ctx>();
     e->model = std::make_unique<engine::qwen4exp::Model>(config->model_path, opt);
     const auto &li = e->model->info();
@@ -1210,6 +1211,12 @@ engine_status engine_open(const engine_config *config, engine_info *info, engine
     e->info.arena_bytes = li.arena_bytes;
     e->info.load_seconds = li.seconds;
     e->info.host_read_bytes_per_s = li.host_read_bytes_per_s;
+    e->info.loader_threads = li.loader_threads;
+    e->info.ngram_in_ram = li.ngram_in_ram ? 1 : 0;
+    e->info.loader_bytes_per_s = li.loader_bytes_per_s;
+    e->info.ngram_read_us = li.ngram_read_us;
+    e->info.copy_bytes_per_s[0] = li.copy_bytes_per_s[0];
+    e->info.copy_bytes_per_s[1] = li.copy_bytes_per_s[1];
     e->info.prompt_chunk = e->model->prompt_chunk();
     e->info.max_step_rows = ENGINE_MAX_STEP_SLOTS;
     e->info.drafting = e->model->drafting() ? 1 : 0;
@@ -1570,7 +1577,9 @@ uint32_t engine_abi_layout(engine_abi_row *table, uint32_t cap) {
       ROW(engine_info, arena_bytes), ROW(engine_info, load_seconds), ROW(engine_info, prompt_chunk),
       ROW(engine_info, checkpoints), ROW(engine_info, max_step_rows), ROW(engine_info, drafting),
       ROW(engine_info, image_tokens_max), ROW(engine_info, kv_pages), ROW(engine_info, pages_per_slot),
-      ROW(engine_info, host_read_bytes_per_s), SIZE(engine_info),
+      ROW(engine_info, host_read_bytes_per_s), ROW(engine_info, loader_threads), ROW(engine_info, ngram_in_ram),
+      ROW(engine_info, loader_bytes_per_s), ROW(engine_info, ngram_read_us), ROW(engine_info, copy_bytes_per_s),
+      SIZE(engine_info),
       ROW(engine_settings, temperature), ROW(engine_settings, top_k), ROW(engine_settings, top_p),
       ROW(engine_settings, max_tokens), ROW(engine_settings, seed), ROW(engine_settings, n_stop),
       ROW(engine_settings, stop), ROW(engine_settings, min_p), ROW(engine_settings, penalty_last_n),

@@ -20,7 +20,7 @@ extern "C" {
 #define ENGINE_API
 #endif
 
-#define ENGINE_API_VERSION 12
+#define ENGINE_API_VERSION 13
 
 typedef enum {
   ENGINE_OK = 0,
@@ -65,6 +65,7 @@ typedef struct {
 #define ENGINE_CONFIG_SHARE_KV 8u     /* with SWAPS and the experts not set: the KV pages the plans leave free (kv_free)
                                          lend their memory to the expert cache, so it holds more experts while the
                                          pool holds less */
+#define ENGINE_CONFIG_NGRAM_RAM 16u   /* the whole n-gram table read into RAM at open, rows served from it */
 
 /* What open reports. */
 typedef struct {
@@ -85,6 +86,12 @@ typedef struct {
   uint32_t kv_pages;           /* the KV cache's pages */
   uint32_t pages_per_slot;     /* logical pages a slot can map: the context's, rounded up to a multiple of the cards */
   double host_read_bytes_per_s; /* the CPU workers' read of the arena at open, bytes a second; 0: not measured */
+  uint32_t loader_threads;     /* threads reading the model file, the fastest of 4, 8 and 16 (ENGINE_LOADER_THREADS
+                                  sets it; the choice is kept in ENGINE_MTP_CACHE_DIR) */
+  uint32_t ngram_in_ram;       /* 1: the n-gram table is in RAM */
+  double loader_bytes_per_s;   /* their read rate when chosen */
+  double ngram_read_us;        /* one 4 KiB row read from the file at open, microseconds; 0 with the table in RAM */
+  double copy_bytes_per_s[2];  /* each card's copy engine reading pinned host memory at open, bytes a second */
 } engine_info;
 
 /* A request's sampling and stopping, copied once by admit. The core samples in llama.cpp's order: penalties, top-k,

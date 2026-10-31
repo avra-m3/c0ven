@@ -32,7 +32,7 @@ import gguf
 import protocol
 from engine import fit, host
 from engine.api.interface import IMAGE_PATCH_BYTES, Engine, EngineError, EngineFacts, Image, OpenConfig
-from engine.memory_plan import GIB, MemoryPlan, PlanError, PlanOptions
+from engine.memory_plan import GIB, MemoryPlan, PlanError, PlanOptions, ngram_fits
 from engine.scheduler import CheckpointRule, Scheduler, SchedulerOptions
 
 log = logging.getLogger("engine")
@@ -140,6 +140,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--ram-max",
         type=float,
         help="GiB of host memory the engine may plan for at most; a plan over it is refused with options that fit",
+    )
+    p.add_argument(
+        "--ngram-ram",
+        choices=("auto", "on", "off"),
+        default="auto",
+        help="the n-gram table in RAM; auto: when the host has room for it beside the plan, with"
+        " a quarter of its memory, at least 8 GiB, left free",
     )
     p.add_argument("--table-cache", type=Path, help="a directory that keeps the model's tensor table between starts")
     p.add_argument(
@@ -425,6 +432,13 @@ def main(argv: list[str] | None = None) -> int:
                 args.model if native else None, options, args.deterministic, draft, args.table_cache, **workers
             ),
         )
+        mem_total = the_host.mem_total if the_host is not None else None
+        if native and (args.ngram_ram == "on" or (args.ngram_ram == "auto" and ngram_fits(plan, mem_total))):
+            options = dataclasses.replace(options, ngram_in_ram=True)
+            config, plan = cast(
+                "tuple[OpenConfig, MemoryPlan]",
+                model.open_config(args.model, options, args.deterministic, draft, args.table_cache, **workers),
+            )
     except PlanError as exc:
         print(protocol.Error(None, f"memory plan: {exc}").encode(), flush=True)
         return 1
@@ -458,8 +472,11 @@ def report(
         fit.card_rows(cards, plan, facts.experts_cached)
         + fit.host_rows(the_host, plan, facts.host_pinned, fit.rss())
         + fit.cpu_rows(the_host, workers, facts.host_read_bytes_per_s)
+        + fit.storage_rows(plan, facts)
     )
-    notes = fit.card_notes(plan, facts.experts_cached) + fit.notes(
-        the_host, bool(os.environ.get("ENGINE_UNLOCKED_ARENA"))
+    notes = (
+        fit.card_notes(plan, facts.experts_cached)
+        + fit.notes(the_host, bool(os.environ.get("ENGINE_UNLOCKED_ARENA")))
+        + fit.storage_notes(facts)
     )
     return rows, notes

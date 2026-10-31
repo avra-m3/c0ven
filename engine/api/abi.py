@@ -15,7 +15,8 @@ changes in each plan, a slot without a page for its next position stalls, and a 
 Version 6 adds `engine_image.frames` for video (ADR-0034). Version 7 adds min-p and the penalties to
 `engine_settings`. Version 9 adds the counters: `engine_read_stats` and `engine_read_slot_stats` (ADR-0049).
 Version 11 adds `engine_cards`, the cards listed before open (ADR-0057); version 12 the workers' read rate of the
-arena to `engine_info`.
+arena to `engine_info`; version 13 the loader's threads, the n-gram table in RAM (`NGRAM_RAM`) and the cards' copy
+rates.
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ import ctypes
 from dataclasses import dataclass
 from enum import IntEnum
 
-ABI_VERSION = 12
+ABI_VERSION = 13
 
 MAX_STOP = 8
 MAX_STEP_SLOTS = 8
@@ -48,6 +49,7 @@ class ConfigFlag(IntEnum):
     PROMPT_SET = 2
     SWAPS = 4
     SHARE_KV = 8
+    NGRAM_RAM = 16
 
 
 class CEventKind(IntEnum):
@@ -120,6 +122,11 @@ class CInfo(ctypes.Structure):
         ("kv_pages", ctypes.c_uint32),
         ("pages_per_slot", ctypes.c_uint32),
         ("host_read_bytes_per_s", ctypes.c_double),
+        ("loader_threads", ctypes.c_uint32),
+        ("ngram_in_ram", ctypes.c_uint32),
+        ("loader_bytes_per_s", ctypes.c_double),
+        ("ngram_read_us", ctypes.c_double),
+        ("copy_bytes_per_s", ctypes.c_double * 2),
     )
 
 
