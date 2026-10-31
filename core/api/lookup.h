@@ -64,8 +64,8 @@ uint32_t choose_drafts(const DraftOdds &odds, uint32_t layer_drafts, uint32_t dr
 // The drafts each of several writing slots makes while the window times are not known.
 constexpr uint32_t kSharedDrafts = 2;
 
-// The drafts each of the slots makes in a round of several (one count for all), 0 to the most the window's rows
-// hold: the count that gives the most tokens a millisecond, the slots' expected tokens (the row sampled last and the
+// The most drafts each of the slots makes in a round of several (one count for all; each makes at most its share of
+// the window's spare rows, as draft_share gives them): the count that gives the most tokens a millisecond, the slots' expected tokens (the row sampled last and the
 // draft layer's drafts accepted) over the time of their windows together. kSharedDrafts until a window's time is known.
 uint32_t choose_shared_drafts(const std::vector<DraftOdds> &slots, uint32_t draft_max, uint32_t max_rows,
                               const WindowTimes &times);

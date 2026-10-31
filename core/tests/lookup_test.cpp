@@ -165,9 +165,10 @@ int main() {
     EXPECT(choose_shared_drafts(slots(2, 3, 3), 1, 8, WindowTimes{}) == 1, "no times, draft_max 1");
     // Every draft accepted: 3 each of 2 slots is 8 tokens in 42.3 ms (0.19 a ms), 1 each is 4 in 25.6 (0.16).
     EXPECT(choose_shared_drafts(slots(2, 3, 3), 3, 8, w) == 3, "sure: %u", choose_shared_drafts(slots(2, 3, 3), 3, 8, w));
-    // The most is draft_max, then the rows: 2 slots take 3 each, 3 slots 1, 4 slots 1, 8 slots 0.
+    // The most is draft_max, then the rows: 2 slots take 3 each; 3 slots 2, so that they share the 5 spare rows as
+    // 2, 2 and 1; 8 slots 0.
     EXPECT(choose_shared_drafts(slots(2, 3, 3), 2, 8, w) == 2, "draft_max 2");
-    EXPECT(choose_shared_drafts(slots(3, 3, 3), 3, 8, w) == 1, "3 slots: %u", choose_shared_drafts(slots(3, 3, 3), 3, 8, w));
+    EXPECT(choose_shared_drafts(slots(3, 3, 3), 3, 8, w) == 2, "3 slots: %u", choose_shared_drafts(slots(3, 3, 3), 3, 8, w));
     EXPECT(choose_shared_drafts(slots(8, 3, 3), 3, 8, w) == 0, "8 slots");
     // Nothing accepted: no drafts.
     EXPECT(choose_shared_drafts(slots(2, 0, 3), 3, 8, w) == 0, "never accepted");

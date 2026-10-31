@@ -97,14 +97,21 @@ uint32_t choose_shared_drafts(const std::vector<DraftOdds> &slots, uint32_t draf
                               const WindowTimes &times) {
   const uint32_t n = (uint32_t)slots.size();
   if (n == 0 || n >= max_rows) return 0;
-  const uint32_t most = std::min(draft_max, (max_rows - n) / n);
+  // The window's spare rows are handed out as the engine does (draft_share): each slot spare / n, and the first
+  // spare % n slots one more. With k at most each, slot i makes min(k, its share).
+  const uint32_t spare = max_rows - n, most = std::min(draft_max, (spare + n - 1) / n);
   if (times.ms(n) == 0) return std::min(kSharedDrafts, most);
   double best = 0;
   uint32_t take = 0;
   for (uint32_t k = 0; k <= most; k++) {
     double tokens = 0;
-    for (const DraftOdds &o : slots) tokens += 1.0 + o.layer_expected(k);
-    const double r = tokens / times.ms(n * (k + 1));
+    uint32_t rows = n;
+    for (uint32_t i = 0; i < n; i++) {
+      const uint32_t d = std::min(k, spare / n + (i < spare % n ? 1u : 0u));
+      rows += d;
+      tokens += 1.0 + slots[i].layer_expected(d);
+    }
+    const double r = tokens / times.ms(rows);
     if (r > best) best = r, take = k;
   }
   return take;
