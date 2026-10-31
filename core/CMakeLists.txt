@@ -2,6 +2,7 @@
 
 add_library(engine_core STATIC
   api/lookup.cpp
+  api/swap_cadence.cpp
   api/sampling.cpp
   cpu/experts.cpp
   cpu/multirow.cpp

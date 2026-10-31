@@ -21,6 +21,7 @@
 
 #include "api/lookup.h"
 #include "api/sampling.h"
+#include "api/swap_cadence.h"
 #include "models/qwen4exp/model.h"
 
 using engine::penalised;
@@ -147,6 +148,7 @@ struct engine_ctx {
   bool prompt_ended = false;  // the plan being run read some slot's last prompt token
   uint32_t writers = 0;  // the slots the plan being run decoded
   engine::WindowTimes window_times;  // one slot's decode steps and rounds, by their rows
+  engine::SwapCadence swap_cadence;  // when the next swap round is due; under mu
   engine_stats stats{};  // the counters (include/engine_api.h); the model's are copied in at each plan's end
   uint64_t t_open = 0;
   bool stop = false;
@@ -780,6 +782,7 @@ struct engine_ctx {
       const engine::qwen4exp::StepStats &ss = model->last_stats();
       record({ENGINE_TIMING_DECODE, plan, (uint32_t)rows.size(), ss.misses, t0, t1});
       if (rows.size() == 1) window_times.add(1, (t1 - t0) * 1e-6);
+      swap_cadence.step((uint32_t)rows.size(), ss.layers_missed, (t1 - t0) * 1e-6);
       stats.steps++;
       stats.step_rows += rows.size();
       stats.step_ns += t1 - t0;
@@ -909,6 +912,7 @@ struct engine_ctx {
       const engine::qwen4exp::StepStats &ss = model->last_stats();
       record({ENGINE_TIMING_ROUND, plan, (uint32_t)rows.size(), ss.misses, t0, t1});
       window_times.add((uint32_t)rows.size(), (t1 - t0) * 1e-6);
+      swap_cadence.step((uint32_t)rows.size(), ss.layers_missed, (t1 - t0) * 1e-6);
       Slot &sl = slots[s];
       if (!sl.used) return;
       count_round(rows.size(), t1 - t0, ss);
@@ -997,6 +1001,7 @@ struct engine_ctx {
       const uint64_t t1 = now_ns();
       const engine::qwen4exp::StepStats &ss = model->last_stats();
       record({ENGINE_TIMING_ROUND, plan, n, ss.misses, t0, t1});
+      swap_cadence.step(n, ss.layers_missed, (t1 - t0) * 1e-6);
       count_round(n, t1 - t0, ss);
       for (uint32_t i = 0; i < ns; i++) {
         const uint32_t s = row0[i].slot, p = row0[i].pos, a = acc[i];
@@ -1096,13 +1101,19 @@ struct engine_ctx {
         apply_pages(pages);
         prompt_pieces(seq, plan);
         decode(seq, plan);
-        // A swap round after a plan that ended a prompt, and after every 4th plan while at most one slot writes, every
-        // 16th while several do (docs/measurements/MEASUREMENTS.md#2026-10-28-swaps-every-4th-plan). Never while a slot reads its prompt
+        // A swap round after a plan that ended a prompt, and otherwise once the time the CPU's misses have cost since
+        // the last round reaches that round's time, within 4 to 16 plans of it (api/swap_cadence.h); 4 and 16 until
+        // both are known, and 16 while several slots write. Never while a slot reads its prompt
         // (docs/measurements/MEASUREMENTS.md#2026-10-16-drafting-and-swaps). While several slots write, the round's swaps are
         // shared out: the cache follows several requests' routing at once.
-        const uint32_t every = writers > 1 ? 16 : 4;
+        bool due;
+        {
+          std::lock_guard<std::mutex> lk(mu);
+          swap_cadence.plan();
+          due = prompt_ended || swap_cadence.due(writers);
+        }
         uint64_t swapped = 0, swap_ns = 0;
-        if (swaps && (prompt_ended || seq % every == 0) && !prompt_reading()) {
+        if (swaps && due && !prompt_reading()) {
           const uint64_t t0 = now_ns();
           swapped = model->swap_round(64 / std::max<uint32_t>(1, writers));
           swap_ns = now_ns() - t0;
@@ -1113,6 +1124,7 @@ struct engine_ctx {
         stats.plans++;
         stats.busy_ns += now_ns() - t_plan;
         if (swap_ns) {
+          swap_cadence.round(swap_ns * 1e-6);
           stats.swap_rounds++;
           stats.swaps += swapped;
           stats.swap_ns += swap_ns;
