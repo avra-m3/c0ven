@@ -153,8 +153,8 @@ sequenceDiagram
    the slot restores it and reads only the rest (section 4). `engine_admit` copies the settings and the prompt ids
    into the core once. From then on the request is a slot number.
 4. The scheduler reads the prompt in pieces. While another request is writing, it sizes each piece by time, so that
-   decode keeps its share ([ADR-0017](adr/0017-scheduling-several-requests.md)). A piece of up to 64 tokens with no
-   image runs as decode windows; a longer one goes through the prompt path (section 9).
+   decode keeps its share ([ADR-0017](adr/0017-scheduling-several-requests.md)). A piece of up to the plan's `window_rows`
+   tokens (64 until the scheduler has measured both costs) with no image runs as decode windows; a longer one goes through the prompt path (section 9).
 5. The core runs each plan in order: its page changes, its prompt pieces, then one decode step for every slot that
    is writing. Python keeps two plans queued while any slot decodes, so the core never waits for Python between
    steps.

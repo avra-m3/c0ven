@@ -28,8 +28,8 @@ PAGE_CELLS = 4
 MAX_SLOTS = 16
 MAX_PROMPT_SPANS = 8
 WINDOW_ROWS = 64
-"""A prompt piece of at most this many rows is read as decode windows (the core's kWindowPrompt), without the prompt
-path's staging of the layers' uncached experts."""
+"""The default of StepPlan.window_rows (the core's kWindowPrompt): a prompt piece of at most that many rows is read as
+decode windows, without the prompt path's staging of the layers' uncached experts."""
 PROMPT_RUNS = 4
 """The longer pieces of each four prompt spans of a plan, in order, are read as one chunk, the experts staged once for
 all their rows (the core's PROMPT_MAX_RUNS and pieces a plan)."""
@@ -69,8 +69,8 @@ class EventKind(IntEnum):
     FINISHED = 3
     """The slot stopped and left decode: `a` a FinishReason. The slot stays admitted until `release`."""
     STEP_DONE = 4
-    """`a` decoding slots, `b` prompt rows, `c` the prompt pieces of more than WINDOW_ROWS rows (each a pass of the
-    prompt path), `t_ns` the step's time on the cards."""
+    """`a` decoding slots, `b` prompt rows, `c` the passes of the prompt path (a prompt piece longer than the plan's
+    window_rows is one; pieces read as windows are none), `t_ns` the step's time on the cards."""
     CHECKPOINT_DONE = 5
     """`a` the checkpoint id."""
     STALLED = 6
@@ -274,6 +274,8 @@ class StepPlan:
     kv_free: int = 0
     """The pages at the top of the pool nothing holds, after `pages`: the engine may lend their memory to the expert
     cache until a plan maps them again (`include/engine_api.h`)."""
+    window_rows: int = 0
+    """Prompt spans of at most this many rows, with no image, are read as decode windows; 0: WINDOW_ROWS."""
 
     def check(self) -> None:
         if len(self.prompt) > MAX_PROMPT_SPANS:

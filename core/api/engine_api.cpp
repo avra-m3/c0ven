@@ -77,9 +77,9 @@ struct Slot {
 // memory goes to the experts the requests in progress need.
 constexpr uint64_t kIdleResident = 300ull * 1000000000ull;
 
-// A prompt piece of at most this many tokens is read as decode windows of forced rows: a prompt chunk stages every
-// uncached expert whatever its size, so a short piece is faster as windows
-// (docs/measurements/MEASUREMENTS.md#2026-10-17-prompt-windows).
+// A prompt piece of at most the plan's window_rows tokens is read as decode windows of forced rows: a prompt chunk
+// stages every uncached expert whatever its size, so a short piece is faster as windows
+// (docs/measurements/MEASUREMENTS.md#2026-10-17-prompt-windows). A plan that says 0 gets this many.
 constexpr uint32_t kWindowPrompt = 64;
 
 // The most drafts each of several writing slots makes (docs/measurements/MEASUREMENTS.md#2026-10-19-draft-rounds-several-writers).
@@ -462,7 +462,7 @@ struct engine_ctx {
 
   // Reads the piece's tokens from its slot. False when there is nothing to read: the slot is gone or done, or its next
   // cell has no page (it stalls). Runs on the engine thread.
-  bool prepare_piece(engine_prompt_piece pc, Piece &pi) {
+  bool prepare_piece(engine_prompt_piece pc, uint32_t window, Piece &pi) {
     std::lock_guard<std::mutex> lk(mu);
     if (pc.slot >= slots.size()) return false;
     Slot &sl = slots[pc.slot];
@@ -485,12 +485,12 @@ struct engine_ctx {
     bool image = false;
     for (const SlotImage &im : sl.images)
       image |= im.first < pos0 + n && im.first + (im.grid_h / 2) * (im.grid_w / 2) > pos0;
-    pi.windowed = n <= kWindowPrompt && !image;
+    pi.windowed = n <= window && !image;
     pi.restart = sl.windows_end != pos0;
     // The piece expected next, of the same size, so its n-gram rows are read while this one runs. A short one is
     // read as windows, which gather their own rows.
     const uint32_t nn = std::min(left - n, pc.tokens ? std::min(pc.tokens, info.prompt_chunk) : info.prompt_chunk);
-    if (!pi.windowed && nn > kWindowPrompt)
+    if (!pi.windowed && nn > window)
       pi.next.assign(sl.prompt.begin() + pos0 + n, sl.prompt.begin() + pos0 + n + nn);
     return true;
   }
@@ -613,6 +613,7 @@ struct engine_ctx {
   // PROMPT_MAX_RUNS of them and prompt_chunk rows; a short one goes as windows when it comes. Runs on the engine
   // thread.
   void prompt_pieces(uint32_t plan, const engine_step_plan &sp) {
+    const uint32_t window = sp.window_rows ? sp.window_rows : kWindowPrompt;
     std::vector<Piece> chunk;
     uint32_t rows = 0;
     auto flush = [&] {
@@ -629,7 +630,7 @@ struct engine_ctx {
           break;
         }
       Piece pi;
-      if (!prepare_piece(sp.pieces[i], pi)) continue;
+      if (!prepare_piece(sp.pieces[i], window, pi)) continue;
       if (pi.windowed) {  // its slot is not in the chunk, which can wait for it
         prompt_windows(plan, pi.slot, pi.pos0, pi.toks, pi.p1, pi.p2, pi.restart);
         if (swaps) model->note_prompt_routing();
@@ -1547,7 +1548,7 @@ uint32_t engine_abi_layout(engine_abi_row *table, uint32_t cap) {
       ROW(engine_prompt_piece, slot), ROW(engine_prompt_piece, tokens), SIZE(engine_prompt_piece),
       ROW(engine_step_plan, nslots), ROW(engine_step_plan, slots), ROW(engine_step_plan, npieces),
       ROW(engine_step_plan, pieces), ROW(engine_step_plan, npages), ROW(engine_step_plan, pages),
-      ROW(engine_step_plan, kv_free), SIZE(engine_step_plan),
+      ROW(engine_step_plan, kv_free), ROW(engine_step_plan, window_rows), SIZE(engine_step_plan),
       ROW(engine_event, kind), ROW(engine_event, slot), ROW(engine_event, token), ROW(engine_event, value),
       SIZE(engine_event),
       ROW(engine_timing, kind), ROW(engine_timing, plan), ROW(engine_timing, rows), ROW(engine_timing, misses),

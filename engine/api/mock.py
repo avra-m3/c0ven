@@ -107,8 +107,8 @@ class MockEngine:
     ) -> None:
         """`prompt_row_ms` and `decode_step_ms` are the step times it reports (estimates from stand-in kernels:
         docs/measurements/MEASUREMENTS.md#2026-10-13-design-inputs), and `prompt_chunk_ms` the fixed time of a
-        chunk, as the core's staging costs: the spans longer than WINDOW_ROWS of each PROMPT_RUNS of a plan share
-        one. With `realtime`, it also sleeps for them."""
+        chunk, as the core's staging costs: the spans longer than the plan's window_rows of each PROMPT_RUNS of a plan
+        share one. With `realtime`, it also sleeps for them."""
         self._script = script
         self._row_ms = prompt_row_ms
         self._chunk_ms = prompt_chunk_ms
@@ -392,8 +392,9 @@ class MockEngine:
                     rows += self._run_span(span.slot, span.first, span.count, span.last)
                 except PlanFault as fault:
                     self._emit(EventKind.ERROR, fault.slot, ErrorCode.INVALID_ARGUMENT)
+            window = plan.window_rows or WINDOW_ROWS
             for i in range(0, len(plan.prompt), PROMPT_RUNS):
-                chunks += any(span.count > WINDOW_ROWS for span in plan.prompt[i : i + PROMPT_RUNS])
+                chunks += any(span.count > window for span in plan.prompt[i : i + PROMPT_RUNS])
         started = {span.slot for span in plan.prompt} if plan is not None else set[int]()
         for slot, s in self._slots.items():
             if not s.decoding or s.finished or slot in started:
