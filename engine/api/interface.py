@@ -153,6 +153,8 @@ class OpenConfig:
     draft_dir: str = ""
     """The draft (MTP) layer's tensors, one file each (MODEL_FILES.md, "The MTP layer"); empty: no drafting."""
     vision_path: str = ""
+    ngram_in_ram: bool = False
+    """Read the whole n-gram table into RAM at open, and serve every row from it."""
     """The image encoder's file (the mmproj GGUF, spec/MODEL_VISION.md); empty: no images."""
 
 
@@ -176,6 +178,13 @@ class EngineFacts:
     """The most tokens an image may have; 0: no images."""
     host_read_bytes_per_s: float = 0.0
     """The CPU workers' read of the host's expert arena at the load, bytes a second; 0: not measured."""
+    loader_threads: int = 0
+    loader_bytes_per_s: float = 0.0
+    ngram_in_ram: bool = False
+    ngram_read_us: float = 0.0
+    """One 4 KiB row read from the file, microseconds; 0 with the table in RAM."""
+    copy_bytes_per_s: tuple[float, ...] = ()
+    """Each card's copy engine reading pinned host memory, bytes a second."""
 
 
 IMAGE_PATCH_BYTES = 768

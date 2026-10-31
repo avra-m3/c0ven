@@ -33,11 +33,16 @@ depends on the host and is not read.
    cgroup's `cpu.max` and to their physical cores. `ENGINE_CPU_WORKERS` overrides the count. The core refuses to open
    on a CPU without a feature the ggml build uses, and names it. At the first load the workers read the arena once,
    and the fit report gives the rate.
-5. **A plan that does not fit is refused before the load.** The message names the figure that does not fit and gives
+5. **The loader's thread count is the fastest of 4, 8 and 16** on a 256 MiB read of the model file, kept in
+   `ENGINE_MTP_CACHE_DIR` beside the draft layer's cache. `ENGINE_LOADER_THREADS` sets it.
+6. **The n-gram table is read into RAM when the host has room for it**: with the table beside the plan, a quarter of
+   the host's memory, at least 8 GiB, stays free. Otherwise it stays in the file
+   ([ADR-0015](0015-ngram-table-on-the-ssd.md)). `--ngram-ram on|off` forces either.
+7. **A plan that does not fit is refused before the load.** The message names the figure that does not fit and gives
    options that do. `--ram-max` sets a host memory limit of the user's own.
-6. **Each load prints a fit report** beside its plan figures and the core's figures after the load, and sends it in
+8. **Each load prints a fit report** beside its plan figures and the core's figures after the load, and sends it in
    INFO, so `/metrics` carries it.
-7. **The test machine's constants stay as test fixtures** for the mock and the reference backends, which run without a
+9. **The test machine's constants stay as test fixtures** for the mock and the reference backends, which run without a
    card. The two B60s remain the machine every measurement is taken on.
 
 ## Options not chosen
@@ -57,4 +62,7 @@ depends on the host and is not read.
   expert count more than 5% from the plan's.
 - A worker past the CPU quota waits for it, so under a quota the default is the quota's CPUs. The ggml build stays AVX-512 only;
   an AVX2 build chosen at run time would be a decision of its own.
-- The storage and links slice adds its rows to the fit report ([#25](https://github.com/avra-m3/c0ven/issues/25)).
+- The fit report also gives the model file's read rate, a 4 KiB read of the n-gram table from the file, and each
+  card's copy engine reading pinned host memory, measured at open (about 0.2 s together). It notes a file read under
+  half the test machine's rate.
+- A load that holds the n-gram table in RAM reads it whole first, and keeps it through a sleep, like the arena.

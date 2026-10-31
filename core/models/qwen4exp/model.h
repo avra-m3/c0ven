@@ -53,6 +53,7 @@ struct Options {
   // shared system USM: the driver's buffers, which xe moves out of GTT under reclaim and so stalls the CPU's experts
   // (docs/measurements/MEASUREMENTS.md#2026-10-17-decode-stalls-eviction). options() gives the value the engine took.
   bool anon_arena = true;
+  bool ngram_in_ram = false;                // the whole n-gram table in RAM (ngram.h)
   // A profile to choose the cached experts by (tools/route_profile.cpp); empty: the first experts of each layer.
   std::string routing_profile = ENGINE_ROUTING_PROFILE;
   // The draft (MTP) layer's tensors (docs/MODEL_FILES.md, "The MTP layer"); empty: no drafting.
@@ -82,6 +83,11 @@ struct LoadInfo {
   bool arena_anon = false;   // the arena is the process's own memory (Options::anon_arena)
   double seconds = 0;
   double host_read_bytes_per_s = 0;  // the CPU workers' read of the arena at the first load; 0: not measured
+  unsigned loader_threads = 0;       // the loader's threads, from DirectReader::probe_threads
+  double loader_bytes_per_s = 0;     // their read rate in the probe
+  bool ngram_in_ram = false;
+  double ngram_read_us = 0;          // one 4 KiB row read from the file, when the table is not in RAM
+  double copy_bytes_per_s[2] = {0, 0};  // each card's copy engine reading pinned host memory
 };
 
 // One row of a decode step: a token of a sequence at its position; p1 and p2 are the two tokens before it (kNoToken
@@ -397,6 +403,8 @@ class Model {
   uint8_t *spare_piece(uint64_t need);
   uint8_t *arena_piece(uint64_t need);
   double measure_host_read();
+  unsigned loader_threads();
+  double measure_copy(uint32_t card);
   void settle_arena();
   uint32_t ngram_ev() const;  // the event the host signals when a decode step's n-gram rows are in
   uint32_t idx_ev(uint32_t attn, uint32_t c) const;  // card c's indexer candidates of attention layer attn are out

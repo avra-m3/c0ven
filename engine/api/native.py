@@ -366,6 +366,8 @@ class NativeEngine:
         # Adaptive swaps but with ADR-0016's switches; drafting when the draft layer is given (ADR-0029).
         if not config.deterministic:
             c.flags |= abi.ConfigFlag.SWAPS | abi.ConfigFlag.SHARE_KV
+        if config.ngram_in_ram:
+            c.flags |= abi.ConfigFlag.NGRAM_RAM
         self._draft_dir = config.draft_dir.encode()
         if self._draft_dir:
             c.mtp_dir = self._draft_dir
@@ -409,6 +411,11 @@ class NativeEngine:
             version=f"core-abi{info.api_version}",
             image_tokens_max=int(info.image_tokens_max),
             host_read_bytes_per_s=float(info.host_read_bytes_per_s),
+            loader_threads=int(info.loader_threads),
+            loader_bytes_per_s=float(info.loader_bytes_per_s),
+            ngram_in_ram=bool(info.ngram_in_ram),
+            ngram_read_us=float(info.ngram_read_us),
+            copy_bytes_per_s=tuple(float(info.copy_bytes_per_s[i]) for i in range(info.cards)),
         )
 
     def sleep(self) -> None:
