@@ -141,6 +141,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=float,
         help="GiB of host memory the engine may plan for at most; a plan over it is refused with options that fit",
     )
+    p.add_argument(
+        "--card-memory",
+        type=float,
+        help="GiB of each card the engine may plan for at most, below what the card reports when a display or another"
+        " program uses it; default: the smallest used card's memory",
+    )
     p.add_argument("--table-cache", type=Path, help="a directory that keeps the model's tensor table between starts")
     p.add_argument(
         "--swapout-limit-mib",
@@ -381,6 +387,14 @@ def serve(
     return status
 
 
+def card_memory(reported: list[int], limit_gib: float | None) -> int | None:
+    """The memory the plan gives each card: the smallest card's, or `--card-memory` when that is less. None: the
+    model's reference card (no cards were read and no limit is set)."""
+    limit = round(limit_gib * GIB) if limit_gib is not None else None
+    sizes = [*reported, *([limit] if limit is not None else [])]
+    return min(sizes) if sizes else None
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     logging.basicConfig(level=args.log_level, stream=sys.stderr, format="%(asctime)s %(name)s %(message)s")
@@ -402,7 +416,7 @@ def main(argv: list[str] | None = None) -> int:
     used = cards[:2]
     options = PlanOptions(
         cards=len(used) if used else 2,
-        usable_vram=min(c.memory for c in used) if used else None,
+        usable_vram=card_memory([c.memory for c in used], args.card_memory),
         slots=args.slots,
         context=args.context,
         checkpoints=args.checkpoints,
