@@ -21,11 +21,19 @@ depends on the host and is not read.
 1. **The engine reads the host before its memory plan, and never writes it.** `engine/host.py` reads the host's
    available memory, the cgroup's `memory.max`, `memory.swap.max` and `cpu.max`, `RLIMIT_MEMLOCK`, the CPUs the process
    may use and their cores, and the CPU's features.
-2. **A plan that does not fit is refused before the load.** The message names the figure that does not fit and gives
+2. **The plan takes each card's memory and the card count from the cards.** The core lists the cards before open
+   (`engine_cards`, ABI version 11): name, memory, IP version, Xe cores and PCIe link. The smallest card bounds the
+   plan, and one card holds every weight whole. The test machine's card is the plan's card only for the mock and the
+   reference.
+3. **Kernels are built for each chip in `ENGINE_AOT_DEVICES`** (`bmg-g21` and `bmg-g31` by default), each set in a
+   directory named for the chip's IP version, and the core loads the set that matches each card. A card with no set
+   compiles the modules' SPIR-V at load and logs that its chip is untested. `ENGINE_KERNEL_TARGET=spirv` forces that
+   path on any card, for testing.
+4. **A plan that does not fit is refused before the load.** The message names the figure that does not fit and gives
    options that do. `--ram-max` sets a host memory limit of the user's own.
-3. **Each load prints a fit report** beside its plan figures and the core's figures after the load, and sends it in
+5. **Each load prints a fit report** beside its plan figures and the core's figures after the load, and sends it in
    INFO, so `/metrics` carries it.
-4. **The test machine's constants stay as test fixtures** for the mock and the reference backends, which run without a
+6. **The test machine's constants stay as test fixtures** for the mock and the reference backends, which run without a
    card. The two B60s remain the machine every measurement is taken on.
 
 ## Options not chosen
@@ -40,6 +48,8 @@ depends on the host and is not read.
 - The memory plan's two host thresholds go; the plan checks its host total against what the host can give.
 - Inside a container only the container's own cgroup is visible. A limit on a parent cgroup is not read, and a load
   over it is still killed.
-- The slices that follow add their rows to the fit report: the cards, the CPU, and storage and links
-  ([#22](https://github.com/avra-m3/c0ven/issues/22), [#23](https://github.com/avra-m3/c0ven/issues/23),
-  [#25](https://github.com/avra-m3/c0ven/issues/25)).
+- A build compiles every kernel once for each chip, and the image holds each set.
+- The plan's card figures for the draft layer and working memory remain estimates. The fit report notes a core
+  expert count more than 5% from the plan's.
+- The slices that follow add their rows to the fit report: the CPU, and storage and links
+  ([#23](https://github.com/avra-m3/c0ven/issues/23), [#25](https://github.com/avra-m3/c0ven/issues/25)).

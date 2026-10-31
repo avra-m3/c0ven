@@ -110,3 +110,33 @@ def test_a_limit_nothing_fits_names_a_smaller_file():
 def test_impossible_plans(options: PlanOptions):
     with pytest.raises(PlanError):
         plan(MODEL, options)
+
+
+def test_one_card_holds_every_weight_and_head_whole():
+    one = model_memory(TABLE, cards=1)
+    two = model_memory(TABLE, cards=2)
+    assert one.weights_per_card > 2 * two.weights_per_card - 2 * 1024**3
+    assert one.kv_cell_per_card == 2 * two.kv_cell_per_card
+    p1 = plan(one, PlanOptions(cards=1, slots=1, context=262_144))
+    p2 = plan(two, PlanOptions(slots=1, context=262_144))
+    assert p1.experts_cached < p2.experts_cached // 2
+    assert p1.arena_bytes > p2.arena_bytes
+
+
+def test_the_plan_takes_the_cards_memory():
+    big = plan(MODEL, PlanOptions(slots=1, context=262_144, usable_vram=32 * 2**30))
+    ref = plan(MODEL, PlanOptions(slots=1, context=262_144))
+    assert ref.usable_vram == 24_385_683_456
+    assert big.experts_per_layer > ref.experts_per_layer
+
+
+def test_a_card_too_small_is_refused_with_what_fits():
+    with pytest.raises(PlanError, match="short before any expert") as exc:
+        plan(MODEL, PlanOptions(slots=4, context=262_144, usable_vram=6 * 2**30))
+    assert "Options that fit" in str(exc.value)
+
+
+def test_without_the_draft_layer_the_cards_cache_more():
+    assert (
+        plan(MODEL, PlanOptions(slots=1, draft=False)).experts_cached > plan(MODEL, PlanOptions(slots=1)).experts_cached
+    )

@@ -1,5 +1,9 @@
 #include "ze.h"
 
+#include "library.h"
+
+#include <sys/stat.h>
+
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -41,13 +45,17 @@ Runtime::Runtime(uint32_t min_cards) {
     ZE_CHECK(zeDeviceGet(drv, &n, devs.data()));
     std::vector<Card> found;
     for (auto dev : devs) {
-      ze_device_properties_t p = {ZE_STRUCTURE_TYPE_DEVICE_PROPERTIES_1_2};
+      ze_device_ip_version_ext_t ipv = {ZE_STRUCTURE_TYPE_DEVICE_IP_VERSION_EXT};
+      ze_device_properties_t p = {ZE_STRUCTURE_TYPE_DEVICE_PROPERTIES_1_2, &ipv};
       ZE_CHECK(zeDeviceGetProperties(dev, &p));
       if (p.type != ZE_DEVICE_TYPE_GPU) continue;
       Card c;
       c.device = dev;
       c.name = p.name;
       c.max_alloc = p.maxMemAllocSize;
+      c.device_id = p.deviceId;
+      c.ip_version = ipv.ipVersion;
+      c.xe_cores = p.numSlices * p.numSubslicesPerSlice;
       c.timer_hz = p.timerResolution;  // cycles per second, with the 1.2 properties
       c.timestamp_mask = p.timestampValidBits >= 64 ? ~0ull : ((1ull << p.timestampValidBits) - 1);
       uint32_t nm = 0;
@@ -64,6 +72,9 @@ Runtime::Runtime(uint32_t min_cards) {
         std::snprintf(buf, sizeof buf, "%04x:%02x:%02x.%x", pci.address.domain, pci.address.bus, pci.address.device,
                       pci.address.function);
         c.pci = buf;
+        c.pcie_gen = pci.maxSpeed.genVersion;
+        c.pcie_width = pci.maxSpeed.width;
+        c.pcie_bytes_per_s = pci.maxSpeed.maxBandwidth;
       }
       uint32_t ng = 0;
       ZE_CHECK(zeDeviceGetCommandQueueGroupProperties(dev, &ng, nullptr));
@@ -213,12 +224,19 @@ void Runtime::free_card(uint32_t card) {
   }
 }
 
-Module::Module(Runtime &rt, uint32_t card, const std::string &path) {
+std::string Card::ip() const {
+  if (!ip_version) return "";
+  return std::to_string(ip_version >> 22) + "." + std::to_string((ip_version >> 14) & 0xff) + "." +
+         std::to_string(ip_version & 0x3f);
+}
+
+Module::Module(Runtime &rt, uint32_t card, const std::string &path, const std::string *spirv_options) {
   auto bin = read_file(path);
   ze_module_desc_t md = {ZE_STRUCTURE_TYPE_MODULE_DESC};
-  md.format = ZE_MODULE_FORMAT_NATIVE;
+  md.format = spirv_options ? ZE_MODULE_FORMAT_IL_SPIRV : ZE_MODULE_FORMAT_NATIVE;
   md.inputSize = bin.size();
   md.pInputModule = bin.data();
+  if (spirv_options) md.pBuildFlags = spirv_options->c_str();
   ze_module_build_log_handle_t log = nullptr;
   ze_result_t r = zeModuleCreate(rt.context(), rt.cards().at(card).device, &md, &mod_, &log);
   if (r != ZE_RESULT_SUCCESS) {
@@ -230,6 +248,40 @@ Module::Module(Runtime &rt, uint32_t card, const std::string &path) {
     throw std::runtime_error("zeModuleCreate(" + path + ") failed: " + s);
   }
   if (log) zeModuleBuildLogDestroy(log);
+}
+
+Library::Library(Runtime &rt, std::string dir, std::string spirv_dir)
+    : rt_(rt), dir_(std::move(dir)), spirv_dir_(std::move(spirv_dir)) {
+  const char *target = std::getenv("ENGINE_KERNEL_TARGET");
+  const bool force = target && std::string(target) == "spirv";
+  for (uint32_t c = 0; c < rt_.ncards(); c++) {
+    const Card &card = rt_.cards()[c];
+    struct stat st;
+    const std::string ip = card.ip();
+    const bool built = !ip.empty() && ::stat((dir_ + "/" + ip).c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+    spirv_.push_back(force || !built);
+    if (force)
+      std::fprintf(stderr, "engine: card %u: ENGINE_KERNEL_TARGET=spirv, its kernels are compiled at load\n", c);
+    else if (!built)
+      std::fprintf(stderr,
+                   "engine: card %u (%s, IP %s): no kernels are built for this chip, which is untested; its kernels "
+                   "are compiled from SPIR-V at load\n",
+                   c, card.name.c_str(), ip.empty() ? "not reported" : ip.c_str());
+  }
+}
+
+ze_kernel_handle_t Library::get(uint32_t card, const std::string &module, const std::string &name) {
+  auto &m = modules_[{card, module}];
+  if (!m) {
+    if (spirv_.at(card)) {
+      auto opts = read_file(dir_ + "/" + module + ".options");
+      const std::string options(opts.begin(), opts.end());
+      m = std::make_unique<Module>(rt_, card, spirv_dir_ + "/" + module + ".spv", &options);
+    } else {
+      m = std::make_unique<Module>(rt_, card, dir_ + "/" + rt_.cards()[card].ip() + "/" + module + ".bin");
+    }
+  }
+  return m->kernel(name);
 }
 
 Module::~Module() {

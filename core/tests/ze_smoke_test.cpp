@@ -23,7 +23,7 @@ int main() {
     const auto &card = rt.cards()[c];
     std::printf("card %u: %s at %s, %.2f GiB, shared system USM 0x%x\n", c, card.name.c_str(), card.pci.c_str(),
                 card.memory / 1073741824.0, card.shared_system);
-    mods.push_back(std::make_unique<ze::Module>(rt, c, ENGINE_KERNEL_DIR "/smoke.bin"));
+    mods.push_back(std::make_unique<ze::Module>(rt, c, ENGINE_KERNEL_DIR "/" + card.ip() + "/smoke.bin"));
     lists.push_back(std::make_unique<ze::List>(rt, c, ze::List::regular));
   }
   // Card c writes its slice with bias c; card c > 0 first waits for card c - 1's event.

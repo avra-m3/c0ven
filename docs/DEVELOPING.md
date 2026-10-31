@@ -26,7 +26,7 @@ The build makes:
 
 | Output | What it is |
 | --- | --- |
-| `build/kernels/*.bin` | the kernel modules, compiled ahead of time by `ocloc` for `bmg-g21` ([ADR-0003](adr/0003-kernel-language.md)), one per `engine_add_kernel_module` in [`kernels/CMakeLists.txt`](../kernels/CMakeLists.txt): the decode step's `matvec_<type>_l<lanes>` and `moe_<type>_g<group>`, the prompt path's `gemm_*`, `qgemm_<type>[_file]` and `qwen4exp_prompt`/`_attn`/`_gdn`, the image encoder's `qwen4exp_vision*`, the model's own `qwen4exp`, and `common` and `smoke` |
+| `build/kernels/<ip>/*.bin`, `*.spv`, `build/kernels/*.options` | the kernel modules, compiled ahead of time by `ocloc` for each chip in `ENGINE_AOT_DEVICES` (`bmg-g21` and `bmg-g31` by default), in a directory named for the chip's IP version (`20.1.0`, `20.2.0`), with each module's SPIR-V and the build options a card without its own binaries compiles it with at load ([ADR-0003](adr/0003-kernel-language.md), [ADR-0057](adr/0057-the-engine-reads-the-host-it-runs-on.md)); one per `engine_add_kernel_module` in [`kernels/CMakeLists.txt`](../kernels/CMakeLists.txt): the decode step's `matvec_<type>_l<lanes>` and `moe_<type>_g<group>`, the prompt path's `gemm_*`, `qgemm_<type>[_file]` and `qwen4exp_prompt`/`_attn`/`_gdn`, the image encoder's `qwen4exp_vision*`, the model's own `qwen4exp`, and `common` and `smoke` |
 | `build/core/libengine.so` | the C ABI of [`include/engine_api.h`](../include/engine_api.h), the library the control plane loads. It exports only the `engine_` symbols |
 | `build/core/libengine_core.a` | the core itself, which the tests link |
 | `build/core/tests/*` | the core's tests |
