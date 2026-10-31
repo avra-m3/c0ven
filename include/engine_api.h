@@ -20,7 +20,7 @@ extern "C" {
 #define ENGINE_API
 #endif
 
-#define ENGINE_API_VERSION 10
+#define ENGINE_API_VERSION 11
 
 typedef enum {
   ENGINE_OK = 0,
@@ -319,6 +319,24 @@ ENGINE_API const char *engine_last_error(const engine_ctx *e);
 
 /* Frees everything. */
 ENGINE_API void engine_close(engine_ctx *e);
+
+/* One card the engine can use, as Level Zero reports it (ZE_AFFINITY_MASK applies). */
+typedef struct {
+  char name[64];
+  char pci[16];                /* bus address, "0000:03:00.0" */
+  uint64_t memory;             /* device-local memory, bytes */
+  uint32_t device_id;
+  uint32_t ip_version;         /* architecture << 22 | release << 14 | revision; 0: not reported */
+  uint32_t xe_cores;
+  int32_t pcie_gen;            /* the link's most, as the driver reports it; -1: unknown */
+  int32_t pcie_width;          /* lanes; -1: unknown */
+  uint32_t reserved;
+  int64_t pcie_bytes_per_s;    /* -1: unknown */
+} engine_card;
+
+/* Lists the cards without opening an engine: up to cap of them into cards (which may be null), and how many there are
+ * into *n. Errors as engine_open's, read with engine_last_error(null). */
+ENGINE_API engine_status engine_cards(engine_card *cards, uint32_t cap, uint32_t *n);
 
 /* For the ABI test: one row per field of every struct above, name "struct.field" with its offset and size, then
  * one row per struct, name "struct", with offset 0 and its size. Returns the number of rows; table may be null. */

@@ -54,6 +54,34 @@ class Host:
         return max(1, min(self.cpus, math.ceil(self.cpu_quota)))
 
 
+@dataclass(frozen=True, slots=True)
+class Card:
+    """One card the engine can use, from the core's `engine_cards` (Level Zero)."""
+
+    name: str
+    pci: str
+    memory: int
+    """Device-local memory, bytes."""
+    device_id: int
+    ip_version: int
+    """Level Zero's packed IP version; 0 when not reported."""
+    xe_cores: int
+    pcie_gen: int
+    """The link's most, as the driver reports it; -1: unknown."""
+    pcie_width: int
+    pcie_bytes_per_s: int
+
+    @property
+    def ip(self) -> str:
+        """The IP version as architecture.release.revision, the form `ocloc` takes: 20.1.0 for a B60."""
+        v = self.ip_version
+        return f"{v >> 22}.{(v >> 14) & 0xFF}.{v & 0x3F}" if v else "unknown"
+
+    @property
+    def link(self) -> str:
+        return f"PCIe {self.pcie_gen}.0 x{self.pcie_width}" if self.pcie_gen > 0 and self.pcie_width > 0 else "unknown"
+
+
 def _read(path: Path) -> str | None:
     try:
         return path.read_text()

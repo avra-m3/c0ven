@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
 
-from engine.host import Host
+from engine.host import Card, Host
 from engine.memory_plan import GIB, MemoryPlan
 
 UNKNOWN = "-"
@@ -55,6 +55,43 @@ def host_rows(host: Host, plan: MemoryPlan, arena_core: int | None = None, rss_c
         Row("memlock", "RLIMIT_MEMLOCK", gib(host.memlock) if host.memlock is not None else "unlimited"),
     ]
     return rows
+
+
+EXPERTS_TOLERANCE = 0.05
+"""A core's expert count further than this share from the plan's is noted: the plan's card figures are estimates."""
+
+
+def card_rows(cards: list[Card], plan: MemoryPlan, experts_core: int | None = None) -> list[Row]:
+    rows = [
+        Row(
+            f"card{i}",
+            f"card {i}",
+            f"{c.name.replace(' ', '_')},{gib(c.memory)},IP_{c.ip},{c.xe_cores}_Xe_cores,{c.link.replace(' ', '_')}",
+            gib(plan.usable_vram) if i < plan.cards else "unused",
+        )
+        for i, c in enumerate(cards)
+    ]
+    rows.append(
+        Row(
+            "experts",
+            "experts per layer",
+            "",
+            str(plan.experts_per_layer),
+            str(experts_core) if experts_core is not None else "",
+        )
+    )
+    return rows
+
+
+def card_notes(plan: MemoryPlan, experts_core: int) -> list[str]:
+    """What the core's figures say about the plan's, after the load."""
+    p = plan.experts_per_layer
+    if abs(experts_core - p) > max(8, EXPERTS_TOLERANCE * p):
+        return [
+            f"the core caches {experts_core} experts a layer and the plan {p}: the plan's figures for the cards, "
+            "and the host memory planned from them, are off by that much"
+        ]
+    return []
 
 
 def info(rows: list[Row]) -> dict[str, str]:

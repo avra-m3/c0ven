@@ -57,14 +57,14 @@ def split_of(name: str) -> SplitKind:
     raise KeyError(f"no split rule for {name}")
 
 
-def bytes_per_card(t: FileTensor) -> int:
-    """What the tensor takes on each card outside the expert cache: whole, half, or nothing."""
+def bytes_per_card(t: FileTensor, cards: int = 2) -> int:
+    """What the tensor takes on each card outside the expert cache: whole, its share of the cards, or nothing."""
     if t.category is Category.EXPERTS:
         return 0
     match split_of(t.name):
         case SplitKind.WHOLE:
             return t.nbytes
         case SplitKind.ROWS | SplitKind.COLUMNS:
-            return -(-t.nbytes // 2)
+            return -(-t.nbytes // cards)
         case _:
             return 0

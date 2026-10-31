@@ -224,8 +224,7 @@ def serve(
     stdout: TextIO,
     info: Callable[[], dict[str, str]] = dict,
     swapout_limit_mib: float | None = None,
-    fit_rows: Callable[[EngineFacts], list[fit.Row]] | None = None,
-    fit_notes: tuple[str, ...] = (),
+    fit_report: Callable[[EngineFacts], tuple[list[fit.Row], list[str]]] | None = None,
 ) -> int:
     events: queue.Queue[protocol.Event | None] = queue.Queue()
     commands: queue.Queue[protocol.Command] = queue.Queue()
@@ -238,9 +237,9 @@ def serve(
         pages = int(measured.get("pswpout", "0"))
         if swapout_limit_mib is not None and pages * 4096 > swapout_limit_mib * 2**20:
             return f"the host swapped out {pages * 4096 / 2**20:.0f} MiB while loading, over {swapout_limit_mib:g}"
-        rows = fit_rows(facts) if fit_rows is not None else []
+        rows, notes = fit_report(facts) if fit_report is not None else ([], [])
         if rows:
-            fit.write(rows, list(fit_notes))
+            fit.write(rows, notes)
         facts_info = {
             "version": facts.version,
             "cards": str(facts.cards),
@@ -388,9 +387,22 @@ def main(argv: list[str] | None = None) -> int:
     arch = args.arch or architecture(args.model)  # the front end passes --arch, so the GGUF is read once
     model = model_module(arch)
     native = args.backend == "native"
-    # Only the native backend takes host memory; the mock and the reference plan with no host limit.
+    # Only the native backend reads the host and the cards; the mock and the reference plan for the test machine with
+    # no host limit.
     the_host = host.read() if native else None
+    cards: list[host.Card] = []
+    if native:
+        from engine.api.native import cards as read_cards  # noqa: PLC0415
+
+        try:
+            cards = read_cards()
+        except EngineError as exc:
+            print(protocol.Error(None, f"cards: {exc}").encode(), flush=True)
+            return 1
+    used = cards[:2]
     options = PlanOptions(
+        cards=len(used) if used else 2,
+        usable_vram=min(c.memory for c in used) if used else None,
         slots=args.slots,
         context=args.context,
         checkpoints=args.checkpoints,
@@ -423,10 +435,20 @@ def main(argv: list[str] | None = None) -> int:
         options=sched,
         stdin=sys.stdin,
         stdout=sys.stdout,
-        info=lambda: {"backend": args.backend, "arch": arch, "experts_planned": str(plan.experts_cached)},
+        info=lambda: {"backend": args.backend, "arch": arch, "experts_planned": str(plan.experts_per_layer)},
         swapout_limit_mib=args.swapout_limit_mib,
-        fit_rows=(lambda facts: fit.host_rows(the_host, plan, facts.host_pinned, fit.rss()))
-        if the_host is not None
-        else None,
-        fit_notes=tuple(fit.notes(the_host, bool(os.environ.get("ENGINE_UNLOCKED_ARENA")))) if the_host else (),
+        fit_report=(lambda facts: report(the_host, cards, plan, facts)) if the_host is not None else None,
     )
+
+
+def report(
+    the_host: host.Host, cards: list[host.Card], plan: MemoryPlan, facts: EngineFacts
+) -> tuple[list[fit.Row], list[str]]:
+    """The fit report after a load: the cards and the host, with the core's figures."""
+    rows = fit.card_rows(cards, plan, facts.experts_cached) + fit.host_rows(
+        the_host, plan, facts.host_pinned, fit.rss()
+    )
+    notes = fit.card_notes(plan, facts.experts_cached) + fit.notes(
+        the_host, bool(os.environ.get("ENGINE_UNLOCKED_ARENA"))
+    )
+    return rows, notes

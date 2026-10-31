@@ -263,10 +263,20 @@ def test_the_fit_report_is_in_the_info_line():
         options=SchedulerOptions(),
         stdin=io.StringIO("QUIT\n"),
         stdout=out,
-        fit_rows=lambda _facts: rows,
+        fit_report=lambda _facts: (rows, []),
     )
     assert status == 0
     info = protocol.parse_event(out.getvalue().splitlines()[0])
     assert isinstance(info, protocol.Info)
     assert info.facts["fit_arena"] == "-/1.00GiB/0.98GiB"
     assert info.facts["fit_swap"] == "8.00GiB,cgroup:-/-/-"
+
+
+def test_the_core_far_from_the_plan_is_noted():
+    from engine.memory_plan import PlanOptions, plan  # noqa: PLC0415
+    from engine.models.qwen4exp.memory import model_memory  # noqa: PLC0415
+    from engine.models.qwen4exp.tensors import from_tsv  # noqa: PLC0415
+
+    p = plan(model_memory(from_tsv()), PlanOptions())
+    assert fit.card_notes(p, p.experts_per_layer + 3) == []
+    assert "the core caches" in fit.card_notes(p, p.experts_per_layer + 60)[0]

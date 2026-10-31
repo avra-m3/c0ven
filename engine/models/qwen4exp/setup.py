@@ -7,6 +7,7 @@ model (ADR-0024, item 3).
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from pathlib import Path
 
 from engine.api.interface import OpenConfig, Tensor
@@ -26,7 +27,7 @@ TIMING_RECORDS = 1 << 16
 
 
 def memory_plan(table: TensorTable, options: PlanOptions) -> MemoryPlan:
-    return plan(model_memory(table), options)
+    return plan(model_memory(table, options.cards), options)
 
 
 def draft_dir(model: Path) -> Path | None:
@@ -50,6 +51,8 @@ def open_config(
     passed: enough for the mock and the reference. draft: the draft layer's directory, or None for no drafting.
     table_cache: a directory keeping the model's tensor table between starts, or None."""
     table = from_gguf_cached(model, table_cache) if model is not None else from_tsv()
+    if model is not None:
+        options = replace(options, draft=draft is not None)
     mp = memory_plan(table, options)
     tensors = (
         tuple(
