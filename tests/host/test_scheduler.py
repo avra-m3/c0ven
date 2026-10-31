@@ -11,7 +11,6 @@ import protocol
 from engine.api.interface import Event, EventKind, OpenConfig, StepPlan
 from engine.api.mock import MockEngine, Script
 from engine.scheduler import CheckpointRule, Phase, Scheduler, SchedulerOptions, every_16k
-from engine.timing import WHOLE_ROWS
 from tests.helpers import facts_of, open_config
 
 
@@ -244,8 +243,9 @@ def test_a_short_prompt_beside_a_writer_is_one_piece():
     short, long = sorted(pieces.values(), key=len)
     assert short == [568], "its chunk is over the budget, but cutting it would pay the fixed part twice"
     assert sum(long) == 5000
-    assert max(long) <= WHOLE_ROWS, "a long prompt holds the writers for one piece of at most WHOLE_ROWS at a time"
-    assert min(long[:-1]) >= WHOLE_ROWS // 2, "no piece so short that it is almost all fixed part"
+    whole = run.scheduler.cost.whole_rows(options.chunk_rows)
+    assert max(long) <= whole, "a long prompt holds the writers for one piece of at most the whole rows at a time"
+    assert min(long[:-1]) >= whole // 2, "no piece so short that it is almost all fixed part"
 
 
 def test_short_prompts_beside_a_writer_share_a_chunk():

@@ -404,8 +404,9 @@ with each process, so a log store is what keeps them.
 The scheduler's cost model (`engine/timing.py`) keeps a moving average of a decode step's time. It fits a prompt
 chunk's time as a fixed part, the staging of the layers' uncached experts, and a part per row, and sizes prompt pieces
 by them ([ADR-0017](adr/0017-scheduling-several-requests.md)). Every piece pays the fixed part, so a prompt of up to
-1,024 rows is read whole, and a longer one in pieces of at most 1,024 rows, each holding the writers about as long as
-a short prompt does ([ADR-0044](adr/0044-a-short-prompt-is-read-whole.md)). The protocol's
+the rows whose part equals the fixed part is read whole, and a longer one in pieces of at most that many rows (1,024
+and 1.6 times the time budget until the model has seen a chunk), each holding the writers about as long as a short
+prompt does ([ADR-0044](adr/0044-a-short-prompt-is-read-whole.md)). The protocol's
 `PP` and `DONE` lines carry each request's prompt and decode times.
 
 `Options::trace` in the core times every kernel of a prompt chunk's or a decode step's lists, for tests and tools.

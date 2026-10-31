@@ -26,12 +26,10 @@ class Ewma:
         self.samples += 1
 
 
-STRETCH = 1.6
-"""A prompt piece may run to this multiple of its time budget rather than be cut: each cut pays the fixed part again."""
-WHOLE_ROWS = 1024
-"""Beside writers, the most rows a prompt piece holds: a prompt of up to this many rows may be read whole, a longer one
-is cut, since the fixed part is most of a chunk only up to about this many rows and a longer chunk holds the writers
-for longer (docs/measurements/MEASUREMENTS.md#2026-10-17-prefill-timings)."""
+UNFITTED_STRETCH = 1.6
+"""Before the fit has seen a chunk: a prompt piece may run to this multiple of its time budget rather than be cut."""
+UNFITTED_WHOLE_ROWS = 1024
+"""Before the fit has seen a chunk: the most rows a prompt piece holds beside writers."""
 
 
 @dataclass(slots=True)
@@ -46,6 +44,8 @@ class CostModel:
     decay: float = 0.8
     _s: list[float] = field(default_factory=lambda: [0.0] * 5)
     """The decayed sums: chunks², chunks x rows, rows², chunks x ms, rows x ms."""
+    chunks_seen: int = 0
+    """The chunks `observe` has fitted. While it is 0, `chunk_ms` and `row_ms` are only the starting values."""
 
     @classmethod
     def initial(cls, decode_ms: float = 11.0, row_ms: float = 0.46, chunk_ms: float = 0.0) -> CostModel:
@@ -60,6 +60,7 @@ class CostModel:
             return
         if chunks == 0:
             return
+        self.chunks_seen += chunks
         y = max(0.0, ms - (self.decode_ms.value if decoded else 0.0))
         s, d = self._s, self.decay
         for i, v in enumerate((chunks * chunks, chunks * rows, rows * rows, chunks * y, rows * y)):
@@ -78,19 +79,34 @@ class CostModel:
         """A piece of `rows` rows read as one chunk."""
         return (self.chunk_ms if rows > WINDOW_ROWS else 0.0) + self.row_ms * rows
 
-    def rows_within(self, budget_ms: float, wanted: int) -> int:
-        """The rows of a piece that aims at `budget_ms`, of the `wanted` rows left. All of them when they are at most
-        WHOLE_ROWS and their chunk costs at most STRETCH x the budget or its fixed part is at least its rows' part,
-        since each cut would pay the fixed part again and a short prompt's chunk is mostly that part, the staging
-        (docs/measurements/MEASUREMENTS.md#2026-10-17-prefill-timings). Otherwise the rows that fit the budget, but
-        no fewer than make the rows' part equal the fixed one or half of WHOLE_ROWS, whichever is fewer, and no more
-        than WHOLE_ROWS; all of them when fewer than WINDOW_ROWS would be left."""
+    def whole_ms(self, budget_ms: float) -> float:
+        """The time a prompt piece may take and stay whole: the budget and one more cut's fixed part, since a cut
+        pays that part again. Before the fit has seen a chunk, UNFITTED_STRETCH x the budget."""
+        if self.chunks_seen == 0:
+            return UNFITTED_STRETCH * budget_ms
+        return budget_ms + self.chunk_ms
+
+    def whole_rows(self, cap: int) -> int:
+        """The most rows a prompt piece holds beside writers: the rows whose part equals the fixed part, at least
+        two windows and at most `cap` (the rows of a chunk). Before the fit has seen a chunk, UNFITTED_WHOLE_ROWS."""
+        if self.chunks_seen == 0:
+            return UNFITTED_WHOLE_ROWS
+        return min(cap, max(2 * WINDOW_ROWS, round(self.chunk_ms / max(self.row_ms, 1e-6))))
+
+    def rows_within(self, budget_ms: float, wanted: int, cap: int) -> int:
+        """The rows of a piece that aims at `budget_ms`, of the `wanted` rows left; `cap` is the rows of a chunk. All
+        of them when they are at most `whole_rows` and their chunk costs at most `whole_ms` or its fixed part is at
+        least its rows' part, since each cut would pay the fixed part again and a short prompt's chunk is mostly that
+        part, the staging (docs/measurements/MEASUREMENTS.md#2026-10-17-prefill-timings). Otherwise the rows that
+        fit the budget, but no fewer than make the rows' part equal the fixed one or half of `whole_rows`, whichever
+        is fewer, and no more than `whole_rows`; all of them when fewer than WINDOW_ROWS would be left."""
         row_ms = max(self.row_ms, 1e-6)
         even = self.chunk_ms / row_ms  # the rows whose part equals the fixed part
-        if wanted <= WHOLE_ROWS and (wanted <= even or self.prompt_ms(wanted) <= STRETCH * budget_ms):
+        whole = self.whole_rows(cap)
+        if wanted <= whole and (wanted <= even or self.prompt_ms(wanted) <= self.whole_ms(budget_ms)):
             return wanted
         fit = int((budget_ms - self.chunk_ms) / row_ms)
-        rows = min(WHOLE_ROWS, max(1, fit, min(math.ceil(even), WHOLE_ROWS // 2)))
+        rows = min(whole, max(1, fit, min(math.ceil(even), whole // 2)))
         return wanted if wanted - rows < WINDOW_ROWS else rows
 
 

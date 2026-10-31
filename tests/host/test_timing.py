@@ -7,8 +7,8 @@ import numpy as np
 import pytest
 
 from engine.api import abi
-from engine.api.interface import TIMING_DTYPE, TimingStage
-from engine.timing import WHOLE_ROWS, CostModel, summarise
+from engine.api.interface import TIMING_DTYPE, WINDOW_ROWS, TimingStage
+from engine.timing import UNFITTED_WHOLE_ROWS, CostModel, summarise
 from tools.attach import HEADER, RING, Reader, Region, trace_events
 
 
@@ -37,21 +37,69 @@ def test_cost_model_splits_a_chunk_into_fixed_and_per_row_parts():
     assert cost.prompt_ms(64) == pytest.approx(64 * 0.07), "a piece read as windows pays no staging"
 
 
-def test_a_short_prompt_is_one_piece_and_a_long_one_is_cut():
+def test_before_any_chunk_a_short_prompt_is_one_piece_and_a_long_one_is_cut():
     cost = CostModel.initial(row_ms=0.07, chunk_ms=600.0)
-    assert cost.rows_within(500.0, 300) == 300, "a short prompt is whole, though its chunk is over the budget"
-    assert cost.rows_within(500.0, WHOLE_ROWS) == WHOLE_ROWS, "the staging is still the larger part of its chunk"
-    assert cost.rows_within(500.0, WHOLE_ROWS + 76) == WHOLE_ROWS // 2, "longer: cut, though the staging is most"
+    assert cost.rows_within(500.0, 300, 4352) == 300, "a short prompt is whole, though its chunk is over the budget"
+    assert cost.rows_within(500.0, UNFITTED_WHOLE_ROWS, 4352) == UNFITTED_WHOLE_ROWS, (
+        "the staging is still the larger part of its chunk"
+    )
+    assert cost.rows_within(500.0, UNFITTED_WHOLE_ROWS + 76, 4352) == UNFITTED_WHOLE_ROWS // 2, (
+        "longer: cut, though the staging is most"
+    )
     dear = CostModel.initial(row_ms=0.3, chunk_ms=900.0)
-    assert dear.rows_within(500.0, 2048) == WHOLE_ROWS // 2, "nothing fits the budget: half of WHOLE_ROWS"
+    assert dear.rows_within(500.0, 2048, 4352) == UNFITTED_WHOLE_ROWS // 2, (
+        "nothing fits the budget: half of UNFITTED_WHOLE_ROWS"
+    )
     cheap = CostModel.initial(row_ms=0.5, chunk_ms=100.0)
-    assert cheap.rows_within(500.0, 2048) == 800, "the rows that fit the budget"
-    assert cheap.rows_within(500.0, 1000) == 1000, "1.6 x the budget is 800 ms, 1,400 rows"
+    assert cheap.rows_within(500.0, 2048, 4352) == 800, "the rows that fit the budget"
+    assert cheap.rows_within(500.0, 1000, 4352) == 1000, "1.6 x the budget is 800 ms, 1,400 rows"
     cheaper = CostModel.initial(row_ms=0.07, chunk_ms=100.0)
-    assert cheaper.rows_within(500.0, 2048) == WHOLE_ROWS, "no more rows than WHOLE_ROWS, however cheap"
-    assert cheaper.rows_within(500.0, WHOLE_ROWS + 40) == WHOLE_ROWS + 40, "fewer than a window's rows left: they join"
+    assert cheaper.rows_within(500.0, 2048, 4352) == UNFITTED_WHOLE_ROWS, (
+        "no more rows than UNFITTED_WHOLE_ROWS, however cheap"
+    )
+    assert cheaper.rows_within(500.0, UNFITTED_WHOLE_ROWS + 40, 4352) == UNFITTED_WHOLE_ROWS + 40, (
+        "fewer than a window's rows left: they join"
+    )
     per_row = CostModel.initial(row_ms=0.46)
-    assert per_row.rows_within(100.0, 3000) == 217, "without a fixed part, pieces fit the budget"
+    assert per_row.rows_within(100.0, 3000, 4352) == 217, "without a fixed part, pieces fit the budget"
+
+
+def fitted(chunk_ms: float, row_ms: float) -> CostModel:
+    cost = CostModel.initial(decode_ms=10.0)
+    for rows in (300, 2048, 300, 1024, 500, 2048):
+        cost.observe(decoded=1, rows=rows, ms=10.0 + chunk_ms + row_ms * rows)
+    return cost
+
+
+def test_the_fit_counts_the_chunks_it_has_seen():
+    cost = CostModel.initial()
+    assert cost.chunks_seen == 0
+    cost.observe(decoded=1, rows=0, ms=9.0)
+    assert cost.chunks_seen == 0, "a decode step is not a chunk"
+    cost.observe(decoded=1, rows=300, ms=600.0, chunks=2)
+    cost.observe(decoded=1, rows=300, ms=600.0, chunks=0)
+    assert cost.chunks_seen == 2
+
+
+def test_a_piece_stays_whole_for_the_budget_and_one_more_cut():
+    cost = CostModel.initial(row_ms=0.07, chunk_ms=100.0)
+    assert cost.whole_ms(500.0) == pytest.approx(800.0), "before any chunk: 1.6 x the budget"
+    cost = fitted(chunk_ms=100.0, row_ms=0.5)
+    assert cost.whole_ms(500.0) == pytest.approx(600.0), "the budget and one cut's fixed part"
+    assert cost.prompt_ms(1100) > cost.whole_ms(500.0), "a piece of 1,100 rows costs 650 ms: it is cut"
+    assert cost.rows_within(500.0, 1100, 4352) == 200, "cut at the whole rows: 100 ms over 0.5 ms a row"
+
+
+def test_whole_rows_are_where_the_fixed_part_equals_the_rows():
+    assert CostModel.initial(row_ms=0.07, chunk_ms=600.0).whole_rows(4352) == UNFITTED_WHOLE_ROWS
+    cost = fitted(chunk_ms=650.0, row_ms=0.1)
+    assert cost.whole_rows(8192) == 6500
+    assert cost.whole_rows(4352) == 4352, "no more than the rows of a chunk"
+    assert fitted(chunk_ms=5.0, row_ms=0.5).whole_rows(4352) == 2 * WINDOW_ROWS, "at least two windows"
+    assert cost.rows_within(500.0, 5000, 8192) == 5000
+    assert cost.rows_within(500.0, 9000, 8192) == 3250, (
+        "a longer prompt is cut, and no piece is under half the whole rows"
+    )
 
 
 def test_summarise():
