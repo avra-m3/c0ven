@@ -76,14 +76,15 @@ dumps with the base and gives the change in mean KL with its 95% interval, the f
 ([ADR-0054](adr/0054-the-bf16-checkpoint-is-the-end-to-end-reference.md)). A dump named without a directory is read
 from `FLASH_REF_DIR`.
 
-`ENGINE_MTP_CACHE_DIR` keeps the draft layer's quantised experts between loads. When it is set, a load reads them
+`ENGINE_CACHE_DIR` keeps the draft layer's quantised experts between loads. When it is set, a load reads them
 from that directory instead of quantising the BF16 tensors again (about 43 s for both cards,
 [record](measurements/MEASUREMENTS.md#2026-10-16-load-phases)). If the file is missing or does not match, the load quantises and
 writes it there. There is one file per card, named by a key built from the MTP directory's manifest, the expert type
 and the card split. Point the variable at a volume, such as the dev container's cache volume
 (`/home/ubuntu/.cache/c0ven/mtp`), since the models are mounted read-only. When it is unset, every load
-quantises. The same directory keeps the loader's thread count and each card's working memory from the last load with
-the same options, which the next start plans with.
+quantises. `ENGINE_MTP_CACHE_DIR`, its old name, is read while it is unset. The same directory keeps the loader's
+thread count and each card's working memory from the last load with the same options, which the next start plans
+with.
 
 A load locks the arena in memory and stops if it cannot, so the container needs `--ulimit memlock=-1:-1`. A Docker
 daemon that cannot raise the limit, such as one inside another container, refuses that flag. There, set

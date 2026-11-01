@@ -48,7 +48,7 @@ A missing drafter or encoder is not an error: the engine runs without it. The co
 `dflash-manifest.json` as DFlash 2's and any other as the MTP layer's.
 
 At each load the engine quantises the draft layer's experts from BF16, which takes tens of seconds. Set
-`ENGINE_MTP_CACHE_DIR` to a writable directory to keep the result between loads. The cache is keyed by the bytes of
+`ENGINE_CACHE_DIR` to a writable directory to keep the result between loads. The cache is keyed by the bytes of
 `mtp-manifest.json`, the expert type and the card split, and a file that does not match is written again
 ([DEVELOPING.md](DEVELOPING.md)).
 
@@ -56,7 +56,7 @@ With Docker, mount the model directory at `/models` and give a volume for the ca
 [quick start](../README.md#quick-start):
 
 ```bash
-docker run ... -v <model dir>:/models:ro -v c0ven-mtp:/cache -e ENGINE_MTP_CACHE_DIR=/cache/mtp \
+docker run ... -v <model dir>:/models:ro -v c0ven-cache:/cache -e ENGINE_CACHE_DIR=/cache \
   ghcr.io/avra-m3/c0ven/serve:main --model /models/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf ...
 ```
 

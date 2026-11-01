@@ -17,7 +17,7 @@ The design is [ADR-0032](../adr/0032-sleep-the-front-end-stays-the-engine-keeps-
 Replace `993` with your render group's ID and `/path/to/models` with your model directory.
 
 ```bash
-docker run -d --name c0ven --device /dev/dri --group-add 993 --ulimit memlock=-1:-1 --read-only -p 127.0.0.1:8090:8080 -p 127.0.0.1:8091:8081 -v /path/to/models:/models:ro -v c0ven-mtp:/cache -e ENGINE_MTP_CACHE_DIR=/cache/mtp ghcr.io/avra-m3/c0ven/serve:main --model /models/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf --slots 4 --context 262144 --host 0.0.0.0 --port 8080 --start asleep --admin-host 0.0.0.0 --admin-port 8081
+docker run -d --name c0ven --device /dev/dri --group-add 993 --ulimit memlock=-1:-1 --read-only -p 127.0.0.1:8090:8080 -p 127.0.0.1:8091:8081 -v /path/to/models:/models:ro -v c0ven-cache:/cache -e ENGINE_CACHE_DIR=/cache ghcr.io/avra-m3/c0ven/serve:main --model /models/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf --slots 4 --context 262144 --host 0.0.0.0 --port 8080 --start asleep --admin-host 0.0.0.0 --admin-port 8081
 ```
 
 ## 2. Add the model to llama-swap's config

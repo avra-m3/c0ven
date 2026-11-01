@@ -10,11 +10,13 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import TextIO, cast
 
+import pytest
+
 import protocol
 from engine import fit
 from engine.api.interface import StepPlan
 from engine.api.mock import MockEngine
-from engine.process import serve
+from engine.process import cache_dir, serve
 from engine.scheduler import SchedulerOptions, every_16k
 from tests.helpers import open_config
 
@@ -302,3 +304,13 @@ def test_the_whole_fit_report_after_a_load(tmp_path: Path):
     info = fit.info(rows)
     assert info["fit_host_read"] == "-/-/40.0GB/s"
     assert info["fit_cpu"].endswith("/2_workers")
+
+
+def test_the_cache_dir_is_read_under_its_new_name_then_its_old(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("ENGINE_CACHE_DIR", raising=False)
+    monkeypatch.delenv("ENGINE_MTP_CACHE_DIR", raising=False)
+    assert cache_dir() is None
+    monkeypatch.setenv("ENGINE_MTP_CACHE_DIR", "/old")
+    assert cache_dir() == "/old"
+    monkeypatch.setenv("ENGINE_CACHE_DIR", "/new")
+    assert cache_dir() == "/new"
