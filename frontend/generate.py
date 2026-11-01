@@ -157,7 +157,8 @@ def render(model: Model, request: Request, image_tokens_max: int = 0) -> Prompt:
             )
         except ImageError as exc:
             raise BadRequest(str(exc)) from None
-    return Prompt(text, ids, text.endswith("<think>\n"), images)
+    # Templates end a thinking prompt with "<think>\n" or a bare "<think>"; one with thinking off ends after "</think>".
+    return Prompt(text, ids, text.endswith(("<think>", "<think>\n")), images)
 
 
 def budget(engine: Engine, prompt: Prompt, max_tokens: int | None, default: int = 0) -> int:

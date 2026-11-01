@@ -132,6 +132,26 @@ def test_reasoning_effort_becomes_a_level_the_template_accepts(
     assert prompt.startswith(f"effort {effort}\n")
 
 
+def test_a_bare_think_starts_the_reasoning(model: Model, engine: FakeEngine, tokenizer: Tokenizer):
+    engine.output = "Let me think.</think>Hello."
+    with TestClient(create_app(replace(model, template=ChatTemplate(BUDGET_TEMPLATE)), engine)) as c:
+        r = c.post("/v1/chat/completions", json={"messages": [{"role": "user", "content": "hi"}]})
+    assert r.status_code == 200, r.text
+    message = r.json()["choices"][0]["message"]
+    assert message == {"role": "assistant", "content": "Hello.", "reasoning_content": "Let me think."}
+    assert tokenizer.decode(engine.prompts[0], skip_special_tokens=False).endswith("assistant\n<think>")
+
+
+def test_a_closed_think_after_a_bare_one_is_all_content(model: Model, engine: FakeEngine, tokenizer: Tokenizer):
+    engine.output = "Hello."
+    body = {"messages": [{"role": "user", "content": "hi"}], "chat_template_kwargs": {"enable_thinking": False}}
+    with TestClient(create_app(replace(model, template=ChatTemplate(BUDGET_TEMPLATE)), engine)) as c:
+        r = c.post("/v1/chat/completions", json=body)
+    assert r.status_code == 200, r.text
+    assert r.json()["choices"][0]["message"] == {"role": "assistant", "content": "Hello."}
+    assert tokenizer.decode(engine.prompts[0], skip_special_tokens=False).endswith("assistant\n</think>")
+
+
 def test_openai_tool_calls(client: TestClient, engine: FakeEngine):
     engine.output = CALL
     body = chat(client, tools=[TOOL], chat_template_kwargs={"enable_thinking": False})
