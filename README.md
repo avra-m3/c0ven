@@ -26,12 +26,6 @@ Use C0ven if you have:
   ([below](#which-model-file-to-pick)),
 - one person, or a few requests at once, using the model.
 
-At start the engine reads each card's memory and chip, the host's available memory and the cgroup's limits, and the
-CPUs it may use, and refuses a configuration that does not fit before it loads, with options that do. It runs one CPU
-worker per core its CPU quota allows. Kernels are built for the B60's chip
-and the B70's; another Battlemage chip compiles them at load. Each load prints a fit report: what it read, beside what it planned and
-what it took ([ADR-0057](docs/adr/0057-the-engine-reads-the-host-it-runs-on.md)).
-
 C0ven is the wrong tool if you want to run other models, use other GPUs, or serve many users. Use llama.cpp or vLLM
 for those.
 
