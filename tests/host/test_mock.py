@@ -80,3 +80,16 @@ def test_the_reference_refuses_an_unknown_prompt():
     ref.admit(0, SETTINGS, (4, 5))
     ref.submit(StepPlan(1, [PromptSpan(0, 0, 2, True)], [PageChange(PageOp.ASSIGN, 0, 0, 0)]))
     assert EventKind.ERROR in run(ref)
+
+
+def test_a_span_counts_as_a_chunk_when_it_is_longer_than_the_plans_window_rows():
+    chunks: list[int] = []
+    for window_rows in (0, 20, 19, 8):
+        m = MockEngine()
+        m.open(open_config())
+        m.admit(0, SETTINGS, tuple(range(5, 25)))
+        plan = StepPlan(1, [PromptSpan(0, 0, 20, True)], [PageChange(PageOp.ASSIGN, 0, 0, 5)], window_rows=window_rows)
+        m.submit(plan)
+        done = [e for _ in range(20) for e in m.poll() if e.kind is EventKind.STEP_DONE]
+        chunks.append(done[0].c)
+    assert chunks == [0, 0, 1, 1], "0 is 64 rows; a span of 20 rows is a window up to 20"

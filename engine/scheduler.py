@@ -31,7 +31,6 @@ from engine.api.interface import (
     NO_SLOT,
     PAGE_CELLS,
     PROMPT_RUNS,
-    WINDOW_ROWS,
     Engine,
     EngineError,
     EngineFacts,
@@ -322,6 +321,7 @@ class Scheduler:
                 r.stop_sent = True
             elif r.phase is Phase.DECODE:
                 self._grow_ahead(r, len(r.prompt) + r.generated)
+        plan.window_rows = self.cost.window_rows()
         marks = self._prompt_spans(plan)
         plan.pages = self.state.take_changes(MAX_PAGE_CHANGES)
         if plan.empty:
@@ -363,6 +363,7 @@ class Scheduler:
         o = self.options
         candidates.sort(key=lambda r: (r.passes < o.max_passes, r.remaining, r.arrived))
         budget = o.chunk_rows
+        window = plan.window_rows
         left_ms = STRETCH * o.prompt_budget_ms
         marks: list[tuple[Request, int, bool]] = []
         chosen: set[int] = set()
@@ -379,7 +380,7 @@ class Scheduler:
                     ms = self.cost.prompt_ms(rows)
                 else:
                     group = plan.prompt[len(plan.prompt) // PROMPT_RUNS * PROMPT_RUNS :]
-                    shared = rows > WINDOW_ROWS and any(span.count > WINDOW_ROWS for span in group)
+                    shared = rows > window and any(span.count > window for span in group)
                     ms = self.cost.row_ms * rows if shared else self.cost.prompt_ms(rows)
                     if rows < r.next_mark() - r.next_pos or ms > left_ms:
                         break
