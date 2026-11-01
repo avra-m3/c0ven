@@ -157,11 +157,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="the n-gram table in RAM; auto: when the host has room for it beside the plan, with"
         " a quarter of its memory, at least 8 GiB, left free",
     )
-    p.add_argument(
-        "--table-cache",
-        type=Path,
-        help="a directory that keeps the model's tensor table, and the core's working memory per card, between starts",
-    )
+    p.add_argument("--table-cache", type=Path, help="a directory that keeps the model's tensor table between starts")
     p.add_argument(
         "--swapout-limit-mib",
         type=float,
@@ -439,11 +435,12 @@ def main(argv: list[str] | None = None) -> int:
         workers["cpu_workers"] = n
         log.info("CPU workers: %d, bounded by %s (ENGINE_CPU_WORKERS overrides)", n, source)
     vision = None if args.no_vision or not native or args.model is None else args.vision or vision_file(args.model)
-    # The core's working memory from an earlier load with the same options, in place of the estimate.
+    # The core's working memory from an earlier load with the same options, in place of the estimate. It is kept
+    # beside the draft layer's cache.
     working: Path | None = None
-    if native and args.table_cache is not None and args.model is not None:
+    if native and (cache := os.environ.get("ENGINE_MTP_CACHE_DIR")) and args.model is not None:
         working = working_file(
-            args.table_cache, args.model, options, f"draft={draft} vision={vision} deterministic={args.deterministic}"
+            Path(cache), args.model, options, f"draft={draft} vision={vision} deterministic={args.deterministic}"
         )
         if (kept := read_working(working)) is not None:
             options = dataclasses.replace(options, working_per_card=kept)

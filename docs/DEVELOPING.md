@@ -82,7 +82,8 @@ from that directory instead of quantising the BF16 tensors again (about 43 s for
 writes it there. There is one file per card, named by a key built from the MTP directory's manifest, the expert type
 and the card split. Point the variable at a volume, such as the dev container's cache volume
 (`/home/ubuntu/.cache/c0ven/mtp`), since the models are mounted read-only. When it is unset, every load
-quantises.
+quantises. The same directory keeps the loader's thread count and each card's working memory from the last load with
+the same options, which the next start plans with.
 
 A load locks the arena in memory and stops if it cannot, so the container needs `--ulimit memlock=-1:-1`. A Docker
 daemon that cannot raise the limit, such as one inside another container, refuses that flag. There, set

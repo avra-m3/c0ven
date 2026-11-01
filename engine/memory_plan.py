@@ -69,7 +69,7 @@ class PlanOptions:
     """The draft layer is loaded, and takes its share of each card."""
     working_per_card: int = 1_600_663_296
     """Each card's memory outside the weights, the draft layer, the sequences' reserve and the expert cache: the
-    core's figure from an earlier load when `--table-cache` keeps one (working_file), else an estimate."""
+    core's figure from an earlier load when `ENGINE_MTP_CACHE_DIR` keeps one (working_file), else an estimate."""
     checkpoints: int = 8
     kv_tokens: int = 0
     """The KV pool the slots share, in tokens; 0: every slot's own context, plus cached_prefix_pages. It is
@@ -159,7 +159,7 @@ class MemoryPlan:
 
 
 def working_file(cache: Path, model: Path, o: PlanOptions, more: str) -> Path:
-    """Where the core's working memory per card is kept between starts, in the `--table-cache` directory: a file for
+    """Where the core's working memory per card is kept between starts, in `ENGINE_MTP_CACHE_DIR`: a file for
     each model file, engine version, and set of options that changes what the core allocates before its experts.
     `more` names the rest of those options (the draft layer, the vision encoder, ...)."""
     st = model.stat()
