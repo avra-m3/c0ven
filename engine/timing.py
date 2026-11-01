@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from typing import Any
 
 import numpy as np
 
@@ -54,6 +55,30 @@ class CostModel:
     @classmethod
     def initial(cls, decode_ms: float = 11.0, row_ms: float = 0.46, chunk_ms: float = 0.0) -> CostModel:
         return cls(Ewma(decode_ms), chunk_ms, row_ms)
+
+    def to_dict(self) -> dict[str, float | int | list[float]]:
+        """The parts that carry from one run to the next, as JSON values."""
+        return {
+            "decode_ms": self.decode_ms.value,
+            "chunk_ms": self.chunk_ms,
+            "row_ms": self.row_ms,
+            "s": list(self._s),
+            "window_row_ms": self.window_row_ms.value,
+            "window_samples": self.window_row_ms.samples,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> CostModel:
+        """A model from `to_dict`'s output. Raises ValueError, KeyError or TypeError when it is not that. The decode
+        time is a start value: the first step replaces it."""
+        model = cls.initial(float(data["decode_ms"]), float(data["row_ms"]), float(data["chunk_ms"]))
+        model._s = [float(x) for x in data["s"]]
+        model.window_row_ms = Ewma(float(data["window_row_ms"]), samples=int(data["window_samples"]))
+        values = [model.decode_ms.value, model.chunk_ms, model.row_ms, model.window_row_ms.value, *model._s]
+        sizes_ok = len(model._s) == 5 and model.window_row_ms.samples >= 0
+        if not sizes_ok or not all(math.isfinite(v) and v >= 0 for v in values):
+            raise ValueError("the cost model has a wrong size or a value that is not a finite, non-negative number")
+        return model
 
     def observe(self, decoded: int, rows: int, ms: float, chunks: int = 1) -> None:
         """A plan's time: `decoded` decode rows and `rows` prompt rows in `chunks` chunks (pieces read by the prompt

@@ -412,7 +412,10 @@ The scheduler's cost model (`engine/timing.py`) keeps a moving average of a deco
 chunk's time as a fixed part, the staging of the layers' uncached experts, and a part per row, and sizes prompt pieces
 by them ([ADR-0017](adr/0017-scheduling-several-requests.md)). Every piece pays the fixed part, so a prompt of up to
 1,024 rows is read whole, and a longer one in pieces of at most 1,024 rows, each holding the writers about as long as
-a short prompt does ([ADR-0044](adr/0044-a-short-prompt-is-read-whole.md)). The protocol's
+a short prompt does ([ADR-0044](adr/0044-a-short-prompt-is-read-whole.md)). With `ENGINE_CACHE_DIR` set,
+the engine process writes the cost model there at each sleep and at exit, one file for each model file, engine version
+and set of options (the key of the working memory's file), and the next start and wake begin from it instead of the
+estimates. The protocol's
 `PP` and `DONE` lines carry each request's prompt and decode times.
 
 `Options::trace` in the core times every kernel of a prompt chunk's or a decode step's lists, for tests and tools.
