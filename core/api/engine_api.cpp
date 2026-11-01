@@ -1255,9 +1255,10 @@ extern "C" {
 engine_status engine_open(const engine_config *config, engine_info *info, engine_ctx **out) {
   if (!config || !config->model_path || !out) return ENGINE_BAD_ARGUMENT;
   try {
-    if (const std::string missing = engine::missing_cpu_features(); !missing.empty())
-      throw std::runtime_error("this CPU lacks " + missing + ", which the engine's ggml build uses for the experts the "
-                               "cards do not hold (cmake/ggml.cmake); it needs a CPU with AVX-512");
+    if (const std::string missing = engine::missing_cpu_features(ENGINE_CPU_FEATURES); !missing.empty())
+      throw std::runtime_error("this CPU lacks " + missing + ", which this library's ggml build (level " ENGINE_CPU_LEVEL
+                               ") uses for the experts the cards do not hold; load libengine.so, which picks a level "
+                               "the CPU has (cmake/ggml.cmake)");
     engine::qwen4exp::Options opt;
     if (config->slots) opt.slots = config->slots;
     if (config->max_ctx) opt.max_ctx = config->max_ctx;

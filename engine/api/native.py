@@ -58,12 +58,13 @@ from engine.api.interface import (
     TimingRecords,
     TimingStage,
 )
-from engine.host import Card
+from engine.host import Card, cpuinfo
 
 log = logging.getLogger("engine.native")
 
 LIBRARY_ENV = "ENGINE_LIBRARY"
 DEFAULT_LIBRARY = Path("build/core/libengine.so")
+LEVELS_FILE = "cpu_levels.tsv"
 
 _u32 = ctypes.c_uint32
 _p_u32 = ctypes.POINTER(ctypes.c_uint32)
@@ -96,8 +97,34 @@ def _page_changes(changes: Sequence[PageChange]) -> list[abi.CPageChange]:
     return out
 
 
+def cpu_level(directory: Path, cpu_flags: frozenset[str]) -> str | None:
+    """The first level in `directory`'s levels file whose features are all in `cpu_flags` (`/proc/cpuinfo`'s names).
+
+    The build writes the file beside the libraries, most features first (cmake/ggml.cmake). None without the file
+    or such a level.
+    """
+    try:
+        text = (directory / LEVELS_FILE).read_text()
+    except OSError:
+        return None
+    for line in text.splitlines():
+        level, _, features = line.partition("\t")
+        if level and set(features.split()) <= cpu_flags:
+            return level
+    return None
+
+
 def library_path() -> Path:
-    return Path(os.environ.get(LIBRARY_ENV, str(DEFAULT_LIBRARY)))
+    """`ENGINE_LIBRARY`, or the default; for libengine.so, the library of the first level the CPU has beside it."""
+    path = Path(os.environ.get(LIBRARY_ENV, str(DEFAULT_LIBRARY)))
+    if path.name != DEFAULT_LIBRARY.name:
+        return path
+    flags, _ = cpuinfo(Path("/proc/cpuinfo"))
+    level = cpu_level(path.parent, flags) if flags else None
+    if level is None:
+        return path
+    log.info("CPU level %s: %s", level, path.with_name(f"libengine-{level}.so"))
+    return path.with_name(f"libengine-{level}.so")
 
 
 def load_library(path: Path | None = None) -> ctypes.CDLL:

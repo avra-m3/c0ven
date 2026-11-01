@@ -450,6 +450,8 @@ The tests of [Other quants](#other-quants). UD-IQ4_XS's value is given first, th
 | llama.cpp `3cf0325` (CPU, AVX2 build) on the same file against the BF16 checkpoint, same set | one token a step: top-1 84.78%, mean KL 0.1602, p99 2.24; each segment in one batch at `-ub 512`: 84.44%, 0.1590. The engine minus llama.cpp step, paired: -0.0018 +/- 0.0063 (95%), so the engine's 0.158 is the file's loss | <a id="2026-10-29-kl-iq3s-llamacpp"></a>[2026-10-29](#2026-10-29-kl-iq3s-llamacpp) |
 | The engine against llama.cpp on the same file, and llama.cpp batch against llama.cpp step | 93.53% top-1, mean KL 0.035; 93.17%, 0.034 | [2026-10-29](#2026-10-29-kl-iq3s-llamacpp) |
 | The engine on Unsloth's UD-IQ4_XS file against the BF16 checkpoint on the KL set (4,995 positions, one token a step) | top-1 87.45%, mean KL 0.1121, p99 KL 1.39; perplexity 6.254 against the base's 6.081. By segment, mean KL: code 0.114, docs 0.063, English 0.053, four languages 0.060, agent 0.271 | <a id="2026-10-29-kl-ud-iq4xs"></a>[2026-10-29](#2026-10-29-kl-ud-iq4xs) |
+| The engine's `haswell` CPU level against its `zen4` level, IQ3_S file, same set | the same bytes; mean KL 0.1584 on both; `kl_test` 107 and 109 s | <a id="2026-11-01-cpu-levels-check"></a>[2026-11-01](#2026-11-01-cpu-levels-check) |
+| The engine's `x64` CPU level against the BF16 checkpoint, IQ3_S file, same set, the multi-row dots still on AVX2 | top-1 84.72%, mean KL 0.1629, p99 KL 2.09; against `zen4` top-1 93.65%, mean KL 0.029; `kl_test` 152 s against 109 s | [2026-11-01](#2026-11-01-cpu-levels-check) |
 
 ### The engine image
 

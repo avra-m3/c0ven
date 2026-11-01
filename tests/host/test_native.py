@@ -9,11 +9,12 @@ from __future__ import annotations
 from collections import deque
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 
 import pytest
 
 import protocol
-from engine.api import abi
+from engine.api import abi, native
 from engine.api.interface import EngineError, ErrorCode, EventKind, Image, OpenConfig, SlotSettings
 from engine.api.native import NativeEngine
 from engine.scheduler import CheckpointRule, Scheduler, SchedulerOptions, every_16k
@@ -591,3 +592,13 @@ def test_a_core_error_logs_what_the_core_said(caplog: pytest.LogCaptureFixture):
         events = run.engine.poll()
     assert [e.kind for e in events] == [EventKind.ERROR]
     assert "core error 1: card 1 did not finish a list in 60 s" in caplog.text
+
+
+def test_cpu_level_takes_the_first_level_the_cpu_has(tmp_path: Path) -> None:
+    (tmp_path / native.LEVELS_FILE).write_text(
+        "zen4\tsse4_2 avx avx2 avx512f avx512_bf16\nhaswell\tsse4_2 avx avx2\nsse42\tsse4_2\nx64\t\n"
+    )
+    assert native.cpu_level(tmp_path, frozenset(["fpu", "sse4_2", "avx", "avx2", "avx512f", "avx512_bf16"])) == "zen4"
+    assert native.cpu_level(tmp_path, frozenset(["fpu", "sse4_2", "avx", "avx2", "avx_vnni"])) == "haswell"
+    assert native.cpu_level(tmp_path, frozenset({"fpu"})) == "x64"
+    assert native.cpu_level(tmp_path / "missing", frozenset({"fpu"})) is None

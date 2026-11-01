@@ -16,8 +16,9 @@ int main() {
     std::fprintf(stderr, "FAIL: nothing required, something missing\n");
     return 1;
   }
-  const std::string missing = missing_cpu_features();
-  if (!missing.empty()) return test::skip("this CPU lacks " + missing + ", which the ggml build uses");
-  std::printf("this CPU has every feature the ggml build uses: %s\n", ENGINE_CPU_FEATURES);
+  const std::string missing = missing_cpu_features(ENGINE_CPU_FEATURES);
+  if (!missing.empty()) return test::skip("this CPU lacks " + missing + ", which the tests' ggml build uses");
+  std::printf("this CPU has every feature the tests' ggml build (level %s) uses: %s\n", ENGINE_CPU_LEVEL,
+              ENGINE_CPU_FEATURES);
   return 0;
 }
