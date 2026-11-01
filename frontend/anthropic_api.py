@@ -19,7 +19,7 @@ from frontend.generate import BadRequest, End, Finish, Request, Result
 from frontend.images import ImageError, from_base64
 from frontend.openai_api import EFFORTS
 from frontend.output import Content, Piece, Reasoning, ToolCall, ToolCallStart
-from frontend.template import Conversation
+from frontend.template import Conversation, Efforts
 
 type JSONObject = dict[str, Any]
 
@@ -133,9 +133,10 @@ def settings_from(body: JSONObject, defaults: protocol.Settings) -> protocol.Set
 
 
 def conversation(
-    body: JSONObject, images: list[bytes] | None = None, videos: list[bytes] | None = None
+    body: JSONObject, efforts: Efforts, images: list[bytes] | None = None, videos: list[bytes] | None = None
 ) -> tuple[Conversation, dict[str, Any] | None]:
-    """The conversation and the tools' schemas; the images' bytes go to `images`, the videos' to `videos`."""
+    """The conversation and the tools' schemas; the images' bytes go to `images`, the videos' to `videos`. `efforts`:
+    the reasoning efforts the model's template accepts."""
     messages = _messages(
         body.get("system"),
         array(body.get("messages"), "messages"),
@@ -170,22 +171,23 @@ def conversation(
     if enable is None and effort == "none":
         enable = False
     kwargs = obj(body.get("chat_template_kwargs") or {}, "chat_template_kwargs")
+    level = efforts.nearest(effort) if isinstance(effort, str) and effort != "none" else None
     return (
         Conversation(
             messages,
             tools or None,
             enable_thinking=boolean(kwargs.get("enable_thinking", enable)),
-            reasoning_effort=kwargs.get("reasoning_effort", EFFORTS.get(str(effort)) if effort else None),
+            reasoning_effort=efforts.given(kwargs.get("reasoning_effort", level)),
             preserve_thinking=boolean(kwargs.get("preserve_thinking")),
         ),
         schemas or None,
     )
 
 
-def parse(body: JSONObject, defaults: protocol.Settings) -> tuple[Request, bool]:
+def parse(body: JSONObject, defaults: protocol.Settings, efforts: Efforts) -> tuple[Request, bool]:
     images: list[bytes] = []
     videos: list[bytes] = []
-    conv, schemas = conversation(body, images, videos)
+    conv, schemas = conversation(body, efforts, images, videos)
     max_tokens = body.get("max_tokens")
     if not isinstance(max_tokens, int) or isinstance(max_tokens, bool):
         raise BadRequest("max_tokens is required, and must be an integer")

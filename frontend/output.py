@@ -1,7 +1,7 @@
 """Splitting the model's output into reasoning, content and tool calls, as it streams.
 
-The generation prompt opens `<think>\\n` when thinking is on, so the output starts as reasoning and turns to content
-at `</think>`. Tool calls are the template's format (spec/MODEL_IO.md, section 4.2):
+The generation prompt ends in `<think>`, with or without a newline, when thinking is on, so the output starts as
+reasoning and turns to content at `</think>`. Tool calls are the template's format (spec/MODEL_IO.md, section 4.2):
 
     <tool_call>
     <function=NAME>
