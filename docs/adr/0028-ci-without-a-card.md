@@ -17,8 +17,9 @@
   kernel module and links every test, warning-free with `-DENGINE_WERROR=ON`. The image is about 1.9 GB.
 - Without a card, a C++ GPU test skips, and fails instead when `ENGINE_EXPECT_GPUS` is set
   ([DEVELOPING.md](../DEVELOPING.md#tests)). A missing card is never mistaken for a broken kernel.
-- ggml is built with AVX-512 ([cmake/ggml.cmake](../../cmake/ggml.cmake)). GitHub does not promise a CPU model for
-  its hosted runners, so a test that runs ggml's CPU code there may stop on an illegal instruction.
+- The tests link ggml built with AVX-512 ([cmake/ggml.cmake](../../cmake/ggml.cmake)). GitHub does not promise a CPU
+  model for its hosted runners, so a test that runs ggml's CPU code there may stop on an illegal instruction. The
+  engine's libraries cover every x86-64 level ([ADR-0059](0059-a-library-for-each-cpu-level.md)); the tests do not.
 - The [Level Zero](../measurements/LEVEL_ZERO.md) packages ADR-0002 pins carry no null driver (`libze_null.so`); `dpkg -L libze1`
   lists the loader and its validation and tracing layers only.
 

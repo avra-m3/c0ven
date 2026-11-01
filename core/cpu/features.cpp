@@ -9,11 +9,13 @@ std::string missing_cpu_features(const std::string &required) {
   __builtin_cpu_init();
   // __builtin_cpu_supports takes only string literals, hence the table.
   const std::pair<const char *, bool> have[] = {
+      {"sse4.2", __builtin_cpu_supports("sse4.2")},
       {"avx", __builtin_cpu_supports("avx")},
       {"avx2", __builtin_cpu_supports("avx2")},
       {"fma", __builtin_cpu_supports("fma")},
       {"f16c", __builtin_cpu_supports("f16c")},
       {"bmi2", __builtin_cpu_supports("bmi2")},
+      {"avxvnni", __builtin_cpu_supports("avxvnni")},
       {"avx512f", __builtin_cpu_supports("avx512f")},
       {"avx512cd", __builtin_cpu_supports("avx512cd")},
       {"avx512vl", __builtin_cpu_supports("avx512vl")},

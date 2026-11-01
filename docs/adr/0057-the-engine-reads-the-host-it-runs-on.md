@@ -60,8 +60,8 @@ depends on the host and is not read.
 - A build compiles every kernel once for each chip, and the image holds each set.
 - The plan's card figures for the draft layer and working memory remain estimates. The fit report notes a core
   expert count more than 5% from the plan's.
-- A worker past the CPU quota waits for it, so under a quota the default is the quota's CPUs. The ggml build stays AVX-512 only;
-  an AVX2 build chosen at run time would be a decision of its own.
+- A worker past the CPU quota waits for it, so under a quota the default is the quota's CPUs. ggml is built for each x86-64
+  level and the level is chosen at run time ([ADR-0059](0059-a-library-for-each-cpu-level.md)).
 - The fit report also gives the model file's read rate, a 4 KiB read of the n-gram table from the file, and each
   card's copy engine reading pinned host memory, measured at open (about 0.2 s together). It notes a file read under
   half the test machine's rate.

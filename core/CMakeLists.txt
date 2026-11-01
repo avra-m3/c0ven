@@ -24,11 +24,12 @@ add_library(engine_core STATIC
   ze/ze.cpp)
 target_include_directories(engine_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/shared
                            ${CMAKE_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/models/qwen4exp)
+target_include_directories(engine_core SYSTEM PUBLIC ${ENGINE_GGML_INCLUDE_DIR})
 target_include_directories(engine_core PRIVATE ${ENGINE_GGML_SRC_DIR})
-target_link_libraries(engine_core PUBLIC PkgConfig::LEVEL_ZERO Threads::Threads ggml PRIVATE engine_warnings)
+# The core links no ggml: each library below links one level's (cmake/ggml.cmake), and the tests the first level's.
+target_link_libraries(engine_core PUBLIC PkgConfig::LEVEL_ZERO Threads::Threads PRIVATE engine_warnings)
 target_compile_definitions(engine_core PUBLIC ENGINE_KERNEL_DIR="${ENGINE_KERNEL_DIR}"
                            ENGINE_KERNEL_SPIRV_DIR="${ENGINE_KERNEL_SPIRV_DIR}"
-                           ENGINE_CPU_FEATURES="${ENGINE_CPU_FEATURES}"
                            ENGINE_ROUTING_PROFILE="${CMAKE_CURRENT_SOURCE_DIR}/models/qwen4exp/routing_profile.tsv")
 
 # The multi-row dots copy ggml's AVX2 paths; multirow.cpp checks the CPU before using them.
@@ -36,10 +37,23 @@ set_source_files_properties(cpu/multirow.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;
 
 add_subdirectory(tests)
 
-# The library the control plane loads (ctypes): the C ABI over the core.
-add_library(engine SHARED api/engine_api.cpp)
-target_link_libraries(engine PRIVATE engine_core engine_warnings)
-# Only the C ABI is exported: the static libraries' symbols (the core's, ggml's) stay inside.
-target_link_options(engine PRIVATE -Wl,--exclude-libs,ALL)
-set_target_properties(engine PROPERTIES C_VISIBILITY_PRESET hidden CXX_VISIBILITY_PRESET hidden)
-target_compile_definitions(engine PRIVATE ENGINE_API_EXPORT)
+# The libraries the control plane loads (ctypes): the C ABI over the core, one for each CPU level, libengine-<level>.so.
+# libengine.so links to the first level's; the control plane loads, from beside it, the first level the CPU has
+# (engine/api/native.py).
+foreach(level ${ENGINE_CPU_LEVELS})
+  if(level STREQUAL ENGINE_CPU_TEST_LEVEL)
+    set(target engine)
+  else()
+    set(target engine_${level})
+  endif()
+  add_library(${target} SHARED api/engine_api.cpp)
+  target_link_libraries(${target} PRIVATE engine_core ggml_${level} engine_warnings)
+  # Only the C ABI is exported: the static libraries' symbols (the core's, ggml's) stay inside.
+  target_link_options(${target} PRIVATE -Wl,--exclude-libs,ALL)
+  set_target_properties(${target} PROPERTIES OUTPUT_NAME engine-${level} C_VISIBILITY_PRESET hidden
+                        CXX_VISIBILITY_PRESET hidden)
+  target_compile_definitions(${target} PRIVATE ENGINE_API_EXPORT)
+endforeach()
+add_custom_command(TARGET engine POST_BUILD
+                   COMMAND ${CMAKE_COMMAND} -E create_symlink libengine-${ENGINE_CPU_TEST_LEVEL}.so libengine.so
+                   WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR} VERBATIM)

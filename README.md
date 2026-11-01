@@ -20,8 +20,8 @@ Use C0ven if you have:
 - one (or more) Intel Battlemage cards with at least 10 GB of VRAM between them, in one Linux machine, with the `xe` kernel
   driver. The engine is tested on Arc Pro B60 cards (24 GB each); other Battlemage cards likely work but are untested
   ([help test them](https://github.com/avra-m3/c0ven/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22)),
-- a CPU with AVX-512 (VNNI, VBMI and BF16 among it), which computes the experts the cards do not hold; the engine
-  refuses to start on a CPU without them,
+- an x86-64 CPU, which computes the experts the cards do not hold; the engine loads the build of its CPU code that
+  uses the most of the CPU's features (AVX-512 down to plain x86-64),
 - enough RAM that RAM and VRAM together come to 68 GiB with the default model file, or 45 GiB with the smallest
   ([below](#which-model-file-to-pick)),
 - one person, or a few requests at once, using the model.

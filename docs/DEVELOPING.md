@@ -27,13 +27,16 @@ The build makes:
 | Output | What it is |
 | --- | --- |
 | `build/kernels/<ip>/*.bin`, `*.spv`, `build/kernels/*.options` | the kernel modules, compiled ahead of time by `ocloc` for each chip in `ENGINE_AOT_DEVICES` (`bmg-g21` and `bmg-g31` by default), in a directory named for the chip's IP version (`20.1.0`, `20.2.0`), with each module's SPIR-V and the build options a card without its own binaries compiles it with at load ([ADR-0003](adr/0003-kernel-language.md), [ADR-0057](adr/0057-the-engine-reads-the-host-it-runs-on.md)); one per `engine_add_kernel_module` in [`kernels/CMakeLists.txt`](../kernels/CMakeLists.txt): the decode step's `matvec_<type>_l<lanes>` and `moe_<type>_g<group>`, the prompt path's `gemm_*`, `qgemm_<type>[_file]` and `qwen4exp_prompt`/`_attn`/`_gdn`, the image encoder's `qwen4exp_vision*`, the model's own `qwen4exp`, and `common` and `smoke` |
-| `build/core/libengine.so` | the C ABI of [`include/engine_api.h`](../include/engine_api.h), the library the control plane loads. It exports only the `engine_` symbols |
+| `build/core/libengine-<level>.so`, `build/core/libengine.so`, `build/core/cpu_levels.tsv` | the C ABI of [`include/engine_api.h`](../include/engine_api.h), one library for each CPU level, each with ggml built for that level. They export only the `engine_` symbols. `libengine.so` links to the first level's; given it, the control plane loads the first level in `cpu_levels.tsv` whose features the CPU has ([ADR-0059](adr/0059-a-library-for-each-cpu-level.md)). `ENGINE_LIBRARY` set to a `libengine-<level>.so` loads that level |
 | `build/core/libengine_core.a` | the core itself, which the tests link |
 | `build/core/tests/*` | the core's tests |
 | `build/tools/route_profile` | builds the routing profile the expert cache starts from, by running the reference prompts through the prompt path |
 
-ggml's CPU backend is built from `/opt/llama.cpp` with the reference build's CPU flags
-([cmake/ggml.cmake](../cmake/ggml.cmake)). `-DENGINE_GGML_DIR=` points at another tree at the same commit.
+ggml's CPU backend is built from `/opt/llama.cpp` once for each CPU level in `ENGINE_CPU_LEVELS`: `zen4` (the
+reference build's CPU flags), `icelake`, `cascadelake`, `skylakex`, `alderlake`, `haswell`, `sandybridge`, `sse42` and
+`x64` by default, with ggml's own flags for each ([cmake/ggml.cmake](../cmake/ggml.cmake)). The tests and tools link
+the first level's. `-DENGINE_CPU_LEVELS=zen4` builds one level, for a faster build. `-DENGINE_GGML_DIR=` points at
+another tree at the same commit.
 
 ## Tests
 

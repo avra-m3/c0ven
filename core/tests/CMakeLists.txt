@@ -4,7 +4,7 @@
 function(engine_test name)
   cmake_parse_arguments(T "GPU" "" "SOURCES;ARGS" ${ARGN})
   add_executable(${name} ${T_SOURCES})
-  target_link_libraries(${name} PRIVATE engine_core engine_warnings)
+  target_link_libraries(${name} PRIVATE engine_core engine_ggml engine_warnings)
   add_test(NAME ${name} COMMAND ${name} ${T_ARGS})
   set_tests_properties(${name} PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 600)
   if(T_GPU)

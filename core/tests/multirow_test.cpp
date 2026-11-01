@@ -1,10 +1,11 @@
 // dot_rows_for's functions against ggml's vec_dot, bit for bit: for each type, 64 weight rows quantised by ggml from
-// random values, against 1 to 9 activation rows. Skips (77) on a CPU without the features the pinned ggml build uses
-// (cmake/ggml.cmake: AVX-512 among them), which its quantisers and vec_dot would need.
+// random values, against 1 to 9 activation rows. Skips (77) on a CPU without the features the tests' ggml build uses
+// (cmake/ggml.cmake), which its quantisers and vec_dot would need.
 #include <cstring>
 #include <random>
 #include <vector>
 
+#include "cpu/features.h"
 #include "cpu/multirow.h"
 #include "ggml-cpu.h"
 #include "ggml.h"
@@ -13,17 +14,8 @@
 using namespace engine;
 
 int main() {
-#define NEEDS(f) \
-  if (!__builtin_cpu_supports(f)) return test::skip("the CPU lacks " f ", which the ggml build uses")
-  NEEDS("avx2");
-  NEEDS("fma");
-  NEEDS("f16c");
-  NEEDS("bmi2");
-  NEEDS("avx512f");
-  NEEDS("avx512vbmi");
-  NEEDS("avx512vnni");
-  NEEDS("avx512bf16");
-#undef NEEDS
+  if (const std::string missing = missing_cpu_features(ENGINE_CPU_FEATURES); !missing.empty())
+    return test::skip("the CPU lacks " + missing + ", which the tests' ggml build uses");
   ggml_cpu_init();
   if (!dot_rows_for(GGML_TYPE_IQ2_S)) return test::skip("no AVX2, FMA or F16C");
   std::mt19937 rng(7);
