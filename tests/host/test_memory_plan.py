@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from engine.api.interface import SplitKind, card_of_layer
 from engine.memory_plan import (
     PlanError,
     PlanOptions,
@@ -218,3 +219,57 @@ def test_the_working_memory_is_kept_per_model_and_options(tmp_path: Path):
     assert read_working(a) is None
     a.write_text('{"working_per_card": -1}')
     assert read_working(a) is None
+
+
+def test_qwen4exps_plan_as_printed():
+    """tools/plan.py's output for the committed table and the default options."""
+    assert plan(MODEL, PlanOptions()).rows() == [
+        ("sequences x context", "1 x 262,144"),
+        ("cards", "2"),
+        ("usable VRAM per card", "24,385,683,456 B (22.71 GiB)"),
+        ("weights per card", "2,341,860,608 B (2.18 GiB)"),
+        ("draft layer per card", "831,015,936 B (0.77 GiB)"),
+        ("working memory per card (estimate)", "1,600,663,296 B (1.49 GiB)"),
+        ("reserve per sequence per card", "504,664,064 B (0.47 GiB)"),
+        ("free for experts per card", "19,107,479,552 B (17.80 GiB)"),
+        ("experts cached", "18,674 of 24,576"),
+        ("host arena", "12,077,852,800 B (11.25 GiB)"),
+        ("streamed KV", "3,458,203,648 B (3.22 GiB)"),
+        ("checkpoints", "8 x 118,038,528 B"),
+        ("pinned host memory", "16,480,364,672 B (15.35 GiB)"),
+        ("n-gram table", "28,800,138,240 B (26.82 GiB), read from the file"),
+        ("host memory with working set (estimate)", "19,701,590,144 B (18.35 GiB)"),
+        ("KV pages", "65,536 of 4 cells"),
+    ]
+
+
+def test_experts_read_from_the_file_take_no_host_memory():
+    """With no arena the cards cache as many experts, and the host holds none of the rest."""
+    arena = plan(MODEL, PlanOptions())
+    file = plan(replace(MODEL, experts_in_arena=False), PlanOptions())
+    assert file.experts_cached == arena.experts_cached
+    assert file.arena_bytes == 0
+    assert file.pinned_bytes == arena.pinned_bytes - arena.arena_bytes
+    assert file.host_bytes == arena.host_bytes - arena.arena_bytes
+    assert dict(file.rows())["host arena"] == "none, the uncached experts are read from the file"
+
+
+def test_the_kinds_of_split_keep_their_values():
+    assert [(k.name, k.value) for k in SplitKind] == [
+        ("WHOLE", 0),
+        ("ROWS", 1),
+        ("COLUMNS", 2),
+        ("EXPERT_ROWS", 3),
+        ("EXPERT_COLUMNS", 4),
+        ("FILE", 5),
+        ("LAYER", 6),
+        ("EXPERT_LAYER", 7),
+    ]
+
+
+def test_the_card_of_a_layer():
+    assert [card_of_layer(n, (20,)) for n in (0, 19, 20, 39)] == [0, 0, 1, 1]
+    assert {card_of_layer(n, ()) for n in range(40)} == {0}
+    assert [card_of_layer(n, (10, 20, 30)) for n in (9, 10, 29, 30)] == [0, 1, 2, 3]
+    with pytest.raises(ValueError, match="outside the layers"):
+        card_of_layer(-1, (20,))

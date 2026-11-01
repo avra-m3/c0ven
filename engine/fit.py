@@ -11,7 +11,7 @@ from typing import TextIO
 
 from engine.api.interface import EngineFacts
 from engine.host import Card, Host
-from engine.memory_plan import GIB, MemoryPlan
+from engine.memory_plan import GIB, NO_ARENA, MemoryPlan
 
 UNKNOWN = "-"
 
@@ -50,7 +50,13 @@ def host_rows(host: Host, plan: MemoryPlan, arena_core: int | None = None, rss_c
         Row("mem_available", "host memory available", gib(host.mem_available), gib(plan.host_bytes), gib(rss_core)),
         Row("memory_max", "cgroup memory.max", gib(host.cgroup_memory_max)),
         Row("ram_max", "--ram-max", gib(o.ram_max)),
-        Row("arena", "arena", "", gib(plan.arena_bytes), gib(arena_core)),
+        Row(
+            "arena",
+            "arena",
+            "",
+            gib(plan.arena_bytes) if plan.experts_in_arena else NO_ARENA,
+            gib(arena_core),
+        ),
         Row("pinned", "pinned host memory", "", gib(plan.pinned_bytes)),
         Row("swap", "swap", f"{gib(host.swap_total)},cgroup:{gib(host.cgroup_swap_max)}"),
         Row("memlock", "RLIMIT_MEMLOCK", gib(host.memlock) if host.memlock is not None else "unlimited"),

@@ -289,6 +289,42 @@ def test_the_core_far_from_the_plan_is_noted():
     assert "working memory" in fit.card_notes(p, p.experts_per_layer, p.working_per_card + 2**30)[0]
 
 
+def test_the_hosts_rows_of_the_fit_report():
+    """qwen4exp's arena row as its plan gives it, and a model's with the experts read from the file."""
+    from dataclasses import replace  # noqa: PLC0415
+
+    from engine import host  # noqa: PLC0415
+    from engine.memory_plan import PlanOptions, plan  # noqa: PLC0415
+    from engine.models.qwen4exp.memory import model_memory  # noqa: PLC0415
+    from engine.models.qwen4exp.tensors import from_tsv  # noqa: PLC0415
+
+    h = host.Host(
+        mem_total=94 * 2**30,
+        mem_available=56 * 2**30,
+        swap_total=0,
+        cgroup_memory_max=None,
+        cgroup_swap_max=None,
+        memlock=None,
+        cpus=32,
+        cpu_quota=None,
+        physical_cores=16,
+        cpu_flags=frozenset(),
+        cpu_model="AMD Ryzen 9 7945HX",
+    )
+    m = model_memory(from_tsv())
+    assert fit.info(fit.host_rows(h, plan(m, PlanOptions()), 12_000_000_000, 20 * 2**30)) == {
+        "fit_mem_available": "56.00GiB/18.35GiB/20.00GiB",
+        "fit_memory_max": "-/-/-",
+        "fit_ram_max": "-/-/-",
+        "fit_arena": "-/11.25GiB/11.18GiB",
+        "fit_pinned": "-/15.35GiB/-",
+        "fit_swap": "0.00GiB,cgroup:-/-/-",
+        "fit_memlock": "unlimited/-/-",
+    }
+    rows = fit.host_rows(h, plan(replace(m, experts_in_arena=False), PlanOptions()), 0)
+    assert fit.info(rows)["fit_arena"] == "-/none,_the_uncached_experts_are_read_from_the_file/0.00GiB"
+
+
 def test_the_whole_fit_report_after_a_load(tmp_path: Path):
     import dataclasses  # noqa: PLC0415
 

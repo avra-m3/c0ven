@@ -3,7 +3,8 @@
 Everything is planned, then allocated, at load. Python computes the plan from the tensor table and the options and
 checks it against the host's memory (engine/host.py); `open` allocates it, and nothing is allocated on the token
 path. The method is MEMORY_BUDGET.md's for the tensor split: per card, the fixed rows, then a reserve per sequence,
-then experts in what is left; in the host, the arena of the experts the cards do not hold and the streamed KV.
+then experts in what is left; in the host, the arena of the experts the cards do not hold (unless the model reads them
+from the file) and the streamed KV.
 
 The model supplies its numbers as a `ModelMemory` (models/<arch>/memory.py).
 """
@@ -19,6 +20,8 @@ from pathlib import Path
 from engine.api.interface import PAGE_CELLS
 
 GIB = 2**30
+NO_ARENA = "none, the uncached experts are read from the file"
+"""The arena row of the plan and the fit report when the model reads its uncached experts from the file."""
 
 
 class PlanError(ValueError):
@@ -55,6 +58,9 @@ class ModelMemory:
     """The n-gram table, which stays in the file unless the plan holds it in RAM."""
     reference_vram: int
     """One test-machine card's memory, bytes: the plan's card when none is read (the mock and the reference)."""
+    experts_in_arena: bool = True
+    """True: the host arena holds every expert the cards do not cache (ADR-0023, item 5). False: there is no arena;
+    the CPU reads those experts from the model file through the page cache, and the plan counts no memory for them."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +116,8 @@ class MemoryPlan:
     pages: int
     kv_resident_cells: int
     ngram_bytes: int
+    experts_in_arena: bool
+    """The model's (ModelMemory.experts_in_arena). False: the arena is 0."""
 
     @property
     def pinned_bytes(self) -> int:
@@ -148,7 +156,10 @@ class MemoryPlan:
             ("reserve per sequence per card", gib(self.reserve_per_sequence)),
             ("free for experts per card", gib(self.free_per_card)),
             ("experts cached", f"{self.experts_cached:,} of {self.experts_total:,}"),
-            ("host arena", gib(self.arena_bytes)),
+            (
+                "host arena",
+                gib(self.arena_bytes) if self.experts_in_arena else NO_ARENA,
+            ),
             ("streamed KV", gib(self.streamed_kv_bytes)),
             ("checkpoints", f"{o.checkpoints} x {self.checkpoint_bytes // o.checkpoints if o.checkpoints else 0:,} B"),
             ("pinned host memory", gib(self.pinned_bytes)),
@@ -213,9 +224,10 @@ def plan(m: ModelMemory, o: PlanOptions) -> MemoryPlan:
         raise PlanError(f"{exc} {_what_fits(m, o, host_limit(o))}") from None
     limit = host_limit(o)
     if limit is not None and p.host_bytes > limit:
+        arena = f"{p.arena_bytes / GIB:.1f}" if p.experts_in_arena else "none"
         raise PlanError(
             f"the engine needs {p.host_bytes / GIB:.1f} GiB of host memory ({p.pinned_bytes / GIB:.1f} GiB pinned: "
-            f"arena {p.arena_bytes / GIB:.1f}, streamed KV {p.streamed_kv_bytes / GIB:.1f}, checkpoints "
+            f"arena {arena}, streamed KV {p.streamed_kv_bytes / GIB:.1f}, checkpoints "
             f"{p.checkpoint_bytes / GIB:.1f}; working set {o.host_working / GIB:.1f}, an estimate), over the "
             f"{limit / GIB:.1f} GiB {_limit_name(o)}. {_what_fits(m, o, limit)}"
         )
@@ -249,8 +261,8 @@ def _limit_name(o: PlanOptions) -> str:
 
 def _what_fits(m: ModelMemory, o: PlanOptions, limit: int | None) -> str:
     """The largest options that fit the cards and the host limit: fewer slots first, then a shorter context, no
-    checkpoints, no draft layer; or what to change when none does. The arena holds every expert the cards leave out,
-    so a smaller model file is the remaining way."""
+    checkpoints, no draft layer; or what to change when none does. Unless the model reads its uncached experts from the
+    file, the arena holds every expert the cards leave out, so a smaller model file is the remaining way."""
     fits: list[str] = []
     for slots in range(o.slots - 1, 0, -1):
         if _fits(m, replace(o, slots=slots, kv_tokens=0 if o.kv_tokens < o.context else o.kv_tokens), limit):
@@ -297,7 +309,7 @@ def _plan(m: ModelMemory, o: PlanOptions) -> MemoryPlan:
         )
     share = -(-m.expert_bytes // m.cards)
     cached = min(m.experts, free // share)
-    arena = (m.experts - cached) * m.expert_bytes
+    arena = (m.experts - cached) * m.expert_bytes if m.experts_in_arena else 0
     pages_per_slot = -(-o.context // PAGE_CELLS)
     if 0 < o.kv_tokens < o.context:
         raise PlanError(f"a KV pool of {o.kv_tokens:,} tokens holds no sequence of {o.context:,}")
@@ -324,4 +336,5 @@ def _plan(m: ModelMemory, o: PlanOptions) -> MemoryPlan:
         pages=pages,
         kv_resident_cells=min(o.context, m.resident_cells),
         ngram_bytes=m.ngram_bytes,
+        experts_in_arena=m.experts_in_arena,
     )

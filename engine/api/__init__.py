@@ -21,6 +21,7 @@ from engine.api.interface import (
     SplitKind,
     StepPlan,
     Tensor,
+    card_of_layer,
 )
 
 __all__ = [
@@ -44,4 +45,5 @@ __all__ = [
     "SplitKind",
     "StepPlan",
     "Tensor",
+    "card_of_layer",
 ]

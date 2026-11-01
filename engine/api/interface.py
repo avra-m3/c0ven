@@ -14,6 +14,7 @@ A plan carries only changes.
 
 from __future__ import annotations
 
+import bisect
 import hashlib
 from dataclasses import dataclass, field
 from enum import IntEnum
@@ -89,7 +90,8 @@ class FinishReason(IntEnum):
 
 
 class SplitKind(IntEnum):
-    """How a tensor is laid over the two cards (ADR-0023). The model's rules are in models/<arch>/split.py."""
+    """How a tensor is laid over the cards. ROWS to EXPERT_COLUMNS are ADR-0023's tensor split; LAYER and EXPERT_LAYER
+    put each layer whole on one card. Only Python reads it; the model's rules are in models/<arch>/split.py."""
 
     WHOLE = 0
     """Both cards hold all of it."""
@@ -103,6 +105,21 @@ class SplitKind(IntEnum):
     """Routed experts' down projection: each card takes the input columns matching its half of gate and up."""
     FILE = 5
     """Read from the file on demand, never loaded: the n-gram table (ADR-0015)."""
+    LAYER = 6
+    """One card holds all of it: the card of its layer (`card_of_layer`)."""
+    EXPERT_LAYER = 7
+    """Routed experts: the card of their layer holds each cached expert whole; misses stay whole in the host
+    arena, or in the file when the model keeps no arena (ModelMemory.experts_in_arena)."""
+
+
+def card_of_layer(layer: int, splits: tuple[int, ...]) -> int:
+    """The card that holds `layer` (from 0) when a model splits by layers. `splits` is the first layer of each card
+    after card 0, in ascending order: (20,) puts layers 0-19 on card 0 and the rest on card 1, and () puts every layer
+    on card 0. A tensor outside the layers (layer -1) has no card here: the model's split rules name it. Raises
+    ValueError for a negative layer."""
+    if layer < 0:
+        raise ValueError(f"layer {layer} is outside the layers")
+    return bisect.bisect_right(splits, layer)
 
 
 class PageOp(IntEnum):
