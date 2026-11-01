@@ -33,7 +33,10 @@ def main(argv: list[str] | None = None) -> int:
         slots=args.slots, context=args.context, checkpoints=args.checkpoints, kv_tokens=args.kv_tokens
     )
     try:
-        _, plan = cast("tuple[object, MemoryPlan]", setup.open_config(args.model, options))
+        _, plan = cast(
+            "tuple[object, MemoryPlan]",
+            setup.open_config(args.model, options, draft=setup.draft_dir(args.model) if args.model else None),
+        )
     except PlanError as exc:
         print(f"does not fit: {exc}")
         return 1

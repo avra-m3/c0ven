@@ -44,7 +44,5 @@ RESIDENT_CELLS = 32_768
 # Per card, outside the layers' weights (MEMORY_BUDGET.md, "Per card, for the tensor split").
 USABLE_VRAM = 24_385_683_456
 """Measured on each B60 (docs/measurements/MEASUREMENTS.md#2026-10-11-device-memory)."""
-DRAFT_PER_CARD = 614_446_848
-"""*Estimate*: half the draft layer, made before its storage was chosen (MEMORY_BUDGET.md)."""
 WORKING_PER_CARD = 1_600_663_296
 """*Estimate*: working buffers per card."""

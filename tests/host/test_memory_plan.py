@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from engine.memory_plan import (
     working_file,
     write_working,
 )
+from engine.models.qwen4exp.draft import draft_per_card, read_shapes
 from engine.models.qwen4exp.memory import model_memory
 from engine.models.qwen4exp.tensors import Category, from_tsv
 
@@ -35,7 +37,7 @@ def test_reserve_per_sequence(context: int, expected: int):
 
 @pytest.mark.parametrize(
     ("slots", "context", "cached"),
-    [(1, 32_768, 19_151), (2, 32_768, 18_841), (4, 32_768, 18_220), (1, 262_144, 18_968), (4, 262_144, 17_489)],
+    [(1, 32_768, 18_940), (2, 32_768, 18_629), (4, 32_768, 18_009), (1, 262_144, 18_757), (4, 262_144, 17_277)],
 )
 def test_experts_with_every_weight_halved(slots: int, context: int, cached: int):
     """MEMORY_BUDGET.md halves every weight outside the experts; with its figure the plan gives its counts."""
@@ -51,9 +53,33 @@ def test_the_split_rules_keep_some_weights_whole():
     half the dense bytes, and fewer experts than MEMORY_BUDGET.md counts."""
     p = plan(MODEL, PlanOptions(slots=1, context=262_144))
     assert MODEL.weights_per_card > 2_257_086_720
-    assert p.experts_cached < 18_968
-    assert p.free_per_card == 24_385_683_456 - MODEL.weights_per_card - 614_446_848 - 1_600_663_296 - 504_664_064
+    assert p.experts_cached < 18_757
+    assert p.free_per_card == 24_385_683_456 - MODEL.weights_per_card - 831_015_936 - 1_600_663_296 - 504_664_064
     assert p.experts_cached == p.free_per_card // (MODEL.expert_bytes // 2)
+
+
+def test_the_draft_layer_as_the_core_stores_it():
+    """From the committed MTP manifest: IQ4_NL experts, 1,382,400 B a slot on each of two cards, the indexer left
+    out, the norms in F32, and the rest split as a main layer's or whole."""
+    shapes = read_shapes()
+    assert len(shapes) == 31
+    assert draft_per_card(shapes, 2) == 831_015_936
+    assert draft_per_card(shapes, 1) == 1_593_527_296
+    assert MODEL.draft_per_card == 831_015_936
+
+
+def test_a_dflash_manifest(tmp_path: Path):
+    """DFlash 2's manifest lists its tensors; its projections split, its norms and base kernels widen to F32."""
+    tensors = [
+        {"name": "fc.weight", "dtype": "BF16", "shape": [2560, 12800]},
+        {"name": "norm.weight", "dtype": "BF16", "shape": [2560]},
+        {"name": "layers.0.self_attn.q_proj.weight", "dtype": "BF16", "shape": [4096, 2560]},
+        {"name": "layers.0.mlp.down_proj.weight", "dtype": "BF16", "shape": [2560, 7680]},
+        {"name": "layers.0.attention_conv.base_kernel", "dtype": "BF16", "shape": [4, 2560]},
+    ]
+    (tmp_path / "dflash-manifest.json").write_text(json.dumps({"tensors": tensors}))
+    shapes = read_shapes(tmp_path)
+    assert draft_per_card(shapes, 2) == 2 * 2560 * 12800 + 4 * 2560 + 4096 * 2560 + 2560 * 7680 + 4 * 4 * 2560
 
 
 def test_host_side():

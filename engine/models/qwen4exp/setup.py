@@ -13,6 +13,7 @@ from pathlib import Path
 from engine.api.interface import OpenConfig, Tensor
 from engine.memory_plan import MemoryPlan, PlanOptions, plan
 from engine.models.qwen4exp import numbers
+from engine.models.qwen4exp.draft import read_shapes
 from engine.models.qwen4exp.memory import model_memory
 from engine.models.qwen4exp.split import split_of
 from engine.models.qwen4exp.tensors import TensorTable, from_gguf_cached, from_tsv
@@ -27,8 +28,9 @@ NGRAM_CACHE_ROWS = 1 << 20
 TIMING_RECORDS = 1 << 16
 
 
-def memory_plan(table: TensorTable, options: PlanOptions) -> MemoryPlan:
-    return plan(model_memory(table, options.cards), options)
+def memory_plan(table: TensorTable, options: PlanOptions, draft: Path | None = None) -> MemoryPlan:
+    """draft: the drafter's directory, whose manifest sizes it; None: the committed MTP layer's."""
+    return plan(model_memory(table, options.cards, read_shapes(draft) if draft is not None else None), options)
 
 
 def draft_dir(model: Path) -> Path | None:
@@ -57,7 +59,7 @@ def open_config(
     table = from_gguf_cached(model, table_cache) if model is not None else from_tsv()
     if model is not None:
         options = replace(options, draft=draft is not None)
-    mp = memory_plan(table, options)
+    mp = memory_plan(table, options, draft)
     tensors = (
         tuple(
             Tensor(t.name, t.ggml_type, t.shard - 1, t.offset, t.nbytes, t.shape, split_of(t.name), t.layer)

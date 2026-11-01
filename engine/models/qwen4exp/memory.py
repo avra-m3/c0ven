@@ -5,12 +5,16 @@ from __future__ import annotations
 from engine.api.interface import SplitKind
 from engine.memory_plan import ModelMemory
 from engine.models.qwen4exp import numbers
+from engine.models.qwen4exp.draft import draft_per_card, read_shapes
 from engine.models.qwen4exp.split import bytes_per_card, split_of
 from engine.models.qwen4exp.tensors import Category, TensorTable
 
 
-def model_memory(table: TensorTable, cards: int = 2) -> ModelMemory:
-    """The sizes on one card or each of two: one card holds every weight and every head whole."""
+def model_memory(
+    table: TensorTable, cards: int = 2, draft_shapes: dict[str, tuple[int, ...]] | None = None
+) -> ModelMemory:
+    """The sizes on one card or each of two: one card holds every weight and every head whole. draft_shapes: the
+    drafter's tensor shapes (draft.read_shapes); None: the committed MTP layer's."""
     if cards not in (1, 2):
         raise ValueError(f"the engine runs on one or two cards, not {cards}")
     expert_total = table.bytes_of(Category.EXPERTS)
@@ -18,7 +22,7 @@ def model_memory(table: TensorTable, cards: int = 2) -> ModelMemory:
     return ModelMemory(
         cards=cards,
         weights_per_card=sum(bytes_per_card(t, cards) for t in table.tensors),
-        draft_per_card=numbers.DRAFT_PER_CARD * 2 // cards,
+        draft_per_card=draft_per_card(draft_shapes if draft_shapes is not None else read_shapes(), cards),
         layers=numbers.LAYERS,
         experts=experts,
         expert_bytes=expert_total // experts,
