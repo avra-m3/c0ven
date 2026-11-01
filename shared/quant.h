@@ -11,6 +11,7 @@
 #define QT_F16 1
 #define QT_Q4_0 2
 #define QT_Q5_0 6
+#define QT_Q5_1 7
 #define QT_Q8_0 8
 #define QT_Q8_1 9
 #define QT_Q2_K 10
@@ -34,7 +35,7 @@
 // Values per block.
 SHARED_FN u32 quant_block_values(u32 t) {
   switch (t) {
-    case QT_Q4_0: case QT_Q5_0: case QT_Q8_0: case QT_Q8_1: case QT_IQ4_NL: return 32;
+    case QT_Q4_0: case QT_Q5_0: case QT_Q5_1: case QT_Q8_0: case QT_Q8_1: case QT_IQ4_NL: return 32;
     case QT_Q2_0: return 64;
     case QT_Q2_K: case QT_Q3_K: case QT_Q4_K: case QT_Q5_K: case QT_Q6_K: case QT_Q8_K:
     case QT_IQ1_S: case QT_IQ1_M: case QT_IQ2_XXS: case QT_IQ2_XS:
@@ -50,6 +51,7 @@ SHARED_FN u32 quant_block_bytes(u32 t) {
     case QT_F16: case QT_BF16: return 2;
     case QT_Q4_0: return 18;
     case QT_Q5_0: return 22;
+    case QT_Q5_1: return 24;
     case QT_Q8_0: return 34;
     case QT_Q8_1: return 36;
     case QT_Q2_K: return 84;
@@ -78,7 +80,7 @@ SHARED_FN u32 quant_nfields(u32 t) {
     case QT_IQ2_S: case QT_IQ3_S: return 5;
     case QT_IQ4_XS: case QT_Q3_K: case QT_Q5_K: case QT_Q6_K: return 4;
     case QT_IQ1_S: case QT_IQ1_M: case QT_IQ2_XS: case QT_IQ3_XXS:
-    case QT_Q2_K: case QT_Q4_K: case QT_Q5_0: return 3;
+    case QT_Q2_K: case QT_Q4_K: case QT_Q5_0: case QT_Q5_1: return 3;
     case QT_IQ2_XXS: case QT_IQ4_NL: case QT_Q2_0: case QT_Q4_0: case QT_Q8_0: return 2;
     default: return 1;
   }
@@ -129,6 +131,10 @@ SHARED_FN u32 quant_field_(u32 t, u32 f) {
     }
     case QT_Q5_0: {  // qs, qh, d
       const u32 v[3] = {(6u << 8) | 16, (2u << 8) | 4, (0u << 8) | 2};
+      return v[f];
+    }
+    case QT_Q5_1: {  // qs, qh, d and m
+      const u32 v[3] = {(8u << 8) | 16, (4u << 8) | 4, (0u << 8) | 4};
       return v[f];
     }
     case QT_Q8_0: {  // qs, d

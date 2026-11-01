@@ -17,8 +17,8 @@ engine_add_kernel_module(gemm_bf16_t4n2s11 SOURCE kernels/gemm.cl
 add_subdirectory(models/qwen4exp)
 
 # Every quantised weight type the engine reads.
-set(ENGINE_QUANT_TYPES Q8_0 Q4_0 Q5_0 Q2_0 IQ4_NL IQ4_XS Q2_K Q3_K Q4_K Q5_K Q6_K IQ1_S IQ1_M IQ2_XXS IQ2_XS IQ2_S
-    IQ3_XXS IQ3_S)
+set(ENGINE_QUANT_TYPES Q8_0 Q4_0 Q5_0 Q5_1 Q2_0 IQ4_NL IQ4_XS Q2_K Q3_K Q4_K Q5_K Q6_K IQ1_S IQ1_M IQ2_XXS IQ2_XS
+    IQ2_S IQ3_XXS IQ3_S)
 
 # One matrix-vector module per weight type and lanes per row: matvec_<type>_l<lanes>.
 foreach(type ${ENGINE_QUANT_TYPES})

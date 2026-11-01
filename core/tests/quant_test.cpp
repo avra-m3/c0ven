@@ -21,8 +21,8 @@ using namespace engine;
 
 namespace {
 
-// Values of a row of the dot product's activation type: ggml's dequantisation, or for q8_K, which has none, its
-// float scale and 256 int8 values a block.
+// Values of a row of the dot product's activation type: ggml's dequantisation, or for q8_K and q8_1, which have none,
+// the block's scale and int8 values: a float and 256 values, or an f16, an f16 sum and 32 values.
 std::vector<double> act_values(ggml_type t, const uint8_t *row, int64_t K) {
   std::vector<double> v(K);
   if (t == GGML_TYPE_Q8_K) {
@@ -31,6 +31,15 @@ std::vector<double> act_values(ggml_type t, const uint8_t *row, int64_t K) {
       float d;
       std::memcpy(&d, p, 4);
       for (int i = 0; i < 256; i++) v[b * 256 + i] = (double)d * (int8_t)p[4 + i];
+    }
+    return v;
+  }
+  if (t == GGML_TYPE_Q8_1) {
+    for (int64_t b = 0; b < K / 32; b++) {
+      const uint8_t *p = row + b * ggml_type_size(t);
+      uint16_t d;
+      std::memcpy(&d, p, 2);
+      for (int i = 0; i < 32; i++) v[b * 32 + i] = (double)ggml_fp16_to_fp32(d) * (int8_t)p[4 + i];
     }
     return v;
   }

@@ -95,7 +95,7 @@ static inline uint q2_byte(uint x) {
   return sub_bytes(t, 0x01010101u);
 }
 
-// Q4_0 / Q5_0: 4 bits of 4 values (one per byte) into the low bits of their bytes.
+// Q4_0 / Q5_0 / Q5_1: 4 bits of 4 values (one per byte) into the low bits of their bytes.
 static inline uint spread4(uint x) {
   return (x & 1u) | ((x & 2u) << 7) | ((x & 4u) << 14) | ((x & 8u) << 21);
 }
@@ -141,6 +141,18 @@ static inline void decode_unit(__global const uchar *W, ulong n, ulong k, uint s
   }
   *lo = *hi = ld_half(FIELD(1, k));
 #endif
+#elif QTYPE == QT_Q5_1
+  // Q5_1: Q5_0's bits without the offset of 16, and a min; y = d * q + m.
+  __global const uchar *qs = FIELD(0, k);
+  uint qh = dec_u32(FIELD(1, k));
+  for (uint i = 0; i < 4; i++) {
+    uint x = dec_u32(qs + 4 * i);
+    w[i] = (x & 0x0f0f0f0fu) | (spread4(qh >> (4 * i)) << 4);
+    w[4 + i] = ((x >> 4) & 0x0f0f0f0fu) | (spread4(qh >> (16 + 4 * i)) << 4);
+  }
+  __global const uchar *dm = FIELD(2, k);
+  *lo = *hi = ld_half(dm);
+  *mn = -ld_half(dm + 2);
 #elif QTYPE == QT_Q3_K
   // Q3_K: y = d * (scale - 32) * (q - 4 * !h); unit s takes bits 2(s mod 4) of qs bytes 32(s / 4) .. + 31, and bit
   // s of the hmask bytes; its two halves of 16 have scales 2s and 2s + 1.

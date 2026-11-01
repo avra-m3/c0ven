@@ -15,11 +15,13 @@
 using namespace engine;
 
 int main() {
-  // deepseek41's down types with its n_ff of 2,304 (q8_K blocks of 256), and Flash-Next's with 640 (q8_0, 32 rows).
+  // deepseek41's down types with its n_ff of 2,304 (q8_K blocks of 256), and Flash-Next's with 640 (q8_0 and q8_1
+  // blocks of 32).
   const struct {
     uint32_t down_type, n_ff, rows;
   } cases[] = {{QT_Q2_K, 2304, 256}, {QT_IQ2_XS, 2304, 256}, {QT_IQ2_XXS, 2304, 256}, {QT_IQ2_S, 2304, 256},
-               {QT_IQ3_XXS, 2304, 256}, {QT_IQ4_NL, 640, 32}, {QT_Q2_0, 640, 32}, {QT_Q8_0, 640, 32}};
+               {QT_IQ3_XXS, 2304, 256}, {QT_IQ4_NL, 640, 32}, {QT_Q2_0, 640, 32}, {QT_Q8_0, 640, 32},
+               {QT_Q5_1, 640, 32}};
   for (const auto &c : cases) {
     const uint32_t got = CpuExperts::h_rows({QT_IQ2_XXS, c.down_type, 256, c.n_ff});
     EXPECT(got == c.rows, "%s down, n_ff %u: h_rows %u, want %u", ggml_type_label(c.down_type), c.n_ff, got, c.rows);

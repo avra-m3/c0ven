@@ -46,9 +46,10 @@ inline int skip(const std::string &why) {
 
 // Every quantised weight type the engine reads, as kernels/CMakeLists.txt's ENGINE_QUANT_TYPES lists them.
 inline const std::vector<uint32_t> &quant_types() {
-  static const std::vector<uint32_t> t = {QT_Q8_0, QT_Q4_0, QT_Q5_0, QT_Q2_0, QT_IQ4_NL, QT_IQ4_XS,
-                                          QT_Q2_K, QT_Q3_K, QT_Q4_K, QT_Q5_K, QT_Q6_K, QT_IQ1_S,
-                                          QT_IQ1_M, QT_IQ2_XXS, QT_IQ2_XS, QT_IQ2_S, QT_IQ3_XXS, QT_IQ3_S};
+  static const std::vector<uint32_t> t = {QT_Q8_0, QT_Q4_0, QT_Q5_0, QT_Q5_1, QT_Q2_0, QT_IQ4_NL,
+                                          QT_IQ4_XS, QT_Q2_K, QT_Q3_K, QT_Q4_K, QT_Q5_K, QT_Q6_K,
+                                          QT_IQ1_S, QT_IQ1_M, QT_IQ2_XXS, QT_IQ2_XS, QT_IQ2_S, QT_IQ3_XXS,
+                                          QT_IQ3_S};
   return t;
 }
 
@@ -63,7 +64,7 @@ inline std::vector<uint8_t> random_blocks(uint32_t type, uint64_t n, std::mt1993
   switch (type) {
     case QT_Q2_K: f16 = {80, 82}; break;
     case QT_Q3_K: f16 = {108}; break;
-    case QT_Q4_K: case QT_Q5_K: f16 = {0, 2}; break;
+    case QT_Q4_K: case QT_Q5_K: case QT_Q5_1: f16 = {0, 2}; break;
     case QT_Q6_K: f16 = {208}; break;
     case QT_IQ1_M: break;  // d is the top nibbles of the scale words
     default: f16 = {0};
