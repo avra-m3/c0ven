@@ -449,6 +449,7 @@ class NativeEngine:
             ngram_read_us=float(info.ngram_read_us),
             copy_bytes_per_s=tuple(float(info.copy_bytes_per_s[i]) for i in range(info.cards)),
             expert_budget=tuple(int(info.expert_budget[i]) for i in range(info.cards)),
+            fetch_rows=int(info.fetch_rows),
         )
 
     def sleep(self) -> None:

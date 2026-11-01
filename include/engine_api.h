@@ -20,7 +20,7 @@ extern "C" {
 #define ENGINE_API
 #endif
 
-#define ENGINE_API_VERSION 16
+#define ENGINE_API_VERSION 17
 
 typedef enum {
   ENGINE_OK = 0,
@@ -95,6 +95,9 @@ typedef struct {
   double copy_bytes_per_s[2];  /* each card's copy engine reading pinned host memory at open, bytes a second */
   uint64_t expert_budget[2];   /* per card: the device memory left for the expert cache at load, once everything else
                                   is allocated, the whole KV pool backed and reserve_bytes kept free */
+  uint32_t fetch_rows;         /* the most rows a prompt chunk may have and still fetch only the uncached experts its
+                                  router picks; a longer one copies every uncached expert; 0: every chunk is staged
+                                  one way (all experts cached, or a model with one path) */
 } engine_info;
 
 /* A request's sampling and stopping, copied once by admit. The core samples in llama.cpp's order: penalties, top-k,

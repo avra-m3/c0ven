@@ -8,7 +8,7 @@ import pytest
 
 from engine.api import abi
 from engine.api.interface import TIMING_DTYPE, WINDOW_ROWS, TimingStage
-from engine.timing import WHOLE_ROWS, WINDOW_ROWS_RANGE, CostModel, summarise
+from engine.timing import WHOLE_ROWS, WINDOW_ROWS_RANGE, CostModel, summarise, whole_rows
 from tools.attach import HEADER, RING, Reader, Region, trace_events
 
 
@@ -52,6 +52,18 @@ def test_a_short_prompt_is_one_piece_and_a_long_one_is_cut():
     assert cheaper.rows_within(500.0, WHOLE_ROWS + 40) == WHOLE_ROWS + 40, "fewer than a window's rows left: they join"
     per_row = CostModel.initial(row_ms=0.46)
     assert per_row.rows_within(100.0, 3000) == 217, "without a fixed part, pieces fit the budget"
+
+
+def test_a_piece_and_the_writers_beside_it_keep_to_the_fetch_path():
+    assert whole_rows(1024) == 1021, "three writers' rows ride in the chunk"
+    assert whole_rows(512) == 509
+    assert whole_rows(0) == WHOLE_ROWS, "no fetch path: every chunk is staged one way"
+    assert whole_rows(4096) == WHOLE_ROWS, "a longer fetch path: still no longer a piece than WHOLE_ROWS"
+    cost = CostModel.initial(row_ms=0.07, chunk_ms=100.0)
+    assert cost.rows_within(500.0, 2048, whole_rows(1024)) == 1021
+    assert cost.rows_within(500.0, 1100, whole_rows(1024)) == 1021, "a prompt of 1,100 rows is cut"
+    dear = CostModel.initial(row_ms=0.3, chunk_ms=900.0)
+    assert dear.rows_within(500.0, 2048, whole_rows(1024)) == 510, "nothing fits the budget: half of the cap"
 
 
 def test_window_rows_is_where_a_chunk_costs_less_than_windows():

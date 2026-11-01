@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import itertools
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import pytest
 
@@ -11,7 +11,6 @@ import protocol
 from engine.api.interface import Event, EventKind, OpenConfig, StepPlan
 from engine.api.mock import MockEngine, Script
 from engine.scheduler import CheckpointRule, Phase, Scheduler, SchedulerOptions, every_16k
-from engine.timing import WHOLE_ROWS
 from tests.helpers import facts_of, open_config
 
 
@@ -74,10 +73,12 @@ def make(
     options: SchedulerOptions | None = None,
     script: Script | None = None,
     prompt_chunk_ms: float = 0.0,
+    *,
+    fetch_rows: int = 0,
 ) -> Run:
     config = config or open_config()
     engine = SpyEngine(script, prompt_chunk_ms=prompt_chunk_ms)
-    facts = engine.open(config)
+    facts = replace(engine.open(config), fetch_rows=fetch_rows)
     assert facts_of(config).slots == facts.slots
     return Run(engine, Scheduler(engine, facts, options, rule))
 
@@ -228,7 +229,7 @@ def test_a_prompt_step_waits_for_the_decode_the_step_before_owes():
 
 def test_a_short_prompt_beside_a_writer_is_one_piece():
     options = SchedulerOptions(prompt_budget_ms=500.0)
-    run = make(open_config(slots=3, context=8192), options=options, prompt_chunk_ms=600.0)
+    run = make(open_config(slots=3, context=8192), options=options, prompt_chunk_ms=600.0, fetch_rows=1024)
     run.add(1, prompt(300), 400)
     run.tick(3)
     assert run.scheduler.by_rid[1].phase is Phase.DECODE
@@ -244,8 +245,8 @@ def test_a_short_prompt_beside_a_writer_is_one_piece():
     short, long = sorted(pieces.values(), key=len)
     assert short == [568], "its chunk is over the budget, but cutting it would pay the fixed part twice"
     assert sum(long) == 5000
-    assert max(long) <= WHOLE_ROWS, "a long prompt holds the writers for one piece of at most WHOLE_ROWS at a time"
-    assert min(long[:-1]) >= WHOLE_ROWS // 2, "no piece so short that it is almost all fixed part"
+    assert max(long) <= 1021, "a long prompt holds the writers for one piece at a time, kept to the fetch path"
+    assert min(long[:-1]) >= 1021 // 2, "no piece so short that it is almost all fixed part"
 
 
 def test_short_prompts_beside_a_writer_share_a_chunk():
