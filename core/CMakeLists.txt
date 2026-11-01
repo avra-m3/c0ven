@@ -25,6 +25,7 @@ target_compile_definitions(engine_core PUBLIC ENGINE_KERNEL_DIR="${ENGINE_KERNEL
 
 # Each architecture adds its own sources (ADR-0061); models/open.cpp picks one by the file's general.architecture.
 add_subdirectory(models/qwen4exp)
+add_subdirectory(models/deepseek41)
 
 # The multi-row dots copy ggml's AVX2 paths; multirow.cpp checks the CPU before using them.
 set_source_files_properties(cpu/multirow.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c")
