@@ -1,0 +1,1353 @@
+<!DOCTYPE html>
+<!-- Meridian Words: a narrated three.js game, drawn entirely by code, about why c0ven is fast. Each floor of an
+     office stands for one of the engine's tricks. Narration is one MP3 per stretch between choices, in
+     meridian-words/, with each caption word's start time inlined in CHUNKS (docs/showcase/meridian-words.md). -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Meridian Words</title>
+<link rel="icon" href="data:,">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a full-screen 3D scene per floor; HUD on top: brand bar, stopwatch at the right, choices and closed captions at the bottom. Single dark look by choice. */
+:root {
+  --night: #12161d;
+  --panel: rgba(14, 18, 25, 0.84);
+  --panel-edge: rgba(150, 168, 190, 0.22);
+  --text: #eef0ec;
+  --muted: #94a0b2;
+  --sodium: #e8a33d;
+  --cool: #8bb6cf;
+  --track: #2a313d;
+  --font-hud: "Barlow Condensed", "Arial Narrow", Arial, sans-serif;
+  --font-cap: "Atkinson Hyperlegible", "Segoe UI", Helvetica, Arial, sans-serif;
+  --font-data: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+  color-scheme: dark;
+}
+html, body { height: 100%; background: var(--night); color: var(--text); overflow: hidden; }
+body { font-family: var(--font-cap); }
+[hidden] { display: none !important; }
+#stage { position: fixed; inset: 0; }
+#stage canvas { display: block; width: 100%; height: 100%; transition: filter 1.2s ease; }
+#stage.frozen canvas { filter: saturate(0.25) brightness(0.8); }
+#fade { position: fixed; inset: 0; background: #07090c; opacity: 0; pointer-events: none; transition: opacity 0.6s ease; }
+#fade.on { opacity: 1; }
+
+.hud {
+  position: fixed; inset: 0; pointer-events: none;
+  display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 12px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 16px 18px;
+}
+.hud > * { pointer-events: none; }
+.hud button, .panel, .caption { pointer-events: auto; }
+
+.topbar { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.brand { font-family: var(--font-hud); text-transform: uppercase; display: grid; gap: 2px; text-shadow: 0 1px 8px #000a; }
+.brand b { font-weight: 700; letter-spacing: 0.16em; font-size: 1rem; }
+.brand span { color: var(--muted); letter-spacing: 0.14em; font-size: 0.85rem; font-weight: 500; }
+.meta { display: flex; gap: 8px; align-items: center; }
+.chip { font-family: var(--font-hud); font-weight: 600; text-transform: uppercase; letter-spacing: 0.12em; font-size: 0.85rem;
+  background: var(--panel); border: 1px solid var(--panel-edge); color: var(--text); border-radius: 4px; padding: 6px 10px; }
+button.chip { cursor: pointer; }
+button.chip:hover { border-color: var(--muted); }
+.chip em { font-style: normal; color: var(--sodium); }
+
+.middle { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 330px); gap: 12px; align-items: start; min-height: 0; }
+.side { grid-column: 2; display: grid; gap: 12px; align-content: start; min-height: 0; max-height: 100%; }
+.panel { background: var(--panel); border: 1px solid var(--panel-edge); border-radius: 6px; padding: 12px 14px; backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+.ph { font-family: var(--font-hud); text-transform: uppercase; letter-spacing: 0.14em; font-size: 0.8rem; color: var(--muted); font-weight: 600; }
+.watch { display: grid; gap: 8px; }
+.watch-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.time { font-family: var(--font-data); font-size: 1.7rem; font-variant-numeric: tabular-nums; }
+.bar { height: 10px; background: var(--track); border-radius: 2px; overflow: hidden; display: flex; }
+.bar .f { background: var(--sodium); }
+.bar .t { background: var(--cool); }
+.key { display: flex; gap: 14px; flex-wrap: wrap; font-family: var(--font-data); font-size: 0.72rem; color: var(--muted); }
+.key span::before { content: ""; display: inline-block; width: 9px; height: 9px; margin-right: 6px; border-radius: 2px; background: var(--c); }
+.history { display: grid; gap: 5px; padding-top: 4px; border-top: 1px solid var(--panel-edge); }
+.history:empty { display: none; }
+.row { display: grid; grid-template-columns: 7.4rem minmax(0, 1fr) 2.8rem; gap: 8px; align-items: center; font-family: var(--font-data); font-size: 0.72rem; color: var(--muted); }
+.row .bar { height: 6px; }
+.row b { color: var(--text); font-weight: 500; text-align: right; font-variant-numeric: tabular-nums; }
+
+.reveal { display: grid; gap: 10px; overflow-y: auto; min-height: 0; }
+.map { display: grid; gap: 6px; }
+.map div { display: grid; grid-template-columns: 5.6rem minmax(0, 1fr); gap: 8px; font-size: 0.92rem; line-height: 1.35; }
+.map .o { font-family: var(--font-data); font-size: 0.78rem; color: var(--sodium); padding-top: 2px; }
+.lesson { font-size: 0.95rem; line-height: 1.5; margin: 0; color: var(--text); }
+.next { font-family: var(--font-data); font-size: 0.72rem; color: var(--muted); margin: 0; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.bottom { display: grid; gap: 10px; justify-items: center; }
+.choices { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
+.choices:empty { display: none; }
+.opt {
+  display: inline-flex; align-items: center; gap: 10px; cursor: pointer;
+  font-family: var(--font-hud); font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em; font-size: 1.05rem;
+  background: var(--panel); color: var(--text); border: 1px solid var(--panel-edge); border-radius: 5px; padding: 10px 16px;
+  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  animation: rise 0.35s ease both;
+}
+.opt kbd { font-family: var(--font-data); font-size: 0.75rem; border: 1px solid var(--muted); color: var(--muted); border-radius: 3px; padding: 1px 6px; }
+.opt:hover { border-color: var(--sodium); }
+.opt:hover kbd { color: var(--sodium); border-color: var(--sodium); }
+.opt.primary { border-color: var(--sodium); }
+button:focus-visible { outline: 2px solid var(--sodium); outline-offset: 2px; }
+@keyframes rise { from { opacity: 0; transform: translateY(8px) } to { opacity: 1; transform: none } }
+
+.caption {
+  max-width: min(760px, 100%); background: rgba(6, 8, 11, 0.86); border-radius: 4px; padding: 10px 16px 11px;
+  font-size: 1.18rem; line-height: 1.45; text-align: center; cursor: pointer; user-select: none;
+}
+.caption[hidden] { display: none !important; }
+.caption .w { opacity: 0.42; transition: opacity 0.12s linear; }
+.caption .w.said { opacity: 1; }
+.caption .who { font-family: var(--font-hud); font-weight: 600; letter-spacing: 0.14em; font-size: 0.82rem; color: var(--sodium); margin-right: 8px; }
+.caption .skip { display: block; font-family: var(--font-data); font-size: 0.66rem; color: var(--muted); margin-top: 4px; letter-spacing: 0.06em; }
+
+.toast { position: fixed; left: 50%; top: calc(64px + env(safe-area-inset-top, 0px)); transform: translate(-50%, -12px); opacity: 0;
+  transition: opacity 0.4s ease, transform 0.4s ease; pointer-events: none; text-align: center;
+  background: var(--panel); border: 1px solid var(--sodium); border-radius: 6px; padding: 10px 18px; }
+.toast.on { opacity: 1; transform: translate(-50%, 0); }
+.toast .k { font-family: var(--font-hud); letter-spacing: 0.16em; font-size: 0.75rem; color: var(--sodium); font-weight: 600; text-transform: uppercase; }
+.toast .n { font-family: var(--font-hud); font-weight: 700; letter-spacing: 0.08em; font-size: 1.35rem; text-transform: uppercase; }
+
+.anchor { position: fixed; left: 0; top: 0; pointer-events: none; transform: translate(-50%, -100%); white-space: nowrap;
+  font-family: var(--font-data); font-size: 0.78rem; padding: 4px 8px; border-radius: 3px;
+  background: var(--text); color: #151a21; opacity: 0; transition: opacity 0.4s ease; }
+.anchor::after { content: ""; position: absolute; left: 50%; bottom: -5px; margin-left: -5px; border: 5px solid transparent; border-bottom: 0; border-top-color: var(--text); }
+.anchor.slow { background: var(--sodium); }
+.anchor.slow::after { border-top-color: var(--sodium); }
+.anchor.on { opacity: 1; }
+.anchor.think { background: var(--cool); }
+.anchor.think::after { border-top-color: var(--cool); }
+
+.start { position: fixed; inset: 0; display: grid; place-items: center; background: radial-gradient(ellipse at center, rgba(18,22,29,0.55), rgba(10,12,16,0.92));
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+.start[hidden] { display: none !important; }
+.start-card { display: grid; gap: 14px; justify-items: center; text-align: center; max-width: 30rem; }
+.start .k { font-family: var(--font-hud); letter-spacing: 0.2em; color: var(--muted); font-weight: 600; text-transform: uppercase; font-size: 0.9rem; }
+.start h1 { font-family: var(--font-hud); font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; font-size: clamp(2.6rem, 9vw, 4.6rem); line-height: 0.95; margin: 0; text-wrap: balance; }
+.start p { margin: 0; color: var(--muted); line-height: 1.5; }
+.floors { display: grid; gap: 10px; justify-items: stretch; width: min(22rem, 100%); }
+.floors .opt { justify-content: space-between; }
+.floors .opt small { font-family: var(--font-data); font-size: 0.72rem; color: var(--muted); letter-spacing: 0.04em; text-transform: none; font-weight: 400; }
+
+@media (max-width: 720px) {
+  .middle { grid-template-columns: minmax(0, 1fr); }
+  .side { grid-column: 1; }
+  .time { font-size: 1.35rem; }
+  .caption { font-size: 1.02rem; }
+  .reveal { max-height: 34vh; }
+  .opt { font-size: 0.95rem; padding: 9px 12px; }
+  .brand span { font-size: 0.78rem; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .caption .w { transition: none; }
+  .opt { animation: none; }
+  #stage canvas, .toast, .anchor, #fade { transition: none; }
+}
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div id="fade"></div>
+
+<div class="hud">
+  <div class="topbar">
+    <div class="brand"><b>Meridian Words Ltd.</b><span id="brandFloor">Floor 01 / 48 · The Shelf Room</span></div>
+    <div class="meta">
+      <span class="chip" id="endings">Endings <em>0</em>/2</span>
+      <button class="chip" id="sound" type="button" aria-pressed="true">Sound on</button>
+    </div>
+  </div>
+
+  <div class="middle">
+    <div class="side">
+      <section class="panel watch" aria-label="Stopwatch">
+        <div class="watch-head"><span class="ph">Time to stamp one word</span><span class="time" id="time">0.0 s</span></div>
+        <div class="bar"><div class="f" id="liveF" style="width:0%"></div><div class="t" id="liveT" style="width:0%"></div></div>
+        <div class="key"><span style="--c: var(--sodium)" id="keyF">Fetching</span><span style="--c: var(--cool)" id="keyT">Thinking</span></div>
+        <div class="history" id="history"></div>
+      </section>
+      <section class="panel reveal" id="reveal" hidden aria-label="What this floor teaches">
+        <span class="ph">Under the labels</span>
+        <div class="map" id="revealMap"></div>
+        <p class="lesson" id="revealLesson"></p>
+        <p class="next" id="nextNote"></p>
+        <div class="actions" id="revealActions"></div>
+      </section>
+    </div>
+  </div>
+
+  <div class="bottom">
+    <div class="choices" id="choices"></div>
+    <div class="caption" id="caption" hidden role="status" aria-live="polite"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"><div class="k">Ending found</div><div class="n" id="toastName"></div></div>
+
+<div class="anchor think" id="aThink">thinking…</div>
+<div class="anchor" id="aAdv">maths units (fast)</div>
+<div class="anchor" id="aShelf">memory</div>
+<div class="anchor" id="aBook">the model's weights</div>
+<div class="anchor slow" id="aPath">reading the weights (slow)</div>
+<div class="anchor" id="aMain">graphics card (fast, small)</div>
+<div class="anchor" id="aAnnex">CPU and main memory (slower, big)</div>
+<div class="anchor" id="aExpert">an expert</div>
+<div class="anchor slow" id="aFax">the question: about 10 KB</div>
+<div class="anchor slow" id="aVan">an expert's weights: megabytes</div>
+
+<div class="start" id="start">
+  <div class="start-card">
+    <span class="k">Meridian Words Ltd. · Night shift</span>
+    <h1>Meridian Words</h1>
+    <p>A 48-floor building that writes one word at a time. Two floors are open. Sound on for the narrator; captions are always shown.</p>
+    <div class="floors">
+      <button class="opt primary" id="begin1" type="button">Floor 1 · The Shelf Room <small>3 min</small></button>
+      <button class="opt" id="begin2" type="button">Floor 2 · The Annex <small>2 min</small></button>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // ---------- Narration: one audio file per stretch between choices, captions cued inside it ----------
+  // CHUNKS: each file's length, and for each caption line the time each of its words is spoken, in seconds
+  // (from Parakeet's word timestamps, tools/align.py).
+  const LINES = {"intro1": "Meridian Words is a building of 48 floors that never sleeps. All night, people across the city send it questions, and by morning it has written their answers.", "intro2": "It writes them one word at a time. And no word may leave the building until every floor has stamped it. Every floor.", "intro3": "The advisers on each floor have worked here longer than anyone can remember. They are very good at their jobs. Nobody has ever asked them to hurry. Until tonight.", "intro4": "You are the night courier. You carry each word up the building, floor by floor, to the roof. Tonight there are a great many words. I do hope you're up to it.", "intro5": "This is floor 1. A desk, an adviser, and a shelf of manuals nobody has dusted since the building opened. Lovely, isn't it?", "bet1": "Before you hand the word over, a small bet. Just between us.", "bet2": "To stamp it, the adviser looks something up in a manual, then thinks about your word. Where will most of the time go?", "watch": "Hand the envelope over. Watch the clock. I certainly will.", "right": "Correct. Nearly all of it went on the walk to the shelf and back. The thinking took a moment. Clever. I'll remember that.", "wrong": "Not quite. The thinking took a moment. Nearly all of the time went on the walk to the shelf and back. Don't worry. I won't tell anyone.", "upgrade": "Management will pay for one upgrade on this floor. I'd choose carefully. Management keeps notes.", "faster1": "The adviser is back from a weekend course, thinking twice as fast. Watch the clock.", "faster2": "Your word arrived 0.3 seconds sooner. Out of 4.0.", "faster3": "Nobody on this floor was ever slow at thinking. But you knew that. Didn't you?", "closer1": "Management has had a word with the shelf. It's agreed to come to you. This once.", "closer2": "1.4 seconds. The same adviser, thinking at the same speed. Only the walk changed. Well done.", "reveal1": "The office freezes. The labels peel off. You weren't supposed to see this part.", "reveal2": "To write each word, an AI model reads a huge pile of numbers from memory, and does a little maths with them. The maths is quick. The reading is slow.", "reveal3": "So a faster AI engine mostly reads less, or reads from somewhere closer. Each of the next floors is one of its tricks. I'll be waiting on floor 2.", "f2a1": "Floor 2. You'll notice it's busier.", "f2a2": "Meridian Words employs far more advisers than it has desks. Hundreds on every floor. Each word only needs a handful of them.", "f2a3": "The popular ones work here, in the main office. Everyone else works at the annex, across town. It's cheaper. Nobody visits.", "f2a4": "Tonight, your word needs someone from the annex.", "f2a5": "So. Another small bet, between friends. Is it faster to drive the adviser over here, manuals and all? Or to send them a fax?", "f2d1": "Excellent. I'll call the van. They'll need their manuals, of course. They never go anywhere without them. Watch the clock.", "f2d2": "7.4 seconds. Most of it in traffic, with four crates of paper on the roof.", "f2d3": "And tomorrow, somebody has to drive them back.", "f2x1": "A fax. How old-fashioned. I like it. Your adviser sends the question. Only the question. Watch the clock.", "f2x2": "1.6 seconds. The annex adviser is slower at sums. Older equipment.", "f2x3": "It hardly matters. Nothing heavy moved. One page went across town, and one page came back.", "f2r1": "The office freezes again. I really must speak to maintenance.", "f2r2": "The main office is the graphics card. Fast, but small. The annex is the computer's main processor, and its memory. Slower, but enormous. Each adviser is one expert: a small part of the model.", "f2r3": "c0ven keeps the busiest experts on the card, and lets the processor work out the rest, right where they live. The knowledge stays put. Only the question travels.", "f2r4": "Floor 3 is next. I've been rearranging the desks."};
+  const CHUNKS = {"intro": {"dur": 86.88, "lines": [["intro1", [0.0, 0.72, 1.2, 1.44, 1.6, 2.0, 2.24, 2.96, 3.76, 4.0, 4.32, 5.52, 5.84, 6.56, 6.88, 7.44, 7.68, 8.0, 8.48, 8.8, 9.68, 9.92, 10.16, 10.96, 11.2, 11.44, 11.92, 12.16]], ["intro2", [13.44, 13.76, 14.56, 14.96, 15.28, 15.92, 16.24, 16.56, 17.44, 17.76, 18.08, 18.56, 18.8, 19.28, 19.52, 20.16, 21.04, 21.36, 22.0, 22.24, 23.04, 23.68, 24.24]], ["intro3", [25.76, 26.0, 26.8, 27.04, 27.44, 28.16, 28.48, 29.04, 29.36, 29.92, 30.24, 30.88, 31.2, 32.16, 32.48, 32.8, 33.12, 33.36, 33.68, 33.92, 35.04, 35.68, 35.92, 36.48, 36.88, 37.12, 37.36, 38.56, 39.36]], ["intro4", [40.8, 41.12, 41.44, 41.68, 42.16, 43.36, 43.6, 44.16, 44.64, 45.12, 45.36, 45.6, 46.48, 47.04, 47.36, 48.0, 48.16, 48.4, 49.44, 50.4, 50.72, 51.04, 51.36, 51.68, 52.0, 53.28, 53.6, 53.92, 54.24, 54.8, 55.12, 55.36]], ["intro5", [56.0, 56.56, 56.88, 57.68, 58.48, 58.8, 59.52, 59.84, 60.88, 61.12, 61.28, 61.76, 62.08, 63.04, 63.6, 63.92, 64.56, 64.96, 65.2, 66.08, 67.68, 68.56, 69.12]], ["bet1", [69.76, 70.16, 70.4, 70.8, 71.12, 71.76, 72.4, 72.72, 73.36, 74.48, 75.04, 75.68]], ["bet2", [76.88, 77.12, 77.6, 78.0, 78.24, 79.04, 79.44, 79.76, 79.92, 80.08, 80.32, 81.12, 81.44, 82.08, 82.4, 82.72, 83.92, 84.56, 84.88, 85.2, 85.52, 85.84, 86.16]]]}, "watch": {"dur": 4.91, "lines": [["watch", [0.0, 0.4, 0.56, 1.36, 2.0, 2.4, 2.64, 3.44, 3.68, 4.4]]]}, "right": {"dur": 18.91, "lines": [["right", [0.16, 1.04, 1.52, 1.76, 1.92, 2.16, 2.4, 2.56, 2.72, 3.12, 3.28, 3.44, 4.24, 4.56, 5.2, 5.44, 5.92, 6.32, 6.56, 7.44, 8.56, 9.04, 9.76]], ["upgrade", [10.4, 11.2, 11.44, 11.84, 12.08, 12.4, 13.12, 13.44, 13.68, 14.64, 15.04, 15.52, 16.8, 17.68, 18.16]]]}, "wrong": {"dur": 19.98, "lines": [["wrong", [0.08, 0.48, 1.28, 1.52, 2.0, 2.32, 2.56, 3.52, 4.0, 4.24, 4.4, 4.64, 4.96, 5.28, 5.44, 5.6, 5.92, 6.08, 6.32, 6.88, 7.2, 8.08, 8.64, 9.36, 9.6, 10.16, 10.4]], ["upgrade", [11.52, 12.32, 12.56, 12.96, 13.2, 13.44, 14.16, 14.4, 14.64, 15.6, 16.08, 16.56, 17.76, 18.64, 19.2]]]}, "faster1": {"dur": 6.66, "lines": [["faster1", [0.0, 0.24, 0.88, 1.12, 1.36, 1.52, 1.68, 2.48, 3.12, 3.68, 4.32, 4.64, 5.44, 5.84, 6.08]]]}, "faster2": {"dur": 12.59, "lines": [["faster2", [0.0, 0.48, 0.8, 1.57, 2.35, 3.12, 4.0, 4.56, 5.2]], ["faster3", [5.84, 6.48, 6.72, 7.04, 7.44, 7.68, 8.16, 8.72, 8.96, 9.84, 10.16, 10.48, 10.96, 11.6, 12.08]]]}, "closer1": {"dur": 7.05, "lines": [["closer1", [0.0, 0.8, 1.04, 1.2, 1.36, 1.68, 1.92, 2.16, 3.04, 3.44, 4.08, 4.4, 4.72, 4.96, 5.76, 6.24]]]}, "closer2": {"dur": 9.9, "lines": [["closer2", [0.16, 1.28, 2.4, 2.64, 2.88, 3.92, 4.48, 4.72, 5.04, 5.36, 6.32, 6.72, 6.96, 7.52, 8.72, 9.2]]]}, "reveal": {"dur": 34.87, "lines": [["reveal1", [0.16, 0.32, 0.8, 2.0, 2.24, 3.04, 3.6, 4.48, 4.72, 5.28, 5.84, 6.16, 6.48, 6.8]], ["reveal2", [7.76, 8.0, 8.4, 8.88, 9.52, 9.84, 10.4, 10.88, 11.28, 11.52, 11.92, 12.4, 12.64, 13.04, 13.28, 14.16, 14.48, 14.72, 14.88, 15.12, 15.84, 16.16, 16.8, 17.04, 17.6, 17.84, 18.64, 18.96, 19.6, 19.92]], ["reveal3", [21.12, 21.44, 21.68, 22.32, 23.44, 24.08, 24.64, 25.12, 25.84, 26.08, 26.56, 26.88, 27.44, 28.56, 28.88, 29.12, 29.36, 29.68, 30.32, 30.56, 30.8, 30.96, 31.28, 32.4, 32.8, 32.96, 33.44, 33.68, 34.24]]]}, "f2intro": {"dur": 42.76, "lines": [["f2a1", [0.08, 0.64, 1.28, 1.68, 2.08, 2.48]], ["f2a2", [3.52, 4.32, 4.88, 5.6, 6.0, 6.32, 7.04, 7.28, 7.52, 7.84, 8.8, 9.6, 9.92, 10.24, 11.2, 11.68, 12.24, 12.56, 12.96, 13.2, 13.92, 14.16]], ["f2a3", [14.72, 14.96, 15.6, 16.16, 16.48, 17.04, 17.28, 17.44, 17.92, 18.8, 19.44, 19.76, 20.08, 20.32, 20.48, 21.36, 21.92, 22.72, 23.12, 24.24, 24.8]], ["f2a4", [26.0, 26.96, 27.36, 27.84, 28.24, 28.72, 28.96, 29.12]], ["f2a5", [30.56, 31.36, 32.0, 32.64, 33.2, 33.76, 34.96, 35.2, 35.44, 36.0, 36.24, 36.72, 36.88, 37.92, 38.16, 38.8, 39.76, 40.08, 40.72, 40.96, 41.2, 41.6, 41.76, 41.92]]]}, "f2drive1": {"dur": 9.43, "lines": [["f2d1", [0.0, 1.2, 1.68, 1.84, 2.08, 2.8, 3.28, 3.52, 3.76, 4.48, 4.72, 5.36, 5.68, 6.0, 6.24, 7.04, 7.52, 8.16, 8.56, 8.8]]]}, "f2drive2": {"dur": 11.1, "lines": [["f2d2", [0.16, 1.36, 2.56, 2.88, 3.12, 3.28, 3.44, 4.24, 4.56, 4.88, 5.44, 5.6, 6.0, 6.16, 6.4]], ["f2d3", [7.52, 7.68, 8.8, 9.36, 9.6, 9.76, 10.32, 10.56]]]}, "f2fax1": {"dur": 9.51, "lines": [["f2x1", [0.0, 0.32, 1.2, 1.44, 2.64, 2.96, 3.28, 3.92, 4.24, 4.96, 5.52, 5.84, 6.48, 7.04, 7.36, 8.24, 8.64, 8.88]]]}, "f2fax2": {"dur": 15.02, "lines": [["f2x2", [0.6, 1.2, 2.24, 2.48, 3.04, 3.6, 3.84, 4.32, 4.56, 5.44, 5.92]], ["f2x3", [7.12, 7.36, 7.84, 8.8, 9.28, 9.84, 10.64, 11.04, 11.52, 11.84, 12.32, 12.96, 13.28, 13.6, 14.16, 14.48]]]}, "f2reveal": {"dur": 43.7, "lines": [["f2r1", [0.0, 0.32, 0.72, 1.84, 2.48, 2.8, 3.12, 3.52, 3.92, 4.16]], ["f2r2", [5.68, 5.92, 6.32, 6.72, 6.96, 7.2, 7.92, 8.8, 9.68, 10.0, 10.88, 11.12, 11.76, 12.0, 12.24, 12.88, 13.36, 14.32, 14.64, 14.96, 15.92, 16.88, 17.2, 18.56, 18.96, 20.0, 20.32, 20.64, 21.76, 22.08, 22.56, 22.8, 23.04, 23.28]], ["f2r3", [24.12, 24.96, 25.2, 25.36, 26.16, 26.72, 26.96, 27.2, 27.92, 28.16, 28.48, 28.72, 29.6, 29.84, 30.16, 30.4, 31.12, 31.44, 31.92, 32.16, 33.04, 33.36, 34.08, 34.96, 35.6, 36.24, 36.56, 37.12]], ["f2r4", [38.56, 39.28, 39.76, 40.08, 40.96, 41.28, 41.6, 42.48, 42.72]]]}};
+  const audio = new Audio();
+  audio.preload = "auto";
+  let soundOn = true, skipLine = null;
+  // Every file fetched up front as a blob, so playback starts with no load gap.
+  const clips = {};
+  for (const id of Object.keys(CHUNKS)) {
+    fetch(`meridian-words/${id}.mp3`).then((r) => r.ok ? r.blob() : null).then((b) => { if (b) clips[id] = URL.createObjectURL(b); }).catch(() => {});
+  }
+
+  function caption(lineId) {
+    const cap = $("caption");
+    const words = LINES[lineId].split(" ").map((w) => `<span class="w">${w}</span>`).join(" ");
+    cap.innerHTML = `<span class="who">[PA SYSTEM]</span>${words}<span class="skip">Click or press Space to skip</span>`;
+    cap.hidden = false;
+    return cap.querySelectorAll(".w");
+  }
+
+  // Plays a chunk; onCue(lineId) runs as each caption starts. Without sound, or if the file fails, a clock stands in.
+  function speak(id, onCue) {
+    const { dur, lines } = CHUNKS[id];
+    const cues = lines.map(([line, ts], i) => [i ? ts[0] : 0, line, ts]);
+    return new Promise((resolve) => {
+      let done = false, shown = -1, spans = [], said = 0, useAudio = soundOn, base = 0, t0 = performance.now();
+      let lastT = -1, lastMove = performance.now(), endTimer = null;
+      const time = () => useAudio ? audio.currentTime : base + (performance.now() - t0) / 1000;
+      const toClock = () => { if (!useAudio) return; base = audio.currentTime || 0; t0 = performance.now(); useAudio = false; audio.pause(); };
+      const finish = () => {
+        if (done) return;
+        done = true;
+        clearTimeout(endTimer);
+        audio.onended = audio.onerror = null;
+        audio.pause();
+        skipLine = null;
+        resolve();
+      };
+      skipLine = () => {
+        const next = cues[shown + 1];
+        if (!next) { finish(); return; }
+        if (useAudio) audio.currentTime = next[0];
+        else { base = next[0]; t0 = performance.now(); }
+      };
+      const tick = () => {
+        if (done) return;
+        const t = time();
+        let i = 0;
+        while (i + 1 < cues.length && cues[i + 1][0] <= t) i++;
+        if (i !== shown) { shown = i; spans = caption(cues[i][1]); said = 0; if (onCue) onCue(cues[i][1]); }
+        const ts = cues[i][2];
+        while (said < spans.length && ts[said] <= t + 0.05) spans[said++].classList.add("said");
+        if (useAudio) {
+          if (t !== lastT) { lastT = t; lastMove = performance.now(); }
+          else if (performance.now() - lastMove > 4000) toClock();  // a stalled file never holds the floor
+        } else if (t >= dur + 0.55) { finish(); return; }
+        requestAnimationFrame(tick);
+      };
+      if (useAudio) {
+        audio.src = clips[id] || `meridian-words/${id}.mp3`;
+        audio.onended = () => { endTimer = setTimeout(finish, 550); };
+        audio.onerror = toClock;
+        const p = audio.play();
+        if (p && p.catch) p.catch(toClock);
+      }
+      tick();
+    });
+  }
+  $("caption").addEventListener("click", () => skipLine && skipLine());
+  $("sound").addEventListener("click", () => {
+    soundOn = !soundOn;
+    $("sound").textContent = soundOn ? "Sound on" : "Sound off";
+    $("sound").setAttribute("aria-pressed", soundOn);
+    if (!soundOn) audio.pause();
+  });
+
+  // ---------- The scene ----------
+  const stage = $("stage");
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2));
+  renderer.outputEncoding = THREE.sRGBEncoding;
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.05;
+  stage.appendChild(renderer.domElement);
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x12161d);
+  scene.fog = new THREE.Fog(0x12161d, 11, 24);
+  const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 140);
+
+  const mat = (color, o = {}) => new THREE.MeshStandardMaterial(Object.assign({ color, roughness: 0.85, metalness: 0.02 }, o));
+  function box(w, h, d, m, x, y, z, parent = scene) {
+    const b = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m);
+    b.position.set(x, y, z); b.castShadow = true; b.receiveShadow = true;
+    parent.add(b); return b;
+  }
+  function canvasTex(w, h, draw) {
+    const c = document.createElement("canvas"); c.width = w; c.height = h;
+    draw(c.getContext("2d"), w, h);
+    const t = new THREE.CanvasTexture(c); t.encoding = THREE.sRGBEncoding; return t;
+  }
+  function sign(text, w, h, x, y, z, bg = "#e9ebe6", fg = "#1a1f27") {
+    const tex = canvasTex(512, Math.round(512 * h / w), (g, cw, ch) => {
+      g.fillStyle = bg; g.fillRect(0, 0, cw, ch);
+      g.fillStyle = fg; g.font = `700 ${Math.round(ch * 0.62)}px 'Barlow Condensed', Arial Narrow, sans-serif`;
+      g.textAlign = "center"; g.textBaseline = "middle"; g.fillText(text, cw / 2, ch * 0.54);
+    });
+    const s = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshStandardMaterial({ map: tex, roughness: 0.6 }));
+    s.position.set(x, y, z); scene.add(s); return s;
+  }
+  // Lit windows of buildings at night, shared by both floors.
+  const windowsTex = canvasTex(1024, 128, (g) => {
+    g.fillStyle = "#0b0f16"; g.fillRect(0, 0, 1024, 128);
+    for (let i = 0; i < 260; i++) {
+      const x = (i * 97) % 1024, y = 18 + ((i * 53) % 92);
+      if ((i * 7) % 5 < 2) { g.fillStyle = (i % 3) ? "#d8b46a" : "#9fb5c9"; g.globalAlpha = 0.35 + ((i * 13) % 50) / 100; g.fillRect(x, y, 10, 7); }
+    }
+    g.globalAlpha = 1;
+  });
+
+  scene.add(new THREE.HemisphereLight(0x9fb2c8, 0x1a1f27, 0.55));
+  // A cool rim from behind, so figures separate from the walls.
+  const rim = new THREE.DirectionalLight(0x8bb6cf, 0.3); rim.position.set(-4, 6, -8); scene.add(rim);
+  // Soft glow discs for lamps, so lights read as lit at the camera's distance.
+  const haloTex = canvasTex(64, 64, (g) => {
+    const r = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+    r.addColorStop(0, "rgba(255,255,255,1)"); r.addColorStop(0.3, "rgba(255,255,255,0.4)"); r.addColorStop(1, "rgba(255,255,255,0)");
+    g.fillStyle = r; g.fillRect(0, 0, 64, 64);
+  });
+  function halo(color, size, x, y, z, parent = scene, opacity = 0.8) {
+    const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: haloTex, color, transparent: true, opacity, blending: THREE.AdditiveBlending, depthWrite: false }));
+    s.scale.setScalar(size); s.position.set(x, y, z); parent.add(s); return s;
+  }
+  const tubes = [];
+  function tube(x, y, z) {
+    const t = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.05, 0.18), new THREE.MeshBasicMaterial({ color: 0xe6efe9 }));
+    t.position.set(x, y, z); scene.add(t); tubes.push(t);
+    const l = new THREE.PointLight(0xdfe9e4, 0.45, 9, 1.6); l.position.set(x, y - 0.2, z); scene.add(l);
+  }
+  function keyLight(x, y, z, tx, angle, dist) {
+    const k = new THREE.SpotLight(0xe8f0ea, 1.3, dist, angle, 0.6, 1.2);
+    k.position.set(x, y, z); k.target.position.set(tx, 0, 0);
+    k.castShadow = true; k.shadow.mapSize.set(1024, 1024); k.shadow.bias = -0.0005;
+    scene.add(k, k.target);
+  }
+
+  // Furniture builders
+  const wood = mat(0x6b5845, { roughness: 0.7 }), woodDark = mat(0x4e4135), paperM = mat(0xeceee8, { roughness: 0.6 });
+  // A desk centred at (cx, cz), facing the camera, with drawers on its right, papers on its left and a lamp at the back left.
+  function makeDesk(cx, cz, lamp = true) {
+    box(2.0, 0.08, 1.0, wood, cx, 0.98, cz);
+    box(2.0, 0.03, 0.06, woodDark, cx, 0.925, cz + 0.47);
+    for (const [dx, dz] of [[-0.9, -0.4], [0.9, -0.4], [-0.9, 0.4], [0.9, 0.4]]) box(0.07, 0.94, 0.07, woodDark, cx + dx, 0.47, cz + dz);
+    box(0.6, 0.6, 0.9, woodDark, cx + 0.6, 0.64, cz);
+    for (const dy of [0.45, 0.72]) box(0.14, 0.02, 0.02, mat(0x8a9099, { metalness: 0.6, roughness: 0.4 }), cx + 0.6, dy, cz + 0.46);
+    const stack = box(0.3, 0.035, 0.22, paperM, cx - 0.55, 1.04, cz + 0.2); stack.rotation.y = 0.15;
+    const mug = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.04, 0.1, 12), mat(0xe8a33d, { roughness: 0.5 }));
+    mug.position.set(cx + 0.78, 1.07, cz - 0.3); mug.castShadow = true; scene.add(mug);
+    if (!lamp) return;
+    const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.5, 8), mat(0x8a9099, { metalness: 0.6, roughness: 0.4 }));
+    arm.position.set(cx - 0.7, 1.25, cz - 0.25); arm.rotation.z = 0.25; scene.add(arm);
+    box(0.16, 0.02, 0.16, mat(0x8a9099, { metalness: 0.6, roughness: 0.4 }), cx - 0.76, 1.03, cz - 0.25);
+    const shade = new THREE.Mesh(new THREE.ConeGeometry(0.16, 0.2, 18, 1, true), mat(0xe8a33d, { side: THREE.DoubleSide, emissive: 0x6a4210, emissiveIntensity: 0.6 }));
+    shade.position.set(cx - 0.63, 1.52, cz - 0.25); scene.add(shade);
+    halo(0xffb45c, 0.5, cx - 0.63, 1.46, cz - 0.2, scene, 0.35);
+    const l = new THREE.PointLight(0xffb45c, 0.9, 3.2, 2); l.position.set(cx - 0.6, 1.4, cz - 0.2); scene.add(l);
+  }
+  // A desk phone, handset across the top.
+  function makePhone(x, z, rotY) {
+    const g = new THREE.Group(); g.position.set(x, 1.02, z); g.rotation.y = rotY; scene.add(g);
+    const dark = mat(0x2a2e36, { roughness: 0.5 });
+    const base = box(0.22, 0.07, 0.16, dark, 0, 0.035, 0, g); base.rotation.x = 0.15;
+    for (let i = 0; i < 6; i++) box(0.03, 0.01, 0.025, mat(0xb9bcb5), 0.03 + (i % 3) * 0.04, 0.075, -0.02 + Math.floor(i / 3) * 0.04, g);
+    box(0.05, 0.035, 0.2, dark, -0.07, 0.1, 0, g);
+    for (const dz of [-0.085, 0.085]) box(0.06, 0.03, 0.05, dark, -0.07, 0.085, dz, g);
+  }
+  // An office chair facing the camera.
+  function makeChair(x, z) {
+    const chair = new THREE.Group(); scene.add(chair);
+    const fabric = mat(0x2f3644, { roughness: 0.95 }), steel = mat(0x8a9099, { metalness: 0.7, roughness: 0.35 }), black = mat(0x1c2027, { roughness: 0.6 });
+    for (let i = 0; i < 5; i++) {
+      const arm = new THREE.Group(); arm.rotation.y = i * Math.PI * 2 / 5; chair.add(arm);
+      box(0.3, 0.035, 0.05, steel, 0.15, 0.09, 0, arm);
+      const wheel = new THREE.Mesh(new THREE.SphereGeometry(0.035, 10, 8), black);
+      wheel.position.set(0.29, 0.035, 0); wheel.castShadow = true; arm.add(wheel);
+    }
+    const column = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.035, 0.36, 12), steel);
+    column.position.y = 0.28; column.castShadow = true; chair.add(column);
+    box(0.5, 0.06, 0.48, black, 0, 0.47, 0, chair);
+    const seat = box(0.48, 0.08, 0.46, fabric, 0, 0.54, 0.01, chair); seat.rotation.x = 0.04;
+    box(0.05, 0.36, 0.04, black, 0, 0.66, -0.25, chair);
+    const back = new THREE.Group(); back.position.set(0, 0.98, -0.27); back.rotation.x = -0.14; chair.add(back);
+    box(0.46, 0.52, 0.07, fabric, 0, 0, 0, back);
+    box(0.4, 0.1, 0.05, fabric, 0, -0.14, 0.04, back);
+    box(0.44, 0.06, 0.03, fabric, 0, 0.29, 0.01, back);
+    for (const sx of [-0.27, 0.27]) {
+      box(0.035, 0.2, 0.035, black, sx, 0.64, -0.02, chair);
+      box(0.06, 0.03, 0.28, black, sx, 0.75, 0.02, chair);
+      box(0.07, 0.025, 0.2, fabric, sx, 0.775, 0.04, chair);
+    }
+    chair.position.set(x, 0, z);
+  }
+  // An adviser. The frame loop poses them from walking, walkPhase, sit (0 standing, 1 seated), carry, reach, busy
+  // (typing at a desk), lift (extra height) and heading (the yaw they turn towards). `old` gives a stoop and a shuffle.
+  function makeAdviser({ x = 0, z = 0, suit = 0x56657d, hair = 0x3b322b, tie = 0xe8a33d, skin = 0xc9b39d, nodPhase = 0, old = false } = {}) {
+    const g = new THREE.Group(); scene.add(g); g.position.set(x, 0, z);
+    const suitM = mat(suit), trousers = mat(0x2b303a), shoe = mat(0x23272f), skinM = mat(skin), hairM = mat(hair), dark = mat(0x1a1f27);
+    const cyl = (rt, rb, h, m, parent, y) => { const c = new THREE.Mesh(new THREE.CylinderGeometry(rt, rb, h, 14), m); c.position.y = y; c.castShadow = true; parent.add(c); return c; };
+    const ball = (r, m, parent, px, py, pz) => { const s = new THREE.Mesh(new THREE.SphereGeometry(r, 14, 10), m); s.position.set(px, py, pz); s.castShadow = true; parent.add(s); return s; };
+    // The upper body pivots at the waist, so a lean carries the arms and head with it.
+    const body = new THREE.Group(); body.position.y = 0.92; g.add(body);
+    box(0.34, 0.16, 0.24, trousers, 0, 0.86, 0, g);
+    const torso = cyl(0.19, 0.22, 0.66, suitM, body, 0.33);
+    box(0.1, 0.3, 0.02, mat(0xe6e8e3), 0, 0.5, 0.21, body);
+    if (tie !== null) box(0.05, 0.26, 0.02, mat(tie), 0, 0.45, 0.225, body);
+    for (const sx of [-1, 1]) ball(0.075, suitM, body, sx * 0.22, 0.6, 0);
+    cyl(0.055, 0.06, 0.12, skinM, body, 0.7);
+    const head = new THREE.Group(); head.position.y = 0.76; body.add(head);
+    ball(0.16, skinM, head, 0, 0.14, 0);
+    const cap = new THREE.Mesh(new THREE.SphereGeometry(0.166, 20, 10, 0, Math.PI * 2, 0, Math.PI / (old ? 3.4 : 2.2)), hairM);
+    cap.position.y = 0.15; head.add(cap);
+    for (const sx of [-1, 1]) {
+      ball(0.02, dark, head, sx * 0.058, 0.165, 0.14);
+      ball(0.025, skinM, head, sx * 0.155, 0.13, 0);
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(0.045, 0.007, 6, 16), dark); ring.position.set(sx * 0.062, 0.165, 0.162); head.add(ring);
+      if (old) box(0.06, 0.02, 0.02, hairM, sx * 0.06, 0.218, 0.15, head);
+    }
+    box(0.03, 0.006, 0.006, dark, 0, 0.165, 0.162, head);
+    if (old) box(0.1, 0.028, 0.03, hairM, 0, 0.085, 0.15, head);
+    else box(0.05, 0.008, 0.01, mat(0x9a6e60), 0, 0.08, 0.152, head);
+    // Arms: shoulder pivot, elbow pivot, hand. Legs: hip pivot, knee pivot, shoe.
+    function arm(sx) {
+      const sh = new THREE.Group(); sh.position.set(sx * 0.27, 0.6, 0); body.add(sh);
+      cyl(0.055, 0.05, 0.3, suitM, sh, -0.15);
+      const elbow = new THREE.Group(); elbow.position.y = -0.3; sh.add(elbow);
+      cyl(0.05, 0.042, 0.28, suitM, elbow, -0.14);
+      const hand = new THREE.Group(); hand.position.y = -0.3; elbow.add(hand);
+      ball(0.045, skinM, hand, 0, 0, 0);
+      sh.elbow = elbow; sh.hand = hand; return sh;
+    }
+    function leg(sx) {
+      const hip = new THREE.Group(); hip.position.set(sx * 0.1, 0.86, 0); g.add(hip);
+      cyl(0.075, 0.065, 0.44, trousers, hip, -0.22);
+      const knee = new THREE.Group(); knee.position.y = -0.43; hip.add(knee);
+      cyl(0.065, 0.06, 0.4, trousers, knee, -0.2);
+      box(0.12, 0.07, 0.24, shoe, 0, -0.395, 0.05, knee);
+      hip.knee = knee; return hip;
+    }
+    return {
+      group: g, body, torso, head, legL: leg(-1), legR: leg(1), armL: arm(-1), armR: arm(1),
+      walking: 0, walkAmt: 0, walkPhase: 0, sit: 0, carry: false, reach: false, busy: false, lift: 0, nodPhase, old, heading: 0,
+    };
+  }
+  const wrapAngle = (a) => Math.atan2(Math.sin(a), Math.cos(a));
+  const clamp1 = (v, m) => Math.max(-m, Math.min(m, v));
+  function poseAdviser(A, t, dt) {
+    const g = A.group, k = reduced ? 1 : Math.min(1, dt * 10);
+    A.walkAmt += (A.walking - A.walkAmt) * k;
+    const turn = wrapAngle(A.heading - g.rotation.y);
+    g.rotation.y += reduced ? turn : turn * Math.min(1, dt * 11);
+    const w = A.walkAmt, s = A.sit, ph = A.walkPhase, blend = (a, b) => a + (b - a) * s;
+    const swing = Math.sin(ph) * (A.old ? 0.36 : 0.55) * w;
+    // Limbs hang along -y and the body faces +z, so a negative x rotation swings a limb forward.
+    // Legs: thighs forward and shins down when seated; a knee bend on whichever leg is swinging.
+    const seatHip = 1.35 * s;
+    A.legL.rotation.x = -(swing + seatHip); A.legR.rotation.x = -(-swing + seatHip);
+    A.legL.knee.rotation.x = seatHip + Math.max(0, Math.cos(ph)) * 0.9 * w;
+    A.legR.knee.rotation.x = seatHip + Math.max(0, -Math.cos(ph)) * 0.9 * w;
+    // Arms standing: a swing opposite the legs; the old hand rests in the small of the back.
+    let aL = -swing * 0.8, aR = swing * 0.8, eL = 0.25 + 0.25 * w, eR = eL, zL = 0, zR = 0, ezL = 0, ezR = 0;
+    if (A.old) { aL = -0.41; zL = 0.45; eL = 0.6; }
+    if (A.carry) { aL = aR = 0.8; eL = eR = 1.15; zL = zR = 0; ezL = 0.25; ezR = -0.25; }
+    else if (A.reach) { aR = 1.35; eR = 0.1; }
+    const nod = s > 0.9 && !reduced ? Math.sin(t * 9 + A.nodPhase) : 0;
+    // Arms seated: both at the keyboard when busy, else one on the desk and one at the chin.
+    let sL = 1.15, sR = 1.25, seL = 0.45, seR = 2.1 + nod * 0.05, sezR = -0.7;
+    if (A.busy) { sL = sR = 1.05; seL = 0.55 + Math.sin(t * 13 + A.nodPhase) * 0.07; seR = 0.55 + Math.cos(t * 13 + A.nodPhase) * 0.07; sezR = 0; }
+    A.armL.rotation.set(-blend(aL, sL), 0, blend(zL, 0)); A.armL.elbow.rotation.set(-blend(eL, seL), 0, blend(ezL, 0));
+    A.armR.rotation.set(-blend(aR, sR), 0, blend(zR, 0)); A.armR.elbow.rotation.set(-blend(eR, seR), 0, blend(ezR, sezR));
+    const stoop = A.old ? 0.22 * (1 - 0.5 * s) : 0;
+    A.body.rotation.x = 0.1 * w + Math.sin(s * Math.PI) * 0.4 + stoop;
+    A.body.rotation.z = (reduced ? 0 : Math.sin(t * 0.8 + A.nodPhase) * 0.015) * (1 - w) + Math.sin(ph) * (A.old ? 0.07 : 0.035) * w - clamp1(turn, 0.5) * 0.3;
+    A.head.rotation.x = nod * 0.12 - stoop * 0.8 - 0.05 * w;
+    A.head.rotation.y = A.busy ? Math.sin(t * 0.45 + A.nodPhase) * 0.35 : reduced ? 0 : Math.sin(t * 0.35 + A.nodPhase) * 0.12 * (1 - w);
+    const b = reduced ? 0 : Math.sin(t * 1.6 + A.nodPhase) * 0.012;
+    A.torso.scale.set(1 + b, 1 + b * 0.5, 1 + b);
+    g.position.y = w * (0.5 - 0.5 * Math.cos(2 * ph)) * 0.045 - 0.29 * s + A.lift;
+  }
+  function makeEnvelope() {
+    const g = new THREE.Group(); scene.add(g);
+    const paper = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.012, 0.28), paperM);
+    paper.castShadow = true; g.add(paper);
+    const flap = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.004, 0.02), mat(0xb9bdb6)); flap.position.set(0, 0.008, -0.06); g.add(flap);
+    for (const [w, z] of [[0.16, 0.02], [0.2, 0.05], [0.12, 0.08]]) box(w, 0.002, 0.01, mat(0x6d7486), -0.08, 0.008, z, g);
+    const stamp = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.006, 24), mat(0xe8a33d, { emissive: 0x7a4a10, emissiveIntensity: 0.5 }));
+    stamp.position.set(0.12, 0.01, 0.05); stamp.visible = false; g.add(stamp);
+    return { group: g, stamp };
+  }
+
+  // ======================= Floor 1: the shelf room, around x = 0 =======================
+  (() => {
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(30, 14), mat(0x2f3540, { roughness: 1 }));
+    floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; scene.add(floor);
+    const wall = new THREE.Mesh(new THREE.PlaneGeometry(30, 6), mat(0x323b4b));
+    wall.position.set(0, 3, -2.6); wall.receiveShadow = true; scene.add(wall);
+    box(30, 0.12, 0.06, mat(0x262c37), 0, 0.06, -2.56);
+    const win = new THREE.Mesh(new THREE.PlaneGeometry(13, 1.6), new THREE.MeshBasicMaterial({ map: windowsTex }));
+    win.position.set(2.2, 2.85, -2.58); scene.add(win);
+    for (let i = 0; i <= 8; i++) box(0.06, 1.7, 0.06, mat(0x262c37), -4.3 + i * 13 / 8, 2.85, -2.55);
+    box(13.2, 0.08, 0.1, mat(0x262c37), 2.2, 2.02, -2.55);
+    box(13.2, 0.08, 0.1, mat(0x262c37), 2.2, 3.68, -2.55);
+    sign("FLOOR 1", 0.9, 0.34, -2.9, 2.85, -2.56);
+    keyLight(2.5, 7, 4, 2.5, Math.PI / 4.5, 26);
+    for (const x of [-0.6, 3.2, 7]) tube(x, 4.4, 0.4);
+    for (const x of [5.2, 9.5]) { box(1.8, 0.08, 0.9, wood, x, 0.98, -1.6); box(0.5, 0.9, 0.8, woodDark, x + 0.55, 0.47, -1.6); }
+    const plant = new THREE.Mesh(new THREE.IcosahedronGeometry(0.42, 0), mat(0x3f5a4b, { flatShading: true }));
+    plant.position.set(-3.4, 1.0, -1.9); plant.castShadow = true; scene.add(plant);
+    box(0.36, 0.5, 0.36, mat(0x55473a), -3.4, 0.25, -1.9);
+  })();
+  makeDesk(0.35, 1.35);
+  // Just behind where the adviser stands, so sitting down lands on the seat.
+  makeChair(0.35, 0.15);
+
+  // The shelf. shelf moves across the floor; shelfBody lifts and waddles on the legs that fold out from under it.
+  const FAR = 6.2, NEAR = 1.9;
+  const shelf = new THREE.Group(); scene.add(shelf);
+  const shelfBody = new THREE.Group(); shelf.add(shelfBody);
+  const shelfWood = mat(0x4a3d31);
+  box(1.3, 2.4, 0.08, shelfWood, 0, 1.2, -0.25, shelfBody);
+  box(0.08, 2.4, 0.55, shelfWood, -0.61, 1.2, 0, shelfBody);
+  box(0.08, 2.4, 0.55, shelfWood, 0.61, 1.2, 0, shelfBody);
+  box(1.4, 0.08, 0.64, shelfWood, 0, 2.44, 0, shelfBody);
+  box(1.36, 0.1, 0.6, mat(0x3a2f26), 0, 0.05, 0, shelfBody);
+  // Legs: a pivot under each corner whose y scale is the leg's length; the boot undoes that scale.
+  const shelfLegs = [];
+  for (const [x, z, phase] of [[-0.5, 0.17, 0], [0.5, -0.17, 0], [0.5, 0.17, Math.PI], [-0.5, -0.17, Math.PI]]) {
+    const pivot = new THREE.Group(); pivot.position.set(x, 0.02, z); shelfBody.add(pivot);
+    const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.03, 1, 10), mat(0x2b2620, { roughness: 0.7 }));
+    leg.position.y = -0.5; leg.castShadow = true; pivot.add(leg);
+    const foot = new THREE.Group(); foot.position.y = -1; pivot.add(foot);
+    box(0.17, 0.07, 0.1, mat(0xb8893a, { metalness: 0.4, roughness: 0.4 }), 0.03, 0.01, 0, foot);
+    pivot.visible = false;
+    shelfLegs.push({ pivot, foot, phase });
+  }
+  // The puff of dust where the shelf lands.
+  const dust = new THREE.Mesh(new THREE.RingGeometry(0.3, 0.7, 24), new THREE.MeshBasicMaterial({ color: 0xaab0b8, transparent: true, opacity: 0, side: THREE.DoubleSide, depthWrite: false }));
+  dust.rotation.x = -Math.PI / 2; dust.position.y = 0.03; scene.add(dust);
+  function setLegs(len) {
+    const L = Math.max(len, 0.001);
+    for (const l of shelfLegs) { l.pivot.visible = len > 0.01; l.pivot.scale.y = L; l.foot.scale.y = 1 / L; }
+  }
+  const spineCols = [0x5d6b7f, 0x7a6a55, 0x4f6a63, 0x6d7486, 0x8a5a48, 0x3f4e66];
+  let k = 0;
+  for (let s = 0; s < 5; s++) {
+    const y = 0.06 + s * 0.56;
+    box(1.2, 0.05, 0.52, shelfWood, 0, y, 0, shelfBody);
+    if (s === 4) break;
+    let x = -0.54;
+    while (x < 0.5) {
+      const w = 0.05 + ((k * 7) % 5) * 0.012, h = 0.34 + ((k * 5) % 7) * 0.025;
+      if (x + w > 0.56) break;
+      box(w, h, 0.36, mat(spineCols[k % spineCols.length]), x + w / 2, y + 0.025 + h / 2, 0.02, shelfBody);
+      x += w + 0.008; k++;
+    }
+  }
+  shelf.position.set(FAR, 0, 0);
+  shelf.rotation.y = -0.18;
+
+  const HOME = 0.35;
+  const A1 = makeAdviser({ x: HOME, z: 0.45 });
+  const adv = A1.group;
+  // The manual, carried flat across both hands; rotated back out of the forearm's tilt in the carry pose.
+  const handBook = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.07, 0.24), mat(0x4f6a63));
+  handBook.position.set(-0.25, 0.02, -0.04); handBook.rotation.x = 1.95; handBook.visible = false; A1.armR.hand.add(handBook);
+
+  const E1 = makeEnvelope();
+  const ENV_IN = new THREE.Vector3(0.15, 1.03, 1.1), ENV_OUT = new THREE.Vector3(-4.5, 1.6, 0.8);
+  E1.group.position.copy(ENV_OUT);
+  const deskBook = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.06, 0.22), mat(0x4f6a63));
+  deskBook.position.set(0.75, 1.05, 1.05); deskBook.rotation.y = 0.3; deskBook.castShadow = true; deskBook.visible = false; scene.add(deskBook);
+
+  // The walk, drawn on the floor in the reveal
+  const pathGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(HOME, 0.02, 0.6), new THREE.Vector3(FAR - 0.8, 0.02, 0.6)]);
+  const pathLine = new THREE.Line(pathGeo, new THREE.LineDashedMaterial({ color: 0xe8a33d, dashSize: 0.18, gapSize: 0.12, transparent: true, opacity: 0 }));
+  pathLine.computeLineDistances(); scene.add(pathLine);
+  function setPath() {
+    const p = pathGeo.attributes.position;
+    p.setX(1, Math.max(HOME + 0.3, shelf.position.x - 0.8)); p.needsUpdate = true;
+    pathLine.computeLineDistances();
+  }
+
+  // ======================= Floor 2: the annex, around x = X2 =======================
+  // Far enough from floor 1 that each floor's fog hides the other.
+  const X2 = 60;
+  const MAIN_X = X2 - 4.6, ANNEX_X = X2 + 6.0;   // where each office's adviser stands, at z = 0.45
+  const VAN_OFFICE = X2 - 3.6, VAN_ANNEX = X2 + 5.4, VAN_LIGHT = X2 + 2.7, VAN_Z = 3.85;
+  const colleagues = [];
+  const trafficLamps = {};
+  const wireMat = new THREE.LineBasicMaterial({ color: 0x14171c });
+  let wireLine = null;
+  (() => {
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(44, 34), mat(0x1f232b, { roughness: 1 }));
+    ground.rotation.x = -Math.PI / 2; ground.position.set(X2, 0, 2); ground.receiveShadow = true; scene.add(ground);
+    box(17.5, 0.06, 0.7, mat(0x3a3f48), X2 + 0.6, 0.03, 2.75);
+    box(17.5, 0.02, 1.8, mat(0x191c22, { roughness: 1 }), X2 + 0.6, 0.01, 3.95);
+    for (let x = -8; x <= 9; x += 1.2) box(0.6, 0.025, 0.07, mat(0xd8d2b8, { roughness: 0.8 }), X2 + x, 0.025, 3.95);
+    box(17.5, 0.06, 0.5, mat(0x3a3f48), X2 + 0.6, 0.03, 5.1);
+
+    // The main office: a cutaway room, busy
+    const officeWall = mat(0x323b4b);
+    box(5.0, 0.1, 5.2, mat(0x2f3540, { roughness: 1 }), X2 - 4.7, 0.05, 0);
+    box(5.0, 3.6, 0.12, officeWall, X2 - 4.7, 1.8, -2.6);
+    box(0.12, 3.6, 5.2, officeWall, X2 - 7.2, 1.8, 0);
+    const win = new THREE.Mesh(new THREE.PlaneGeometry(4.2, 1.1), new THREE.MeshBasicMaterial({ map: windowsTex }));
+    win.position.set(X2 - 4.7, 2.7, -2.53); scene.add(win);
+    sign("MAIN OFFICE", 2.4, 0.42, X2 - 4.7, 3.92, -2.52);
+    tube(X2 - 4.7, 3.5, 0.2);
+    makeDesk(X2 - 4.6, 1.35);
+    makeChair(X2 - 4.6, 0.15);
+    // Colleagues: the popular advisers, busy at their desks
+    for (const [cx, suit, hair, ph] of [[X2 - 6.0, 0x6a5f78, 0x2a2420, 1.3], [X2 - 3.4, 0x5b6f63, 0x6b4a2e, 2.9]]) {
+      makeDesk(cx, -0.95, false);
+      makeChair(cx, -2.0);
+      makePhone(cx + 0.45, -1.1, -0.4);
+      const c = makeAdviser({ x: cx, z: -2.0, suit, hair, nodPhase: ph });
+      c.sit = 1; c.busy = true; colleagues.push(c);
+    }
+    // A side table with the fax machine
+    box(0.6, 0.06, 0.5, wood, X2 - 6.1, 0.75, 0.45);
+    for (const [dx, dz] of [[-0.25, -0.2], [0.25, -0.2], [-0.25, 0.2], [0.25, 0.2]]) box(0.04, 0.72, 0.04, woodDark, X2 - 6.1 + dx, 0.36, 0.45 + dz);
+    makeFax(X2 - 6.1, 0.79, 0.45, 0.6);
+
+    // The annex: older, smaller, and lined with every manual nobody visits
+    const brick = mat(0x5a3b32, { roughness: 0.95 });
+    box(4.4, 0.1, 5.2, mat(0x3a332e, { roughness: 1 }), X2 + 6.1, 0.05, 0);
+    box(4.4, 3.6, 0.12, brick, X2 + 6.1, 1.8, -2.6);
+    box(0.12, 3.6, 5.2, brick, X2 + 8.3, 1.8, 0);
+    const library = canvasTex(1024, 768, (g, w, h) => {
+      g.fillStyle = "#2c2520"; g.fillRect(0, 0, w, h);
+      const cols = ["#5d6b7f", "#7a6a55", "#4f6a63", "#6d7486", "#8a5a48", "#3f4e66", "#6b5a3a"];
+      let n = 0;
+      for (let row = 0; row < 6; row++) {
+        const y0 = 14 + row * 126, y1 = y0 + 112;
+        let x = 10;
+        while (x < w - 16) {
+          const bw = 9 + ((n * 7) % 6) * 3, bh = 82 + ((n * 5) % 7) * 4;
+          g.fillStyle = cols[n % cols.length]; g.fillRect(x, y1 - bh, bw, bh);
+          x += bw + 2; n++;
+        }
+        g.fillStyle = "#4a3d31"; g.fillRect(0, y1, w, 12);
+      }
+    });
+    const lib = new THREE.Mesh(new THREE.PlaneGeometry(4.1, 3.1), new THREE.MeshStandardMaterial({ map: library, roughness: 0.9 }));
+    lib.position.set(X2 + 6.1, 1.65, -2.53); scene.add(lib);
+    sign("ANNEX", 1.4, 0.42, X2 + 6.1, 3.92, -2.52, "#d9c9a8", "#3a2a22");
+    const warm = new THREE.PointLight(0xffc27a, 0.7, 7, 1.6); warm.position.set(X2 + 6.1, 3.2, 0.4); scene.add(warm);
+    makeDesk(X2 + 6.0, 1.35);
+    makeChair(X2 + 6.0, 0.15);
+    makeFax(X2 + 6.75, 1.07, 1.1, 0.75);
+
+    // The street: a lamp and a traffic light
+    const steel = mat(0x5d636d, { metalness: 0.5, roughness: 0.5 });
+    const lampPole = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.06, 3.4, 10), steel);
+    lampPole.position.set(X2 + 0.6, 1.7, 2.6); lampPole.castShadow = true; scene.add(lampPole);
+    const lampArm = box(0.5, 0.05, 0.07, steel, X2 + 0.82, 3.4, 2.6); lampArm.rotation.z = 0.12;
+    box(0.3, 0.08, 0.22, steel, X2 + 1.04, 3.36, 2.6);
+    box(0.26, 0.04, 0.18, mat(0xffd59a, { emissive: 0xffb45c, emissiveIntensity: 1.2 }), X2 + 1.04, 3.31, 2.6);
+    halo(0xffb45c, 1.3, X2 + 1.04, 3.28, 2.66, scene, 0.45);
+    const streetLight = new THREE.PointLight(0xffb45c, 1.1, 9, 1.6); streetLight.position.set(X2 + 1.0, 3.1, 2.8); scene.add(streetLight);
+    const tlPole = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.05, 2.4, 10), steel);
+    tlPole.position.set(X2 + 1.9, 1.2, 2.85); scene.add(tlPole);
+    box(0.14, 0.03, 0.14, steel, X2 + 1.9, 0.015, 2.85);
+    const housing = mat(0x1c2027, { roughness: 0.6 });
+    box(0.26, 0.74, 0.22, housing, X2 + 1.9, 2.6, 2.85);
+    box(0.3, 0.03, 0.26, housing, X2 + 1.9, 2.98, 2.87);
+    [["red", 0xd2412f, 2.8], ["amber", 0xe8a33d, 2.6], ["green", 0x4fb36b, 2.4]].forEach(([name, c, y]) => {
+      const m = new THREE.MeshStandardMaterial({ color: 0x222222, emissive: c, emissiveIntensity: 0.05 });
+      const s = new THREE.Mesh(new THREE.SphereGeometry(0.065, 12, 10), m); s.position.set(X2 + 1.9, y, 2.96); scene.add(s);
+      box(0.2, 0.02, 0.1, housing, X2 + 1.9, y + 0.08, 3.0);
+      trafficLamps[name] = { m, halo: halo(c, 0.55, X2 + 1.9, y, 3.03, scene, 0) };
+    });
+
+    // Telephone poles and the line the fax travels on
+    for (const px of [X2 - 2.0, X2 + 3.9]) {
+      const p = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, 4.2, 10), mat(0x3b3029));
+      p.position.set(px, 2.1, -0.3); p.castShadow = true; scene.add(p);
+      box(0.7, 0.06, 0.06, mat(0x3b3029), px, 4.0, -0.3);
+    }
+    const sag = new THREE.QuadraticBezierCurve3(new THREE.Vector3(X2 - 2.0, 4.05, -0.3), new THREE.Vector3(X2 + 0.95, 3.2, -0.3), new THREE.Vector3(X2 + 3.9, 4.05, -0.3));
+    wireLine = new THREE.Line(new THREE.BufferGeometry().setFromPoints(sag.getPoints(40)), wireMat);
+    scene.add(wireLine);
+
+    // Background city
+    const cityMat = new THREE.MeshBasicMaterial({ map: windowsTex, color: 0x9aa3b0 });
+    [[-14, 7, 3], [-9, 10, 3.5], [-3, 6, 4], [2.5, 12, 3], [8, 8, 4], [13, 11, 3.2], [18, 7, 3]].forEach(([dx, h, w]) => {
+      const b = new THREE.Mesh(new THREE.BoxGeometry(w, h, 2), [mat(0x161a21), mat(0x161a21), mat(0x161a21), mat(0x161a21), cityMat, mat(0x161a21)]);
+      b.position.set(X2 + dx, h / 2, -11); scene.add(b);
+    });
+    keyLight(X2 + 0.5, 14, 9, X2 + 0.5, Math.PI / 4, 40);
+  })();
+  // A fax machine: sloped keypad, handset on the right, a sheet waiting in the out tray.
+  function makeFax(x, y, z, rotY) {
+    const g = new THREE.Group(); g.position.set(x, y, z); g.rotation.y = rotY; scene.add(g);
+    const shell = mat(0xb9bcb5, { roughness: 0.5 }), dark = mat(0x2a2e36, { roughness: 0.5 });
+    box(0.44, 0.12, 0.34, shell, 0, 0.06, 0, g);
+    const panel = box(0.3, 0.07, 0.2, shell, -0.05, 0.145, 0.03, g); panel.rotation.x = 0.22;
+    for (let i = 0; i < 12; i++) {
+      const key = box(0.035, 0.012, 0.028, mat(i === 11 ? 0xe8a33d : 0x3a3f48), -0.13 + (i % 4) * 0.05, 0.19 - Math.floor(i / 4) * 0.012, 0.1 - Math.floor(i / 4) * 0.05, g);
+      key.rotation.x = 0.22;
+    }
+    box(0.3, 0.025, 0.03, dark, -0.05, 0.13, -0.13, g);
+    const tray = box(0.3, 0.01, 0.2, paperM, -0.05, 0.22, -0.2, g); tray.rotation.x = 0.5;
+    box(0.06, 0.03, 0.26, dark, 0.17, 0.15, 0, g);
+    for (const dz of [-0.11, 0.11]) box(0.07, 0.035, 0.06, dark, 0.17, 0.135, dz, g);
+    box(0.04, 0.02, 0.02, mat(0x4fb36b, { emissive: 0x4fb36b, emissiveIntensity: 0.8 }), 0.16, 0.12, 0.16, g);
+  }
+
+  function setTraffic(on) { for (const [n, l] of Object.entries(trafficLamps)) { l.m.emissiveIntensity = n === on ? 1.4 : 0.05; l.halo.material.opacity = n === on ? 0.8 : 0; } }
+
+  const M = makeAdviser({ x: MAIN_X, z: 0.45 });
+  const N = makeAdviser({ x: ANNEX_X, z: 0.45, suit: 0x6b5a48, hair: 0xc4c4bf, tie: null, nodPhase: 0.7, old: true });
+
+  // The van: cab at +x, cargo box behind, a roof rack for the four crates of manuals. vanBody carries the
+  // suspension's squat and dip; the wheels sit on `van` and turn with its travel.
+  const van = new THREE.Group(); scene.add(van);
+  const vanBody = new THREE.Group(); van.add(vanBody);
+  const paint = mat(0xc9ccc4, { roughness: 0.55 }), glass = mat(0x1b2230, { roughness: 0.2, metalness: 0.4 }), trim = mat(0x2a2e36, { roughness: 0.6 });
+  box(1.9, 1.0, 0.95, paint, -0.25, 0.78, 0, vanBody);
+  box(0.78, 0.42, 0.95, paint, 1.06, 0.49, 0, vanBody);
+  box(0.55, 0.5, 0.95, paint, 0.95, 0.95, 0, vanBody);
+  const screen = box(0.03, 0.42, 0.85, glass, 1.21, 0.93, 0, vanBody); screen.rotation.z = 0.28;
+  for (const sz of [-1, 1]) {
+    box(0.42, 0.3, 0.02, glass, 0.98, 0.98, sz * 0.475, vanBody);
+    box(0.05, 0.1, 0.06, trim, 1.2, 0.98, sz * 0.52, vanBody);
+    box(0.02, 0.5, 0.02, trim, 0.4, 0.78, sz * 0.475, vanBody);
+    box(0.02, 0.5, 0.02, trim, -0.5, 0.78, sz * 0.475, vanBody);
+    box(0.9, 0.02, 0.02, trim, -0.05, 1.03, sz * 0.475, vanBody);
+    const label = new THREE.Mesh(new THREE.PlaneGeometry(1.2, 0.26), new THREE.MeshStandardMaterial({ transparent: true, roughness: 0.6, map: canvasTex(512, 112, (g, w, h) => {
+      g.fillStyle = "#56657d"; g.font = "700 72px 'Barlow Condensed', Arial Narrow, sans-serif"; g.textAlign = "center"; g.textBaseline = "middle"; g.fillText("MERIDIAN WORDS", w / 2, h / 2);
+    }) }));
+    label.position.set(-0.25, 0.88, sz * 0.478); label.rotation.y = sz > 0 ? 0 : Math.PI; vanBody.add(label);
+  }
+  box(1.9, 0.12, 0.96, mat(0xe8a33d), -0.25, 0.62, 0, vanBody);
+  box(0.08, 0.14, 0.98, trim, 1.44, 0.3, 0, vanBody);
+  box(0.08, 0.14, 0.98, trim, -1.22, 0.3, 0, vanBody);
+  box(0.02, 0.18, 0.5, trim, 1.46, 0.52, 0, vanBody);
+  for (const rz of [-0.4, 0.4]) box(1.7, 0.04, 0.04, trim, -0.3, 1.32, rz, vanBody);
+  for (const rx of [-1.0, -0.3, 0.4]) box(0.04, 0.04, 0.86, trim, rx, 1.32, 0, vanBody);
+  const tailM = mat(0xd2412f, { emissive: 0xd2412f, emissiveIntensity: 0.4 });
+  const beams = [];
+  for (const hz of [-0.32, 0.32]) {
+    box(0.03, 0.1, 0.16, mat(0xfff2c9, { emissive: 0xfff2c9, emissiveIntensity: 1 }), 1.46, 0.52, hz, vanBody);
+    box(0.03, 0.1, 0.1, tailM, -1.21, 0.62, hz, vanBody);
+    const beam = new THREE.Mesh(new THREE.ConeGeometry(0.5, 2.4, 14, 1, true), new THREE.MeshBasicMaterial({ color: 0xfff2c9, transparent: true, opacity: 0.1, side: THREE.DoubleSide, blending: THREE.AdditiveBlending, depthWrite: false }));
+    beam.position.set(2.66, 0.45, hz); beam.rotation.z = Math.PI / 2; beam.visible = false; vanBody.add(beam); beams.push(beam);
+  }
+  const headLight = new THREE.SpotLight(0xfff2c9, 1.2, 7, 0.55, 0.6, 1.2);
+  headLight.position.set(1.4, 0.55, 0); headLight.target.position.set(6, -0.5, 0); vanBody.add(headLight, headLight.target);
+  headLight.visible = false;
+  function vanLights(on) { headLight.visible = on; for (const b of beams) b.visible = on; }
+  function brake(on) { tailM.emissiveIntensity = on ? 1.6 : 0.4; }
+  const wheels = [], hub = mat(0x8a9099, { metalness: 0.6, roughness: 0.4 });
+  for (const [wx, wz] of [[-0.75, -0.48], [-0.75, 0.48], [0.95, -0.48], [0.95, 0.48]]) {
+    const p = new THREE.Group(); p.position.set(wx, 0.22, wz); van.add(p); wheels.push(p);
+    const w = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.14, 16), mat(0x1c2027)); w.rotation.x = Math.PI / 2; w.castShadow = true; p.add(w);
+    const h = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.11, 0.15, 12), hub); h.rotation.x = Math.PI / 2; p.add(h);
+    box(0.17, 0.03, 0.16, trim, 0, 0, 0, p);
+  }
+  const vanLast = new THREE.Vector3();
+  const crates = [];
+  for (const [cx, cz, cy] of [[-0.75, -0.22, 1.54], [-0.75, 0.22, 1.54], [0.1, -0.22, 1.54], [-0.32, 0, 1.94]]) {
+    const c = new THREE.Group(); c.position.set(cx, cy, cz); vanBody.add(c);
+    box(0.42, 0.4, 0.4, mat(0x8a6a44, { roughness: 0.9 }), 0, 0, 0, c);
+    for (const dy of [-0.12, 0.12]) box(0.44, 0.04, 0.42, mat(0x5e4630, { roughness: 0.9 }), 0, dy, 0, c);
+    c.visible = false; crates.push(c);
+  }
+  // The fax page hangs from a clip on the line, rippling as it goes. The route runs up from the main office's fax,
+  // along the line, and down to the annex's fax.
+  const pageG = new THREE.Group(); pageG.visible = false; scene.add(pageG);
+  box(0.08, 0.07, 0.04, mat(0xe8a33d, { emissive: 0xe8a33d, emissiveIntensity: 0.8 }), 0, 0, 0, pageG);
+  const pageGeo = new THREE.PlaneGeometry(0.5, 0.68, 6, 8);
+  const pageTex = canvasTex(128, 176, (g, w, h) => {
+    g.fillStyle = "#f2f2ec"; g.fillRect(0, 0, w, h);
+    g.fillStyle = "#1a1f27"; g.font = "700 22px 'Barlow Condensed', Arial Narrow, sans-serif"; g.fillText("FAX", 14, 30);
+    g.fillStyle = "#6d7486";
+    for (let i = 0; i < 9; i++) g.fillRect(14, 50 + i * 13, 40 + ((i * 37) % 60), 4);
+  });
+  const page = new THREE.Mesh(pageGeo, new THREE.MeshStandardMaterial({ map: pageTex, side: THREE.DoubleSide, emissive: 0xe8a33d, emissiveIntensity: 0.25 }));
+  page.position.y = -0.3; pageG.add(page);
+  const faxRoute = new THREE.CatmullRomCurve3([
+    new THREE.Vector3(X2 - 6.1, 1.05, 0.45), new THREE.Vector3(X2 - 6.0, 3.5, 0.3), new THREE.Vector3(X2 - 2.0, 4.1, -0.3),
+    new THREE.Vector3(X2 + 0.95, 3.3, -0.3), new THREE.Vector3(X2 + 3.9, 4.1, -0.3), new THREE.Vector3(X2 + 6.7, 3.5, 1.0),
+    new THREE.Vector3(X2 + 6.75, 1.3, 1.1),
+  ]);
+  const E2 = makeEnvelope();
+  const ENV2_IN = new THREE.Vector3(MAIN_X - 0.2, 1.03, 1.1), ENV2_OUT = new THREE.Vector3(X2 - 10, 1.6, 0.8);
+  E2.group.position.copy(ENV2_OUT);
+
+  function resetFloor2() {
+    van.position.set(VAN_OFFICE, 0, VAN_Z); van.rotation.y = 0; vanBody.scale.set(1, 1, 1); vanBody.position.y = 0; vanBody.rotation.set(0, 0, 0);
+    vanLast.copy(van.position); vanLights(false); brake(false);
+    for (const c of crates) { c.visible = false; c.scale.setScalar(1); }
+    for (const [A, x] of [[M, MAIN_X], [N, ANNEX_X]]) {
+      A.group.visible = true; A.group.position.set(x, 0, 0.45); A.group.rotation.y = A.heading = 0;
+      A.sit = 0; A.walking = 0; A.reach = false; A.carry = false; A.lift = 0;
+    }
+    setTraffic("green");
+    pageG.visible = false;
+    E2.group.position.copy(ENV2_OUT); E2.stamp.visible = false;
+  }
+
+  // ---------- Frame loop ----------
+  const CAMS = {
+    1: { look: new THREE.Vector3(2.4, 1.05, 0), wide: new THREE.Vector3(2.6, 3.0, 8.2), narrow: new THREE.Vector3(2.2, 3.4, 10.5), fog: [11, 24], par: 1 },
+    2: { look: new THREE.Vector3(X2 + 0.6, 0.8, 1.6), wide: new THREE.Vector3(X2 + 0.6, 6.2, 15.5), fit: 8.8, fog: [20, 46], par: 1.6 },
+  };
+  let floor = 1;
+  let pointer = { x: 0, y: 0 };
+  addEventListener("pointermove", (e) => { pointer.x = e.clientX / innerWidth - 0.5; pointer.y = e.clientY / innerHeight - 0.5; });
+  function resize() {
+    const w = innerWidth, h = innerHeight;
+    renderer.setSize(w, h, false);
+    camera.aspect = w / h;
+    camera.fov = w / h < 0.9 ? 62 : 42;
+    camera.updateProjectionMatrix();
+  }
+  addEventListener("resize", resize); resize();
+
+  let thinker = A1;
+  const up = (o, y) => o.position.clone().add(new THREE.Vector3(0, y, 0));
+  const anchors = [
+    [$("aThink"), () => up(thinker.group, 2.2)],
+    [$("aAdv"), () => up(adv, 2.2)],
+    [$("aShelf"), () => up(shelf, 2.65)],
+    [$("aBook"), () => up(deskBook, 0.2)],
+    [$("aPath"), () => new THREE.Vector3((HOME + shelf.position.x - 0.8) / 2, 0.1, 0.6)],
+    [$("aMain"), () => new THREE.Vector3(X2 - 4.7, 4.35, -2.5)],
+    [$("aAnnex"), () => new THREE.Vector3(X2 + 6.1, 4.35, -2.5)],
+    [$("aExpert"), () => up(N.group, 2.2)],
+    [$("aFax"), () => new THREE.Vector3(X2 + 0.95, 3.75, -0.3)],
+    [$("aVan"), () => up(van, 2.0)],
+  ];
+  const v = new THREE.Vector3();
+  // shake: the camera's jolt when the shelf lands, decaying each frame.
+  let shake = 0;
+  // Backs the camera off until `fit` units either side of the look point are in view, at any aspect.
+  const fitPos = new THREE.Vector3();
+  // On wide screens the view centres on the part the side panel leaves clear.
+  function fitCam(C) {
+    const side = innerWidth > 720 ? 350 : 0;
+    camera.setViewOffset(innerWidth, innerHeight, side / 2, -innerHeight * 0.1, innerWidth, innerHeight);
+    const half = Math.tan(camera.fov * Math.PI / 360), aspect = (innerWidth - side) / innerHeight;
+    const d = Math.max(C.fit / (half * aspect), 6 / half) * 1.05;
+    scene.fog.near = d * 0.8; scene.fog.far = d * 2.4;
+    return fitPos.set(C.look.x, C.look.y + d * 0.36, C.look.z + d);
+  }
+  let lastNow = 0;
+  function frame(now) {
+    const t = now / 1000, dt = Math.min(0.1, (now - lastNow) / 1000); lastNow = now;
+    const C = CAMS[floor];
+    if (!C.fit && camera.view && camera.view.enabled) camera.clearViewOffset();
+    const base = C.fit ? fitCam(C) : innerWidth / innerHeight < 0.9 ? C.narrow : C.wide;
+    const px = reduced ? 0 : pointer.x * 0.6 * C.par, py = reduced ? 0 : pointer.y * 0.3 * C.par;
+    camera.position.set(base.x + px + (Math.random() - 0.5) * shake, base.y - py + (Math.random() - 0.5) * shake, base.z);
+    camera.lookAt(C.look);
+    shake *= 0.86;
+    for (const A of [A1, M, N, ...colleagues]) poseAdviser(A, t, dt);
+    // Wheels turn with the van's travel along its own length.
+    const fwd = (van.position.x - vanLast.x) * Math.cos(van.rotation.y) - (van.position.z - vanLast.z) * Math.sin(van.rotation.y);
+    vanLast.copy(van.position);
+    for (const w of wheels) w.rotation.z -= fwd / 0.22;
+    if (pageG.visible && !reduced) {
+      const p = pageGeo.attributes.position;
+      for (let i = 0; i < p.count; i++) p.setZ(i, Math.sin(p.getX(i) * 14 + t * 22) * 0.015 + Math.sin(p.getY(i) * 9 + t * 17) * 0.01);
+      p.needsUpdate = true;
+    }
+    tubes.forEach((m, i) => { m.material.color.setScalar(((t * 0.37 + i * 0.31) % 7) < 0.06 ? 0.55 : 0.92); });
+    renderer.render(scene, camera);
+    for (const [el, at] of anchors) {
+      if (!el.classList.contains("on")) continue;
+      v.copy(at()).project(camera);
+      el.style.transform = `translate(${(v.x * 0.5 + 0.5) * innerWidth}px, ${(-v.y * 0.5 + 0.5) * innerHeight}px) translate(-50%, -100%)`;
+    }
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+  // ---------- Floors: what the HUD says on each ----------
+  const FLOORS = {
+    1: {
+      brand: "Floor 01 / 48 · The Shelf Room", scale: 4.2, keys: ["Fetching", "Thinking"],
+      labels: ["aAdv", "aShelf", "aBook", "aPath"],
+      map: [
+        ["Adviser", "the graphics card's maths units"],
+        ["Shelf", "memory"],
+        ["Manual", "the model's weights: billions of learned numbers"],
+        ["The walk", "reading those numbers again, for every word"],
+      ],
+      lesson: "The maths is quick. The reading is slow. A faster AI engine mostly reads less, or reads from somewhere closer. c0ven is built around that problem, and each floor above is one of its tricks.",
+      next: "Floor 2 · The Annex · open now.",
+    },
+    2: {
+      brand: "Floor 02 / 48 · The Annex", scale: 8, keys: ["Moving", "Thinking"],
+      labels: ["aMain", "aAnnex", "aExpert", "aFax", "aVan"],
+      map: [
+        ["Main office", "the graphics card: fast, with room for only some of the experts"],
+        ["Annex", "the CPU and the computer's main memory: slower, with room for all of them"],
+        ["Adviser", "an expert: one of 512 in each layer. Each word uses 10"],
+        ["The van", "copying an expert's weights onto the card: megabytes"],
+        ["The fax", "sending the word's numbers to the CPU and back: about 10 KB"],
+      ],
+      lesson: "c0ven keeps the busiest experts on the graphics card. When a word needs one that isn't there, the CPU works it out where it already sits, and only the small answer comes back. Moving the question is far cheaper than moving the knowledge.",
+      next: "Floor 3 · Musical Desks · coming next.",
+    },
+  };
+  function setFloorHud(n) {
+    const F = FLOORS[n];
+    $("brandFloor").textContent = F.brand;
+    $("keyF").textContent = F.keys[0]; $("keyT").textContent = F.keys[1];
+    $("revealMap").innerHTML = F.map.map(([o, s]) => `<div><span class="o">${o}</span><span>${s}</span></div>`).join("");
+    $("revealLesson").textContent = F.lesson;
+  }
+
+  // ---------- Stopwatch ----------
+  const RUNS = {
+    built: { label: "As built", fetch: 3.4, think: 0.6 },
+    faster: { label: "Faster thinker", fetch: 3.4, think: 0.3 },
+    closer: { label: "Shelf moved", fetch: 0.8, think: 0.6 },
+    drive: { label: "Drive them over", fetch: 6.8, think: 0.6 },
+    fax: { label: "Send a fax", fetch: 0.7, think: 0.9 },
+  };
+  const pct = (s) => (s / FLOORS[floor].scale * 100).toFixed(2) + "%";
+  function setClock(f, t) { $("time").textContent = (f + t).toFixed(1) + " s"; $("liveF").style.width = pct(f); $("liveT").style.width = pct(t); }
+  const ran = new Set();
+  function addHistory(run) {
+    if (ran.has(run.label)) return;
+    ran.add(run.label);
+    const row = document.createElement("div");
+    row.className = "row";
+    row.innerHTML = `<span>${run.label}</span><div class="bar"><div class="f" style="width:${pct(run.fetch)}"></div><div class="t" style="width:${pct(run.think)}"></div></div><b>${(run.fetch + run.think).toFixed(1)} s</b>`;
+    $("history").appendChild(row);
+  }
+
+  // ---------- Motion ----------
+  function tween(seconds, fn) {
+    return new Promise((done) => {
+      if (reduced || seconds <= 0) { fn(1); done(); return; }
+      const t0 = performance.now();
+      const tick = (now) => { const u = Math.min(1, (now - t0) / (seconds * 1000)); fn(u); if (u < 1) requestAnimationFrame(tick); else done(); };
+      requestAnimationFrame(tick);
+    });
+  }
+  const ease = (u) => u < 0.5 ? 2 * u * u : 1 - Math.pow(-2 * u + 2, 2) / 2;
+  const lerp = (a, b, u) => a + (b - a) * u;
+  const sleep = (s) => new Promise((r) => setTimeout(r, reduced ? 0 : s * 1000));
+
+  // Walks an adviser in a straight line, turning to face the way they go. Older advisers take shorter steps.
+  async function walkTo(A, x, z, seconds) {
+    const g = A.group, x0 = g.position.x, z0 = g.position.z, dist = Math.hypot(x - x0, z - z0);
+    if (dist < 0.01) return;
+    A.heading = Math.atan2(x - x0, z - z0);
+    A.walking = 1;
+    let last = 0;
+    await tween(seconds, (u) => {
+      g.position.x = lerp(x0, x, u); g.position.z = lerp(z0, z, u);
+      A.walkPhase += (u - last) * dist * (A.old ? 11 : 7.5); last = u;
+    });
+    A.walking = 0;
+  }
+  // Sits into the chair behind, thinks while the clock counts `think` seconds after `moved`, stands up again.
+  async function sitAndThink(A, moved, think, z0 = 0.45) {
+    A.heading = 0;
+    await tween(0.45, (u) => { A.sit = ease(u); A.group.position.z = z0 - 0.25 * A.sit; });
+    thinker = A;
+    $("aThink").classList.add("on");
+    await tween(think, (u) => setClock(moved, think * u));
+    $("aThink").classList.remove("on");
+    await tween(0.4, (u) => { A.sit = 1 - ease(u); A.group.position.z = z0 - 0.25 * A.sit; });
+    A.sit = 0;
+  }
+
+  const backOut = (u) => 1 + 2.70158 * Math.pow(u - 1, 3) + 1.70158 * Math.pow(u - 1, 2);
+  const squash = (u, kk) => shelfBody.scale.set(1 + 0.6 * kk * Math.sin(u * Math.PI), 1 - kk * Math.sin(u * Math.PI), 1 + 0.6 * kk * Math.sin(u * Math.PI));
+
+  // The shelf crouches, pops its legs out, looks both ways, waddles to `to` in `seconds`, and sets itself down.
+  async function moveShelf(to, seconds) {
+    const LEG = 0.42, from = shelf.position.x, dir = Math.sign(to - from);
+    const steps = Math.max(3, Math.round(Math.abs(to - from) / 0.55));
+    // The boots are built with their toes toward +x; mirror them to point the way it walks.
+    for (const l of shelfLegs) l.foot.scale.x = dir < 0 ? -1 : 1;
+    await tween(0.25, (u) => squash(u, 0.06));
+    await tween(0.45, (u) => { const e = backOut(u); setLegs(LEG * e); shelfBody.position.y = LEG * e; shelfBody.rotation.z = Math.sin(u * Math.PI * 3) * 0.03 * (1 - u); });
+    await tween(0.3, (u) => { shelfBody.rotation.y = Math.sin(u * Math.PI * 2) * 0.14; shelfBody.rotation.z = -dir * 0.07 * Math.sin(u * Math.PI); });
+    shelfBody.rotation.y = 0;
+    await tween(seconds, (u) => {
+      shelf.position.x = from + (to - from) * ease(u);
+      const amp = Math.min(1, u * 6, (1 - u) * 6), ph = u * steps * Math.PI * 2;
+      // A foot pushes back while planted and lifts as it swings forward; the body rides highest over upright legs.
+      for (const l of shelfLegs) {
+        const p = ph + l.phase, lift = Math.max(0, dir * Math.cos(p)) * amp;
+        l.pivot.rotation.z = Math.sin(p) * 0.4 * amp;
+        l.pivot.scale.y = LEG * (1 - 0.3 * lift); l.foot.scale.y = 1 / l.pivot.scale.y;
+      }
+      shelfBody.position.y = LEG + Math.abs(Math.cos(ph)) * 0.06 * amp;
+      shelfBody.rotation.x = Math.sin(ph) * 0.06 * amp;
+      shelfBody.rotation.z = (Math.sin(2 * ph) * 0.02 - dir * 0.03) * amp;
+      setPath();
+    });
+    for (const l of shelfLegs) l.pivot.rotation.z = 0;
+    shelfBody.rotation.set(0, 0, 0);
+    await tween(0.35, (u) => { const e = u * u; setLegs(LEG * (1 - e)); shelfBody.position.y = LEG * (1 - e); });
+    setLegs(0); shelfBody.position.y = 0;
+    if (!reduced) shake = 0.12;
+    dust.position.x = shelf.position.x;
+    tween(0.5, (u) => { dust.scale.setScalar(1 + u * 2.2); dust.material.opacity = 0.45 * (1 - u); });
+    await tween(0.3, (u) => squash(u, 0.07));
+    shelfBody.scale.set(1, 1, 1);
+  }
+
+  // Floor 1: one word delivered and stamped. The clock counts only the adviser's fetching and thinking.
+  async function deliver(run) {
+    setClock(0, 0);
+    E1.stamp.visible = false; deskBook.visible = false;
+    await tween(0.7, (u) => E1.group.position.lerpVectors(ENV_OUT, ENV_IN, ease(u)));
+    await sleep(0.2);
+    const target = shelf.position.x - 0.85, dist = target - HOME;
+    let last = 0;
+    A1.walking = 1;
+    await tween(run.fetch, (u) => {
+      const there = u < 0.5, w = there ? u * 2 : (u - 0.5) * 2;
+      adv.position.x = there ? HOME + dist * w : target - dist * w;
+      adv.position.z = 0.45 + 0.12 * Math.min(1, (there ? w : 1 - w) * 6);  // step out past the chair
+      A1.heading = there ? Math.PI / 2 : -Math.PI / 2;
+      A1.walkPhase += (u - last) * dist * 12; last = u;
+      A1.reach = u > 0.4 && there;
+      handBook.visible = A1.carry = !there;
+      setClock(run.fetch * u, 0);
+    });
+    A1.walking = 0;
+    adv.position.x = HOME;
+    handBook.visible = A1.carry = false; deskBook.visible = true;
+    await sitAndThink(A1, run.fetch, run.think);
+    E1.stamp.visible = true;
+    addHistory(run);
+    await sleep(0.4);
+  }
+
+  // Floor 2: a counted stretch of moving; the clock shows `moved` so far plus this stretch, and `thought` so far.
+  function counter() {
+    const c = { moved: 0, thought: 0 };
+    c.seg = (s, fn) => tween(s, (u) => { if (fn) fn(u); setClock(c.moved + s * u, c.thought); }).then(() => { c.moved += s; });
+    return c;
+  }
+  async function envelopeIn() {
+    setClock(0, 0);
+    await tween(0.7, (u) => E2.group.position.lerpVectors(ENV2_OUT, ENV2_IN, ease(u)));
+    await sleep(0.2);
+  }
+  // The van's suspension: a squat as it pulls away, a dip as it brakes, a shiver while it idles.
+  const TURN_R = 0.28;
+  function vanRide(u, dip) { vanBody.rotation.z = dip * Math.sin(u * Math.PI); vanBody.position.y = -0.04 + Math.abs(Math.sin(u * 14)) * 0.015; }
+  // The van fetches the annex adviser and four crates of manuals, stopping at the light on the way back.
+  async function driveRun() {
+    resetFloor2();
+    await envelopeIn();
+    const c = counter();
+    vanLights(true);
+    await c.seg(1.4, (u) => {
+      van.position.x = lerp(VAN_OFFICE, VAN_ANNEX, ease(u));
+      vanRide(u, u < 0.5 ? 0.035 : -0.045); brake(u > 0.6);
+    });
+    brake(false);
+    await Promise.all([c.seg(0.6), walkTo(N, VAN_ANNEX, 2.95, 0.6)]);
+    // N climbs in at the kerb side and the van rocks; the crates drop onto the rack as it U-turns into the near lane.
+    N.heading = 0; N.walking = 1;
+    await c.seg(0.8, (u) => {
+      const inU = ease(Math.min(1, u / 0.3));
+      N.group.position.set(VAN_ANNEX, 0, 2.95 + 0.45 * inU); N.lift = 0.35 * inU; N.walkPhase += 0.2;
+      if (u >= 0.3) N.group.visible = false;
+      vanBody.rotation.x = -0.05 * Math.sin(inU * Math.PI);
+      crates.forEach((cr, i) => {
+        const s = Math.min(1, Math.max(0, (u - 0.1) * 5 - i));
+        cr.visible = s > 0; cr.scale.setScalar(s > 0 ? backOut(s) : 1); cr.position.y = (i === 3 ? 1.94 : 1.54) + (1 - s) * 0.5;
+      });
+      const a = Math.PI * ease(Math.max(0, (u - 0.3) / 0.7));
+      van.rotation.y = -a;
+      van.position.set(VAN_ANNEX + TURN_R * Math.sin(a), 0, VAN_Z + TURN_R * (1 - Math.cos(a)));
+      vanBody.position.y = -0.04 * Math.min(1, u * 4);
+    });
+    N.walking = 0; N.lift = 0;
+    vanBody.scale.y = 0.94; vanBody.position.y = -0.04;
+    setTraffic("amber");
+    walkTo(M, MAIN_X - 0.95, 0.55, 0.8);
+    await c.seg(1.0, (u) => {
+      van.position.x = lerp(VAN_ANNEX, VAN_LIGHT, Math.sin(u * Math.PI / 2));
+      if (u > 0.5) setTraffic("red");
+      vanRide(u, u > 0.5 ? -0.05 : 0); brake(u > 0.45);
+    });
+    await c.seg(1.0, (u) => { vanBody.position.y = -0.04 + Math.sin(u * 60) * 0.006; vanBody.rotation.z = 0; if (u > 0.85) setTraffic("green"); });
+    setTraffic("green");
+    await c.seg(1.0, (u) => {
+      van.position.x = lerp(VAN_LIGHT, VAN_OFFICE, ease(u));
+      vanRide(u, u < 0.5 ? 0.035 : -0.045); brake(u > 0.65);
+    });
+    brake(false); vanLights(false); vanBody.rotation.z = 0;
+    M.heading = 0;
+    // N hops out on the road side and crosses to the main office's desk.
+    N.group.position.set(VAN_OFFICE, 0, van.position.z - 0.5); N.group.rotation.y = N.heading = Math.PI; N.lift = 0.35; N.group.visible = true;
+    tween(0.2, (u) => { N.lift = 0.35 * (1 - ease(u)); });
+    await Promise.all([c.seg(1.0), (async () => {
+      await walkTo(N, MAIN_X + 1.4, 0.5, 0.45);
+      await walkTo(N, MAIN_X, 0.45, 0.55);
+    })()]);
+    await sitAndThink(N, c.moved, RUNS.drive.think);
+    E2.stamp.visible = true;
+    addHistory(RUNS.drive);
+    await sleep(0.4);
+  }
+  // The main office faxes the question; the annex adviser works it out there and faxes the answer back.
+  async function faxRun() {
+    resetFloor2();
+    await envelopeIn();
+    await walkTo(M, MAIN_X - 0.95, 0.45, 0.45);
+    M.heading = -Math.PI / 2; M.reach = true;
+    const c = counter();
+    pageG.visible = true;
+    // The page leaves the slot flat and small, hangs below the clip over the line, and shrinks into the far slot.
+    const place = (u) => {
+      const end = Math.min(1, u * 8, (1 - u) * 8);
+      pageG.position.copy(faxRoute.getPointAt(u));
+      page.position.y = -0.3 * end; page.scale.setScalar(0.3 + 0.7 * end);
+      page.rotation.set(-0.2 + 0.15 * Math.sin(u * 9), 0.35 + Math.sin(u * 7) * 0.3, Math.sin(u * 13) * 0.12);
+    };
+    // The line glows while a page is on it.
+    wireMat.color.setHex(0xe8a33d);
+    await c.seg(0.35, (u) => { place(u); if (u > 0.6) { N.heading = 0.9; N.reach = true; } });
+    pageG.visible = false; M.reach = false; N.reach = false;
+    wireMat.color.setHex(0x14171c);
+    await sitAndThink(N, c.moved, RUNS.fax.think);
+    c.thought = RUNS.fax.think;
+    N.heading = 0.9; N.reach = true;
+    pageG.visible = true;
+    wireMat.color.setHex(0xe8a33d);
+    await c.seg(0.35, (u) => { place(1 - u); if (u > 0.3) N.reach = false; if (u > 0.6) M.reach = true; });
+    pageG.visible = false; M.reach = false;
+    wireMat.color.setHex(0x14171c);
+    await walkTo(M, MAIN_X, 0.45, 0.45);
+    M.heading = N.heading = 0;
+    E2.stamp.visible = true;
+    addHistory(RUNS.fax);
+    await sleep(0.4);
+  }
+
+  // ---------- UI pieces ----------
+  function choose(opts) {
+    const bx = $("choices");
+    bx.innerHTML = "";
+    opts.forEach(([text, fn], i) => {
+      const b = document.createElement("button");
+      b.type = "button"; b.className = "opt" + (i === 0 && opts.length === 1 ? " primary" : "");
+      b.innerHTML = `${text} <kbd>${i + 1}</kbd>`;
+      b.addEventListener("click", () => { bx.innerHTML = ""; fn(); });
+      bx.appendChild(b);
+    });
+  }
+  const endings = { 1: new Set(), 2: new Set() };
+  function showEndings() { $("endings").innerHTML = `Endings <em>${endings[floor].size}</em>/2`; }
+  function findEnding(id, name) {
+    if (endings[floor].has(id)) return;
+    endings[floor].add(id);
+    showEndings();
+    $("toastName").textContent = name;
+    $("toast").classList.add("on");
+    setTimeout(() => $("toast").classList.remove("on"), 3200);
+  }
+  function labels(on) {
+    for (const n of [1, 2]) for (const id of FLOORS[n].labels) $(id).classList.toggle("on", on && n === floor);
+    pathLine.material.opacity = on && floor === 1 ? 0.95 : 0;
+    wireMat.color.setHex(on && floor === 2 ? 0xe8a33d : 0x14171c);
+    stage.classList.toggle("frozen", on);
+  }
+  function revealButtons(list) {
+    const acts = $("revealActions");
+    acts.innerHTML = "";
+    list.forEach(([text, fn, primary]) => {
+      const b = document.createElement("button"); b.type = "button"; b.className = "opt" + (primary ? " primary" : "");
+      b.textContent = text; b.addEventListener("click", fn); acts.appendChild(b);
+    });
+  }
+  function clearStage() { labels(false); $("reveal").hidden = true; $("choices").innerHTML = ""; }
+
+  // Moves to a floor behind a fade, resets it, and starts its narration.
+  async function goFloor(n) {
+    clearStage();
+    $("fade").classList.add("on");
+    await sleep(0.6);
+    floor = n;
+    const C = CAMS[n];
+    scene.fog.near = C.fog[0]; scene.fog.far = C.fog[1];
+    setFloorHud(n);
+    $("history").innerHTML = ""; ran.clear();
+    setClock(0, 0); showEndings();
+    if (n === 1) resetFloor1(); else resetFloor2();
+    $("fade").classList.remove("on");
+    await sleep(0.4);
+    if (n === 1) intro(); else f2Intro();
+  }
+
+  // ---------- Floor 1 ----------
+  function resetFloor1() {
+    shelf.position.x = FAR; setPath();
+    adv.position.set(HOME, 0, 0.45); adv.rotation.y = A1.heading = 0; A1.sit = 0; A1.reach = false;
+    E1.group.position.copy(ENV_OUT); E1.stamp.visible = false; deskBook.visible = false;
+  }
+  async function intro() {
+    await speak("intro");
+    choose([["Thinking about the word", () => watch("think")], ["Fetching the manual", () => watch("fetch")]]);
+  }
+  async function watch(b) {
+    await speak("watch");
+    await deliver(RUNS.built);
+    await speak(b === "fetch" ? "right" : "wrong");
+    choose([["Train a faster thinker", faster], ["Move the shelf to the desk", closer]]);
+  }
+  async function faster() {
+    clearStage();
+    if (Math.abs(shelf.position.x - FAR) > 0.01) await moveShelf(FAR, 2.2);
+    await speak("faster1");
+    await deliver(RUNS.faster);
+    findEnding("thinking", "The Thinking Ending");
+    await speak("faster2");
+    if (endings[1].has("shelf")) choose([["See what it means", reveal]]);
+    else choose([["Try the other door", closer]]);
+  }
+  async function closer() {
+    clearStage();
+    await Promise.all([speak("closer1"), moveShelf(NEAR, 4.4)]);
+    await deliver(RUNS.closer);
+    findEnding("shelf", "The Short Walk");
+    await speak("closer2");
+    choose([["What just happened?", reveal]]);
+  }
+  async function reveal() {
+    labels(true);
+    const more = !endings[1].has("thinking");
+    $("nextNote").textContent = FLOORS[1].next + (more ? " One ending on this floor is still hidden." : " Both endings found.");
+    revealButtons([]);
+    await speak("reveal", (line) => { if (line === "reveal2") $("reveal").hidden = false; });
+    $("reveal").hidden = false;
+    $("caption").hidden = true;
+    revealButtons([
+      ["Take the lift to floor 2", () => goFloor(2), true],
+      ...(more ? [["Try the other door", faster]] : []),
+      ["Replay floor 1", () => { endings[1].clear(); goFloor(1); }],
+    ]);
+  }
+
+  // ---------- Floor 2 ----------
+  async function f2Intro() {
+    await speak("f2intro");
+    choose([["Drive them over", drive], ["Send a fax", fax]]);
+  }
+  async function drive() {
+    clearStage();
+    await speak("f2drive1");
+    await driveRun();
+    findEnding("drive", "The Traffic Ending");
+    await speak("f2drive2");
+    if (endings[2].has("fax")) choose([["See what it means", reveal2]]);
+    else choose([["Try the other door", fax]]);
+  }
+  async function fax() {
+    clearStage();
+    await speak("f2fax1");
+    await faxRun();
+    findEnding("fax", "One Page Each Way");
+    await speak("f2fax2");
+    choose([["What just happened?", reveal2]]);
+  }
+  async function reveal2() {
+    labels(true);
+    const more = !endings[2].has("drive");
+    $("nextNote").textContent = FLOORS[2].next + (more ? " One ending on this floor is still hidden." : " Both endings found.");
+    revealButtons([]);
+    await speak("f2reveal", (line) => { if (line === "f2r2") $("reveal").hidden = false; });
+    $("reveal").hidden = false;
+    $("caption").hidden = true;
+    revealButtons([
+      ...(more ? [["Try the other door", drive, true]] : []),
+      ["Replay floor 2", () => { endings[2].clear(); goFloor(2); }],
+      ["Back to floor 1", () => goFloor(1)],
+    ]);
+  }
+
+  // ---------- Keys and start ----------
+  addEventListener("keydown", (e) => {
+    if (!$("start").hidden) {
+      if (e.key === "Enter" || e.key === "1") $("begin1").click();
+      if (e.key === "2") $("begin2").click();
+      return;
+    }
+    if (e.key === " " && skipLine) { e.preventDefault(); skipLine(); return; }
+    const n = parseInt(e.key, 10);
+    if (n >= 1) {
+      const b = $("choices").querySelectorAll("button")[n - 1];
+      if (b) b.click();
+    }
+  });
+  // The first click unlocks sound for the one audio element.
+  function begin(n) {
+    $("start").hidden = true;
+    audio.play().catch(() => {});
+    audio.pause();
+    goFloor(n);
+  }
+  $("begin1").addEventListener("click", () => begin(1));
+  $("begin2").addEventListener("click", () => begin(2));
+  if (location.hash === "#floor2") { $("begin2").classList.add("primary"); $("begin1").classList.remove("primary"); }
+  setFloorHud(1);
+  resetFloor2();
+  setPath();
+})();
+</script>
+</body>
+</html>
