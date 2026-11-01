@@ -37,6 +37,8 @@ struct Checker {
       double e = std::fabs(ref[i] - ggml_fp16_to_fp32(got[i]));
       maxerr = std::isnan(e) ? INFINITY : std::max(maxerr, e);
     }
+    // A reference past fp16's range would come back inf from a right kernel: the test's data is wrong.
+    EXPECT(maxref < 65504.0, "%s: reference %.3e, past fp16's range", what, maxref);
     double rel = maxerr / maxref;
     bool ok = rel <= 2e-3;
     failures += !ok;

@@ -86,7 +86,12 @@ int main() {
     std::vector<uint8_t> W = test::random_blocks(type, rows * K / qk, rng);
     std::vector<float> wf((size_t)(rows * K));
     ggml_get_type_traits(t)->to_float(W.data(), wf.data(), rows * K);
-    for (float v : wf) EXPECT(std::isfinite(v), "%s: random blocks dequantise to a value not finite", name);
+    float wmax = 0;
+    for (float v : wf) {
+      EXPECT(std::isfinite(v), "%s: random blocks dequantise to a value not finite", name);
+      wmax = std::max(wmax, std::fabs(v));
+    }
+    EXPECT(wmax <= 0.5f, "%s: random blocks reach %g, past the size of the files' weights", name, wmax);
     if (!missing.empty()) {
       std::printf("%-8s table, fields and runs layout ok; dot product not checked: the CPU lacks %s\n", name,
                   missing.c_str());

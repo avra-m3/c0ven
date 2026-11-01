@@ -192,6 +192,23 @@ reordered layout run 3.2-8.8 times faster than in the file's layout
 | `p_hc_combine_norm` | write partial sums into the other card directly, in 64-byte stores | 243-246 → 136-139 ms | 2,353.5 → 2,427 tokens/s | [2026-10-15](#2026-10-15-prompt-exchange-stores) |
 | hyper-connections | each card computes half the rows and sends the other card its half; only from 2,048 rows | 4,352 rows: 0.85 → 0.43 ms, plus 0.61 ms to send | s4352 first token 1,663 → 1,559 ms; long-128k 53,800 → 51,110 ms | [2026-10-17](#2026-10-17-hc-split) |
 
+### The kernel tests' random blocks
+
+Why `qgemm_test` once failed on random blocks with max error inf, and how large its blocks are now against real
+weights. Computed on the CPU, no card, by a program not kept. It repeats `qgemm_test`'s draws: `std::mt19937` seed 99,
+75 assignments of 2,560 N(0, 1) activations rounded through fp16, then for each type the blocks in the test's order. It
+dequantises them with ggml and computes `moe_gate_up_t`'s reference, silu(gate x) (up x), in double precision for rows
+512-1,023 of 1,024, 38,400 values a type. A value is past fp16 when `ggml_fp32_to_fp16` gives inf (from 65,520; the
+largest finite fp16 is 65,504). The real weights are expert 7 of the first layer of each gate and down type in the IQ3_S
+and UD-IQ4_XS files, with the same activations on rows 320-639 for the reference. They sample those files; the other
+experts were not read.
+
+| Blocks | Largest \|reference\|, and values past fp16 of 38,400 | Measured |
+| --- | --- | --- |
+| Random bytes, each f16 scale with a random sign and mantissa and an exponent of 2^-6 to 2^-2, 18 types (`qgemm_test` passed Q2_0 and Q4_0, and failed the other 16) | Q2_0 1,327, 0; Q4_0 18,610, 0; IQ1_S 67,260, 1; Q5_0 87,510, 1; IQ1_M 903,200, 578; Q2_K 445,700, 1,365; the other 12 types 2.3e6 to 1.96e9, 8,758 to 19,228 | <a id="2026-11-02-random-blocks"></a>[2026-11-02](#2026-11-02-random-blocks) |
+| `test::random_blocks`, each scale set so its term of a value reaches 2^-5 to 2^-2, 19 types | 36.8 (IQ4_XS) to 596 (Q5_1), none past fp16; largest \|weight\| 0.25 to 0.496 | [2026-11-02](#2026-11-02-random-blocks) |
+| The files' expert weights | largest reference 3.10 to 5.81, none past fp16; largest \|weight\| in an expert 0.0718 to 0.429, rms 0.0121 to 0.0143 | [2026-11-02](#2026-11-02-random-blocks) |
+
 ## The host
 
 | Operation | Value | Measured |
