@@ -1,5 +1,6 @@
 """The fit report: what the host and the cards give, beside the plan's figure that depends on each and the core's figure
-after the load (ADR-0057). It is printed at each load and sent in INFO, so `/metrics` carries it as `fit_*` facts.
+after the load (ADR-0057). It is printed at each load and sent in INFO, so `/metrics` carries it as `fit_*` facts. A
+model with an SSD tier adds a row for each tier.
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ from typing import TextIO
 
 from engine.api.interface import EngineFacts
 from engine.host import Card, Host
-from engine.memory_plan import GIB, MemoryPlan
+from engine.memory_plan import GIB, MemoryPlan, Tiers
 
 UNKNOWN = "-"
 
@@ -38,6 +39,17 @@ def rss(status: Path = Path("/proc/self/status")) -> int | None:
     try:
         for line in status.read_text().splitlines():
             if line.startswith("VmRSS:"):
+                return int(line.split()[1]) * 1024
+    except OSError, ValueError, IndexError:
+        return None
+    return None
+
+
+def anon_huge_pages(rollup: Path = Path("/proc/self/smaps_rollup")) -> int | None:
+    """The process's anonymous memory in huge pages, bytes."""
+    try:
+        for line in rollup.read_text().splitlines():
+            if line.startswith("AnonHugePages:"):
                 return int(line.split()[1]) * 1024
     except OSError, ValueError, IndexError:
         return None
@@ -134,6 +146,58 @@ def cpu_rows(host: Host, workers: int, read_bytes_per_s: float) -> list[Row]:
             core=f"{read_bytes_per_s / 1e9:.1f}GB/s" if read_bytes_per_s else "",
         ),
     ]
+
+
+def _tier_text(t: Tiers, experts: tuple[int, ...], share: float | None) -> str:
+    low, high = min(experts), max(experts)
+    count = str(low) if low == high else f"{low}-{high}"
+    return f"{count}_a_layer,{gib(t.bytes_of(experts))}" + (f",{share:.1%}_of_routings" if share is not None else "")
+
+
+def _tiers_text(t: Tiers) -> list[str]:
+    """The VRAM, arena and SSD figures, then the SSD reads a token: each as one report cell."""
+    shares = t.routing_shares() or (None, None, None)
+    cells = [_tier_text(t, n, s) for n, s in zip((t.vram, t.arena, t.ssd), shares, strict=True)]
+    if not t.routes_per_row:
+        return [*cells, ""]
+    reads, size = t.ssd_per_token()
+    basis = "" if t.hit_curve else ",uniform_routing"
+    return [*cells, f"{reads:.1f}_reads,{gib(round(size))}{basis}"]
+
+
+def tier_rows(
+    plan: MemoryPlan,
+    experts_core: int | None = None,
+    huge_core: int | None = None,
+) -> list[Row]:
+    """A model with an SSD tier: each tier's experts a layer and bytes, the share of routings it expects when a hit
+    curve is given, and the SSD reads and bytes a token at one row. The core's count, when given, is the truth: its
+    column follows from it. huge_core: the whole process's anonymous memory in huge pages, bytes, which holds more than
+    the arena, so it bounds the arena's coverage and does not measure it. Empty for any other model."""
+    t = plan.tiers
+    if t is None:
+        return []
+    planned = _tiers_text(t)
+    core = _tiers_text(t.with_core(experts_core)) if experts_core is not None else [""] * len(planned)
+    rows = [
+        Row(key, name, "", p, c)
+        for key, name, p, c in zip(
+            ("tier_vram", "tier_arena", "tier_ssd", "ssd_token"),
+            ("VRAM tier", "arena tier", "SSD tier", "SSD reads a token, one row"),
+            planned,
+            core,
+            strict=True,
+        )
+    ]
+    rows.append(Row("process_huge", "process memory in huge pages", gib(huge_core) if huge_core is not None else ""))
+    if plan.prompt_staging_per_card or plan.prompt_host_ring_bytes:
+        mean = t.bytes_of((1,) * len(t.vram)) // len(t.vram)
+        in_vram = plan.prompt_staging_per_card // plan.layers // max(1, -(-mean // plan.cards))
+        in_arena = plan.prompt_host_ring_bytes // plan.layers // max(1, mean)
+        rows.append(
+            Row("prompt_staging", "experts a layer prompt staging costs", "", f"{in_vram}_VRAM,{in_arena}_arena")
+        )
+    return rows
 
 
 LOADER_REFERENCE_BYTES_PER_S = 6.5e9

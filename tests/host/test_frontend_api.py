@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import time
 from collections.abc import AsyncGenerator, Iterator
 from dataclasses import replace
-from typing import Any
+from pathlib import Path
+from typing import Any, TextIO, cast
 
 import pytest
 from starlette.testclient import TestClient
@@ -15,10 +17,13 @@ from starlette.types import Message, Scope
 from tokenizers import Tokenizer
 
 import protocol
+from engine.api.mock import MockEngine
+from engine.process import SwapWatch, serve
+from engine.scheduler import SchedulerOptions, every_16k
 from frontend.app import KEEPALIVE, _kept_alive, create_app  # pyright: ignore[reportPrivateUsage]
 from frontend.model import Model
 from frontend.template import ChatTemplate
-from tests.helpers import BUDGET_TEMPLATE, LEVEL_TEMPLATE, TINY_TEMPLATE, FakeEngine
+from tests.helpers import BUDGET_TEMPLATE, LEVEL_TEMPLATE, TINY_TEMPLATE, FakeEngine, open_config
 
 CALL = "<tool_call>\n<function=get_weather>\n<parameter=city>\nParis\n</parameter>\n</function>\n</tool_call>"
 TOOL = {
@@ -490,6 +495,29 @@ def test_anthropic_stream(client: TestClient, engine: FakeEngine):
     (delta,) = [d for e, d in events if e == "message_delta"]
     assert delta["delta"]["stop_reason"] == "tool_use"
     assert delta["usage"]["total_time"] == 0.003
+
+
+def test_the_engines_swap_counter_reaches_metrics(client: TestClient, engine: FakeEngine, tmp_path: Path):
+    """The STATS line a real engine loop writes, through the front end. A missing file ends the watch's thread at once
+    and leaves `pages` as set here."""
+    watch = SwapWatch(tmp_path / "none")
+    watch.pages = 5
+    out = io.StringIO()
+    stdin = iter([protocol.Stats().encode() + "\n", protocol.Quit().encode() + "\n"])
+    serve(
+        MockEngine(),
+        open_config(),
+        rule=every_16k,
+        options=SchedulerOptions(),
+        stdin=cast("TextIO", stdin),
+        stdout=out,
+        swap_watch=watch,
+    )
+    line = next(line for line in out.getvalue().splitlines() if line.startswith("STATS"))
+    report = protocol.parse_event(line)
+    assert isinstance(report, protocol.StatsReport)
+    engine.counts = report.counts
+    assert client.get("/metrics").json()["core"]["swapped_out_pages"] == 5
 
 
 def test_anthropic_needs_max_tokens(client: TestClient):

@@ -280,3 +280,37 @@ Measured on the host on 2026-10-13, with nothing else on the cards ([the design-
 
 One or two sequences with the not-cached arena (11.2-18.5 GiB) fit inside the range where the host only compacts
 and reclaims page cache. Four at 262K (26.8 GiB) reach the edge. An arena of every expert does not fit.
+
+## Experts in three tiers
+
+A model whose experts do not all fit in VRAM and host memory declares an SSD tier (`ModelMemory.ssd_tier`). The plan
+then describes where its experts are as sizes, in `engine/memory_plan.py`. Flash-Next declares none and its plan is the
+one above.
+
+VRAM holds the same bytes for each layer. A layer's count on a card is those bytes over its share of the layer's mean
+expert (`ModelMemory.layer_expert_bytes`). Each card holds the same share of every cached expert, so the plan caches
+what the card with the least free memory holds. Bytes a layer cannot use go to the other layers. Each card's weights
+may differ (`ModelMemory.card_weights`), and prompt staging slots come off each card before the experts.
+
+The arena holds no expert VRAM holds, and its size is:
+
+```
+host  = min(MemAvailable, memory.max, --ram-max)
+arena = host - pinned - engine working set - n-gram table in RAM - Engram cache - SSD staging ring - prompt host ring
+        - headroom
+```
+
+Pinned here is the streamed KV and the checkpoints. The working set is `PlanOptions.host_working`. Headroom is 24 GiB
+(`SSD_TIER_HEADROOM`), the 22 GiB default of `tools/check.py --mem-floor` and 2 GiB, and has no option. The arena is
+capped by the experts left to hold, and it holds whole experts, the same bytes a layer. The SSD holds the rest.
+
+An arena under one expert, or a host with no figure to read, gives arena 0 with every expert outside VRAM on the SSD.
+That is a normal plan. The plan is refused only when the memory outside the arena is over the host's limit, or the
+cards are short before any expert.
+
+The fit report adds a row for each tier, with its experts a layer and bytes, and its share of routings when the model
+gives a routing profile's hit curve (`ModelMemory.hit_curve`). It adds the SSD reads and bytes a token at one row, from
+that curve or, without one, at uniform routing. A further row gives the whole process's anonymous memory in huge
+pages. It is no measure of the arena's coverage, since an n-gram table in RAM and other anonymous memory count too. The core's
+column scales VRAM's counts to the core's expert count, and that count is the truth
+([ADR-0057](../adr/0057-the-engine-reads-the-host-it-runs-on.md)).
