@@ -1,4 +1,5 @@
-"""What the engine process needs from qwen4exp: its open config and its checkpoint rule.
+"""What the engine process needs from qwen4exp (engine.models.ModelSetup): its open config, where its drafter and
+image encoder are, and its checkpoint rule.
 
 The engine process finds this module by the GGUF's `general.architecture`, so code outside models/ never names the
 model (ADR-0024, item 3).
@@ -19,7 +20,7 @@ from engine.models.qwen4exp.split import split_of
 from engine.models.qwen4exp.tensors import TensorTable, from_gguf_cached, from_tsv
 from engine.models.qwen4exp.turns import checkpoint_positions
 
-__all__ = ["checkpoint_positions", "draft_dir", "memory_plan", "open_config"]
+__all__ = ["checkpoint_positions", "draft_dir", "memory_plan", "open_config", "vision_file"]
 
 CPU_WORKERS = 16
 """One per core of the test machine's 7945HX (DESIGN.md, section 9): the count when the host is not read (the mock and
@@ -41,6 +42,12 @@ def draft_dir(model: Path) -> Path | None:
         if (d / manifest).is_file():
             return d
     return None
+
+
+def vision_file(model: Path) -> Path | None:
+    """The image encoder beside the model file: the one `mmproj-*.gguf` there (MODEL_FILES.md), else None."""
+    found = sorted(model.parent.glob("mmproj-*.gguf"))
+    return found[0] if len(found) == 1 else None
 
 
 def open_config(

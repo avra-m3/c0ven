@@ -27,13 +27,20 @@ def test_the_front_end_never_imports_the_engine():
     assert {k: v for k, v in offenders.items() if v} == {}
 
 
-def test_the_engine_outside_models_does_not_name_the_model():
-    offenders = [
-        str(p.relative_to(ROOT))
+def model_names() -> list[str]:
+    """Each architecture's folder under engine/models/."""
+    return sorted(p.name for p in (ROOT / "engine" / "models").iterdir() if (p / "__init__.py").is_file())
+
+
+def test_the_engine_outside_models_names_no_model():
+    names = model_names()
+    assert "qwen4exp" in names
+    offenders = {
+        str(p.relative_to(ROOT)): found
         for p in (ROOT / "engine").rglob("*.py")
-        if "models" not in p.relative_to(ROOT / "engine").parts and "qwen4exp" in p.read_text()
-    ]
-    assert offenders == []
+        if "models" not in p.relative_to(ROOT / "engine").parts and (found := [n for n in names if n in p.read_text()])
+    }
+    assert offenders == {}
 
 
 def test_protocol_imports_nothing_of_ours():

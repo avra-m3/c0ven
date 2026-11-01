@@ -3,24 +3,27 @@
     python -m tools.plan --slots 4 --context 262144
     python -m tools.plan --model /models/<file>-00001-of-00002.gguf --slots 1 --context 32768
 
-Without `--model` it uses the committed IQ3_S tensor table (docs/model/tensors-IQ3_S.tsv).
+The architecture is the `--model` file's unless `--arch` names one. Without `--model` it uses the committed IQ3_S
+tensor table (docs/model/tensors-IQ3_S.tsv).
 """
 
 from __future__ import annotations
 
 import argparse
-import importlib
 from pathlib import Path
-from typing import cast
 
 import protocol
-from engine.memory_plan import MemoryPlan, PlanError, PlanOptions
+from engine.memory_plan import PlanError, PlanOptions
+from engine.process import architecture, model_module
+
+ARCH = "qwen4exp"
+"""The architecture of the committed tensor table, planned when no --model is given."""
 
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="python -m tools.plan", description=(__doc__ or "").splitlines()[0])
-    p.add_argument("--model", type=Path)
-    p.add_argument("--arch", default="qwen4exp")
+    p.add_argument("--model", type=Path, help="the GGUF file (any shard)")
+    p.add_argument("--arch", help=f"the architecture; default: the --model file's, else {ARCH}")
     p.add_argument("--slots", type=int, default=1)
     p.add_argument("--context", type=int, default=262_144)
     p.add_argument("--checkpoints", type=int, default=8)
@@ -28,15 +31,14 @@ def main(argv: list[str] | None = None) -> int:
         "--kv-tokens", type=protocol.tokens, default=0, help="the KV pool the slots share; default: slots x context"
     )
     args = p.parse_args(argv)
-    setup = importlib.import_module(f"engine.models.{args.arch}.setup")
+    arch = args.arch or (architecture(args.model) if args.model is not None else ARCH)
+    setup = model_module(arch)
     options = PlanOptions(
         slots=args.slots, context=args.context, checkpoints=args.checkpoints, kv_tokens=args.kv_tokens
     )
     try:
-        _, plan = cast(
-            "tuple[object, MemoryPlan]",
-            setup.open_config(args.model, options, draft=setup.draft_dir(args.model) if args.model else None),
-        )
+        draft = setup.draft_dir(args.model) if args.model is not None else None
+        _, plan = setup.open_config(args.model, options, draft=draft)
     except PlanError as exc:
         print(f"does not fit: {exc}")
         return 1

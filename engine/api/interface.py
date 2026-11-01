@@ -39,7 +39,6 @@ batches (SchedulerOptions.decode_batch). The core copies any count; each plan's 
 page tables (ADR-0033)."""
 MAX_EOS = 4
 MAX_BATCH_WIDTHS = 8
-MAX_SHARDS = 4
 
 
 class EngineError(RuntimeError):
@@ -151,7 +150,8 @@ class OpenConfig:
     deterministic: bool = False
     """ADR-0016's switches: no PCIe share of the misses, no adaptive swaps, no prefetching."""
     draft_dir: str = ""
-    """The draft (MTP) layer's tensors, one file each (MODEL_FILES.md, "The MTP layer"); empty: no drafting."""
+    """The drafter, a directory or a file as the model's setup finds it (models/<arch>/setup.py); empty: no
+    drafting."""
     vision_path: str = ""
     ngram_in_ram: bool = False
     """Read the whole n-gram table into RAM at open, and serve every row from it."""

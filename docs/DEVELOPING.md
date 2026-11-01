@@ -255,7 +255,7 @@ uv run python -m engine --backend mock --arch qwen4exp --context 4096
 ### The memory plan
 
 `tools/plan.py` prints the plan for a context and a number of sequences, from the committed tensor table, with no
-model at hand:
+model at hand. With `--model`, any shard of a GGUF, it plans that file for the architecture its header names:
 
 ```bash
 uv run python -m tools.plan --context 262144 --slots 1

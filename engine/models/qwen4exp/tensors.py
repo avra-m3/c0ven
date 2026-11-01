@@ -17,13 +17,13 @@ from pathlib import Path
 
 import gguf
 
+from engine.gguf_files import shard_paths
 from engine.models.qwen4exp import numbers
 
 TABLES = Path(__file__).resolve().parents[3] / "docs" / "model"
 TSV = TABLES / "tensors-IQ3_S.tsv"
 TSV_UD_IQ4_XS = TABLES / "tensors-UD-IQ4_XS.tsv"
 _LAYER = re.compile(r"^blk\.(\d+)\.")
-_SHARD = re.compile(r"^(?P<stem>.*)-(?P<no>\d{5})-of-(?P<count>\d{5})\.gguf$")
 
 
 class Category(StrEnum):
@@ -128,15 +128,6 @@ def from_tsv(path: Path = TSV) -> TensorTable:
                 )
             )
     return TensorTable(tuple(rows))
-
-
-def shard_paths(first: Path) -> tuple[Path, ...]:
-    """All shards of a split file, from the path of any of them; a single-file model is its own list."""
-    m = _SHARD.match(first.name)
-    if m is None:
-        return (first,)
-    count = int(m.group("count"))
-    return tuple(first.with_name(f"{m.group('stem')}-{i:05d}-of-{count:05d}.gguf") for i in range(1, count + 1))
 
 
 def from_gguf(path: Path) -> TensorTable:

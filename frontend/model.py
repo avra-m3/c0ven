@@ -6,6 +6,7 @@ given. The front end reads the file's header only; the tensors are the engine's.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
@@ -29,6 +30,17 @@ class Model:
     path: str = ""
     arch: str = ""
     """The GGUF's `general.architecture`, passed to the engine so it need not read the header again."""
+
+
+SHARD = re.compile(r"^(?P<stem>.*)-\d{5}-of-(?P<count>\d{5})\.gguf$")
+"""A split GGUF's file name. Only the first shard holds the metadata. The engine has its own copy
+(engine/gguf_files.py), since the front end does not import the engine (ADR-0024, item 7)."""
+
+
+def first_shard(model: Path) -> Path:
+    """The first shard of a split GGUF, from the path of any of its shards; any other file is itself."""
+    m = SHARD.match(model.name)
+    return model if m is None else model.with_name(f"{m['stem']}-00001-of-{m['count']}.gguf")
 
 
 def _field(reader: gguf.GGUFReader, key: str) -> object | None:
@@ -68,7 +80,7 @@ def load(
             _stop_ids(tokenizer),
             protocol.Settings(),
         )
-    reader = gguf.GGUFReader(gguf_path)
+    reader = gguf.GGUFReader(first_shard(gguf_path))
     if tokenizer_json is not None:
         tokenizer = from_json(tokenizer_json)
     else:

@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from engine.api.interface import SplitKind
+from engine.gguf_files import shard_paths
 from engine.models.qwen4exp import tensors
 from engine.models.qwen4exp.split import split_of
 from engine.models.qwen4exp.tensors import (
@@ -15,7 +16,6 @@ from engine.models.qwen4exp.tensors import (
     LayerKind,
     from_gguf_cached,
     from_tsv,
-    shard_paths,
 )
 
 TABLE = from_tsv()
@@ -63,15 +63,6 @@ def test_every_tensor_has_a_split_rule():
     assert kinds["blk.1.ffn_down_exps.weight"] is SplitKind.EXPERT_COLUMNS
     assert kinds["per_layer_token_embd.weight"] is SplitKind.FILE
     assert kinds["output.weight"] is SplitKind.ROWS
-
-
-def test_shards():
-    first = Path("/m/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf")
-    assert [p.name for p in shard_paths(first)] == [
-        "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
-        "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
-    ]
-    assert shard_paths(Path("/m/one.gguf")) == (Path("/m/one.gguf"),)
 
 
 def test_the_table_is_read_from_the_gguf_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

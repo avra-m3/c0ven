@@ -23,6 +23,7 @@ def model_memory(
         cards=cards,
         weights_per_card=sum(bytes_per_card(t, cards) for t in table.tensors),
         draft_per_card=draft_per_card(draft_shapes if draft_shapes is not None else read_shapes(), cards),
+        working_per_card=numbers.WORKING_PER_CARD,
         layers=numbers.LAYERS,
         experts=experts,
         expert_bytes=expert_total // experts,
