@@ -13,6 +13,7 @@ from starlette.testclient import TestClient
 from starlette.types import Message, Scope
 from tokenizers import Tokenizer
 
+import protocol
 from frontend.app import KEEPALIVE, _kept_alive, create_app  # pyright: ignore[reportPrivateUsage]
 from frontend.model import Model
 from tests.helpers import FakeEngine
@@ -91,6 +92,27 @@ def test_openai_tool_calls(client: TestClient, engine: FakeEngine):
     assert choice["finish_reason"] == "tool_calls"
     (call,) = choice["message"]["tool_calls"]
     assert call["function"] == {"name": "get_weather", "arguments": '{"city": "Paris"}'}
+
+
+def test_a_tool_call_cut_by_max_tokens_finishes_on_length(client: TestClient, engine: FakeEngine):
+    engine.output = "Let me look.\n" + CALL[:40]
+    engine.finish = protocol.Finish.LENGTH
+    body = chat(client, tools=[TOOL], chat_template_kwargs={"enable_thinking": False})
+    choice = body["choices"][0]
+    assert choice["finish_reason"] == "length"
+    assert choice["message"]["content"] == "Let me look."
+    assert not choice["message"].get("tool_calls")
+    r = client.post(
+        "/v1/messages",
+        json={
+            "max_tokens": 400,
+            "messages": [{"role": "user", "content": "weather?"}],
+            "tools": [{"name": "get_weather", "input_schema": {"type": "object"}}],
+            "thinking": {"type": "disabled"},
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["stop_reason"] == "max_tokens"
 
 
 def test_openai_assistant_tool_call_history_renders(client: TestClient, engine: FakeEngine, tokenizer: Tokenizer):
