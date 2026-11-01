@@ -5,7 +5,8 @@
 [ADR-0028](0028-ci-without-a-card.md): it gains `.github/workflows/`; and by
 [ADR-0047](0047-the-docs-site-built-by-zensical.md): it gains `zensical.toml` at the root and `docs/guides/`.
 Item 4 superseded in part, for `engine/`, by
-[ADR-0060](0060-the-control-plane-takes-a-models-rules-through-modelsetup.md) (draft).
+[ADR-0060](0060-the-control-plane-takes-a-models-rules-through-modelsetup.md) (draft), and for the core and kernels by
+[ADR-0061](0061-the-core-picks-its-model-by-the-files-architecture.md) (draft).
 **Revisit when:** a second model architecture is added ([ADR-0006](0006-scope.md)).
 
 ## Context
