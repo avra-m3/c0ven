@@ -2,18 +2,27 @@
 
 from __future__ import annotations
 
+from operator import index
+from typing import ClassVar, SupportsIndex
+
 import pytest
 from tokenizers import Tokenizer
 
 from frontend.openai_api import EFFORTS
 from frontend.output import (
+    DSML,
+    DSML_FORMAT,
+    THINK_END,
+    XML_FORMAT,
     Content,
     OutputParser,
     Piece,
     Reasoning,
     ToolCall,
     ToolCallError,
+    ToolCallFormat,
     ToolCallStart,
+    parse_dsml_call,
     parse_tool_call,
 )
 from frontend.template import LEVELS, ChatTemplate, Conversation, Efforts, TemplateFailed
@@ -222,3 +231,254 @@ def test_string_parameters_stay_strings():
     body = "\n<function=f>\n<parameter=n>\n42\n</parameter>\n<parameter=s>\n42\n</parameter>\n</function>\n"
     call = parse_tool_call(body, {"f": {"properties": {"s": {"type": "string"}}}})
     assert call.arguments == {"n": 42, "s": "42"}
+
+
+def dsml(text: str) -> str:
+    """DeepSeek's DSML token has fullwidth bars (U+FF5C); the samples spell them `|`."""
+    return text.replace("|DSML|", DSML)
+
+
+# Completions as DeepSeek's encoding writes them (deepseek-ai/DeepSeek-V4.1-Flash-1017, encoding/test_encoding.py
+# and encoding/tests/), without the end-of-sentence token, which the engine stops at and does not send.
+LOOKUP = dsml(
+    "  reason  </think>summary\n\n"
+    "<|DSML| calls>\n"
+    '<|DSML| invoke name="lookup">\n'
+    '<|DSML| parameter name="query" string="true">value</|DSML| parameter>\n'
+    '<|DSML| parameter name="limit" string="false">2</|DSML| parameter>\n'
+    "</|DSML| invoke>\n"
+    "</|DSML| calls>"
+)
+NAMESPACES = dsml(
+    "summary\n\n<|DSML| calls>\n"
+    + "\n".join(
+        f'<|DSML| invoke name="{name}">\n'
+        '<|DSML| parameter name="query" string="true">value</|DSML| parameter>\n'
+        "</|DSML| invoke>"
+        for name in ("lookup", "search::lookup", "files::lookup")
+    )
+    + "\n</|DSML| calls>"
+)
+WEATHER = dsml(
+    "The user wants the weather in Beijing. I should call get_weather.</think>\n\n"
+    "<|DSML| calls>\n"
+    '<|DSML| invoke name="get_weather">\n'
+    '<|DSML| parameter name="location" string="true">Beijing</|DSML| parameter>\n'
+    '<|DSML| parameter name="unit" string="true">celsius</|DSML| parameter>\n'
+    "</|DSML| invoke>\n"
+    "</|DSML| calls>"
+)
+SEARCH = dsml(
+    "\n\n<|DSML| calls>\n"
+    '<|DSML| invoke name="search">\n'
+    '<|DSML| parameter name="queries" string="true">小柴胡冲剂 布洛芬 相互作用 一起吃</|DSML| parameter>\n'
+    "</|DSML| invoke>\n"
+    "</|DSML| calls>"
+)
+# The `open` tool of encoding/tests/test_input_3.json, its arguments written as encode_arguments_to_dsml writes them.
+OPEN = dsml(
+    "Opening both.\n\n<|DSML| calls>\n"
+    '<|DSML| invoke name="open">\n'
+    '<|DSML| parameter name="open_list" string="false">[{"id": 0, "loc": 12, "num_lines": 40}, '
+    '{"id": "https://example.com/a b"}]</|DSML| parameter>\n'
+    '<|DSML| parameter name="note" string="true">{"not": "json"}\n second line</|DSML| parameter>\n'
+    '<|DSML| parameter name="strict" string="false">true</|DSML| parameter>\n'
+    "</|DSML| invoke>\n"
+    '<|DSML| invoke name="search">\n'
+    '<|DSML| parameter name="queries" string="true">42</|DSML| parameter>\n'
+    "</|DSML| invoke>\n"
+    "</|DSML| calls>"
+)
+STEPS = [1, 2, 3, 5, 7, 11, 1000]
+
+
+def dsml_pieces(out: str, thinking: bool, step: int) -> list[Piece]:
+    return pieces_of(out, thinking, step, call_format=DSML_FORMAT)
+
+
+@pytest.mark.parametrize("step", STEPS)
+def test_dsml_reasoning_content_and_a_call(step: int):
+    r, c, calls = joined(dsml_pieces(LOOKUP, True, step))
+    assert (r, c) == ("reason", "summary")
+    assert [(x.name, x.arguments) for x in calls] == [("lookup", {"query": "value", "limit": 2})]
+
+
+@pytest.mark.parametrize("step", STEPS)
+def test_dsml_several_calls_are_each_named_before_their_arguments(step: int):
+    pieces = dsml_pieces(NAMESPACES, False, step)
+    assert joined(pieces)[1] == "summary"
+    calls = [x for x in pieces if not isinstance(x, Content)]
+    assert [type(x) for x in calls] == [ToolCallStart, ToolCall] * 3
+    names = ["lookup", "lookup", "search::lookup", "search::lookup", "files::lookup", "files::lookup"]
+    assert [x.name for x in calls if isinstance(x, ToolCall | ToolCallStart)] == names
+    assert all(x.arguments == {"query": "value"} for x in calls if isinstance(x, ToolCall))
+
+
+@pytest.mark.parametrize("step", STEPS)
+def test_dsml_calls_after_reasoning_alone(step: int):
+    r, c, calls = joined(dsml_pieces(WEATHER, True, step))
+    assert (r, c) == ("The user wants the weather in Beijing. I should call get_weather.", "")
+    assert [(x.name, x.arguments) for x in calls] == [("get_weather", {"location": "Beijing", "unit": "celsius"})]
+    r, c, calls = joined(dsml_pieces(SEARCH, False, step))
+    assert (r, c) == ("", "")
+    assert [(x.name, x.arguments) for x in calls] == [("search", {"queries": "小柴胡冲剂 布洛芬 相互作用 一起吃"})]
+
+
+@pytest.mark.parametrize("step", STEPS)
+def test_dsml_values_are_json_or_text_as_marked(step: int):
+    _, c, calls = joined(dsml_pieces(OPEN, False, step))
+    assert c == "Opening both."
+    assert [(x.name, x.arguments) for x in calls] == [
+        (
+            "open",
+            {
+                "open_list": [{"id": 0, "loc": 12, "num_lines": 40}, {"id": "https://example.com/a b"}],
+                "note": '{"not": "json"}\n second line',
+                "strict": True,
+            },
+        ),
+        ("search", {"queries": "42"}),
+    ]
+
+
+@pytest.mark.parametrize("step", STEPS)
+def test_dsml_a_later_block_does_not_name_a_call_early(step: int):
+    block = WEATHER.split("</think>")[1]
+    pieces = dsml_pieces(block + "\n\nAgain." + block + dsml('\n\nThen <|DSML| invoke name="x"> as text.'), False, step)
+    assert [type(x) for x in pieces if not isinstance(x, Content)] == [ToolCallStart, ToolCall] * 2
+    assert [x.name for x in pieces if isinstance(x, ToolCall)] == ["get_weather", "get_weather"]
+    assert joined(pieces)[1] == "Again." + dsml('Then <|DSML| invoke name="x"> as text.')
+
+
+def test_dsml_marks_split_anywhere_are_held_back():
+    for cut in range(len("summary\n\n"), len(LOOKUP.split("</think>")[1])):
+        p = OutputParser(False, call_format=DSML_FORMAT)
+        text = LOOKUP.split("</think>")[1]
+        got = list(p.feed(text[:cut])) + list(p.feed(text[cut:])) + list(p.finish())
+        assert got[0] == Content("summary"), cut
+        assert [type(x) for x in got[1:]] == [ToolCallStart, ToolCall], cut
+
+
+def test_dsml_a_call_is_named_while_its_arguments_are_written():
+    p = OutputParser(False, call_format=DSML_FORMAT)
+    head = dsml('Writing.\n\n<|DSML| calls>\n<|DSML| invoke name="write">\n<|DSML| parameter name="content" string="t')
+    assert list(p.feed(head)) == [Content("Writing."), ToolCallStart("write")]
+    assert list(p.feed(dsml('rue">many lines'))) == []
+    tail = dsml(" more</|DSML| parameter>\n</|DSML| invoke>\n</|DSML| calls>")
+    assert [(x.name, x.arguments) for x in p.feed(tail) if isinstance(x, ToolCall)] == [
+        ("write", {"content": "many lines more"})
+    ]
+    assert list(p.finish()) == []
+
+
+def test_dsml_content_that_looks_like_a_mark():
+    out = dsml("Use <|DSML| call or <tool_call> as text.")
+    assert joined(pieces_of(out, False, 1, call_format=DSML_FORMAT))[1] == out
+
+
+def test_dsml_errors():
+    with pytest.raises(ToolCallError):
+        dsml_pieces(dsml('<|DSML| calls>\n<|DSML| invoke name="f">\n'), False, 1000)
+    with pytest.raises(ToolCallError):
+        dsml_pieces(dsml('<|DSML| calls>\n<|DSML| invoke name="f">\n</|DSML| calls>'), False, 1000)
+    with pytest.raises(ToolCallError):
+        parse_dsml_call("no invoke here")
+
+
+def test_the_template_chooses_the_call_format():
+    assert ChatTemplate(TINY_TEMPLATE).tool_calls is XML_FORMAT
+    assert ChatTemplate(dsml("{{- '<|DSML| calls>' }}")).tool_calls is DSML_FORMAT
+
+
+def long_reply(fmt: ToolCallFormat) -> str:
+    """Reasoning, content and calls long enough that rescanning the whole reply on each piece would show."""
+    words = " ".join(f"w{i} < >" for i in range(2000))
+    if fmt is XML_FORMAT:
+        call = "<tool_call>\n<function=f{}>\n<parameter=text>\n{}\n</parameter>\n</function>\n</tool_call>"
+        calls = "\n".join(call.format(n, words) for n in range(3))
+    else:
+        call = dsml('<|DSML| invoke name="f{}">\n<|DSML| parameter name="text" string="true">{}</|DSML| parameter>\n')
+        calls = dsml("<|DSML| calls>\n") + "".join(call.format(n, words) + dsml("</|DSML| invoke>\n") for n in range(3))
+        calls += dsml("</|DSML| calls>")
+    return f"{words}\n</think>\n\n{words}\n\n{calls}"
+
+
+def outcome(pieces: list[Piece]) -> tuple[str, str, list[tuple[str, str]]]:
+    r, c, _ = joined(pieces)
+    calls = [(type(x).__name__, repr(x)) for x in pieces if isinstance(x, ToolCall | ToolCallStart)]
+    return r, c, calls
+
+
+@pytest.mark.parametrize("fmt", [XML_FORMAT, DSML_FORMAT])
+def test_a_long_reply_fed_a_character_at_a_time_reads_as_fed_whole(fmt: ToolCallFormat):
+    out = long_reply(fmt)
+    whole = outcome(pieces_of(out, True, len(out), call_format=fmt))
+    assert whole[0]
+    assert whole[1]
+    assert len(whole[2]) == 6
+    assert outcome(pieces_of(out, True, 1, call_format=fmt)) == whole
+
+
+@pytest.mark.parametrize("fmt", [XML_FORMAT, DSML_FORMAT])
+def test_marks_split_across_pieces(fmt: ToolCallFormat):
+    out = long_reply(fmt)
+    whole = outcome(pieces_of(out, True, len(out), call_format=fmt))
+    name = fmt.name.search(out)
+    assert name
+    marks = [THINK_END, fmt.start, fmt.end, *([fmt.call_end] if fmt.call_end else [])]
+    spans = [(out.index(m), out.index(m) + len(m)) for m in marks]
+    # Each mark is cut after each of its characters, once the parser has scanned a long first piece.
+    for start, end in [*spans, name.span()]:
+        for cut in range(start + 1, end):
+            p = OutputParser(True, call_format=fmt)
+            got = list(p.feed(out[: start - 7])) + list(p.feed(out[start - 7 : cut])) + list(p.feed(out[cut:]))
+            assert outcome(got + list(p.finish())) == whole, (start, cut)
+
+
+class SearchedText(str):
+    """A parser's buffer that records how many characters each find and rfind is given, and stays a SearchedText
+    when added to or sliced."""
+
+    widths: ClassVar[list[int]] = []
+
+    def find(self, sub: str, start: SupportsIndex | None = None, end: SupportsIndex | None = None, /) -> int:
+        SearchedText.widths.append(len(self) - index(start or 0))
+        return super().find(sub, start, end)
+
+    def rfind(self, sub: str, start: SupportsIndex | None = None, end: SupportsIndex | None = None, /) -> int:
+        SearchedText.widths.append(len(self) - index(start or 0))
+        return super().rfind(sub, start, end)
+
+    def __add__(self, other: str) -> SearchedText:
+        return SearchedText(str.__add__(self, other))
+
+    def __getitem__(self, key: SupportsIndex | slice) -> SearchedText:
+        return SearchedText(super().__getitem__(key))
+
+
+@pytest.mark.parametrize("fmt", [XML_FORMAT, DSML_FORMAT])
+def test_each_piece_is_searched_only_near_its_new_text(fmt: ToolCallFormat):
+    out = long_reply(fmt)
+    p = OutputParser(True, call_format=fmt)
+    p._buffer = SearchedText()  # pyright: ignore[reportPrivateUsage]
+    SearchedText.widths = []
+    for ch in out:
+        list(p.feed(ch))
+    assert len(SearchedText.widths) > len(out)
+    # A search reaches back no further than a mark or a call's name can straddle.
+    assert max(SearchedText.widths) < 64
+
+
+@pytest.mark.parametrize("step", STEPS)
+def test_dsml_a_call_without_a_name_is_not_named_from_the_next(step: int):
+    out = dsml('<|DSML| calls>\n<|DSML| invoke>\n</|DSML| invoke>\n<|DSML| invoke name="f">\n</|DSML| invoke>\n')
+    p = OutputParser(False, call_format=DSML_FORMAT)
+    got: list[Piece] = []
+
+    def feed() -> None:
+        for i in range(0, len(out), step):
+            got.extend(p.feed(out[i : i + step]))
+
+    with pytest.raises(ToolCallError):
+        feed()
+    assert got == []

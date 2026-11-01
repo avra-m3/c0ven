@@ -18,7 +18,7 @@ import protocol
 from frontend.app import KEEPALIVE, _kept_alive, create_app  # pyright: ignore[reportPrivateUsage]
 from frontend.model import Model
 from frontend.template import ChatTemplate
-from tests.helpers import BUDGET_TEMPLATE, LEVEL_TEMPLATE, FakeEngine
+from tests.helpers import BUDGET_TEMPLATE, LEVEL_TEMPLATE, TINY_TEMPLATE, FakeEngine
 
 CALL = "<tool_call>\n<function=get_weather>\n<parameter=city>\nParis\n</parameter>\n</function>\n</tool_call>"
 TOOL = {
@@ -238,6 +238,39 @@ def test_openai_stream_names_a_tool_call_before_its_arguments(client: TestClient
     assert first["function"] == {"name": "get_weather", "arguments": ""}
     assert first["id"].startswith("call_")
     assert second == {"index": 0, "function": {"arguments": '{"city": "Paris"}'}}
+
+
+def test_openai_streams_the_calls_of_a_dsml_template(model: Model, engine: FakeEngine):
+    """A template that writes DSML calls makes the parser read DSML: two calls in one block come out as two."""
+    dsml = "\uff5cDSML\uff5c"
+    template = ChatTemplate(TINY_TEMPLATE + "{#- <" + dsml + " calls> #}")
+    invoke = (
+        '<{0} invoke name="get_weather">\n<{0} parameter name="city" string="true">{1}</{0} parameter>\n'
+        '<{0} parameter name="days" string="false">3</{0} parameter>\n</{0} invoke>'
+    )
+    engine.output = (
+        f"Two cities.\n\n<{dsml} calls>\n{invoke.format(dsml, 'Paris')}\n{invoke.format(dsml, 'Oslo')}\n</{dsml} calls>"
+    )
+    with TestClient(create_app(replace(model, template=template), engine)) as client:
+        r = client.post(
+            "/v1/chat/completions",
+            json={
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": True,
+                "tools": [TOOL],
+                "chat_template_kwargs": {"enable_thinking": False},
+            },
+        )
+    chunks = [d["choices"][0] for _, d in sse(r.text)[:-1]]
+    assert "".join(c["delta"].get("content", "") for c in chunks) == "Two cities."
+    calls = [c["delta"]["tool_calls"][0] for c in chunks if "tool_calls" in c["delta"]]
+    assert [(x["index"], x["function"]) for x in calls] == [
+        (0, {"name": "get_weather", "arguments": ""}),
+        (0, {"arguments": '{"city": "Paris", "days": 3}'}),
+        (1, {"name": "get_weather", "arguments": ""}),
+        (1, {"arguments": '{"city": "Oslo", "days": 3}'}),
+    ]
+    assert chunks[-1]["finish_reason"] == "tool_calls"
 
 
 def test_openai_stop_string_stops_the_engine(client: TestClient, engine: FakeEngine):

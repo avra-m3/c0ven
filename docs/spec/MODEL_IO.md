@@ -386,6 +386,16 @@ machine).
 Tool results are grouped into one user turn of `<tool_response>` blocks. The generation prompt is
 `<|im_start|>assistant\n<think>\n` (or `<think>\n\n</think>\n\n` with thinking off).
 
+**Tool calls in DSML.** DeepSeek V4.1's template writes tool calls in DSML instead
+([`deepseek-ai/DeepSeek-V4.1-Flash-1017`](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017) at `1bae0e1`,
+`encoding/encoding.py`). The front end reads calls in DSML when the template's source holds the DSML token `｜DSML｜`,
+whose bars are fullwidth (U+FF5C), and in the `<tool_call>` format otherwise (`call_format` in
+[`frontend/output.py`](../../frontend/output.py)). One block holds several calls:
+`<｜DSML｜ calls>\n`, then for each call `<｜DSML｜ invoke name="NAME">\n`, its parameters as
+`<｜DSML｜ parameter name="K" string="true">V</｜DSML｜ parameter>\n` and `</｜DSML｜ invoke>\n`, then
+`</｜DSML｜ calls>`. `string="true"` marks a value as text; `string="false"` marks it as JSON, which the front end
+reads as text when it does not parse.
+
 **Earlier turns' reasoning.** With `preserve_thinking` undefined or true, which is the default, **every** assistant turn
 is rendered with its `<think>` block. If the client did not send `reasoning_content`, the block is still there,
 empty: `<think>\n\n</think>\n\n`. With `preserve_thinking` false, turns before the last real user query are rendered

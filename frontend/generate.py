@@ -211,7 +211,12 @@ async def stream(model: Model, engine: Engine, request: Request, prompt: Prompt)
     """The output as pieces, then one End."""
     max_new = budget(engine, prompt, request.max_tokens)
     detok = Detokenizer(model.tokenizer)
-    parser = OutputParser(prompt.thinking, request.tool_schemas, tools=request.tool_schemas is not None)
+    parser = OutputParser(
+        prompt.thinking,
+        request.tool_schemas,
+        tools=request.tool_schemas is not None,
+        call_format=model.template.tool_calls,
+    )
     stops = _StopStrings(request.stop)
     generated = 0
     cached = 0
