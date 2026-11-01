@@ -564,6 +564,10 @@ exactly from run to run only with `--deterministic`, which turns swaps off
 A round holds the engine thread only to append the halves' copies, switch the maps and wait for the cards' copies,
 about 3 ms; the swap thread chooses the next round's swaps and builds their halves from the arena behind the steps
 ([the record](measurements/MEASUREMENTS.md#2026-10-20-swap-round-behind-the-steps)).
+Once no plan has come for 100 ms, the engine thread keeps running rounds on the counts as they stand, without decaying
+them, one each time the swap thread is done, until a round chooses nothing: the cache catches up with the routing,
+and the KV pool and the cache settle, while nothing waits. A plan that comes waits at most for the round in hand.
+`engine_stats.idle_rounds` counts these rounds.
 
 ### A prompt chunk
 

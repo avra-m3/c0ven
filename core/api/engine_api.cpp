@@ -80,6 +80,12 @@ struct Slot {
 // memory goes to the experts the requests in progress need.
 constexpr uint64_t kIdleResident = 300ull * 1000000000ull;
 
+// With swaps on, once no plan has come for kIdleAfter, the engine thread runs swap rounds on the counts as they stand,
+// one each time the swap thread is done, checked every kIdleStep, until a round chooses nothing: the cache catches up
+// with the routing, and the KV pool and the cache settle, while nothing waits on them (docs/DESIGN.md, Swaps).
+constexpr auto kIdleAfter = std::chrono::milliseconds(100);
+constexpr auto kIdleStep = std::chrono::milliseconds(5);
+
 // A prompt piece of at most this many tokens is read as decode windows of forced rows: a prompt chunk stages every
 // uncached expert whatever its size, so a short piece is faster as windows
 // (docs/measurements/MEASUREMENTS.md#2026-10-17-prompt-windows).
@@ -147,6 +153,7 @@ struct engine_ctx {
   std::deque<engine_timing> timing;
   uint32_t plans_done = 0, plans_taken = 0;
   bool running = false;  // a plan is being run
+  bool idle_due = false;  // with swaps on, a plan has run since the idle rounds last settled (idle_rounds)
   bool prompt_ended = false;  // the plan being run read some slot's last prompt token
   uint32_t writers = 0;  // the slots the plan being run decoded
   engine::WindowTimes window_times;  // one slot's decode steps and rounds, by their rows
@@ -1080,7 +1087,7 @@ struct engine_ctx {
       uint32_t seq;
       {
         std::unique_lock<std::mutex> lk(mu);
-        cv.wait(lk, [&] { return stop || !plans.empty(); });
+        idle_rounds(lk);
         if (stop) return;
         plan = plans.front().plan;
         pages = std::move(plans.front().pages);
@@ -1099,6 +1106,7 @@ struct engine_ctx {
         apply_pages(pages);
         prompt_pieces(seq, plan);
         decode(seq, plan);
+        idle_due = swaps;
         // A swap round after a plan that ended a prompt, and after every 4th plan while at most one slot writes, every
         // 16th while several do (docs/measurements/MEASUREMENTS.md#2026-10-28-swaps-every-4th-plan). Never while a slot reads its prompt
         // (docs/measurements/MEASUREMENTS.md#2026-10-16-drafting-and-swaps). While several slots write, the round's swaps are
@@ -1135,6 +1143,48 @@ struct engine_ctx {
       std::lock_guard<std::mutex> lk(mu);
       running = false;
       idle_cv.notify_all();
+    }
+  }
+
+  // Waits for a plan, running swap rounds while none comes (kIdleAfter). A round counts as a plan running, so drain
+  // waits for it. Under the lock lk.
+  void idle_rounds(std::unique_lock<std::mutex> &lk) {
+    const auto last = std::chrono::steady_clock::now();
+    bool ran = false;  // the first round runs whatever the last chose: it also moves memory between the KV and the cache
+    while (!stop && plans.empty()) {
+      if (!idle_due || asleep) {
+        cv.wait(lk, [&] { return stop || !plans.empty(); });
+        return;
+      }
+      if (cv.wait_for(lk, kIdleStep, [&] { return stop || !plans.empty(); })) return;
+      if (std::chrono::steady_clock::now() - last < kIdleAfter || !model->swaps_ready()) continue;
+      if (ran && model->swaps_settled()) {
+        idle_due = false;
+        continue;
+      }
+      ran = true;
+      running = true;
+      lk.unlock();
+      uint64_t swapped = 0;
+      const uint64_t t0 = now_ns();
+      try {
+        swapped = model->swap_round(64, false);
+      } catch (const std::exception &ex) {
+        lk.lock();
+        error = ex.what();
+        idle_due = running = false;
+        idle_cv.notify_all();
+        emit({ENGINE_EVENT_ERROR, 0, kNoToken, ENGINE_ERROR});
+        return;
+      }
+      const uint64_t t1 = now_ns();
+      lk.lock();
+      running = false;
+      idle_cv.notify_all();
+      stats.swap_rounds++;
+      stats.idle_rounds++;
+      stats.swaps += swapped;
+      stats.swap_ns += t1 - t0;
     }
   }
 
@@ -1613,7 +1663,7 @@ uint32_t engine_abi_layout(engine_abi_row *table, uint32_t cap) {
       ROW(engine_stats, swaps), ROW(engine_stats, swap_ns), ROW(engine_stats, stalls),
       ROW(engine_stats, checkpoints_taken), ROW(engine_stats, restores), ROW(engine_stats, ngram_rows),
       ROW(engine_stats, ngram_hits), ROW(engine_stats, ngram_reads), ROW(engine_stats, experts_cached),
-      ROW(engine_stats, experts_floor), SIZE(engine_stats),
+      ROW(engine_stats, experts_floor), ROW(engine_stats, idle_rounds), SIZE(engine_stats),
       ROW(engine_slot_stats, steps), ROW(engine_slot_stats, rounds), ROW(engine_slot_stats, drafts),
       ROW(engine_slot_stats, accepted), ROW(engine_slot_stats, lookup_rounds), ROW(engine_slot_stats, lookup_drafts),
       ROW(engine_slot_stats, lookup_accepted), SIZE(engine_slot_stats),

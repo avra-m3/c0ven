@@ -383,6 +383,8 @@ class EngineStats:
     """Per layer at the last plan's end, the mean over the layers; `experts_floor` the fewest the load keeps room
     for, whatever the KV pool holds (ADR-0045)."""
     experts_floor: int = 0
+    idle_rounds: int = 0
+    """Of the swap rounds, those run while no plan came."""
 
 
 @dataclass(frozen=True, slots=True)
