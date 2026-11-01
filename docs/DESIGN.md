@@ -410,12 +410,15 @@ with each process, so a log store is what keeps them.
 
 The scheduler's cost model (`engine/timing.py`) keeps a moving average of a decode step's time. It fits a prompt
 chunk's time as a fixed part, the staging of the layers' uncached experts, and a part per row, and sizes prompt pieces
-by them ([ADR-0017](adr/0017-scheduling-several-requests.md)). Every piece pays the fixed part, so a prompt of up to
-1,021 rows is read whole, and a longer one in pieces of at most 1,021 rows, each holding the writers about as long as
-a short prompt does ([ADR-0044](adr/0044-a-short-prompt-is-read-whole.md)). With the writers' rows that ride in it, such
-a chunk stays at 1,024 rows or fewer, the chunks whose experts are fetched as their router picks them. A plan's
-pieces are priced at most 1.6 times the budget, which bounds the writers' longest wait. Both numbers come from chunk
-times and writers' gaps measured at piece sizes of 256 to 3,072 rows
+by them ([ADR-0017](adr/0017-scheduling-several-requests.md)). Every piece pays the fixed part, so a short prompt is
+read whole, and a longer one in pieces, each holding the writers about as long as a short prompt does
+([ADR-0044](adr/0044-a-short-prompt-is-read-whole.md)). The core reports `fetch_rows`, the longest chunk whose
+uncached experts are fetched as its router picks them ([ADR-0046](adr/0046-a-short-chunk-fetches-the-experts-its-router-picks.md));
+a longer chunk copies every uncached expert, and is slower near that size. A piece holds at most `fetch_rows` less
+the three writers' rows that may ride in its chunk, and at most 1,024 rows: 1,021 on qwen4exp with experts left
+uncached (`fetch_rows` 1,024), 1,024 with every expert cached (`fetch_rows` 0). A plan's pieces are priced at most 1.6
+times the budget, which bounds the writers' longest wait. Both numbers come from chunk times and writers' gaps
+measured at piece sizes of 256 to 3,072 rows
 ([the record](measurements/MEASUREMENTS.md#2026-11-01-whole-rows-and-stretch)). With `ENGINE_CACHE_DIR` set,
 the engine process writes the cost model there at each sleep and at exit, one file for each model file, engine version
 and set of options (the key of the working memory's file), and the next start and wake begin from it instead of the

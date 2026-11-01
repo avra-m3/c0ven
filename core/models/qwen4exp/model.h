@@ -212,6 +212,9 @@ class Model {
   std::vector<std::vector<Candidate>> prompt_runs(const PromptRun *runs, uint32_t nruns, const int32_t *next = nullptr,
                                                   uint32_t next_n = 0);
   uint32_t prompt_chunk() const { return tmax_; }
+  // The most rows a chunk may have and fetch only the uncached experts its router picks (kFetchRows); a longer one
+  // copies every uncached expert. 0 when the cards cache every expert, and every chunk is staged one way.
+  uint32_t fetch_rows() const;
   // With Options::trace: the last prompt chunk's (or decode step's) time on a card per kernel, largest first.
   std::vector<TraceRow> prompt_trace(uint32_t card) const;
   std::vector<TraceRow> step_trace(uint32_t card) const;

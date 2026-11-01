@@ -6,7 +6,8 @@ protocol lines. The rules, from ADR-0017:
 - Prompt work is scheduled by time. While a request is writing, a prompt step aims at `prompt_budget_ms`, sized by
   the cost model; after it, decode is owed `decode_share` of its time before the next prompt step. A prompt chunk's
   time is mostly a fixed part that each piece pays, so a short prompt is read whole and a long one in pieces of at
-  most `WHOLE_ROWS` (`CostModel.rows_within`). With nobody writing, a prompt takes whole chunks.
+  most `whole_rows` of the core's `fetch_rows` (`CostModel.rows_within`). With nobody writing, a prompt takes whole
+  chunks.
 - Short prompts are packed into one step, shortest first, and the engine reads up to PROMPT_RUNS of them as one
   chunk. A prompt passed over `max_passes` times goes first.
 - One producer per shared prefix: a request whose prompt starts with a prefix another request will checkpoint waits
@@ -44,7 +45,7 @@ from engine.api.interface import (
     prefix_key,
 )
 from engine.seqstate.manager import SeqState, pages_for
-from engine.timing import STRETCH, CostModel
+from engine.timing import STRETCH, CostModel, whole_rows
 
 type CheckpointRule = Callable[[tuple[int, ...]], list[tuple[int, bool]]]
 """Where to checkpoint a prompt: (position, kept) pairs. The model's rule is in models/<arch>/."""
@@ -146,6 +147,7 @@ class Scheduler:
         self.clock = clock
         self.state = SeqState(facts.slots, facts.pages, facts.checkpoints, classes=max(1, facts.cards))
         self.cost = cost or CostModel.initial()
+        self.whole_rows = whole_rows(facts.fetch_rows)
         self.waiting: list[Request] = []
         self.by_rid: dict[int, Request] = {}
         self.by_slot: dict[int, Request] = {}
@@ -378,7 +380,7 @@ class Scheduler:
                 # (CostModel.rows_within); another prompt joins whole while the plan's prompt time stays in bound.
                 # A longer piece shares the chunk of those before it in its PROMPT_RUNS, and so its fixed part.
                 if not plan.prompt:
-                    rows = self.cost.rows_within(o.prompt_budget_ms, rows)
+                    rows = self.cost.rows_within(o.prompt_budget_ms, rows, self.whole_rows)
                     ms = self.cost.prompt_ms(rows)
                 else:
                     group = plan.prompt[len(plan.prompt) // PROMPT_RUNS * PROMPT_RUNS :]

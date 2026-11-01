@@ -186,6 +186,11 @@ void Model::record_prompt_copy(Card &card) {
   }
 }
 
+// Every card has a fetch list or none, as every card stages the same experts.
+uint32_t Model::fetch_rows() const {
+  return cards_.empty() || !cards_[0]->pc || !cards_[0]->pc->fetch ? 0 : kFetchRows;
+}
+
 // The chunk's list copies each layer's routing counts to P.routed and signals kRouted after p_moe_count; it waits
 // on kStaged before the staged experts' products. Each layer's experts go into slot l % 2 once kFree of layer l - 2
 // says the chunk is done with it. Every expert the chunk routes to is staged before kStaged, so the products are the

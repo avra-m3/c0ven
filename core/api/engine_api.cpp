@@ -1301,6 +1301,7 @@ engine_status engine_open(const engine_config *config, engine_info *info, engine
     e->info.copy_bytes_per_s[0] = li.copy_bytes_per_s[0];
     e->info.copy_bytes_per_s[1] = li.copy_bytes_per_s[1];
     e->info.prompt_chunk = e->model->prompt_chunk();
+    e->info.fetch_rows = e->model->fetch_rows();
     e->info.max_step_rows = ENGINE_MAX_STEP_SLOTS;
     e->info.drafting = e->model->drafting() ? 1 : 0;
     e->info.image_tokens_max = e->model->image_tokens_max();
@@ -1601,6 +1602,7 @@ engine_status engine_wake(engine_ctx *e, engine_info *info) {
     e->info.device_bytes[1] = li.device_bytes[1];
     e->info.expert_budget[0] = li.expert_budget[0];
     e->info.expert_budget[1] = li.expert_budget[1];
+    e->info.fetch_rows = e->model->fetch_rows();
     e->info.load_seconds = li.seconds;
   }
   if (info) *info = e->info;
@@ -1664,7 +1666,7 @@ uint32_t engine_abi_layout(engine_abi_row *table, uint32_t cap) {
       ROW(engine_info, image_tokens_max), ROW(engine_info, kv_pages), ROW(engine_info, pages_per_slot),
       ROW(engine_info, host_read_bytes_per_s), ROW(engine_info, loader_threads), ROW(engine_info, ngram_in_ram),
       ROW(engine_info, loader_bytes_per_s), ROW(engine_info, ngram_read_us), ROW(engine_info, copy_bytes_per_s),
-      ROW(engine_info, expert_budget), SIZE(engine_info),
+      ROW(engine_info, expert_budget), ROW(engine_info, fetch_rows), SIZE(engine_info),
       ROW(engine_settings, temperature), ROW(engine_settings, top_k), ROW(engine_settings, top_p),
       ROW(engine_settings, max_tokens), ROW(engine_settings, seed), ROW(engine_settings, n_stop),
       ROW(engine_settings, stop), ROW(engine_settings, min_p), ROW(engine_settings, penalty_last_n),
