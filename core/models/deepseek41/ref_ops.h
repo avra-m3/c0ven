@@ -1,7 +1,7 @@
 // One scalar definition of each deepseek41 operation the kernels compute, for the kernel tests to compare against
 // (ADR-0012 item 4). Each follows DeepSeek's inference/model.py (M) or kernel.py (K) and names its section of the
-// deepseek41 forward-pass spec; the arithmetic is upstream llama.cpp's (ADR-0062 item 11): fp32 values, no bf16
-// rounding, no FP8 or FP4 simulation. Sums and dot products accumulate in double.
+// deepseek41 forward-pass spec; the arithmetic is upstream llama.cpp's (ADR-0062 item 11): fp32 values, no FP8 or FP4
+// simulation, and a BF16 product's input in bf16 where a function says so. Sums and dot products accumulate in double.
 #pragma once
 
 #include <cstdint>
@@ -58,7 +58,8 @@ void compress(const float *kv, const float *sc, uint32_t r, const float *w, floa
 
 // A compressed row (section 3d; M Indexer.forward, then Attention._compress_kv) from the group's latent before its
 // rotation: ik = RMSNorm_{k_norm}(attn_k . latent) rotated at pos, then the latent rotated at pos; row = [latent | ik]
-// (D41_COMP_ROW values). attn_k: D41_IDX_D rows of D41_HD; pos = j r, the group's first position.
+// (D41_COMP_ROW values). attn_k: D41_IDX_D rows of D41_HD, BF16 weights as f32, so the product takes the latent rounded
+// to bf16, as ggml's does, while the row keeps it in f32. pos = j r, the group's first position.
 void compressed_row(const float *latent, const float *attn_k, const float *k_norm, uint32_t pos, float *row);
 
 // The indexer's scores (section 3d, "Indexer"; M Indexer.forward): score[s] = sum_h relu(iq_h . ik_s) w_h / 64.

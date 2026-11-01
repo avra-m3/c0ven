@@ -14,17 +14,21 @@
 #define D41_YARN_LOW 15
 #define D41_YARN_HIGH 25
 
-// The angle of rotated pair i (0 .. 31) at pos; yarn: the layer has compressed rows (ratio 1 or 2). As ggml: pos
-// times the step once a pair, in float; the YaRN blend is ggml's rope_yarn with ext_factor 1. No magnitude scale.
-SHARED_FN float d41_rope_theta(u32 pos, u32 i, int yarn) {
-  float theta = (float)pos;
-  const float step = yarn ? D41_ROPE_STEP_C : D41_ROPE_STEP;
-  for (u32 k = 0; k < i; k++) theta *= step;
-  if (!yarn) return theta;
+// YaRN's change to pair i's angle: ggml's rope_yarn with ext_factor 1. A pair below D41_YARN_LOW keeps its angle.
+SHARED_FN float d41_yarn(float theta, u32 i) {
   float y = (float)((i32)i - D41_YARN_LOW) / (float)(D41_YARN_HIGH - D41_YARN_LOW);
   y = y < 0.0f ? 0.0f : y > 1.0f ? 1.0f : y;
   const float mix = 1.0f - y;  // 1: the pair keeps its frequency
   return theta * (1.0f / D41_YARN_FACTOR) * (1.0f - mix) + theta * mix;
+}
+
+// The angle of rotated pair i (0 .. 31) at pos; yarn: the layer has compressed rows (ratio 1 or 2). As ggml: pos
+// times the step once a pair, in float, which rounds at each pair. No magnitude scale.
+SHARED_FN float d41_rope_theta(u32 pos, u32 i, int yarn) {
+  float theta = (float)pos;
+  const float step = yarn ? D41_ROPE_STEP_C : D41_ROPE_STEP;
+  for (u32 k = 0; k < i; k++) theta *= step;
+  return yarn ? d41_yarn(theta, i) : theta;
 }
 
 #ifndef __OPENCL_C_VERSION__

@@ -5,42 +5,14 @@
 #include "a8.h"
 #include "builtins.h"
 #include "layout.h"
+#include "ops.h"
 
 static inline float sigmoid(float x) { return 1.0f / (1.0f + exp(-x)); }
-
-// Sub-group block moves of f32 values. Lane i holds p[i], or p[16 j + i] as element j. Reads need 4-byte alignment,
-// writes 16-byte.
-static inline float rd1(__global const float *p) {
-  return as_float(intel_sub_group_block_read((__global const uint *)p));
-}
-static inline float4 rd4(__global const float *p) {
-  return as_float4(intel_sub_group_block_read4((__global const uint *)p));
-}
-static inline void wr1(__global float *p, float v) { intel_sub_group_block_write((__global uint *)p, as_uint(v)); }
-static inline void wr4(__global float *p, float4 v) { intel_sub_group_block_write4((__global uint *)p, as_uint4(v)); }
-
-static inline float sum4(float4 v) { return (v.s0 + v.s1) + (v.s2 + v.s3); }
 
 // Comes before reading what another agent wrote to host memory, as the card caches host-memory lines (ADR-0011). It
 // invalidates the card's cache, so a launch that reads only card memory leaves it out.
 static inline void host_read_fence(void) {
   atomic_work_item_fence(CLK_GLOBAL_MEM_FENCE, memory_order_acquire, memory_scope_all_svm_devices);
-}
-
-// The total of the sub-groups' posted sums, after the barrier: lanes read the posts together, in a fixed order.
-static inline float posted_sum(__local const float *red, uint nsg) {
-  float t = 0.0f;
-  for (uint i = sg_lane(); i < nsg; i += SG_SIZE) t += red[i];
-  return sg_sum(t);
-}
-
-// a8 unit u of the row at a (a8.h's rule), from 32 values held as element j of lane i = value 16 j + i.
-static inline void a8_store_block(float2 v, __global uchar *a, uint u) {
-  const float amax = sub_group_reduce_max(fmax(fabs(v.x), fabs(v.y)));
-  const float d = amax / 127.0f;
-  const float id = d != 0.0f ? 1.0f / d : 0.0f;
-  intel_sub_group_block_write_uc2(a + 32 * u, as_uchar2(convert_char2(round(v * id))));
-  if (sg_lane() == 0) ((__global float *)(a + D41_EMBD))[u] = d;
 }
 
 // One chunk of a sublayer's input, values i .. i + 63, into each form its consumers read; a null pointer has none.
@@ -53,8 +25,8 @@ static inline void store_x(float4 x, uint i, __global uchar *xa, __global ushort
     intel_sub_group_block_write_us4(xb + i, (ushort4)(f32_to_bf16(x.s0), f32_to_bf16(x.s1), f32_to_bf16(x.s2),
                                                       f32_to_bf16(x.s3)));
   if (xa) {
-    a8_store_block(x.lo, xa, i / 32);
-    a8_store_block(x.hi, xa, i / 32 + 1);
+    a8_store_block(x.lo, xa, D41_EMBD, i / 32);
+    a8_store_block(x.hi, xa, D41_EMBD, i / 32 + 1);
   }
 }
 
