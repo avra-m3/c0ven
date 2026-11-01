@@ -21,6 +21,7 @@
 #define QT_IQ2_XXS 16
 #define QT_IQ2_XS 17
 #define QT_IQ3_XXS 18
+#define QT_IQ1_S 19
 #define QT_IQ4_NL 20
 #define QT_IQ3_S 21
 #define QT_IQ2_S 22
@@ -35,7 +36,7 @@ SHARED_FN u32 quant_block_values(u32 t) {
     case QT_Q4_0: case QT_Q5_0: case QT_Q8_0: case QT_Q8_1: case QT_IQ4_NL: return 32;
     case QT_Q2_0: return 64;
     case QT_Q3_K: case QT_Q4_K: case QT_Q5_K: case QT_Q6_K: case QT_Q8_K:
-    case QT_IQ1_M: case QT_IQ2_XXS: case QT_IQ2_XS:
+    case QT_IQ1_S: case QT_IQ1_M: case QT_IQ2_XXS: case QT_IQ2_XS:
     case QT_IQ3_XXS: case QT_IQ3_S: case QT_IQ2_S: case QT_IQ4_XS: return 256;
     default: return 1;
   }
@@ -55,6 +56,7 @@ SHARED_FN u32 quant_block_bytes(u32 t) {
     case QT_Q5_K: return 176;
     case QT_Q6_K: return 210;
     case QT_Q8_K: return 292;
+    case QT_IQ1_S: return 50;
     case QT_IQ1_M: return 56;
     case QT_IQ2_XXS: return 66;
     case QT_IQ2_XS: return 74;
@@ -73,7 +75,8 @@ SHARED_FN u32 quant_nfields(u32 t) {
   switch (t) {
     case QT_IQ2_S: case QT_IQ3_S: return 5;
     case QT_IQ4_XS: case QT_Q3_K: case QT_Q5_K: case QT_Q6_K: return 4;
-    case QT_IQ1_M: case QT_IQ2_XS: case QT_IQ3_XXS: case QT_Q4_K: case QT_Q5_0: return 3;
+    case QT_IQ1_S: case QT_IQ1_M: case QT_IQ2_XS: case QT_IQ3_XXS:
+    case QT_Q4_K: case QT_Q5_0: return 3;
     case QT_IQ2_XXS: case QT_IQ4_NL: case QT_Q2_0: case QT_Q4_0: case QT_Q8_0: return 2;
     default: return 1;
   }
@@ -84,6 +87,10 @@ SHARED_FN u32 quant_field_(u32 t, u32 f) {
   switch (t) {
     case QT_IQ2_S: {  // qs (grid index low bits), signs, qh, scales, d
       const u32 v[5] = {(2u << 8) | 32, (34u << 8) | 32, (66u << 8) | 8, (74u << 8) | 8, (0u << 8) | 2};
+      return v[f];
+    }
+    case QT_IQ1_S: {  // qs (grid index low bits), qh (index high bits, scale and delta sign), d
+      const u32 v[3] = {(2u << 8) | 32, (34u << 8) | 16, (0u << 8) | 2};
       return v[f];
     }
     case QT_IQ1_M: {  // qs (grid index low bits), qh, scales (with d in their top nibbles)
@@ -169,7 +176,7 @@ SHARED_FN u32 quant_pairs_sigma(u32 t) { return t == QT_IQ2_S || t == QT_IQ3_XXS
 #define QGRID_KVALUES 11264     // i8 x 16 (kvalues_iq4nl)
 #define QGRID_IQ2XXS 11280      // u64 x 256
 #define QGRID_IQ2XS 13328       // u64 x 512
-#define QGRID_IQ1S 17424        // u64 x 2048 (iq1s_grid, IQ1_M's too)
+#define QGRID_IQ1S 17424        // u64 x 2048 (iq1s_grid, IQ1_S's and IQ1_M's)
 #define QGRID_BYTES 33808
 
 #endif

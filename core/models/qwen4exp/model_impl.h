@@ -89,7 +89,7 @@ inline std::string mv_module(uint32_t type, uint32_t lanes) {
 inline std::string moe_module(uint32_t type, uint32_t W, bool down) {
   bool has = down ? type == QT_IQ4_NL || type == QT_Q2_0 || type == QT_Q8_0
                   : type == QT_IQ2_S || type == QT_IQ3_XXS || type == QT_IQ3_S || type == QT_IQ4_XS ||
-                        type == QT_IQ2_XXS || type == QT_IQ2_XS || type == QT_IQ1_M;
+                        type == QT_IQ2_XXS || type == QT_IQ2_XS || type == QT_IQ1_S || type == QT_IQ1_M;
   if (!has) return "";
   std::string s = std::string("moe_") + ggml_type_label(type) + "_g" + std::to_string(W);
   for (auto &c : s) c = (char)std::tolower(c);
