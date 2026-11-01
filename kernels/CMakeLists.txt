@@ -17,8 +17,8 @@ engine_add_kernel_module(gemm_bf16_t4n2s11 SOURCE kernels/gemm.cl
 add_subdirectory(models/qwen4exp)
 
 # Every quantised weight type the engine reads.
-set(ENGINE_QUANT_TYPES Q8_0 Q4_0 Q5_0 Q2_0 IQ4_NL IQ4_XS Q3_K Q4_K Q5_K Q6_K IQ1_S IQ1_M IQ2_XXS IQ2_XS IQ2_S IQ3_XXS
-    IQ3_S)
+set(ENGINE_QUANT_TYPES Q8_0 Q4_0 Q5_0 Q2_0 IQ4_NL IQ4_XS Q2_K Q3_K Q4_K Q5_K Q6_K IQ1_S IQ1_M IQ2_XXS IQ2_XS IQ2_S
+    IQ3_XXS IQ3_S)
 
 # One matrix-vector module per weight type and lanes per row: matvec_<type>_l<lanes>.
 foreach(type ${ENGINE_QUANT_TYPES})
@@ -36,14 +36,14 @@ foreach(type ${ENGINE_QUANT_TYPES})
   engine_add_kernel_module(qgemm_${lower} SOURCE kernels/quant/qgemm.cl
                            OPTIONS -DQTYPE=QT_${type} -cl-intel-256-GRF-per-thread -I${CMAKE_SOURCE_DIR}/kernels/quant)
 endforeach()
-foreach(type Q8_0 Q2_0 IQ4_NL IQ4_XS IQ1_S IQ1_M IQ2_XXS IQ2_XS IQ2_S IQ3_XXS IQ3_S)
+foreach(type Q8_0 Q2_0 IQ4_NL IQ4_XS Q2_K IQ1_S IQ1_M IQ2_XXS IQ2_XS IQ2_S IQ3_XXS IQ3_S)
   string(TOLOWER ${type} lower)
   engine_add_kernel_module(qgemm_${lower}_file SOURCE kernels/quant/qgemm.cl
                            OPTIONS -DQTYPE=QT_${type} -DLAYOUT_FILE -cl-intel-256-GRF-per-thread -I${CMAKE_SOURCE_DIR}/kernels/quant)
 endforeach()
 
 # The decode step's expert products for the experts' types, one module per type and largest group: moe_<type>_g<a>.
-foreach(type IQ2_S IQ3_XXS IQ3_S IQ4_XS IQ4_NL Q2_0 Q8_0 IQ2_XXS IQ2_XS IQ1_S IQ1_M)
+foreach(type IQ2_S IQ3_XXS IQ3_S IQ4_XS IQ4_NL Q2_0 Q8_0 IQ2_XXS IQ2_XS IQ1_S IQ1_M Q2_K)
   string(TOLOWER ${type} lower)
   foreach(a 1 2 3 4 6 8)
     engine_add_kernel_module(moe_${lower}_g${a} SOURCE kernels/quant/moe.cl

@@ -32,14 +32,14 @@ static inline void row_dot(__global const uchar *W, ulong n, uint r, uint bpr, _
   for (uint t = 0; t < MAXT; t++) acc[t] = 0.0f;
   for (uint u = u0; u < units; u += du) {
     uint w[8];
-    float lo, hi, mn;
+    float lo, hi, mn, mh;
     ulong k = (ulong)r * bpr + u / UNITS_PER_BLOCK;
-    decode_unit(W, n, k, u % UNITS_PER_BLOCK, w, &lo, &hi, &mn GRID_ARG);
+    decode_unit(W, n, k, u % UNITS_PER_BLOCK, w, &lo, &hi, &mn, &mh GRID_ARG);
     for (uint t = 0; t < MAXT; t++) {
       if (t < ntok) {
         uint q[8];
         float da = load_act(act + t * act_stride, K, u, q);
-        acc[t] += da * unit_dot(w, q, lo, hi, mn);
+        acc[t] += da * unit_dot(w, q, lo, hi, mn, mh);
       }
     }
   }
@@ -139,14 +139,14 @@ static inline void row_dot_g(__global const uchar *W, ulong n, uint r, uint bpr,
   for (uint t = 0; t < MOE_GROUP_MAX; t++) acc[t] = 0.0f;
   for (uint u = lane; u < units; u += LANES) {
     uint w[8];
-    float lo, hi, mn;
+    float lo, hi, mn, mh;
     ulong k = (ulong)r * bpr + u / UNITS_PER_BLOCK;
-    decode_unit(W, n, k, u % UNITS_PER_BLOCK, w, &lo, &hi, &mn GRID_ARG);
+    decode_unit(W, n, k, u % UNITS_PER_BLOCK, w, &lo, &hi, &mn, &mh GRID_ARG);
     for (uint t = 0; t < MOE_GROUP_MAX; t++) {
       if (t < na) {
         uint q[8];
         float da = load_act(act + (asg[t] / div) * act_stride, K, u, q);
-        acc[t] += da * unit_dot(w, q, lo, hi, mn);
+        acc[t] += da * unit_dot(w, q, lo, hi, mn, mh);
       }
     }
   }

@@ -59,8 +59,8 @@ inline uint64_t align256(uint64_t x) { return (x + 255) & ~255ull; }
 
 inline bool is_raw(uint32_t type) { return type == QT_F32 || type == QT_F16 || type == QT_BF16; }
 
-// Lanes per row for a dense product: 16 for long rows of the i-quants, 8 for the K-quants and IQ4_XS, 4 for short
-// rows, the fastest of each (docs/measurements/MEASUREMENTS.md#2026-10-11-kernel-spike).
+// Lanes per row for a dense product: 16 for long rows of the i-quants, 8 for Q3_K to Q6_K and IQ4_XS, 4 for short
+// rows, the fastest of each (docs/measurements/MEASUREMENTS.md#2026-10-11-kernel-spike). Q2_K's 16 is not measured.
 inline uint32_t lanes_for(uint32_t type, uint32_t K) {
   if (K / 32 < 40) return 4;
   if (type == QT_Q3_K || type == QT_Q4_K || type == QT_Q5_K || type == QT_Q6_K || type == QT_IQ4_XS) return 8;
@@ -87,9 +87,10 @@ inline std::string mv_module(uint32_t type, uint32_t lanes) {
 // kernels/quant/moe.cl's module for an expert type and groups of up to W assignments (W: kStepWidths), or "" when it
 // has no kernel for the type (matvec.cl's then).
 inline std::string moe_module(uint32_t type, uint32_t W, bool down) {
-  bool has = down ? type == QT_IQ4_NL || type == QT_Q2_0 || type == QT_Q8_0
+  bool has = down ? type == QT_IQ4_NL || type == QT_Q2_0 || type == QT_Q8_0 || type == QT_Q2_K
                   : type == QT_IQ2_S || type == QT_IQ3_XXS || type == QT_IQ3_S || type == QT_IQ4_XS ||
-                        type == QT_IQ2_XXS || type == QT_IQ2_XS || type == QT_IQ1_S || type == QT_IQ1_M;
+                        type == QT_IQ2_XXS || type == QT_IQ2_XS || type == QT_IQ1_S || type == QT_IQ1_M ||
+                        type == QT_Q2_K;
   if (!has) return "";
   std::string s = std::string("moe_") + ggml_type_label(type) + "_g" + std::to_string(W);
   for (auto &c : s) c = (char)std::tolower(c);
