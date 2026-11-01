@@ -77,6 +77,10 @@ class Run:
     mem_low_gib: float = 0.0
     load_s: float = 0.0
 
+    def ran(self, scenario: str) -> bool:
+        """Whether any of the scenario's requests ran: a run stops at its first failure."""
+        return any(r["scenario"] == scenario for r in self.requests)
+
     def seconds(self, scenario: str) -> float:
         """The scenario's time: from its first request sent to its last request's end, the slowest request's time."""
         return max(r["seconds"] for r in self.requests if r["scenario"] == scenario)
@@ -112,11 +116,12 @@ class Run:
 
 
 def against_a(a: Run, b: Run) -> list[str]:
-    """The ways B fails against its A run: a scenario over twice A's time, or over 1 GiB more swapped out."""
+    """The ways B fails against its A run: a scenario over twice A's time, or over 1 GiB more swapped out. A
+    scenario either run did not reach is left out; the run's failure says why."""
     out = [
         f"{s}: {b.seconds(s):.1f} s against A's {a.seconds(s):.1f} s"
         for s in b.scenarios
-        if s in a.scenarios and b.seconds(s) > 2 * a.seconds(s)
+        if s in a.scenarios and a.ran(s) and b.ran(s) and b.seconds(s) > 2 * a.seconds(s)
     ]
     if b.swapped_pages - a.swapped_pages > SWAP_PAGES:
         out.append(f"swapped out {b.swapped_pages} pages against A's {a.swapped_pages}")
@@ -905,7 +910,7 @@ class Check:
         ]
         for r in self.runs:
             for s in r.scenarios:
-                if not any(q["scenario"] == s for q in r.requests):
+                if not r.ran(s):
                     lines.append(
                         f"| {r.n} | {r.arm} | {r.config} | {r.start} | {s} | | | | {r.swapped_pages} | "
                         f"{'; '.join(r.failures)} |"

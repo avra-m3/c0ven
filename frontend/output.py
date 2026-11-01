@@ -158,8 +158,9 @@ class OutputParser:
                     self._buffer = self._buffer[i + len(CALL_END) :]
                     self._switch(_Mode.CONTENT)
 
-    def finish(self) -> Iterator[Piece]:
-        """The end of the output: whatever is held back. An unterminated tool call is an error."""
+    def finish(self, cut: bool = False) -> Iterator[Piece]:
+        """The end of the output: whatever is held back. An unterminated tool call is dropped when the output was cut
+        (`cut`: a token limit or a cancel), and is an error when the model ended it."""
         rest, self._buffer = self._buffer.rstrip(), ""
         match self._mode:
             case _Mode.REASONING:
@@ -167,7 +168,8 @@ class OutputParser:
             case _Mode.CONTENT:
                 yield from self._piece(Content, rest)
             case _Mode.TOOL_CALL:
-                raise ToolCallError(f"the output ended inside a tool call: {rest[:80]!r}")
+                if not cut:
+                    raise ToolCallError(f"the output ended inside a tool call: {rest[:80]!r}")
 
     def _switch(self, mode: _Mode) -> None:
         self._mode = mode

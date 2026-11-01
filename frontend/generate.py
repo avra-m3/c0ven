@@ -239,7 +239,7 @@ async def stream(model: Model, engine: Engine, request: Request, prompt: Prompt)
                 case protocol.Done(finish=finish, reused=reused, prompt_ms=prompt_ms, decode_ms=decode_ms) as done:
                     cached = reused or cached
                     try:
-                        tail = pieces(detok.flush()) + list(parser.finish())
+                        tail = pieces(detok.flush()) + list(parser.finish(cut=finish is not protocol.Finish.STOP))
                     except ToolCallError as exc:
                         yield End(Finish.ERROR, len(prompt.ids), generated, cached, error=str(exc))
                         return

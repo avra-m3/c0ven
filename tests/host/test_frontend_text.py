@@ -59,12 +59,12 @@ def test_template_errors():
         ChatTemplate("{{ raise_exception('no') }}").render(Conversation([]))
 
 
-def pieces_of(out: str, thinking: bool, step: int, **kw: object) -> list[Piece]:
+def pieces_of(out: str, thinking: bool, step: int, cut: bool = False, **kw: object) -> list[Piece]:
     p = OutputParser(thinking, **kw)  # pyright: ignore[reportArgumentType]
     got: list[Piece] = []
     for i in range(0, len(out), step):
         got += p.feed(out[i : i + step])
-    return got + list(p.finish())
+    return got + list(p.finish(cut))
 
 
 def joined(pieces: list[Piece]) -> tuple[str, str, list[ToolCall]]:
@@ -124,6 +124,12 @@ def test_reasoning_cut_short_by_length():
 def test_an_unterminated_call_is_an_error():
     with pytest.raises(ToolCallError):
         pieces_of("<tool_call>\n<function=f>\n", False, 1000)
+
+
+def test_a_call_cut_short_is_dropped():
+    out = "Checking.\n<tool_call>\n<function=f>\n<parameter=x>\n4"
+    for step in (1, 1000):
+        assert joined(pieces_of(out, False, step, cut=True)) == ("", "Checking.", [])
 
 
 def test_string_parameters_stay_strings():

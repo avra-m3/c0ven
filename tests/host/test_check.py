@@ -63,6 +63,14 @@ def test_against_a_fails_twice_the_time_and_a_gib_more_swap():
     assert len(against_a(a, run("B", {"short": 6.3, "four": 12.9}, swapped=14_499 + (1 << 18) + 1))) == 1
 
 
+def test_against_a_leaves_out_a_scenario_a_failed_run_did_not_reach():
+    a = run("A", {"short": 6.3, "four": 12.8, "mixed": 16.5})
+    b = run("B", {"short": 6.3, "four": 12.9})
+    b.scenarios = ("short", "four", "mixed")
+    assert against_a(a, b) == []
+    assert against_a(b, a) == []
+
+
 def test_reference_body_tags_the_first_message_and_wraps_tool_calls():
     rows = [json.loads(x) for x in (ROOT / "reference/messages.jsonl").read_text().splitlines() if x.strip()]
     messages = {r["id"]: r for r in rows}
