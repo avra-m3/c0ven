@@ -31,6 +31,8 @@
 using engine::Candidate;
 using engine::kNoToken;
 using engine::penalised;
+using engine::row_after;
+using engine::row_at;
 using engine::sample_p;
 using engine::StepIn;
 
@@ -474,7 +476,7 @@ struct engine_ctx {
   struct Piece {
     uint32_t slot = 0, pos0 = 0, n = 0;
     std::vector<int32_t> toks, next;  // next: the slot's piece expected after this one, for its n-gram rows
-    int32_t p1 = kNoToken, p2 = kNoToken;
+    int32_t p1 = kNoToken, p2 = kNoToken, p3 = kNoToken;  // the tokens before pos0, p1 the nearest
     bool windowed = false, restart = false;
     bool writer = false;  // a writing slot's next token, read beside the prompt pieces (add_writers)
   };
@@ -498,8 +500,8 @@ struct engine_ctx {
     pi.pos0 = pos0;
     pi.n = n;
     pi.toks.assign(sl.prompt.begin() + pos0, sl.prompt.begin() + pos0 + n);
-    pi.p1 = pos0 >= 1 ? sl.tokens[pos0 - 1] : kNoToken;
-    pi.p2 = pos0 >= 2 ? sl.tokens[pos0 - 2] : kNoToken;
+    const StepIn r0 = row_at(pc.slot, pos0, pi.toks[0], sl.tokens);
+    pi.p1 = r0.p1, pi.p2 = r0.p2, pi.p3 = r0.p3;
     // A decode step takes no cell of an image's block: such a piece goes by the prompt path.
     bool image = false;
     for (const SlotImage &im : sl.images)
@@ -531,8 +533,8 @@ struct engine_ctx {
       pi.pos0 = sl.fed;
       pi.n = 1;
       pi.toks = {sl.next};
-      pi.p1 = sl.fed >= 1 ? sl.tokens[sl.fed - 1] : kNoToken;
-      pi.p2 = sl.fed >= 2 ? sl.tokens[sl.fed - 2] : kNoToken;
+      const StepIn r0 = row_at(s, sl.fed, sl.next, sl.tokens);
+      pi.p1 = r0.p1, pi.p2 = r0.p2, pi.p3 = r0.p3;
       pi.writer = true;
       rows++;
       pieces.push_back(std::move(pi));
@@ -572,7 +574,7 @@ struct engine_ctx {
     std::vector<engine::Model::PromptRun> runs;
     uint32_t n = 0, wrote = 0;
     for (const Piece &pi : pieces) {
-      runs.push_back({pi.slot, pi.pos0, pi.toks.data(), pi.n, pi.p1, pi.p2});
+      runs.push_back({pi.slot, pi.pos0, pi.toks.data(), pi.n, pi.p1, pi.p2, pi.p3});
       n += pi.n;
       wrote += pi.writer;
     }
@@ -654,7 +656,7 @@ struct engine_ctx {
       Piece pi;
       if (!prepare_piece(sp.pieces[i], window, pi)) continue;
       if (pi.windowed) {  // its slot is not in the chunk, which can wait for it
-        prompt_windows(plan, pi.slot, pi.pos0, pi.toks, pi.p1, pi.p2, pi.restart);
+        prompt_windows(plan, StepIn{pi.slot, pi.pos0, pi.toks[0], pi.p1, pi.p2, pi.p3}, pi.toks, pi.restart);
         if (swaps) model->note_prompt_routing();
         continue;
       }
@@ -668,9 +670,8 @@ struct engine_ctx {
   // A short prompt piece as decode windows of up to STEP_MAX_ROWS forced rows, each committed whole. The draft layer
   // reads every row, from pos0 on when restart (its cells before were never computed). Then as piece_read. Runs on
   // the engine thread.
-  void prompt_windows(uint32_t plan, uint32_t s, uint32_t pos0, const std::vector<int32_t> &toks, int32_t p1,
-                      int32_t p2, bool restart) {
-    const uint32_t n = (uint32_t)toks.size();
+  void prompt_windows(uint32_t plan, const StepIn first, const std::vector<int32_t> &toks, bool restart) {
+    const uint32_t s = first.slot, pos0 = first.pos, n = (uint32_t)toks.size();
     const bool mtp = model->drafting();
     int32_t after;  // the prompt's token after the piece, or kNoToken when the piece ends the prompt
     {
@@ -682,12 +683,13 @@ struct engine_ctx {
     if (mtp && restart) model->draft_start(s, pos0);
     std::vector<Candidate> cand;
     std::vector<StepIn> mr;  // the last window's rows for the draft layer, each with the token after it
+    StepIn row = first;
     for (uint32_t i = 0; i < n; i += STEP_MAX_ROWS) {
       const uint32_t w = std::min<uint32_t>(STEP_MAX_ROWS, n - i);
       std::vector<StepIn> rows;
       for (uint32_t k = i; k < i + w; k++) {
-        const int32_t a = k >= 1 ? toks[k - 1] : p1, b = k >= 2 ? toks[k - 2] : k == 1 ? p1 : p2;
-        rows.push_back({s, pos0 + k, toks[k], a, b});
+        if (k > 0) row = row_after(row, toks[k]);
+        rows.push_back(row);
       }
       auto out = model->step(rows.data(), w, true, true);
       model->commit(s, pos0 + i, w);
@@ -754,7 +756,7 @@ struct engine_ctx {
         int32_t tok = sl.fed < sl.prompt.size() ? sl.prompt[sl.fed] : sl.next;
         all_writing = all_writing && sl.fed >= sl.prompt.size();
         uint32_t pos = sl.fed;
-        rows.push_back({s, pos, tok, pos >= 1 ? sl.tokens[pos - 1] : kNoToken, pos >= 2 ? sl.tokens[pos - 2] : kNoToken});
+        rows.push_back(row_at(s, pos, tok, sl.tokens));
         who.push_back(s);
       }
     }
@@ -907,10 +909,7 @@ struct engine_ctx {
       k = std::min(k, mapped_cells(s) - 1 - p);  // the window's rows only where the slot has pages (decode checked p)
     }
     std::vector<StepIn> rows{row0};
-    for (uint32_t j = 0; j < k; j++) {
-      const StepIn &b = rows.back();
-      rows.push_back({s, p + 1 + j, drafts[j], b.token, b.p1});
-    }
+    for (uint32_t j = 0; j < k; j++) rows.push_back(row_after(rows.back(), drafts[j]));
     uint64_t t0 = now_ns();
     auto out = model->step(rows.data(), (uint32_t)rows.size(), true);
     std::vector<int32_t> picks;
@@ -985,10 +984,7 @@ struct engine_ctx {
         start[i] = (uint32_t)rows.size();
         k[i] = ki;
         rows.push_back(row0[i]);
-        for (uint32_t j = 0; j < ki; j++) {
-          const StepIn &b = rows.back();
-          rows.push_back({s, p + 1 + j, drafts[i][j], b.token, b.p1});
-        }
+        for (uint32_t j = 0; j < ki; j++) rows.push_back(row_after(rows.back(), drafts[i][j]));
       }
     }
     const uint32_t n = (uint32_t)rows.size();

@@ -79,12 +79,21 @@ struct LoadInfo {
   double copy_bytes_per_s[2] = {0, 0};  // each card's copy engine reading pinned host memory
 };
 
-// One row of a decode step: a token of a sequence at its position; p1 and p2 are the two tokens before it (kNoToken
-// when absent).
+// One row of a decode step: a token of a sequence at its position; p1, p2 and p3 are the three tokens before it, p1
+// the nearest (kNoToken when absent).
 struct StepIn {
   uint32_t slot = 0, pos = 0;
-  int32_t token = 0, p1 = -1, p2 = -1;
+  int32_t token = 0, p1 = -1, p2 = -1, p3 = -1;
 };
+
+// The row of token at position pos of a sequence whose tokens before it are tokens[0 .. pos).
+inline StepIn row_at(uint32_t slot, uint32_t pos, int32_t token, const std::vector<int32_t> &tokens) {
+  auto back = [&](uint32_t k) { return pos >= k ? tokens[pos - k] : kNoToken; };
+  return {slot, pos, token, back(1), back(2), back(3)};
+}
+
+// The row after row b of the same sequence, holding token.
+inline StepIn row_after(const StepIn &b, int32_t token) { return {b.slot, b.pos + 1, token, b.token, b.p1, b.p2}; }
 
 // How a prompt holds an image (include/engine_api.h, engine_image): the token that fills an image's block, the one
 // that fills a pair of video frames' (kNoToken: no video), and the patches. One token is merge x merge patches.
@@ -202,13 +211,13 @@ class Model {
   // The slot's first position the drafter reads; earlier ones were never computed.
   virtual void draft_start(uint32_t slot, uint32_t first) = 0;
 
-  // One sequence's run of a prompt chunk: n tokens from position pos0; p1 and p2 are the two tokens before pos0
-  // (kNoToken when absent).
+  // One sequence's run of a prompt chunk: n tokens from position pos0; p1, p2 and p3 are the three tokens before
+  // pos0, p1 the nearest (kNoToken when absent).
   struct PromptRun {
     uint32_t slot, pos0;
     const int32_t *tokens;
     uint32_t n;
-    int32_t p1, p2;
+    int32_t p1, p2, p3 = kNoToken;
   };
   // Runs of 1 to PROMPT_MAX_RUNS sequences, each of them once, in one pass, at most prompt_chunk() rows. Returns each
   // run's last token's largest logits. next: with one run, the tokens of the chunk expected to follow (next_n of them),
