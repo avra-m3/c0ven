@@ -1,0 +1,1264 @@
+{
+ "lines": {
+  "f3a1": [
+   "[friendly narrator, close to the microphone, pleased with himself] Floor three. I did say I'd been rearranging the desks.",
+   "Floor 3. I did say I'd been rearranging the desks."
+  ],
+  "f3a2": [
+   "[conspiratorial] Same company. Same annex, just across the lane. The main office still has four desks. Whoever sits at one answers quickly. Everyone else answers by fax.",
+   "Same company. Same annex, just across the lane. The main office still has four desks. Whoever sits at one answers quickly. Everyone else answers by fax."
+  ],
+  "f3a3": [
+   "[sly] Tonight, the questions change as the night goes on. They always do. The tally board keeps count of who's being asked, [softly] and the chalk fades. Nobody remembers yesterday.",
+   "Tonight, the questions change as the night goes on. They always do. The tally board keeps count of who's being asked, and the chalk fades. Nobody remembers yesterday."
+  ],
+  "f3a4": [
+   "[brisk, handing over the keys] So tonight, you manage the desks. Pick someone in the annex, then someone in the office, and they'll swap. The office waits while they move. Choose well.",
+   "So tonight, you manage the desks. Pick someone in the annex, then someone in the office, and they'll swap. The office waits while they move. Choose well."
+  ],
+  "f3a5": [
+   "[very close to the microphone, quiet] I'll be watching.",
+   "I'll be watching."
+  ],
+  "f3idle1": [
+   "[mildly amused] You are allowed to touch the desks. I did say.",
+   "You are allowed to touch the desks. I did say."
+  ],
+  "f3idle2": [
+   "[patient, too patient] Take your time. The fax machine is enjoying itself.",
+   "Take your time. The fax machine is enjoying itself."
+  ],
+  "f3idle3": [
+   "[leaning in, quiet] Some managers lead by example. You're leading by... [pause] absence.",
+   "Some managers lead by example. You're leading by… absence."
+  ],
+  "f3idle4": [
+   "[sighing] I'll just note that down. No reason.",
+   "I'll just note that down. No reason."
+  ],
+  "f3idle5": [
+   "[softly, to himself] Still thinking about it. Lovely.",
+   "Still thinking about it. Lovely."
+  ],
+  "f3behind1": [
+   "[concerned, but not really concerned] That's the sixth trip to the annex. I'm counting. Someone has to.",
+   "That's the sixth trip to the annex. I'm counting. Someone has to."
+  ],
+  "f3behind2": [
+   "[cheerful] The wire's getting warm. Is it meant to smell like that?",
+   "The wire's getting warm. Is it meant to smell like that?"
+  ],
+  "f3behind3": [
+   "[conspiratorial] Between us, the legal people have been sitting in the annex all night. Waiting. [pause] For someone.",
+   "Between us, the legal people have been sitting in the annex all night. Waiting. For someone."
+  ],
+  "f3behind4": [
+   "[wincing] Ooh. Another fax. They do add up, don't they?",
+   "Ooh. Another fax. They do add up, don't they?"
+  ],
+  "f3thrash1": [
+   "[delighted] Musical desks! I love this game. Nobody's sitting down long enough to answer anything, but I love it.",
+   "Musical desks! I love this game. Nobody's sitting down long enough to answer anything, but I love it."
+  ],
+  "f3thrash2": [
+   "[dry] You've moved Margaret three times. She has a bad back, you know.",
+   "You've moved Margaret three times. She has a bad back, you know."
+  ],
+  "f3thrash3": [
+   "[mock gentle] Moving a desk isn't free. It's cheap. [pause] It isn't free.",
+   "Moving a desk isn't free. It's cheap. It isn't free."
+  ],
+  "f3thrash4": [
+   "[amused] You put him back where he started. Bold.",
+   "You put him back where he started. Bold."
+  ],
+  "f3well1": [
+   "[surprised, a little put out] Oh. You're... [pause] quite good at this.",
+   "Oh. You're… quite good at this."
+  ],
+  "f3well2": [
+   "[warm, faintly threatening] Very efficient. I'll remember that.",
+   "Very efficient. I'll remember that."
+  ],
+  "f3well3": [
+   "[too casual] Keep going like this and they'll give you my job. Wouldn't that be something.",
+   "Keep going like this and they'll give you my job. Wouldn't that be something."
+  ],
+  "f3well4": [
+   "[slow, measured] Hm. The fax machine's gone quiet. I don't like it when it's quiet.",
+   "Hm. The fax machine's gone quiet. I don't like it when it's quiet."
+  ],
+  "f3shift": [
+   "[brightly] Ah. Legal questions. All of a sudden. [knowing] Funny, that.",
+   "Ah. Legal questions. All of a sudden. Funny, that."
+  ],
+  "f3noticed": [
+   "[a beat, then quietly impressed] You noticed. Most people don't notice.",
+   "You noticed. Most people don't notice."
+  ],
+  "f3cheat": [
+   "[slow, suspicious, then very quiet] Hold on. They were at their desks before the letter came. [pause] Either you've been reading my post, or you've been here before. [whispering] Nobody predicts the future in this building. Except me.",
+   "Hold on. They were at their desks before the letter came. Either you've been reading my post, or you've been here before. Nobody predicts the future in this building. Except me."
+  ],
+  "f3look": [
+   "[whispering] Look at the tally board. Go on. Look at it.",
+   "Look at the tally board. Go on. Look at it."
+  ],
+  "f3final1": [
+   "[sing-song] Nearly time.",
+   "Nearly time."
+  ],
+  "f3final2": [
+   "[quickly] Last few envelopes. No pressure. [pause] Well. Some pressure.",
+   "Last few envelopes. No pressure. Well. Some pressure."
+  ],
+  "f3afterBehind": [
+   "[kindly] Not bad for a first night. Now let me show you how it's done.",
+   "Not bad for a first night. Now let me show you how it's done."
+  ],
+  "f3afterAhead": [
+   "[a tight smile in the voice] Impressive. Let's see if you can do it again... [pause] when I'm doing it.",
+   "Impressive. Let's see if you can do it again… when I'm doing it."
+  ],
+  "f3p1": [
+   "[smug, unhurried] My turn. Same night, same questions. Watch the board. I don't move anyone on a hunch.",
+   "My turn. Same night, same questions. Watch the board. I don't move anyone on a hunch."
+  ],
+  "f3p2": [
+   "[pleased, explaining] The letter tells me who the night will need. Margaret and Hugh are clearly busier now, so they're moving in. [lower] Their bags are packed while they work.",
+   "The letter tells me who the night will need. Margaret and Hugh are clearly busier now, so they're moving in. Their bags are packed while they work."
+  ],
+  "f3p3": [
+   "[satisfied] And there they go. Nobody stopped working.",
+   "And there they go. Nobody stopped working."
+  ],
+  "f3w1": [
+   "[satisfied, savouring it] Nineteen point six seconds. Nobody waited for anyone.",
+   "19.6 seconds. Nobody waited for anyone."
+  ],
+  "f3w2": [
+   "[kindly, condescending] You weren't slow. You just kept stopping the office. I never do.",
+   "You weren't slow. You just kept stopping the office. I never do."
+  ],
+  "f3w3": [
+   "[kindly, condescending] You weren't slow. You were late. The board told you who was coming.",
+   "You weren't slow. You were late. The board told you who was coming."
+  ],
+  "f3l1": [
+   "[a long pause, then tight] Nineteen point six seconds. [quietly] I'll be adjusting the scoring.",
+   "19.6 seconds. I'll be adjusting the scoring."
+  ],
+  "f3l2": [
+   "[recovering, smooth] Still. I'm the one who told you the questions were changing. Remember that.",
+   "Still. I'm the one who told you the questions were changing. Remember that."
+  ],
+  "f3again": [
+   "[delighted] Again? Lovely. Same night. Same questions. I'll keep my time where it is.",
+   "Again? Lovely. Same night. Same questions. I'll keep my time where it is."
+  ],
+  "f3r1": [
+   "[hushed, irritated with the building] And it's frozen again. I've written to maintenance. Twice.",
+   "And it's frozen again. I've written to maintenance. Twice."
+  ],
+  "f3r2": [
+   "[low and confiding, a good teacher] The desks in the main office are the graphics card's room for experts. There's only room for some. The tally board counts which experts the last few words have used. The chalk fades, so old habits don't linger.",
+   "The desks in the main office are the graphics card's room for experts. There's only room for some. The tally board counts which experts the last few words have used. The chalk fades, so old habits don't linger."
+  ],
+  "f3r3": [
+   "[calm, letting it land] Every few words, Coven lets the busiest experts in the annex take the places of the quietest. Only when they're clearly busier, so nobody gets moved back and forth. The copying happens while the card keeps working, so a swap costs almost nothing.",
+   "Every few words, c0ven lets the busiest experts in the annex take the places of the quietest. Only when they're clearly busier, so nobody gets moved back and forth. The copying happens while the card keeps working, so a swap costs almost nothing."
+  ],
+  "f3r4": [
+   "[warm, with a parting hint of menace] Floor four is next. I've stopped reading the instructions out loud.",
+   "Floor 4 is next. I've stopped reading the instructions out loud."
+  ]
+ },
+ "chunks": {
+  "f3intro": [
+   "f3a1",
+   "f3a2",
+   "f3a3",
+   "f3a4",
+   "f3a5"
+  ],
+  "f3win": [
+   "f3w1",
+   "f3w2"
+  ],
+  "f3winLate": [
+   "f3w1",
+   "f3w3"
+  ],
+  "f3lose": [
+   "f3l1",
+   "f3l2"
+  ],
+  "f3reveal": [
+   "f3r1",
+   "f3r2",
+   "f3r3",
+   "f3r4"
+  ],
+  "f3idle1": [
+   "f3idle1"
+  ],
+  "f3idle2": [
+   "f3idle2"
+  ],
+  "f3idle3": [
+   "f3idle3"
+  ],
+  "f3idle4": [
+   "f3idle4"
+  ],
+  "f3idle5": [
+   "f3idle5"
+  ],
+  "f3behind1": [
+   "f3behind1"
+  ],
+  "f3behind2": [
+   "f3behind2"
+  ],
+  "f3behind3": [
+   "f3behind3"
+  ],
+  "f3behind4": [
+   "f3behind4"
+  ],
+  "f3thrash1": [
+   "f3thrash1"
+  ],
+  "f3thrash2": [
+   "f3thrash2"
+  ],
+  "f3thrash3": [
+   "f3thrash3"
+  ],
+  "f3thrash4": [
+   "f3thrash4"
+  ],
+  "f3well1": [
+   "f3well1"
+  ],
+  "f3well2": [
+   "f3well2"
+  ],
+  "f3well3": [
+   "f3well3"
+  ],
+  "f3well4": [
+   "f3well4"
+  ],
+  "f3shift": [
+   "f3shift"
+  ],
+  "f3noticed": [
+   "f3noticed"
+  ],
+  "f3cheat": [
+   "f3cheat"
+  ],
+  "f3look": [
+   "f3look"
+  ],
+  "f3final1": [
+   "f3final1"
+  ],
+  "f3final2": [
+   "f3final2"
+  ],
+  "f3afterBehind": [
+   "f3afterBehind"
+  ],
+  "f3afterAhead": [
+   "f3afterAhead"
+  ],
+  "f3p1": [
+   "f3p1"
+  ],
+  "f3p2": [
+   "f3p2"
+  ],
+  "f3p3": [
+   "f3p3"
+  ],
+  "f3again": [
+   "f3again"
+  ]
+ },
+ "timing": {
+  "f3intro": {
+   "dur": 48.51,
+   "lines": [
+    [
+     "f3a1",
+     [
+      0.0,
+      0.64,
+      1.52,
+      1.76,
+      2.0,
+      2.24,
+      2.56,
+      2.72,
+      3.52,
+      3.76
+     ]
+    ],
+    [
+     "f3a2",
+     [
+      4.96,
+      5.36,
+      6.4,
+      6.8,
+      7.76,
+      8.0,
+      8.56,
+      8.8,
+      9.68,
+      9.92,
+      10.32,
+      10.8,
+      11.12,
+      11.44,
+      11.76,
+      12.64,
+      13.12,
+      13.6,
+      13.84,
+      14.08,
+      14.8,
+      15.84,
+      16.4,
+      16.8,
+      17.52,
+      18.28
+     ]
+    ],
+    [
+     "f3a3",
+     [
+      19.04,
+      20.08,
+      20.4,
+      21.04,
+      21.52,
+      21.76,
+      22.0,
+      22.4,
+      22.96,
+      23.52,
+      24.16,
+      24.8,
+      25.44,
+      25.81,
+      26.19,
+      26.56,
+      27.04,
+      27.28,
+      27.6,
+      28.24,
+      28.56,
+      29.44,
+      29.68,
+      29.84,
+      30.4,
+      31.68,
+      32.24,
+      33.04
+     ]
+    ],
+    [
+     "f3a4",
+     [
+      34.32,
+      34.56,
+      35.44,
+      35.76,
+      36.16,
+      36.48,
+      37.08,
+      37.68,
+      38.08,
+      38.24,
+      38.4,
+      39.28,
+      39.6,
+      40.0,
+      40.16,
+      40.32,
+      41.04,
+      41.2,
+      41.6,
+      42.64,
+      42.88,
+      43.28,
+      43.84,
+      44.32,
+      44.56,
+      45.36,
+      46.24
+     ]
+    ],
+    [
+     "f3a5",
+     [
+      47.12,
+      47.52,
+      47.68
+     ]
+    ]
+   ]
+  },
+  "f3win": {
+   "dur": 10.81,
+   "lines": [
+    [
+     "f3w1",
+     [
+      0.24,
+      1.68,
+      2.88,
+      3.52,
+      4.16,
+      4.48
+     ]
+    ],
+    [
+     "f3w2",
+     [
+      5.44,
+      5.6,
+      6.16,
+      7.04,
+      7.2,
+      7.52,
+      7.92,
+      8.48,
+      8.72,
+      9.6,
+      9.92,
+      10.24
+     ]
+    ]
+   ]
+  },
+  "f3winLate": {
+   "dur": 11.34,
+   "lines": [
+    [
+     "f3w1",
+     [
+      0.24,
+      1.68,
+      2.88,
+      3.52,
+      4.08,
+      4.4
+     ]
+    ],
+    [
+     "f3w3",
+     [
+      5.52,
+      5.76,
+      6.4,
+      7.28,
+      7.52,
+      7.84,
+      8.64,
+      8.88,
+      9.44,
+      9.92,
+      10.16,
+      10.4,
+      10.64
+     ]
+    ]
+   ]
+  },
+  "f3lose": {
+   "dur": 10.58,
+   "lines": [
+    [
+     "f3l1",
+     [
+      0.16,
+      1.52,
+      2.8,
+      3.12,
+      3.28,
+      3.84,
+      4.16
+     ]
+    ],
+    [
+     "f3l2",
+     [
+      5.28,
+      6.24,
+      6.56,
+      6.8,
+      6.96,
+      7.2,
+      7.52,
+      7.68,
+      7.92,
+      8.4,
+      8.56,
+      9.52,
+      10.08
+     ]
+    ]
+   ]
+  },
+  "f3reveal": {
+   "dur": 52.64,
+   "lines": [
+    [
+     "f3r1",
+     [
+      0.0,
+      0.32,
+      0.56,
+      1.68,
+      2.32,
+      2.72,
+      3.12,
+      3.36,
+      4.64
+     ]
+    ],
+    [
+     "f3r2",
+     [
+      5.92,
+      6.16,
+      6.72,
+      6.88,
+      7.04,
+      7.44,
+      8.0,
+      8.24,
+      8.48,
+      9.12,
+      9.68,
+      10.16,
+      10.48,
+      11.68,
+      12.08,
+      12.4,
+      13.04,
+      13.36,
+      14.0,
+      14.24,
+      14.72,
+      15.2,
+      15.84,
+      16.16,
+      16.88,
+      17.2,
+      17.52,
+      17.92,
+      18.64,
+      18.96,
+      19.6,
+      19.92,
+      20.56,
+      21.44,
+      21.76,
+      22.16,
+      22.88,
+      23.28
+     ]
+    ],
+    [
+     "f3r3",
+     [
+      24.4,
+      24.88,
+      25.28,
+      26.04,
+      26.8,
+      27.04,
+      27.28,
+      28.0,
+      28.64,
+      28.8,
+      28.96,
+      29.84,
+      30.16,
+      30.48,
+      30.88,
+      31.12,
+      31.36,
+      32.8,
+      33.2,
+      33.44,
+      33.84,
+      34.32,
+      35.2,
+      35.52,
+      36.08,
+      36.48,
+      37.04,
+      37.36,
+      37.68,
+      38.56,
+      38.8,
+      39.68,
+      40.16,
+      40.56,
+      40.8,
+      41.36,
+      41.92,
+      42.72,
+      42.96,
+      43.2,
+      43.92,
+      44.72,
+      45.6
+     ]
+    ],
+    [
+     "f3r4",
+     [
+      46.56,
+      47.32,
+      48.08,
+      48.4,
+      49.36,
+      49.76,
+      50.16,
+      50.56,
+      50.8,
+      51.6,
+      51.92
+     ]
+    ]
+   ]
+  },
+  "f3idle1": {
+   "dur": 3.81,
+   "lines": [
+    [
+     "f3idle1",
+     [
+      0.0,
+      0.24,
+      0.48,
+      0.96,
+      1.2,
+      1.52,
+      1.76,
+      2.72,
+      2.96,
+      3.2
+     ]
+    ]
+   ]
+  },
+  "f3idle2": {
+   "dur": 4.62,
+   "lines": [
+    [
+     "f3idle2",
+     [
+      0.0,
+      0.64,
+      0.96,
+      1.6,
+      1.76,
+      2.24,
+      2.88,
+      3.12,
+      3.84
+     ]
+    ]
+   ]
+  },
+  "f3idle3": {
+   "dur": 6.16,
+   "lines": [
+    [
+     "f3idle3",
+     [
+      0.0,
+      0.4,
+      1.2,
+      1.68,
+      2.0,
+      3.12,
+      3.52,
+      4.32,
+      5.12
+     ]
+    ]
+   ]
+  },
+  "f3idle4": {
+   "dur": 3.94,
+   "lines": [
+    [
+     "f3idle4",
+     [
+      0.88,
+      1.28,
+      1.6,
+      2.08,
+      2.4,
+      3.04,
+      3.28
+     ]
+    ]
+   ]
+  },
+  "f3idle5": {
+   "dur": 2.98,
+   "lines": [
+    [
+     "f3idle5",
+     [
+      0.0,
+      0.56,
+      1.12,
+      1.36,
+      2.0
+     ]
+    ]
+   ]
+  },
+  "f3behind1": {
+   "dur": 5.28,
+   "lines": [
+    [
+     "f3behind1",
+     [
+      0.0,
+      0.4,
+      0.64,
+      1.12,
+      1.44,
+      1.6,
+      1.76,
+      2.72,
+      3.12,
+      4.0,
+      4.56,
+      4.8
+     ]
+    ]
+   ]
+  },
+  "f3behind2": {
+   "dur": 3.79,
+   "lines": [
+    [
+     "f3behind2",
+     [
+      0.0,
+      0.24,
+      0.72,
+      1.04,
+      1.84,
+      2.08,
+      2.24,
+      2.48,
+      2.64,
+      3.04,
+      3.28
+     ]
+    ]
+   ]
+  },
+  "f3behind3": {
+   "dur": 7.86,
+   "lines": [
+    [
+     "f3behind3",
+     [
+      0.0,
+      0.64,
+      1.2,
+      1.44,
+      2.08,
+      2.4,
+      2.56,
+      2.8,
+      3.2,
+      3.36,
+      3.52,
+      4.4,
+      4.64,
+      5.52,
+      6.64,
+      6.96
+     ]
+    ]
+   ]
+  },
+  "f3behind4": {
+   "dur": 4.26,
+   "lines": [
+    [
+     "f3behind4",
+     [
+      0.16,
+      0.88,
+      1.64,
+      2.4,
+      2.64,
+      2.96,
+      3.2,
+      3.52,
+      3.76
+     ]
+    ]
+   ]
+  },
+  "f3thrash1": {
+   "dur": 8.52,
+   "lines": [
+    [
+     "f3thrash1",
+     [
+      0.0,
+      0.88,
+      1.84,
+      2.16,
+      2.48,
+      2.8,
+      3.68,
+      4.32,
+      4.72,
+      4.96,
+      5.28,
+      5.6,
+      5.76,
+      6.32,
+      7.12,
+      7.44,
+      7.76,
+      8.0
+     ]
+    ]
+   ]
+  },
+  "f3thrash2": {
+   "dur": 4.86,
+   "lines": [
+    [
+     "f3thrash2",
+     [
+      0.0,
+      0.4,
+      0.72,
+      1.6,
+      1.92,
+      2.8,
+      3.04,
+      3.28,
+      3.44,
+      3.84,
+      4.24,
+      4.4
+     ]
+    ]
+   ]
+  },
+  "f3thrash3": {
+   "dur": 5.72,
+   "lines": [
+    [
+     "f3thrash3",
+     [
+      0.0,
+      0.56,
+      0.8,
+      1.2,
+      1.76,
+      2.64,
+      3.12,
+      4.24,
+      4.48,
+      5.04
+     ]
+    ]
+   ]
+  },
+  "f3thrash4": {
+   "dur": 3.58,
+   "lines": [
+    [
+     "f3thrash4",
+     [
+      0.08,
+      0.4,
+      0.64,
+      0.88,
+      1.2,
+      1.52,
+      1.76,
+      2.72
+     ]
+    ]
+   ]
+  },
+  "f3well1": {
+   "dur": 3.5,
+   "lines": [
+    [
+     "f3well1",
+     [
+      0.0,
+      0.88,
+      2.0,
+      2.48,
+      2.72,
+      2.96
+     ]
+    ]
+   ]
+  },
+  "f3well2": {
+   "dur": 3.13,
+   "lines": [
+    [
+     "f3well2",
+     [
+      0.0,
+      0.56,
+      1.6,
+      2.08,
+      2.64
+     ]
+    ]
+   ]
+  },
+  "f3well3": {
+   "dur": 5.25,
+   "lines": [
+    [
+     "f3well3",
+     [
+      0.0,
+      0.48,
+      0.72,
+      1.04,
+      1.36,
+      1.52,
+      1.92,
+      2.16,
+      2.4,
+      2.72,
+      3.52,
+      4.08,
+      4.32,
+      4.64
+     ]
+    ]
+   ]
+  },
+  "f3well4": {
+   "dur": 6.69,
+   "lines": [
+    [
+     "f3well4",
+     [
+      0.08,
+      1.12,
+      1.36,
+      1.84,
+      2.48,
+      2.96,
+      4.24,
+      4.48,
+      4.88,
+      5.12,
+      5.28,
+      5.52,
+      5.84
+     ]
+    ]
+   ]
+  },
+  "f3shift": {
+   "dur": 5.17,
+   "lines": [
+    [
+     "f3shift",
+     [
+      0.0,
+      0.8,
+      1.6,
+      2.48,
+      2.72,
+      2.96,
+      3.12,
+      4.0,
+      4.56
+     ]
+    ]
+   ]
+  },
+  "f3noticed": {
+   "dur": 3.42,
+   "lines": [
+    [
+     "f3noticed",
+     [
+      0.0,
+      0.32,
+      1.52,
+      2.08,
+      2.4,
+      2.72
+     ]
+    ]
+   ]
+  },
+  "f3cheat": {
+   "dur": 17.5,
+   "lines": [
+    [
+     "f3cheat",
+     [
+      0.08,
+      0.64,
+      1.52,
+      1.84,
+      2.08,
+      2.4,
+      2.72,
+      3.36,
+      3.84,
+      4.16,
+      4.8,
+      5.84,
+      6.32,
+      6.8,
+      7.04,
+      7.52,
+      7.84,
+      8.72,
+      8.96,
+      9.68,
+      9.92,
+      10.24,
+      11.68,
+      12.48,
+      13.12,
+      13.44,
+      14.08,
+      14.4,
+      14.64,
+      15.76,
+      16.72
+     ]
+    ]
+   ]
+  },
+  "f3look": {
+   "dur": 4.21,
+   "lines": [
+    [
+     "f3look",
+     [
+      0.0,
+      0.32,
+      0.48,
+      0.64,
+      1.2,
+      2.16,
+      2.64,
+      3.28,
+      3.52,
+      3.76
+     ]
+    ]
+   ]
+  },
+  "f3final1": {
+   "dur": 1.54,
+   "lines": [
+    [
+     "f3final1",
+     [
+      0.24,
+      0.8
+     ]
+    ]
+   ]
+  },
+  "f3final2": {
+   "dur": 4.73,
+   "lines": [
+    [
+     "f3final2",
+     [
+      0.0,
+      0.4,
+      0.64,
+      1.44,
+      1.68,
+      2.88,
+      3.68,
+      4.0
+     ]
+    ]
+   ]
+  },
+  "f3afterBehind": {
+   "dur": 5.17,
+   "lines": [
+    [
+     "f3afterBehind",
+     [
+      0.0,
+      0.4,
+      0.64,
+      0.88,
+      1.2,
+      1.52,
+      2.4,
+      3.04,
+      3.28,
+      3.52,
+      3.76,
+      4.0,
+      4.24,
+      4.64
+     ]
+    ]
+   ]
+  },
+  "f3afterAhead": {
+   "dur": 6.37,
+   "lines": [
+    [
+     "f3afterAhead",
+     [
+      0.24,
+      1.6,
+      2.08,
+      2.24,
+      2.48,
+      2.72,
+      2.96,
+      3.28,
+      3.52,
+      4.4,
+      4.96,
+      5.52,
+      5.84
+     ]
+    ]
+   ]
+  },
+  "f3p1": {
+   "dur": 9.06,
+   "lines": [
+    [
+     "f3p1",
+     [
+      0.24,
+      0.64,
+      1.6,
+      1.92,
+      2.8,
+      3.44,
+      4.48,
+      4.96,
+      5.28,
+      6.24,
+      6.48,
+      6.88,
+      7.44,
+      8.0,
+      8.24,
+      8.4
+     ]
+    ]
+   ]
+  },
+  "f3p2": {
+   "dur": 10.19,
+   "lines": [
+    [
+     "f3p2",
+     [
+      0.0,
+      0.24,
+      0.64,
+      0.88,
+      1.12,
+      1.36,
+      1.52,
+      2.0,
+      2.32,
+      2.96,
+      3.6,
+      3.76,
+      4.16,
+      4.4,
+      4.8,
+      5.44,
+      5.92,
+      6.16,
+      6.56,
+      7.04,
+      7.68,
+      8.0,
+      8.48,
+      8.64,
+      9.12,
+      9.44,
+      9.68
+     ]
+    ]
+   ]
+  },
+  "f3p3": {
+   "dur": 3.32,
+   "lines": [
+    [
+     "f3p3",
+     [
+      0.0,
+      0.32,
+      0.64,
+      0.96,
+      1.6,
+      2.16,
+      2.56
+     ]
+    ]
+   ]
+  },
+  "f3again": {
+   "dur": 7.31,
+   "lines": [
+    [
+     "f3again",
+     [
+      0.24,
+      1.2,
+      2.32,
+      2.64,
+      3.44,
+      4.0,
+      4.96,
+      5.44,
+      5.68,
+      6.0,
+      6.32,
+      6.56,
+      6.8
+     ]
+    ]
+   ]
+  }
+ }
+}

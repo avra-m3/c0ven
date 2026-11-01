@@ -1,0 +1,450 @@
+{
+ "lines": {
+  "f2a1": [
+   "[friendly narrator, close to the microphone, with a quiet undertone of menace] Floor two. You'll notice it's busier.",
+   "Floor 2. You'll notice it's busier."
+  ],
+  "f2a2": [
+   "[conspiratorial, sharing company gossip] Meridian Words employs far more advisers than it has desks. Hundreds on every floor. Each word only needs a handful of them.",
+   "Meridian Words employs far more advisers than it has desks. Hundreds on every floor. Each word only needs a handful of them."
+  ],
+  "f2a3": [
+   "[dry, faintly disdainful] The popular ones work here, in the main office. Everyone else works at the annex, across town. It's cheaper. [lower] Nobody visits.",
+   "The popular ones work here, in the main office. Everyone else works at the annex, across town. It's cheaper. Nobody visits."
+  ],
+  "f2a4": [
+   "[sweetly, as if delivering bad news he is enjoying] Tonight, your word needs someone from the annex.",
+   "Tonight, your word needs someone from the annex."
+  ],
+  "f2a5": [
+   "[leaning in, conspiratorial] So. Another small bet, between friends. Is it faster to drive the adviser over here, manuals and all? [sly] Or to send them a fax?",
+   "So. Another small bet, between friends. Is it faster to drive the adviser over here, manuals and all? Or to send them a fax?"
+  ],
+  "f2d1": [
+   "[delighted, a little too eager] Excellent. I'll call the van. They'll need their manuals, of course. They never go anywhere without them. [crisp] Watch the clock.",
+   "Excellent. I'll call the van. They'll need their manuals, of course. They never go anywhere without them. Watch the clock."
+  ],
+  "f2d2": [
+   "[savouring it, deadpan] Seven point four seconds. Most of it in traffic, with four crates of paper on the roof.",
+   "7.4 seconds. Most of it in traffic, with four crates of paper on the roof."
+  ],
+  "f2d3": [
+   "[quiet, amused] And tomorrow, somebody has to drive them back.",
+   "And tomorrow, somebody has to drive them back."
+  ],
+  "f2x1": [
+   "[approving, amused] A fax. How old-fashioned. I like it. [crisp] Your adviser sends the question. Only the question. Watch the clock.",
+   "A fax. How old-fashioned. I like it. Your adviser sends the question. Only the question. Watch the clock."
+  ],
+  "f2x2": [
+   "[mildly impressed] One point six seconds. The annex adviser is slower at sums. Older equipment.",
+   "1.6 seconds. The annex adviser is slower at sums. Older equipment."
+  ],
+  "f2x3": [
+   "[confiding] It hardly matters. Nothing heavy moved. One page went across town, and one page came back.",
+   "It hardly matters. Nothing heavy moved. One page went across town, and one page came back."
+  ],
+  "f2r1": [
+   "[hushed, irritated with the building] The office freezes again. I really must speak to maintenance.",
+   "The office freezes again. I really must speak to maintenance."
+  ],
+  "f2r2": [
+   "[low and confiding, a good teacher] The main office is the graphics card. Fast, but small. The annex is the computer's main processor, and its memory. Slower, but enormous. Each adviser is one expert: a small part of the model.",
+   "The main office is the graphics card. Fast, but small. The annex is the computer's main processor, and its memory. Slower, but enormous. Each adviser is one expert: a small part of the model."
+  ],
+  "f2r3": [
+   "[calm, letting it land] Coven keeps the busiest experts on the card, and lets the processor work out the rest, right where they live. The knowledge stays put. Only the question travels.",
+   "c0ven keeps the busiest experts on the card, and lets the processor work out the rest, right where they live. The knowledge stays put. Only the question travels."
+  ],
+  "f2r4": [
+   "[warm, with a parting hint of menace] Floor three is next. I've been rearranging the desks.",
+   "Floor 3 is next. I've been rearranging the desks."
+  ]
+ },
+ "chunks": {
+  "f2intro": [
+   "f2a1",
+   "f2a2",
+   "f2a3",
+   "f2a4",
+   "f2a5"
+  ],
+  "f2drive1": [
+   "f2d1"
+  ],
+  "f2drive2": [
+   "f2d2",
+   "f2d3"
+  ],
+  "f2fax1": [
+   "f2x1"
+  ],
+  "f2fax2": [
+   "f2x2",
+   "f2x3"
+  ],
+  "f2reveal": [
+   "f2r1",
+   "f2r2",
+   "f2r3",
+   "f2r4"
+  ]
+ },
+ "timing": {
+  "f2intro": {
+   "dur": 42.76,
+   "lines": [
+    [
+     "f2a1",
+     [
+      0.08,
+      0.64,
+      1.28,
+      1.68,
+      2.08,
+      2.48
+     ]
+    ],
+    [
+     "f2a2",
+     [
+      3.52,
+      4.32,
+      4.88,
+      5.6,
+      6.0,
+      6.32,
+      7.04,
+      7.28,
+      7.52,
+      7.84,
+      8.8,
+      9.6,
+      9.92,
+      10.24,
+      11.2,
+      11.68,
+      12.24,
+      12.56,
+      12.96,
+      13.2,
+      13.92,
+      14.16
+     ]
+    ],
+    [
+     "f2a3",
+     [
+      14.72,
+      14.96,
+      15.6,
+      16.16,
+      16.48,
+      17.04,
+      17.28,
+      17.44,
+      17.92,
+      18.8,
+      19.44,
+      19.76,
+      20.08,
+      20.32,
+      20.48,
+      21.36,
+      21.92,
+      22.72,
+      23.12,
+      24.24,
+      24.8
+     ]
+    ],
+    [
+     "f2a4",
+     [
+      26.0,
+      26.96,
+      27.36,
+      27.84,
+      28.24,
+      28.72,
+      28.96,
+      29.12
+     ]
+    ],
+    [
+     "f2a5",
+     [
+      30.56,
+      31.36,
+      32.0,
+      32.64,
+      33.2,
+      33.76,
+      34.96,
+      35.2,
+      35.44,
+      36.0,
+      36.24,
+      36.72,
+      36.88,
+      37.92,
+      38.16,
+      38.8,
+      39.76,
+      40.08,
+      40.72,
+      40.96,
+      41.2,
+      41.6,
+      41.76,
+      41.92
+     ]
+    ]
+   ]
+  },
+  "f2drive1": {
+   "dur": 9.43,
+   "lines": [
+    [
+     "f2d1",
+     [
+      0.0,
+      1.2,
+      1.68,
+      1.84,
+      2.08,
+      2.8,
+      3.28,
+      3.52,
+      3.76,
+      4.48,
+      4.72,
+      5.36,
+      5.68,
+      6.0,
+      6.24,
+      7.04,
+      7.52,
+      8.16,
+      8.56,
+      8.8
+     ]
+    ]
+   ]
+  },
+  "f2drive2": {
+   "dur": 11.1,
+   "lines": [
+    [
+     "f2d2",
+     [
+      0.16,
+      1.36,
+      2.56,
+      2.88,
+      3.12,
+      3.28,
+      3.44,
+      4.24,
+      4.56,
+      4.88,
+      5.44,
+      5.6,
+      6.0,
+      6.16,
+      6.4
+     ]
+    ],
+    [
+     "f2d3",
+     [
+      7.52,
+      7.68,
+      8.8,
+      9.36,
+      9.6,
+      9.76,
+      10.32,
+      10.56
+     ]
+    ]
+   ]
+  },
+  "f2fax1": {
+   "dur": 9.51,
+   "lines": [
+    [
+     "f2x1",
+     [
+      0.0,
+      0.32,
+      1.2,
+      1.44,
+      2.64,
+      2.96,
+      3.28,
+      3.92,
+      4.24,
+      4.96,
+      5.52,
+      5.84,
+      6.48,
+      7.04,
+      7.36,
+      8.24,
+      8.64,
+      8.88
+     ]
+    ]
+   ]
+  },
+  "f2fax2": {
+   "dur": 15.02,
+   "lines": [
+    [
+     "f2x2",
+     [
+      0.6,
+      1.2,
+      2.24,
+      2.48,
+      3.04,
+      3.6,
+      3.84,
+      4.32,
+      4.56,
+      5.44,
+      5.92
+     ]
+    ],
+    [
+     "f2x3",
+     [
+      7.12,
+      7.36,
+      7.84,
+      8.8,
+      9.28,
+      9.84,
+      10.64,
+      11.04,
+      11.52,
+      11.84,
+      12.32,
+      12.96,
+      13.28,
+      13.6,
+      14.16,
+      14.48
+     ]
+    ]
+   ]
+  },
+  "f2reveal": {
+   "dur": 43.7,
+   "lines": [
+    [
+     "f2r1",
+     [
+      0.0,
+      0.32,
+      0.72,
+      1.84,
+      2.48,
+      2.8,
+      3.12,
+      3.52,
+      3.92,
+      4.16
+     ]
+    ],
+    [
+     "f2r2",
+     [
+      5.68,
+      5.92,
+      6.32,
+      6.72,
+      6.96,
+      7.2,
+      7.92,
+      8.8,
+      9.68,
+      10.0,
+      10.88,
+      11.12,
+      11.76,
+      12.0,
+      12.24,
+      12.88,
+      13.36,
+      14.32,
+      14.64,
+      14.96,
+      15.92,
+      16.88,
+      17.2,
+      18.56,
+      18.96,
+      20.0,
+      20.32,
+      20.64,
+      21.76,
+      22.08,
+      22.56,
+      22.8,
+      23.04,
+      23.28
+     ]
+    ],
+    [
+     "f2r3",
+     [
+      24.12,
+      24.96,
+      25.2,
+      25.36,
+      26.16,
+      26.72,
+      26.96,
+      27.2,
+      27.92,
+      28.16,
+      28.48,
+      28.72,
+      29.6,
+      29.84,
+      30.16,
+      30.4,
+      31.12,
+      31.44,
+      31.92,
+      32.16,
+      33.04,
+      33.36,
+      34.08,
+      34.96,
+      35.6,
+      36.24,
+      36.56,
+      37.12
+     ]
+    ],
+    [
+     "f2r4",
+     [
+      38.56,
+      39.28,
+      39.76,
+      40.08,
+      40.96,
+      41.28,
+      41.6,
+      42.48,
+      42.72
+     ]
+    ]
+   ]
+  }
+ }
+}

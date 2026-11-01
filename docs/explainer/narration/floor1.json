@@ -1,0 +1,671 @@
+{
+ "lines": {
+  "intro1": [
+   "[friendly narrator, close to the microphone, with a quiet undertone of menace, as if welcoming a guest he has plans for] Meridian Words is a building of forty-eight floors that never sleeps. All night, people across the city send it questions, and by morning it has written their answers.",
+   "Meridian Words is a building of 48 floors that never sleeps. All night, people across the city send it questions, and by morning it has written their answers."
+  ],
+  "intro2": [
+   "[warm and measured, then lingering on the repeat as if it were a threat] It writes them one word at a time. And no word may leave the building until every floor has stamped it. <slow>Every floor.</slow>",
+   "It writes them one word at a time. And no word may leave the building until every floor has stamped it. Every floor."
+  ],
+  "intro3": [
+   "[fond, almost tender, then dropping lower and quieter on the last two words] The advisers on each floor have worked here longer than anyone can remember. They are very good at their jobs. Nobody has ever asked them to hurry. <soft>Until tonight.</soft>",
+   "The advisers on each floor have worked here longer than anyone can remember. They are very good at their jobs. Nobody has ever asked them to hurry. Until tonight."
+  ],
+  "intro4": [
+   "[addressing the listener directly, friendly on the surface, faintly doubtful underneath] You are the night courier. You carry each word up the building, floor by floor, to the roof. Tonight there are a great many words. [sweetly insincere] I do hope you're up to it.",
+   "You are the night courier. You carry each word up the building, floor by floor, to the roof. Tonight there are a great many words. I do hope you're up to it."
+  ],
+  "intro5": [
+   "[quietly ceremonial, like a host showing off a room with a hidden trapdoor] This is floor one. A desk, an adviser, and a shelf of manuals nobody has dusted since the building opened. [smiling] Lovely, isn't it?",
+   "This is floor 1. A desk, an adviser, and a shelf of manuals nobody has dusted since the building opened. Lovely, isn't it?"
+  ],
+  "bet1": [
+   "[leaning in, conspiratorial, a near whisper] Before you hand the word over, a small bet. <whisper>Just between us.</whisper>",
+   "Before you hand the word over, a small bet. Just between us."
+  ],
+  "bet2": [
+   "[patient and helpful, a little too helpful] To stamp it, the adviser looks something up in a manual, then thinks about your word. [sly, testing you] Where will <emphasis>most</emphasis> of the time go?",
+   "To stamp it, the adviser looks something up in a manual, then thinks about your word. Where will most of the time go?"
+  ],
+  "watch": [
+   "[crisp, then low and pointed on the last sentence] Hand the envelope over. Watch the clock. I certainly will.",
+   "Hand the envelope over. Watch the clock. I certainly will."
+  ],
+  "right": [
+   "[pleased, but in a way that suggests he is filing this away] Correct. Nearly all of it went on the walk to the shelf and back. The thinking took a moment. [quiet, appraising] Clever. I'll remember that.",
+   "Correct. Nearly all of it went on the walk to the shelf and back. The thinking took a moment. Clever. I'll remember that."
+  ],
+  "wrong": [
+   "[gentle and reassuring, but the reassurance does not quite ring true] Not quite. The thinking took a moment. Nearly all of the time went on the walk to the shelf and back. [conspiratorial, soft] Don't worry. I won't tell anyone.",
+   "Not quite. The thinking took a moment. Nearly all of the time went on the walk to the shelf and back. Don't worry. I won't tell anyone."
+  ],
+  "upgrade": [
+   "[official, slightly grand, then dropping to a confidential murmur] Management will pay for one upgrade on this floor. [murmured warning] I'd choose carefully. Management keeps notes.",
+   "Management will pay for one upgrade on this floor. I'd choose carefully. Management keeps notes."
+  ],
+  "faster1": [
+   "[suspiciously cheerful, as if he knows how this ends] The adviser is back from a weekend course, thinking <emphasis>twice as fast</emphasis>. Watch the clock.",
+   "The adviser is back from a weekend course, thinking twice as fast. Watch the clock."
+  ],
+  "faster2": [
+   "[savouring the moment, deadpan, quietly delighted] Your word arrived three tenths of a second sooner. Out of four.",
+   "Your word arrived 0.3 seconds sooner. Out of 4.0."
+  ],
+  "faster3": [
+   "[quiet, knowing, a little menacing] Nobody on this floor was ever slow at thinking. But you knew that. <soft>Didn't you?</soft>",
+   "Nobody on this floor was ever slow at thinking. But you knew that. Didn't you?"
+  ],
+  "closer1": [
+   "[conspiratorial and amused, as if letting you in on how the building really works] Management has had a word with the shelf. It's agreed to come to you. [lower, a favour he will collect on later] <soft>This once.</soft>",
+   "Management has had a word with the shelf. It's agreed to come to you. This once."
+  ],
+  "closer2": [
+   "[impressed, then slightly unsettled that you figured it out] One point four seconds. The same adviser, thinking at the same speed. Only the walk changed. [cool] Well done.",
+   "1.4 seconds. The same adviser, thinking at the same speed. Only the walk changed. Well done."
+  ],
+  "reveal1": [
+   "[hushed, as if something has gone wrong in the building and he would rather it had not] The office freezes. The labels peel off. <whisper>You weren't supposed to see this part.</whisper>",
+   "The office freezes. The labels peel off. You weren't supposed to see this part."
+  ],
+  "reveal2": [
+   "[low and confiding, sharing a secret the building would rather keep] To write each word, an A.I. model reads a huge pile of numbers from memory, and does a little maths with them. The maths is quick. The reading is slow.",
+   "To write each word, an AI model reads a huge pile of numbers from memory, and does a little maths with them. The maths is quick. The reading is slow."
+  ],
+  "reveal3": [
+   "[warm again, friendly, with a parting hint of menace] So a faster A.I. engine mostly reads less, or reads from somewhere closer. Each of the next floors is one of its tricks. [softly, smiling] I'll be waiting on floor two.",
+   "So a faster AI engine mostly reads less, or reads from somewhere closer. Each of the next floors is one of its tricks. I'll be waiting on floor 2."
+  ]
+ },
+ "chunks": {
+  "intro": [
+   "intro1",
+   "intro2",
+   "intro3",
+   "intro4",
+   "intro5",
+   "bet1",
+   "bet2"
+  ],
+  "watch": [
+   "watch"
+  ],
+  "right": [
+   "right",
+   "upgrade"
+  ],
+  "wrong": [
+   "wrong",
+   "upgrade"
+  ],
+  "faster1": [
+   "faster1"
+  ],
+  "faster2": [
+   "faster2",
+   "faster3"
+  ],
+  "closer1": [
+   "closer1"
+  ],
+  "closer2": [
+   "closer2"
+  ],
+  "reveal": [
+   "reveal1",
+   "reveal2",
+   "reveal3"
+  ]
+ },
+ "timing": {
+  "intro": {
+   "dur": 86.88,
+   "lines": [
+    [
+     "intro1",
+     [
+      0.0,
+      0.72,
+      1.2,
+      1.44,
+      1.6,
+      2.0,
+      2.24,
+      2.96,
+      3.76,
+      4.0,
+      4.32,
+      5.52,
+      5.84,
+      6.56,
+      6.88,
+      7.44,
+      7.68,
+      8.0,
+      8.48,
+      8.8,
+      9.68,
+      9.92,
+      10.16,
+      10.96,
+      11.2,
+      11.44,
+      11.92,
+      12.16
+     ]
+    ],
+    [
+     "intro2",
+     [
+      13.44,
+      13.76,
+      14.56,
+      14.96,
+      15.28,
+      15.92,
+      16.24,
+      16.56,
+      17.44,
+      17.76,
+      18.08,
+      18.56,
+      18.8,
+      19.28,
+      19.52,
+      20.16,
+      21.04,
+      21.36,
+      22.0,
+      22.24,
+      23.04,
+      23.68,
+      24.24
+     ]
+    ],
+    [
+     "intro3",
+     [
+      25.76,
+      26.0,
+      26.8,
+      27.04,
+      27.44,
+      28.16,
+      28.48,
+      29.04,
+      29.36,
+      29.92,
+      30.24,
+      30.88,
+      31.2,
+      32.16,
+      32.48,
+      32.8,
+      33.12,
+      33.36,
+      33.68,
+      33.92,
+      35.04,
+      35.68,
+      35.92,
+      36.48,
+      36.88,
+      37.12,
+      37.36,
+      38.56,
+      39.36
+     ]
+    ],
+    [
+     "intro4",
+     [
+      40.8,
+      41.12,
+      41.44,
+      41.68,
+      42.16,
+      43.36,
+      43.6,
+      44.16,
+      44.64,
+      45.12,
+      45.36,
+      45.6,
+      46.48,
+      47.04,
+      47.36,
+      48.0,
+      48.16,
+      48.4,
+      49.44,
+      50.4,
+      50.72,
+      51.04,
+      51.36,
+      51.68,
+      52.0,
+      53.28,
+      53.6,
+      53.92,
+      54.24,
+      54.8,
+      55.12,
+      55.36
+     ]
+    ],
+    [
+     "intro5",
+     [
+      56.0,
+      56.56,
+      56.88,
+      57.68,
+      58.48,
+      58.8,
+      59.52,
+      59.84,
+      60.88,
+      61.12,
+      61.28,
+      61.76,
+      62.08,
+      63.04,
+      63.6,
+      63.92,
+      64.56,
+      64.96,
+      65.2,
+      66.08,
+      67.68,
+      68.56,
+      69.12
+     ]
+    ],
+    [
+     "bet1",
+     [
+      69.76,
+      70.16,
+      70.4,
+      70.8,
+      71.12,
+      71.76,
+      72.4,
+      72.72,
+      73.36,
+      74.48,
+      75.04,
+      75.68
+     ]
+    ],
+    [
+     "bet2",
+     [
+      76.88,
+      77.12,
+      77.6,
+      78.0,
+      78.24,
+      79.04,
+      79.44,
+      79.76,
+      79.92,
+      80.08,
+      80.32,
+      81.12,
+      81.44,
+      82.08,
+      82.4,
+      82.72,
+      83.92,
+      84.56,
+      84.88,
+      85.2,
+      85.52,
+      85.84,
+      86.16
+     ]
+    ]
+   ]
+  },
+  "watch": {
+   "dur": 4.91,
+   "lines": [
+    [
+     "watch",
+     [
+      0.0,
+      0.4,
+      0.56,
+      1.36,
+      2.0,
+      2.4,
+      2.64,
+      3.44,
+      3.68,
+      4.4
+     ]
+    ]
+   ]
+  },
+  "right": {
+   "dur": 18.91,
+   "lines": [
+    [
+     "right",
+     [
+      0.16,
+      1.04,
+      1.52,
+      1.76,
+      1.92,
+      2.16,
+      2.4,
+      2.56,
+      2.72,
+      3.12,
+      3.28,
+      3.44,
+      4.24,
+      4.56,
+      5.2,
+      5.44,
+      5.92,
+      6.32,
+      6.56,
+      7.44,
+      8.56,
+      9.04,
+      9.76
+     ]
+    ],
+    [
+     "upgrade",
+     [
+      10.4,
+      11.2,
+      11.44,
+      11.84,
+      12.08,
+      12.4,
+      13.12,
+      13.44,
+      13.68,
+      14.64,
+      15.04,
+      15.52,
+      16.8,
+      17.68,
+      18.16
+     ]
+    ]
+   ]
+  },
+  "wrong": {
+   "dur": 19.98,
+   "lines": [
+    [
+     "wrong",
+     [
+      0.08,
+      0.48,
+      1.28,
+      1.52,
+      2.0,
+      2.32,
+      2.56,
+      3.52,
+      4.0,
+      4.24,
+      4.4,
+      4.64,
+      4.96,
+      5.28,
+      5.44,
+      5.6,
+      5.92,
+      6.08,
+      6.32,
+      6.88,
+      7.2,
+      8.08,
+      8.64,
+      9.36,
+      9.6,
+      10.16,
+      10.4
+     ]
+    ],
+    [
+     "upgrade",
+     [
+      11.52,
+      12.32,
+      12.56,
+      12.96,
+      13.2,
+      13.44,
+      14.16,
+      14.4,
+      14.64,
+      15.6,
+      16.08,
+      16.56,
+      17.76,
+      18.64,
+      19.2
+     ]
+    ]
+   ]
+  },
+  "faster1": {
+   "dur": 6.66,
+   "lines": [
+    [
+     "faster1",
+     [
+      0.0,
+      0.24,
+      0.88,
+      1.12,
+      1.36,
+      1.52,
+      1.68,
+      2.48,
+      3.12,
+      3.68,
+      4.32,
+      4.64,
+      5.44,
+      5.84,
+      6.08
+     ]
+    ]
+   ]
+  },
+  "faster2": {
+   "dur": 12.59,
+   "lines": [
+    [
+     "faster2",
+     [
+      0.0,
+      0.48,
+      0.8,
+      1.57,
+      2.35,
+      3.12,
+      4.0,
+      4.56,
+      5.2
+     ]
+    ],
+    [
+     "faster3",
+     [
+      5.84,
+      6.48,
+      6.72,
+      7.04,
+      7.44,
+      7.68,
+      8.16,
+      8.72,
+      8.96,
+      9.84,
+      10.16,
+      10.48,
+      10.96,
+      11.6,
+      12.08
+     ]
+    ]
+   ]
+  },
+  "closer1": {
+   "dur": 7.05,
+   "lines": [
+    [
+     "closer1",
+     [
+      0.0,
+      0.8,
+      1.04,
+      1.2,
+      1.36,
+      1.68,
+      1.92,
+      2.16,
+      3.04,
+      3.44,
+      4.08,
+      4.4,
+      4.72,
+      4.96,
+      5.76,
+      6.24
+     ]
+    ]
+   ]
+  },
+  "closer2": {
+   "dur": 9.9,
+   "lines": [
+    [
+     "closer2",
+     [
+      0.16,
+      1.28,
+      2.4,
+      2.64,
+      2.88,
+      3.92,
+      4.48,
+      4.72,
+      5.04,
+      5.36,
+      6.32,
+      6.72,
+      6.96,
+      7.52,
+      8.72,
+      9.2
+     ]
+    ]
+   ]
+  },
+  "reveal": {
+   "dur": 34.87,
+   "lines": [
+    [
+     "reveal1",
+     [
+      0.16,
+      0.32,
+      0.8,
+      2.0,
+      2.24,
+      3.04,
+      3.6,
+      4.48,
+      4.72,
+      5.28,
+      5.84,
+      6.16,
+      6.48,
+      6.8
+     ]
+    ],
+    [
+     "reveal2",
+     [
+      7.76,
+      8.0,
+      8.4,
+      8.88,
+      9.52,
+      9.84,
+      10.4,
+      10.88,
+      11.28,
+      11.52,
+      11.92,
+      12.4,
+      12.64,
+      13.04,
+      13.28,
+      14.16,
+      14.48,
+      14.72,
+      14.88,
+      15.12,
+      15.84,
+      16.16,
+      16.8,
+      17.04,
+      17.6,
+      17.84,
+      18.64,
+      18.96,
+      19.6,
+      19.92
+     ]
+    ],
+    [
+     "reveal3",
+     [
+      21.12,
+      21.44,
+      21.68,
+      22.32,
+      23.44,
+      24.08,
+      24.64,
+      25.12,
+      25.84,
+      26.08,
+      26.56,
+      26.88,
+      27.44,
+      28.56,
+      28.88,
+      29.12,
+      29.36,
+      29.68,
+      30.32,
+      30.56,
+      30.8,
+      30.96,
+      31.28,
+      32.4,
+      32.8,
+      32.96,
+      33.44,
+      33.68,
+      34.24
+     ]
+    ]
+   ]
+  }
+ }
+}
