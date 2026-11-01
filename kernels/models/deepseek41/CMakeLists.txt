@@ -3,3 +3,5 @@
 
 set(DEEPSEEK41_KERNEL_INCLUDES -I${CMAKE_SOURCE_DIR}/core/models/deepseek41
     -I${CMAKE_SOURCE_DIR}/kernels/models/deepseek41)
+
+engine_add_kernel_module(deepseek41 SOURCE kernels/models/deepseek41/layer.cl OPTIONS ${DEEPSEEK41_KERNEL_INCLUDES})

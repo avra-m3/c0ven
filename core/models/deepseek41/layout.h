@@ -101,4 +101,28 @@ typedef struct {
 } D41MissJob;
 SHARED_ASSERT(sizeof(D41MissJob) == 128 + 4 * D41_EMBD, "D41MissJob layout");
 
+// The stream kernels' work-group: one row, in D41_HC_SGS sub-groups of 16, each with D41_EMBD / D41_HC_SGS values in
+// chunks of 64. An a8 unit is 32 values, so a sub-group must hold whole units, and 64 sub-groups (1,024) would not.
+#define D41_HC_SGS 40
+// ds_hc_mix's sub-groups a work-group: its threads wait on reads, so the most that the local sums allow.
+#define D41_HC_KSPLIT 32
+#define D41_A8_ROW (D41_EMBD + D41_EMBD / 8)  // bytes of a row of x as a8 (kernels/include/a8.h)
+
+// One row's mixes for one sublayer. comb[src * D41_HC + dst] weighs stream src into stream dst.
+typedef struct {
+  float pre[D41_HC];
+  float post[D41_HC];
+  float comb[D41_HC * D41_HC];
+} D41HcMix;
+SHARED_ASSERT(sizeof(D41HcMix) == 4 * D41_MIX, "D41HcMix layout");
+
+// What a card sends the other for one row at an Engram layer, in the other card's memory or pinned host memory; a
+// card also keeps its own gates in one. Each gate fills its 64 bytes, since every store across PCIe is that wide.
+// value is indexed by value row; only the sender's rows are written.
+typedef struct {
+  float gate[D41_HC][16];
+  float value[D41_EMBD];
+} D41EngramSend;
+SHARED_ASSERT(sizeof(D41EngramSend) == 256 + 4 * D41_EMBD, "D41EngramSend layout");
+
 #endif
