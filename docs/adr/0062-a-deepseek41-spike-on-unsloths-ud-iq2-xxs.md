@@ -25,9 +25,9 @@ more than another host layout would.
   Q2_K, IQ2_XS, IQ2_XXS, IQ2_S and IQ3_XXS (down), all in 256-value blocks: 146.1 GiB in all, a mean expert of
   8.49 MiB at layers 0-19 and 10.99 MiB at 20-39. The dense tensors and the head are 7.18 GiB. The Engram table is
   Q5_K, one 176-byte block a row, 135,172,021,600 B in the last shard.
-- Split by tensors, each card holds 4.00 GiB of dense weights and its part of about 104 experts a layer at layers
-  0-19 and 80 at 20-39; the cached experts are 34.0 GiB across both cards (*estimate*, from the file's tensor sizes,
-  the same bytes for every layer, one slot at 16,384 positions, 0.75 GiB of working memory and 0.4 GiB of recorded
+- Split by tensors, each card holds 4.04 GiB of dense weights and its part of about 104 experts a layer at layers
+  0-19 and 80 at 20-39; the cached experts are 34.1 GiB across both cards (*estimate*, from the file's tensor sizes,
+  the same bytes for every layer, one slot at 16,384 positions, 0.75 GiB of working memory and 0.33 GiB of recorded
   lists a card). About 112 GiB of experts stay off the cards, more than the host's 92 GB of RAM
   ([ADR-0006](0006-scope.md) item 1).
 - The pinned llama.cpp `3cf03257f` has no `deepseek41`. Upstream llama.cpp runs it since
@@ -45,8 +45,9 @@ more than another host layout would.
 2. **deepseek41 splits by tensors as ADR-0023 does, except as this item says.** Each card computes half the query
    heads, half the output groups and half the columns of `attn_output_b`. A routed expert splits by rows into whole
    256-value blocks: part A is 1,280 of its 2,304 rows, part B the other 1,024. Each card's cache for a layer has as
-   many part-A slots as part-B slots, and a cached expert holds part A on one card and part B on the other, as its
-   slot pair sets. The shared expert splits 1,152/1,152 where it is Q8_0 and 1,280/1,024 where it is Q5_K. The KV
+   many part-A slots as part-B slots, so its count is even, and a cached expert holds part A on one card and part B on
+   the other, as its slot pair sets. The shared expert splits 1,152/1,152 where it is Q8_0 and 1,280/1,024 where it
+   is Q5_K. The KV
    head, the compressed rows, the router, norms, hyper-connection mixes, compressor and indexer are whole on both
    cards, and the indexer's keys are not split by position. The head splits by vocabulary rows and Engram's product
    by rows. Each Engram layer adds a third exchange to the layer's two.
@@ -75,7 +76,7 @@ more than another host layout would.
 7. **The Engram reads follow ADR-0015,** with rows of 176 B, issued as soon as the step's token ids are known. The
    card waits for both layers' rows before layer 1 and copies them to the card. This amends ADR-0015 item 3, which
    names layer 1 as the only reader. The table is never read into RAM: ADR-0057 item 6 does not apply to a 135 GB
-   table, and the option is refused.
+   table, and `--ngram-ram` has no effect on this model.
 8. **The KV and indexer state stays on the cards, indexed by position, and is priced in experts.** The context is at
    most 16,384 positions until the indexer's candidate filter is built; below that the filter keeps every block.
    Before the limit is raised, 8-bit compressed rows are measured against f16 by `kl_test`.
@@ -93,7 +94,7 @@ more than another host layout would.
 ## Why
 
 - ADR-0023's reason holds: both cards work on every token. Split by layers at 20, the cards would cache about 133
-  more experts, but read 7.71 GB of dense weights a token one card after the other against 4.29 GB on both at once:
+  more experts, but read 7.71 GB of dense weights a token one card after the other against 4.34 GB on both at once:
   about 8-9 ms more a token at 370-420 GB/s
   ([measurements](../measurements/MEASUREMENTS.md#2026-10-14-decode-expert-kernels)), against about 3 ms of misses
   the extra experts remove at uniform routing (*estimate*, from the file's sizes, the SSD read rate
