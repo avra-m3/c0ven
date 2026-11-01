@@ -59,9 +59,10 @@ typedef struct {
 
 #define ENGINE_CONFIG_EXPERTS_SET 1u  /* experts_per_layer is meaningful, 0 included */
 #define ENGINE_CONFIG_PROMPT_SET 2u   /* prompt_chunk is meaningful, 0 included */
-#define ENGINE_CONFIG_SWAPS 4u        /* adaptive swaps: the cached experts follow the routing, a round every 4th plan,
-                                         every 16th while several slots write (changes which experts the CPU computes,
-                                         so their rounding) */
+#define ENGINE_CONFIG_SWAPS 4u        /* adaptive swaps: the cached experts follow the routing, a round once the CPU's
+                                         misses have cost as much time as the last round took, 4 to 16 plans apart (4
+                                         before both are known; 16 while several slots write); changes which
+                                         experts the CPU computes, so their rounding */
 #define ENGINE_CONFIG_SHARE_KV 8u     /* with SWAPS and the experts not set: the KV pages the plans leave free (kv_free)
                                          lend their memory to the expert cache, so it holds more experts while the
                                          pool holds less */
