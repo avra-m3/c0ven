@@ -12,7 +12,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, NoReturn
 
-from jinja2 import TemplateError
+from jinja2 import TemplateError, meta
 from jinja2.sandbox import ImmutableSandboxedEnvironment
 
 type JSON = Any
@@ -78,7 +78,9 @@ class ChatTemplate:
         env.filters["tojson"] = _tojson
         env.globals["raise_exception"] = _raise  # pyright: ignore[reportArgumentType]
         self.source = source
-        self._template = env.from_string(source)
+        parsed = env.parse(source)
+        self._variables = meta.find_undeclared_variables(parsed)
+        self._template = env.from_string(parsed)
         self.efforts = self._efforts()
         """The reasoning efforts the template accepts."""
 
@@ -106,6 +108,9 @@ class ChatTemplate:
             value = getattr(c, key)
             if value is not None:
                 variables[key] = value
+        # A template with `drop_thinking` (default true) drops earlier turns' reasoning unless told not to.
+        if c.preserve_thinking is not None and "drop_thinking" in self._variables:
+            variables["drop_thinking"] = not c.preserve_thinking
         try:
             return self._template.render(**variables)
         except TemplateFailed:

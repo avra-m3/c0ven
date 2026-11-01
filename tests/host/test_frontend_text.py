@@ -108,6 +108,18 @@ def test_a_clients_own_effort_passes_as_a_string_or_an_accepted_integer():
     assert Efforts(("low",), integers=True).given(3.5) is None
 
 
+def test_preserve_thinking_sets_drop_thinking():
+    t = ChatTemplate(BUDGET_TEMPLATE)
+    messages = [
+        {"role": "user", "content": "a"},
+        {"role": "assistant", "content": "b", "reasoning_content": "why"},
+        {"role": "user", "content": "c"},
+    ]
+    assert "<think>why</think>" not in t.render(Conversation(messages))
+    assert "<think>why</think>" not in t.render(Conversation(messages, preserve_thinking=False))
+    assert "<think>why</think>" in t.render(Conversation(messages, preserve_thinking=True))
+
+
 def pieces_of(out: str, thinking: bool, step: int, cut: bool = False, **kw: object) -> list[Piece]:
     p = OutputParser(thinking, **kw)  # pyright: ignore[reportArgumentType]
     got: list[Piece] = []
