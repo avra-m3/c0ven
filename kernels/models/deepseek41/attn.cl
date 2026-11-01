@@ -1,5 +1,5 @@
-// deepseek41's decode-step kernels around attention: the q and KV norms, the window ring, the compressor and the
-// indexer. The maths is the deepseek41 forward pass; core/models/deepseek41/ref_ops.h holds one scalar definition of
+// deepseek41's decode-step kernels around attention: the q and KV norms, the window ring, the compressor, the indexer
+// and the attention. The maths is the deepseek41 forward pass; core/models/deepseek41/ref_ops.h holds one scalar definition of
 // each. Caches are f16, block-written, indexed by position, so a step can run again and a rejected draft overwrites
 // only its own cells.
 
@@ -462,4 +462,193 @@ REQD_SG __kernel void ds_idx_topk(__global const float *score, __global const D4
   const uint n = (pos + 1) / ratio;
   if (n == 0) return;
   idx_select(score + (ulong)r * D41_CTX_CAP, n, idx + (ulong)r * D41_TOPK, hist, scan);
+}
+
+#define ATT_BATCHES (D41_ATT_KEYS / SG_SIZE)      // 8: lots of 16 keys, the lanes of a dot-product sub-group
+#define ATT_CHUNKS (D41_HD / SG_SIZE)             // 32: a head's chunks of 16 values
+#define ATT_CHUNK_VALUES (D41_ATT_HEADS * SG_SIZE)  // a chunk of the group's 8 heads
+#define ATT_SG_CHUNKS (ATT_CHUNKS / D41_ATT_SGS)  // 2: chunks a sub-group holds of q, and writes of the output
+#define ATT_SG_DIMS (ATT_SG_CHUNKS * SG_SIZE)     // 32
+#define ATT_DOT_CHUNKS (ATT_CHUNKS / 2)           // 16: each lot's two sub-groups take half of the chunks
+#define ATT_SCALE 0.044194173824159216f           // 512^-0.5
+
+// How many splits of keys a row has: the window, and its compressed rows (ratio 0: none).
+static inline uint att_compressed(uint pos, uint ratio) { return ratio ? min((pos + 1) / ratio, (uint)D41_TOPK) : 0; }
+static inline uint att_splits(uint pos, uint ratio) {
+  return 1 + (att_compressed(pos, ratio) + D41_ATT_KEYS - 1) / D41_ATT_KEYS;
+}
+
+// Each key's place as a multiple of 64 bytes, lane l holding key i0 + l, i0 a sub-group's first. Split 0 is the window,
+// the last vis positions up to the row's, oldest first; a split after it reads idx from entry (split - 1) D41_ATT_KEYS.
+// A lane past the m keys takes the sub-group's first, since idx past them is not written.
+static inline uint att_key_off(__global const D41Row *row, uint split, uint vis, uint i0, uint m, uint ratio,
+                               __global const uint *idx, __global const uint *pt, uint npp) {
+  const uint lane = sg_lane(), slot = row->slot, i = i0 + lane;
+  if (split == 0) {
+    const int c = (int)row->ring - (int)(vis - 1) + (int)(i < m ? i : i0);
+    return (slot * D41_RING + (uint)(c < 0 ? c + D41_RING : c)) * (D41_HD * 2 / 64);
+  }
+  uint j = intel_sub_group_block_read(idx + (split - 1) * D41_ATT_KEYS + i0);
+  j = i < m ? j : sub_group_broadcast(j, 0);
+  return (uint)d41_comp_index(d41_page(pt, npp, slot, j * ratio), j, ratio) * (D41_COMP_ROW_BYTES / 64);
+}
+
+// One split of one row for 8 heads: for its keys k_i, s_i = (q_h . k_i) 512^-0.5 and, with m the head's largest s_i,
+// o = sum_i exp(s_i - m) k_i, l = sum_i exp(s_i - m). ratio 0: the window only, with base 10000, in a grid of one
+// split. A split past the row's keys or a padded row returns. Groups (heads / 8, W, splits), D41_ATT_WG.
+REQD_SG __kernel void ds_attn_split(__global const float *q,  // the row's rows of this card's heads, not yet rotated
+                                    __global const D41Row *rows, uint ratio,
+                                    __global const ushort *ring,  // split 0's keys, f16: [slot][D41_RING][D41_HD]
+                                    __global const uint *pt, uint npp,
+                                    __global const ushort *pool,  // later splits' keys, f16, by d41_comp_index, pt
+                                    __global const uint *idx,     // their numbers, rows of D41_TOPK
+                                    __global float *part) {       // D41_ATT_PART (layout.h)
+  __local float __attribute__((aligned(64))) lq[D41_HD * D41_ATT_HEADS];       // [chunk][head][16]
+  __local float __attribute__((aligned(64))) lp[2 * D41_ATT_KEYS * D41_ATT_HEADS];  // [half of the chunks][lot][head][16]
+  __local uint __attribute__((aligned(64))) lo[D41_ATT_KEYS];
+  const uint hg = get_group_id(0), r = get_group_id(1), split = get_group_id(2);
+  const uint nh = get_num_groups(0) * D41_ATT_HEADS;
+  __global const D41Row *row = rows + r;
+  const uint slot = row->slot, pos = row->pos;
+  if (slot == D41_NO_ROW || split >= att_splits(pos, ratio)) return;
+  const uint s = sg_id(), lane = sg_lane();
+  const uint vis = min(pos + 1, (uint)D41_WIN);
+  const uint rest = att_compressed(pos, ratio) - (split ? (split - 1) * D41_ATT_KEYS : 0);
+  const uint m = split ? min(rest, (uint)D41_ATT_KEYS) : vis;
+  const uint nb = (m + SG_SIZE - 1) / SG_SIZE;
+  const uint lot = s / 2, side = s & 1;
+  __global const uchar *keys = (__global const uchar *)(split ? pool : ring);
+  __global const float *q0 = q + ((ulong)r * nh + hg * D41_ATT_HEADS) * D41_HD;
+
+  // A sub-group's 32 values of each head; a rotated chunk takes each pair's angle once for the 8 heads.
+  float2 x[D41_ATT_HEADS];
+  for (uint h = 0; h < D41_ATT_HEADS; h++) x[h] = rd2(q0 + h * D41_HD + s * ATT_SG_DIMS);
+  if (s * ATT_SG_DIMS >= D41_NOPE) {
+    const uint yarn = ratio != 0, pair0 = (s * ATT_SG_DIMS - D41_NOPE) / 2;
+    const float sign = (lane & 1) ? 1.0f : -1.0f;
+    float th = rope_chain(pos, pair0, yarn), cs0, cs1;
+    const float sn0 = sign * sincos(yarn ? d41_yarn(th, pair0 + lane / 2) : th, &cs0);
+    th = rope_next8(th, yarn);
+    const float sn1 = sign * sincos(yarn ? d41_yarn(th, pair0 + 8 + lane / 2) : th, &cs1);
+    for (uint h = 0; h < D41_ATT_HEADS; h++)
+      x[h] = (float2)(idx_rot(x[h].s0, cs0, sn0), idx_rot(x[h].s1, cs1, sn1));
+  }
+  __local uint *lq0 = (__local uint *)(lq + s * ATT_SG_CHUNKS * ATT_CHUNK_VALUES);
+  intel_sub_group_block_write8(lq0, as_uint8((float8)(x[0].s0, x[1].s0, x[2].s0, x[3].s0, x[4].s0, x[5].s0, x[6].s0,
+                                                      x[7].s0)));
+  intel_sub_group_block_write8(lq0 + ATT_CHUNK_VALUES,
+                               as_uint8((float8)(x[0].s1, x[1].s1, x[2].s1, x[3].s1, x[4].s1, x[5].s1, x[6].s1,
+                                                 x[7].s1)));
+  if (!side && lot < nb) {
+    const uint off = att_key_off(row, split, vis, lot * SG_SIZE, m, ratio, idx + (ulong)r * D41_TOPK, pt, npp);
+    intel_sub_group_block_write(lo + lot * SG_SIZE, off);
+  }
+  barrier(CLK_LOCAL_MEM_FENCE);
+
+  // The dot products: lanes hold keys, 16 of a lot, so a head needs no reduction, and two sub-groups share a lot's chunks.
+  __local float *lp1 = lp + side * D41_ATT_KEYS * D41_ATT_HEADS;
+  if (lot < nb) {
+    const uint off = intel_sub_group_block_read(lo + lot * SG_SIZE);
+    __global const uint8 *key = (__global const uint8 *)(keys + ((ulong)off << 6));
+    float8 a = (float8)0.0f;
+    for (uint c = side * ATT_DOT_CHUNKS; c < (side + 1) * ATT_DOT_CHUNKS; c++) {
+      const float16 k = convert_float16(as_half16(key[c]));
+      const float8 qc = as_float8(intel_sub_group_block_read8((__local const uint *)(lq + c * ATT_CHUNK_VALUES)));
+      a.s0 = idx_dot(a.s0, k, qc.s0);
+      a.s1 = idx_dot(a.s1, k, qc.s1);
+      a.s2 = idx_dot(a.s2, k, qc.s2);
+      a.s3 = idx_dot(a.s3, k, qc.s3);
+      a.s4 = idx_dot(a.s4, k, qc.s4);
+      a.s5 = idx_dot(a.s5, k, qc.s5);
+      a.s6 = idx_dot(a.s6, k, qc.s6);
+      a.s7 = idx_dot(a.s7, k, qc.s7);
+    }
+    a *= ATT_SCALE;
+    if (lot * SG_SIZE + lane >= m) a = (float8)(-INFINITY);
+    intel_sub_group_block_write8((__local uint *)(lp1 + lot * ATT_CHUNK_VALUES), as_uint8(a));
+  }
+  barrier(CLK_LOCAL_MEM_FENCE);
+
+  // Each head's largest score and its probabilities, by the sub-group of that number.
+  __global float *ph = part + ((ulong)r * nh + hg * D41_ATT_HEADS + s) * D41_ATT_PART;
+  if (s < D41_ATT_HEADS) {
+    float v[ATT_BATCHES];
+    float mx = -INFINITY;
+    for (uint b = 0; b < nb; b++) {
+      const uint at = b * ATT_CHUNK_VALUES + s * SG_SIZE;
+      v[b] = as_float(intel_sub_group_block_read((__local const uint *)(lp + at))) +
+             as_float(intel_sub_group_block_read((__local const uint *)(lp + D41_ATT_KEYS * D41_ATT_HEADS + at)));
+      mx = fmax(mx, v[b]);
+    }
+    mx = sg_max(mx);
+    float sum = 0.0f;
+    for (uint b = 0; b < nb; b++) {
+      const float e = exp(v[b] - mx);
+      sum += e;
+      intel_sub_group_block_write((__local uint *)(lp + b * ATT_CHUNK_VALUES + s * SG_SIZE), as_uint(e));
+    }
+    sum = sg_sum(sum);
+    if (lane == 0) vstore2((float2)(mx, sum), 0, ph + D41_ATT_ML + 2 * split);
+  }
+  barrier(CLK_LOCAL_MEM_FENCE);
+
+  // The weighted keys: lanes hold values, 32 of each head a sub-group, each key's probabilities one value in all lanes.
+  float2 acc[D41_ATT_HEADS];
+  for (uint h = 0; h < D41_ATT_HEADS; h++) acc[h] = (float2)0.0f;
+  for (uint b = 0; b < nb; b++) {
+    const float8 p = as_float8(intel_sub_group_block_read8((__local const uint *)(lp + b * ATT_CHUNK_VALUES)));
+    const uint offs = intel_sub_group_block_read(lo + b * SG_SIZE);
+#define A(h, e, l) acc[h] = mad(k, (float2)sub_group_broadcast(p.e, l), acc[h]);
+#define KEY(l)                                                                                                         \
+  {                                                                                                                    \
+    __global const ushort *kp = (__global const ushort *)(keys + ((ulong)sub_group_broadcast(offs, l) << 6));          \
+    const float2 k = convert_float2(as_half2(intel_sub_group_block_read_us2(kp + s * ATT_SG_DIMS)));                   \
+    A(0, s0, l) A(1, s1, l) A(2, s2, l) A(3, s3, l) A(4, s4, l) A(5, s5, l) A(6, s6, l) A(7, s7, l)                    \
+  }
+    KEY(0) KEY(1) KEY(2) KEY(3) KEY(4) KEY(5) KEY(6) KEY(7)
+    KEY(8) KEY(9) KEY(10) KEY(11) KEY(12) KEY(13) KEY(14) KEY(15)
+#undef KEY
+#undef A
+  }
+  __global float *out = part + ((ulong)r * nh + hg * D41_ATT_HEADS) * D41_ATT_PART + split * D41_HD + s * ATT_SG_DIMS;
+  for (uint h = 0; h < D41_ATT_HEADS; h++) wr2(out + (ulong)h * D41_ATT_PART, acc[h]);
+}
+
+// A row's attention output from its splits: o_h = sum_split exp(m_split - M) o_split / den, den the same sum of the l
+// and exp(sink - M), M the largest of the m, the sink and -1e30 (ggml's form, so exp does not overflow at a large sink);
+// then its rotation taken off. A padded row returns. Groups (heads, W), 256, heads a multiple of 8.
+REQD_SG __kernel void ds_attn_merge(__global const float *part,   // as ds_attn_split leaves it, with the same ratio
+                                    __global const float *sinks,  // D41_H f32
+                                    uint first_head,              // the card's first; groups of heads count from it
+                                    __global const D41Row *rows, uint ratio,
+                                    __global uchar *oa,    // a8, [groups][W] rows of 8 heads, D41_OG_A8_ROW bytes
+                                    __global float *of) {  // when set, the f32 values, rows of heads of D41_HD
+  const uint lh = get_group_id(0), r = get_group_id(1), nh = get_num_groups(0);
+  const uint slot = rows[r].slot, pos = rows[r].pos;
+  if (slot == D41_NO_ROW) return;
+  const uint lane = sg_lane(), ns = att_splits(pos, ratio), i0 = sg_id() * 32;
+  __global const float *ph = part + ((ulong)r * nh + lh) * D41_ATT_PART;
+  // Lane 2 s holds split s's m, the next its l.
+  const float ml = rd1(ph + D41_ATT_ML);
+  const bool is_m = !(lane & 1) && lane / 2 < ns;
+  const float sink = sinks[first_head + lh];
+  const float big = fmax(sg_max(is_m ? ml : -INFINITY), fmax(sink, -1e30f));
+  const float e = exp(ml - big);
+  const float den = sg_sum(is_m ? e * sg_xor(ml, 1) : 0.0f) + exp(sink - big);
+  const float f = e / den;
+  float2 y = (float2)0.0f;
+  for (uint sp = 0; sp < ns; sp++) y = mad(rd2(ph + sp * D41_HD + i0), (float2)sub_group_broadcast(f, 2 * sp), y);
+  if (i0 >= D41_NOPE) {
+    const uint yarn = ratio != 0, pair0 = (i0 - D41_NOPE) / 2;
+    const float sign = (lane & 1) ? -1.0f : 1.0f;
+    float th = rope_chain(pos, pair0, yarn), cs0, cs1;
+    const float sn0 = sign * sincos(yarn ? d41_yarn(th, pair0 + lane / 2) : th, &cs0);
+    th = rope_next8(th, yarn);
+    const float sn1 = sign * sincos(yarn ? d41_yarn(th, pair0 + 8 + lane / 2) : th, &cs1);
+    y = (float2)(idx_rot(y.s0, cs0, sn0), idx_rot(y.s1, cs1, sn1));
+  }
+  if (of) wr2(of + ((ulong)r * nh + lh) * D41_HD + i0, y);
+  const uint g = lh / D41_OG_HEADS;
+  a8_store_block(y, oa + ((ulong)g * get_num_groups(1) + r) * D41_OG_A8_ROW, D41_OG_K,
+                 (lh % D41_OG_HEADS) * (D41_HD / 32) + i0 / 32);
 }

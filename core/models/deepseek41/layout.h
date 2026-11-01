@@ -105,6 +105,25 @@ SHARED_ASSERT(sizeof(D41Row) == 16, "D41Row layout");
 #define D41_QKV_SGS 4
 #define D41_QR_A8_ROW (D41_QLR + D41_QLR / 8)  // bytes of a row of qr as a8 (kernels/include/a8.h)
 
+// ds_attn_split's grid: (first dimension) groups of D41_ATT_HEADS heads, (second) rows, (third) splits of keys, split 0
+// the window and splits 1 to 4 up to D41_ATT_KEYS compressed rows each. 16 sub-groups share a work-group's products,
+// faster than 8 (docs/measurements/MEASUREMENTS.md#2026-11-02-deepseek41-attn-split).
+#define D41_ATT_KEYS 128
+#define D41_ATT_SPLITS (1 + D41_TOPK / D41_ATT_KEYS)
+#define D41_ATT_HEADS 8
+#define D41_ATT_SGS 16
+#define D41_ATT_WG (D41_ATT_SGS * 16)
+// What ds_attn_split leaves for ds_attn_merge, for each row and head D41_ATT_PART f32: each split's sum of
+// exp(s - m) v (D41_HD), then (m, sum of exp(s - m)) for each split at D41_ATT_ML, padded so a head's end is 64-aligned.
+#define D41_ATT_ML (D41_ATT_SPLITS * D41_HD)
+#define D41_ATT_PART (D41_ATT_ML + 16)
+
+// An output group: its heads one after the other as one a8 row, the input of attn_output_a's D41_OLR rows of that group.
+#define D41_OG_HEADS (D41_H / D41_OG)
+#define D41_OG_K (D41_OG_HEADS * D41_HD)            // 4,096
+#define D41_OG_A8_ROW (D41_OG_K + D41_OG_K / 8)     // bytes of a group's a8 row
+#define D41_OG_WG_ROWS 32                           // ds_output_groups' rows a work-group: an a8 unit of its output
+
 // A ratio-2 source's compressor ring: [slot][D41_CRING] cells of kv' then sc (D41_HD f32 each).
 #define D41_CRING_CELL (2 * D41_HD)
 
