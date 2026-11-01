@@ -257,9 +257,14 @@ class Model {
   void kvs_drop(uint32_t slot, uint32_t pages);
 
   // Adaptive swaps (swap.cpp): adds the last prompt chunk's routing to the counts, and makes up to max_swaps swaps
-  // where the counts say so, the clearest first. Returns the swaps made. Call between steps.
+  // where the counts say so, the clearest first. Returns the swaps made. Call between steps. A round while no plan
+  // runs passes decay false: the counts have not changed since the last round, so they are not decayed.
   void note_prompt_routing();
-  uint32_t swap_round(uint32_t max_swaps = 64);
+  uint32_t swap_round(uint32_t max_swaps = 64, bool decay = true);
+  // Whether the swap and move threads are done, so that a round would not wait for them.
+  bool swaps_ready() const { return swap_busy_.load() == 0; }
+  // Whether the last round chose nothing for the next: no swaps, refills or evictions. After swaps_ready.
+  bool swaps_settled() const { return swap_next_.empty() && evict_next_.empty(); }
   uint64_t swaps() const { return swaps_; }
 
   const LoadInfo &info() const { return info_; }
@@ -482,6 +487,7 @@ class Model {
   std::vector<SwapPlan> swap_next_;  // chosen by the last round, applied by the next
   std::map<uint64_t, std::vector<uint8_t *>> spares_;  // spare arena pieces by size
   std::thread swap_bg_;
+  std::atomic<int> swap_busy_{0};  // swap_bg_ and move_bg_ while they run
   std::vector<SwapMove> moves_;  // the last round's, until settle_moves
   std::thread move_bg_;
   std::unique_ptr<Pool> swap_pool_;

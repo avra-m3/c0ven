@@ -39,7 +39,7 @@ void Model::note_prompt_routing() {
 // builds the incoming experts' halves from the arena and reads the outgoing ones from the file into spare pieces.
 // With Options::share_kv the round first moves memory between the KV pool and the cache (kv_share.cpp): while the KV
 // needs memory or the cache can refill, that is the round's choice instead of swaps, made on the engine thread.
-uint32_t Model::swap_round(uint32_t max_swaps) {
+uint32_t Model::swap_round(uint32_t max_swaps, bool decay) {
   if (!share_ && (nslots_cached_ == 0 || nslots_cached_ >= Q_EXPERTS)) return 0;
   if (swap_bg_.joinable()) swap_bg_.join();
   const uint32_t applied = apply_round();
@@ -68,7 +68,8 @@ uint32_t Model::swap_round(uint32_t max_swaps) {
   }
   std::vector<float> use;
   if (!chosen) use = use_;
-  for (auto &x : use_) x *= 0.8f;  // the counts decay each round
+  if (decay)
+    for (auto &x : use_) x *= 0.8f;  // the counts decay each round
   start_round(std::move(use), chosen ? 0 : max_swaps);
   return applied;
 }
@@ -167,13 +168,16 @@ uint32_t Model::apply_round() {
     // Each outgoing expert into the piece its incoming one left, so every staging slot keeps its arena address and
     // the prompt path's copy lists stay as recorded: from the anonymous arena a list costs a bind per copy to record
     // and an unbind to drop (docs/measurements/MEASUREMENTS.md#2026-10-17-swaps-keep-the-copies).
-    if (!moves_.empty())
+    if (!moves_.empty()) {
+      swap_busy_++;
       move_bg_ = std::thread([this] {
         for (const SwapMove &m : moves_) {
           const HostLayer &hl = *host_layers_[m.l];
           std::memcpy(m.to, m.from, 2 * hl.gate_bytes + hl.down_bytes);
         }
+        swap_busy_--;
       });
+    }
     if (!refills.empty()) log_share("refilled the cache", t0);
   }
   swap_next_.clear();
@@ -200,6 +204,7 @@ void Model::start_round(std::vector<float> use, uint32_t max_swaps) {
   // Swaps leave the staging's pieces where they are.
   bool restage = !evict_next_.empty() && cards_[0]->pc;
   for (const SwapPlan &w : swap_next_) restage |= w.out == kNoExpert && cards_[0]->pc;
+  swap_busy_++;
   swap_bg_ = std::thread([this, slot_max, restage, use = std::move(use), max_swaps, old = std::move(retired_)]() mutable {
     old.clear();
     if (max_swaps) choose_swaps(use, max_swaps);
@@ -246,6 +251,7 @@ void Model::start_round(std::vector<float> use, uint32_t max_swaps) {
       const Staging st = staging_after();
       for (auto &card : cards_) next_copies_.push_back(prompt_copies(*card, st, next_copy_count_));
     }
+    swap_busy_--;
   });
   retired_.clear();
 }

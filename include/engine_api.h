@@ -20,7 +20,7 @@ extern "C" {
 #define ENGINE_API
 #endif
 
-#define ENGINE_API_VERSION 14
+#define ENGINE_API_VERSION 15
 
 typedef enum {
   ENGINE_OK = 0,
@@ -238,6 +238,7 @@ typedef struct {
   uint64_t ngram_reads;        /* rows read from the SSD */
   uint64_t experts_cached;     /* experts cached per layer at the last plan's end, the mean over the layers */
   uint64_t experts_floor;      /* the fewest the load keeps room for, whatever the KV pool holds (ENGINE_CONFIG_SHARE_KV) */
+  uint64_t idle_rounds;        /* of the swap rounds, those run while no plan came */
 } engine_stats;
 
 /* One slot's counters since admit: its own decode, not its prompt. */

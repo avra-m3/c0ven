@@ -25,7 +25,7 @@ import ctypes
 from dataclasses import dataclass
 from enum import IntEnum
 
-ABI_VERSION = 14
+ABI_VERSION = 15
 
 MAX_STOP = 8
 MAX_STEP_SLOTS = 8
@@ -251,6 +251,7 @@ STATS_FIELDS = (
     "ngram_reads",
     "experts_cached",
     "experts_floor",
+    "idle_rounds",
 )
 """`engine_stats`'s fields, in the header's order; all 64-bit counts."""
 
