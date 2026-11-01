@@ -14,6 +14,15 @@ namespace engine {
 
 namespace {
 constexpr uint32_t kRowsPerTask = 64;
+
+// silu(g) * u, with g and u clamped first when limit is above 0 (ExpertShape::swiglu_limit).
+inline float swiglu_one(float g, float u, float limit) {
+  if (limit > 0.0f) {
+    g = std::min(g, limit);
+    u = std::clamp(u, -limit, limit);
+  }
+  return g / (1.0f + std::exp(-g)) * u;
+}
 // compute_many's tasks: kRowsGU rows of gate or of up, and kRowsDown rows of down, small enough that one expert
 // spreads evenly over 16 workers. h is made kRowsH rows at a time.
 constexpr uint32_t kRowsGU = 16, kRowsH = 32, kRowsDown = 32;
@@ -90,10 +99,7 @@ void CpuExperts::compute(const ExpertShape &s, const std::vector<ExpertWeights> 
   hq_.resize((size_t)n * hq_bytes);
   std::vector<float> h(F);
   for (uint32_t e = 0; e < n; e++) {
-    for (uint32_t r = 0; r < F; r++) {
-      float gv = g_[(size_t)e * F + r];
-      h[r] = gv / (1.0f + std::exp(-gv)) * u_[(size_t)e * F + r];
-    }
+    for (uint32_t r = 0; r < F; r++) h[r] = swiglu_one(g_[(size_t)e * F + r], u_[(size_t)e * F + r], s.swiglu_limit);
     dq->from_float(h.data(), hq_.data() + e * hq_bytes, F);
   }
   out_.resize((size_t)n * E);
@@ -146,10 +152,8 @@ void CpuExperts::compute_many(const ExpertShape &s, const std::vector<Job> &jobs
   auto swiglu = [&](uint32_t d, uint32_t r0, uint32_t r1) {
     float h[kRowsH];
     for (uint32_t j : of[d]) {
-      for (uint32_t r = r0; r < r1; r++) {
-        float gv = g_[(size_t)j * F + r];
-        h[r - r0] = gv / (1.0f + std::exp(-gv)) * u_[(size_t)j * F + r];
-      }
+      for (uint32_t r = r0; r < r1; r++)
+        h[r - r0] = swiglu_one(g_[(size_t)j * F + r], u_[(size_t)j * F + r], s.swiglu_limit);
       dq->from_float(h, hq_.data() + j * hq_bytes + (size_t)(r0 / hblk) * hblk_bytes, r1 - r0);
     }
   };
@@ -227,10 +231,7 @@ void CpuExperts::compute_many(const ExpertShape &s, const std::vector<Job> &jobs
   pool_.run(nd, [&](uint64_t d) {
     for (uint32_t j : of[d]) {
       std::vector<float> h(F);
-      for (uint32_t r = 0; r < F; r++) {
-        float gv = g_[(size_t)j * F + r];
-        h[r] = gv / (1.0f + std::exp(-gv)) * u_[(size_t)j * F + r];
-      }
+      for (uint32_t r = 0; r < F; r++) h[r] = swiglu_one(g_[(size_t)j * F + r], u_[(size_t)j * F + r], s.swiglu_limit);
       dq->from_float(h.data(), hq_.data() + j * hq_bytes, F);
     }
   });

@@ -22,13 +22,17 @@ struct ExpertShape {
   uint32_t gate_type = 0, down_type = 0;
   uint32_t n_embd = 0;  // K of gate and up, rows of down
   uint32_t n_ff = 0;    // rows of gate and up, K of down
+  // Above 0, the SwiGLU limit L: before the SiLU, gate becomes min(gate, L) and up clamp(up, -L, L)
+  // (docs/spec/MODEL_LAYER.md, section 4.3). 0 leaves both as they are.
+  float swiglu_limit = 0.0f;
 };
 
 class CpuExperts {
  public:
   explicit CpuExperts(Pool &pool);
 
-  // y = sum over k of w[k] * down_k(silu(gate_k x) * (up_k x)), the experts taken in order.
+  // y = sum over k of w[k] * down_k(silu(gate_k x) * (up_k x)), the experts taken in order, gate_k x and up_k x
+  // clamped first when shape.swiglu_limit is above 0.
   void compute(const ExpertShape &shape, const std::vector<ExpertWeights> &experts, const std::vector<float> &w,
                const float *x, float *y);
 

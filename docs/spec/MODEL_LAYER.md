@@ -431,6 +431,13 @@ For each selected expert `e_k` (`src/llama-graph.cpp:2185-2317`):
 
 `moe = y_1 + y_2 + ... + y_10`, summed in rank order (`:2334-2343`).
 
+A file whose `swiglu_clamp_exp` (or `swiglu_clamp_shexp`, for the shared expert) gives a layer a limit `L` above 0
+clamps both inputs first: `h = silu(min(G_e x, L)) * clamp(U_e x, -L, L)`. That is `ggml_swiglu_clamp`
+(`ggml/src/ggml-cpu/ops.cpp:3450-3452`), which the pinned builder uses for DeepSeek-V4 (`src/llama-graph.cpp:2225-2229`,
+`:1831-1835` for the shared expert). DeepSeek's own reference does the same (`Expert.forward` in `inference/model.py`
+of `deepseek-ai/DeepSeek-V4.1-Flash-1017`). The builder's other branch, for other architectures, caps `silu(G_e x)` at
+`L` instead. The engine's CPU experts take `L` as `ExpertShape::swiglu_limit`; for this file it is off.
+
 ### 4.4 The shared expert and how it is combined (`src/models/qwen4exp.cpp:1009-1030`)
 
 `s = D_s( silu(G_s x) * (U_s x) )` (`build_ffn` with SiLU and parallel gate, `src/llama-graph.cpp:1806-1810`,

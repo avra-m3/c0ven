@@ -49,6 +49,7 @@ docker exec engine-dev bash -c 'cd /src/build && ENGINE_EXPECT_GPUS=2 ctest -L g
 | --- | --- | --- |
 | `gguf_test` | 1 | the GGUF reader against the census of the IQ3_S file |
 | `mrope_test` | 1 | the M-RoPE positions an image gives a prompt's cells, against transformers' rule; no card |
+| `experts_test` | 1 | the CPU's expert products with and without the SwiGLU limit, against the formula on ggml's dot products, 1e-5; no card |
 | `ze_smoke_test` | 2 | a kernel runs on every card, and one card waits on another's event |
 | `matvec_test` | 3 | the weight products of all ten quantised types against ggml's dequantisation, 1e-5 |
 | `moe_test` | 3 | the decode step's grouped expert products of `moe.cl` equal `matvec.cl`'s bit for bit, for every expert type the file holds and every group size |
