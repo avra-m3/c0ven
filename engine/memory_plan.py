@@ -143,7 +143,7 @@ class MemoryPlan:
             ("cards", str(self.cards)),
             ("usable VRAM per card", gib(self.usable_vram)),
             ("weights per card", gib(self.weights_per_card)),
-            ("draft layer per card (estimate)", gib(self.draft_per_card)),
+            ("draft layer per card", gib(self.draft_per_card)),
             ("working memory per card (estimate)", gib(self.working_per_card)),
             ("reserve per sequence per card", gib(self.reserve_per_sequence)),
             ("free for experts per card", gib(self.free_per_card)),

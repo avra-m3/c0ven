@@ -17,6 +17,7 @@ from engine.memory_plan import (
     working_file,
     write_working,
 )
+from engine.models.qwen4exp import numbers
 from engine.models.qwen4exp.memory import model_memory
 from engine.models.qwen4exp.tensors import Category, from_tsv
 
@@ -35,7 +36,7 @@ def test_reserve_per_sequence(context: int, expected: int):
 
 @pytest.mark.parametrize(
     ("slots", "context", "cached"),
-    [(1, 32_768, 19_151), (2, 32_768, 18_841), (4, 32_768, 18_220), (1, 262_144, 18_968), (4, 262_144, 17_489)],
+    [(1, 32_768, 18_940), (2, 32_768, 18_629), (4, 32_768, 18_009), (1, 262_144, 18_757), (4, 262_144, 17_277)],
 )
 def test_experts_with_every_weight_halved(slots: int, context: int, cached: int):
     """MEMORY_BUDGET.md halves every weight outside the experts; with its figure the plan gives its counts."""
@@ -51,9 +52,16 @@ def test_the_split_rules_keep_some_weights_whole():
     half the dense bytes, and fewer experts than MEMORY_BUDGET.md counts."""
     p = plan(MODEL, PlanOptions(slots=1, context=262_144))
     assert MODEL.weights_per_card > 2_257_086_720
-    assert p.experts_cached < 18_968
-    assert p.free_per_card == 24_385_683_456 - MODEL.weights_per_card - 614_446_848 - 1_600_663_296 - 504_664_064
+    assert p.experts_cached < 18_757
+    assert p.free_per_card == 24_385_683_456 - MODEL.weights_per_card - 831_015_936 - 1_600_663_296 - 504_664_064
     assert p.experts_cached == p.free_per_card // (MODEL.expert_bytes // 2)
+
+
+def test_the_draft_layer_as_the_core_stores_it():
+    """IQ4_NL experts, 1,382,400 B a slot on each of two cards, and the rest of the layer split as a main layer's."""
+    assert numbers.draft_per_card(2) == 831_015_936
+    assert numbers.draft_per_card(1) == 1_593_527_296
+    assert MODEL.draft_per_card == numbers.draft_per_card(2)
 
 
 def test_host_side():

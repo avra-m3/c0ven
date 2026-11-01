@@ -10,8 +10,8 @@ Every row is labelled **computed** (summed from sizes in the repository, with th
 This budget is for the tensor split ([ADR-0023](../adr/0023-two-cards-tensor-split.md)), with the free RAM measured.
 
 Each card holds half of everything: half the dense weights, the embedding, the head, the PLE and the draft layer,
-half of each sequence's state, and half of every cached expert. That leaves 19.9 GB per card before the
-per-sequence reserve. It caches 18,968 experts (77.2%) for one sequence at 262K, and 17,489 (71.2%) for four
+half of each sequence's state, and half of every cached expert. That leaves 19.7 GB per card before the
+per-sequence reserve. It caches 18,757 experts (76.3%) for one sequence at 262K, and 17,277 (70.3%) for four
 ([tables](#per-card-for-the-tensor-split)).
 
 An arena of every expert does not fit in the host memory that can be pinned. Level Zero host memory comes from large
@@ -22,8 +22,8 @@ memory and reclaim the page cache, and past ~25 GiB the host began to swap. On 2
 reached 45 GiB before swapping. So the limit depends more on how fragmented the host's memory is than on how much is
 free. The arena of every expert is 46.84 GiB, and 50.06 GiB with one 262K sequence's streamed KV.
 
-An arena of only the experts the cards do not hold fits: 10.3-10.7 GiB for one sequence, 13.9 GiB pinned with one
-262K sequence's streamed KV, 26.4 GiB with four ([RAM](#ram-for-the-tensor-split)). A swap then moves an expert both
+An arena of only the experts the cards do not hold fits: 10.7-11.1 GiB for one sequence, 14.3 GiB pinned with one
+262K sequence's streamed KV, 26.8 GiB with four ([RAM](#ram-for-the-tensor-split)). A swap then moves an expert both
 ways on the copy engines: the one leaving VRAM back to the arena, the one entering from it. The engine uses this
 arena ([ADR-0023](../adr/0023-two-cards-tensor-split.md) item 5).
 
@@ -220,9 +220,9 @@ rows above unless labelled; the two cards are the same.
 | PLE (layer 1), half | 32,870,400 | computed |
 | Token embedding, half its columns | 168,857,600 | computed. It could live in host memory instead: one row per token |
 | Head and final mixer, half the vocabulary | 267,310,080 | computed |
-| Draft layer, half | 614,446,848 | *estimate*, which predates the choice of the draft layer's storage. The core keeps its experts in IQ4_NL, 707,788,832 B a card for them alone (the `ENGINE_MTP_CACHE_DIR` file, [DEVELOPING.md](../DEVELOPING.md)) |
+| Draft layer, half | 831,015,936 | computed from the layer's shapes as the core stores it (`numbers.draft_per_card`): its experts in IQ4_NL, 707,790,848 B with the slot map; the rest BF16, the norms F32 |
 | Working memory | 1,600,663,296 | *estimate* |
-| Left for the reserve and the experts | 19,913,486,592 | |
+| Left for the reserve and the experts | 19,696,917,504 | |
 
 ### The reserve per sequence, per card
 
@@ -240,14 +240,14 @@ hold the same count: floor(free / 1,023,200).
 
 | Sequences x context | Free per card | Experts cached | Share of 24,576 | Not cached |
 | --- | ---: | ---: | ---: | ---: |
-| 1 x 32K | 19,595,993,344 | 19,151 | 77.9% | 5,425 |
-| 2 x 32K | 19,278,500,096 | 18,841 | 76.7% | 5,735 |
-| 4 x 32K | 18,643,513,600 | 18,220 | 74.1% | 6,356 |
-| 1 x 262K | 19,408,822,528 | 18,968 | 77.2% | 5,608 |
-| 2 x 262K | 18,904,158,464 | 18,475 | 75.2% | 6,101 |
-| 4 x 262K | 17,894,830,336 | 17,489 | 71.2% | 7,087 |
+| 1 x 32K | 19,379,424,256 | 18,940 | 77.1% | 5,636 |
+| 2 x 32K | 19,061,931,008 | 18,629 | 75.8% | 5,947 |
+| 4 x 32K | 18,426,944,512 | 18,009 | 73.3% | 6,567 |
+| 1 x 262K | 19,192,253,440 | 18,757 | 76.3% | 5,819 |
+| 2 x 262K | 18,687,589,376 | 18,263 | 74.3% | 6,313 |
+| 4 x 262K | 17,678,261,248 | 17,277 | 70.3% | 7,299 |
 
-Spot check: 1 x 262K: 19,913,486,592 - 504,664,064 = 19,408,822,528; / 1,023,200 = 18,968.8, so 18,968.
+Spot check: 1 x 262K: 19,696,917,504 - 504,664,064 = 19,192,253,440; / 1,023,200 = 18,757.1, so 18,757.
 
 ### RAM for the tensor split
 
@@ -256,11 +256,11 @@ is K and V for the whole context plus the draft window: 13,056 x context + 35,65
 
 | Sequences x context | Arena: every expert | Arena: only the experts not cached | Streamed KV | Pinned, every expert | Pinned, not cached only |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| 1 x 32K | 46.84 GiB | 10.34 GiB | 0.43 GiB | 47.27 GiB | 10.77 GiB |
-| 4 x 32K | 46.84 GiB | 12.11 GiB | 1.73 GiB | 48.56 GiB | 13.84 GiB |
-| 1 x 262K | 46.84 GiB | 10.69 GiB | 3.22 GiB | 50.06 GiB | 13.91 GiB |
-| 2 x 262K | 46.84 GiB | 11.63 GiB | 6.44 GiB | 53.28 GiB | 18.07 GiB |
-| 4 x 262K | 46.84 GiB | 13.51 GiB | 12.88 GiB | 59.72 GiB | 26.39 GiB |
+| 1 x 32K | 46.84 GiB | 10.74 GiB | 0.43 GiB | 47.27 GiB | 11.17 GiB |
+| 4 x 32K | 46.84 GiB | 12.52 GiB | 1.73 GiB | 48.56 GiB | 14.24 GiB |
+| 1 x 262K | 46.84 GiB | 11.09 GiB | 3.22 GiB | 50.06 GiB | 14.31 GiB |
+| 2 x 262K | 46.84 GiB | 12.03 GiB | 6.44 GiB | 53.28 GiB | 18.47 GiB |
+| 4 x 262K | 46.84 GiB | 13.91 GiB | 12.88 GiB | 59.72 GiB | 26.79 GiB |
 
 The arena of experts not cached is (24,576 - cached) x 2,046,400 B, from the table above. Beside the pinned memory:
 the n-gram row cache (0.09-1.41 GiB for 1M-16M rows of 90 B), checkpoints (118,038,528 B each in this plan; about
@@ -278,5 +278,5 @@ Measured on the host on 2026-10-13, with nothing else on the cards ([the design-
 | Allocated before the host began to swap (compaction and page-cache reclaim from ~12 GiB on) | ~25 GiB |
 | The same probe on 2026-10-12, before swapping | 45 GiB |
 
-One or two sequences with the not-cached arena (10.8-18.1 GiB) fit inside the range where the host only compacts
-and reclaims page cache. Four at 262K (26.4 GiB) reach the edge. An arena of every expert does not fit.
+One or two sequences with the not-cached arena (11.2-18.5 GiB) fit inside the range where the host only compacts
+and reclaims page cache. Four at 262K (26.8 GiB) reach the edge. An arena of every expert does not fit.

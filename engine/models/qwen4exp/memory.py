@@ -18,7 +18,7 @@ def model_memory(table: TensorTable, cards: int = 2) -> ModelMemory:
     return ModelMemory(
         cards=cards,
         weights_per_card=sum(bytes_per_card(t, cards) for t in table.tensors),
-        draft_per_card=numbers.DRAFT_PER_CARD * 2 // cards,
+        draft_per_card=numbers.draft_per_card(cards),
         layers=numbers.LAYERS,
         experts=experts,
         expert_bytes=expert_total // experts,
