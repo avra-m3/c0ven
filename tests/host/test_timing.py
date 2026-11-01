@@ -41,17 +41,19 @@ def test_a_short_prompt_is_one_piece_and_a_long_one_is_cut():
     cost = CostModel.initial(row_ms=0.07, chunk_ms=600.0)
     assert cost.rows_within(500.0, 300) == 300, "a short prompt is whole, though its chunk is over the budget"
     assert cost.rows_within(500.0, WHOLE_ROWS) == WHOLE_ROWS, "the staging is still the larger part of its chunk"
-    assert cost.rows_within(500.0, WHOLE_ROWS + 76) == WHOLE_ROWS // 2, "longer: cut, though the staging is most"
+    assert cost.rows_within(500.0, WHOLE_ROWS + 76) == WHOLE_ROWS, "longer: cut, the piece full, the staging paid once"
     dear = CostModel.initial(row_ms=0.3, chunk_ms=900.0)
     assert dear.rows_within(500.0, 2048) == WHOLE_ROWS // 2, "nothing fits the budget: half of WHOLE_ROWS"
     cheap = CostModel.initial(row_ms=0.5, chunk_ms=100.0)
-    assert cheap.rows_within(500.0, 2048) == 800, "the rows that fit the budget"
+    assert cheap.rows_within(500.0, 2048) == WHOLE_ROWS, "1.6 x the budget fits more than WHOLE_ROWS"
+    dearer = CostModel.initial(row_ms=1.0, chunk_ms=100.0)
+    assert dearer.rows_within(500.0, 2048) == 700, "the rows that fit 1.6 x the budget"
     assert cheap.rows_within(500.0, 1000) == 1000, "1.6 x the budget is 800 ms, 1,400 rows"
     cheaper = CostModel.initial(row_ms=0.07, chunk_ms=100.0)
     assert cheaper.rows_within(500.0, 2048) == WHOLE_ROWS, "no more rows than WHOLE_ROWS, however cheap"
     assert cheaper.rows_within(500.0, WHOLE_ROWS + 40) == WHOLE_ROWS + 40, "fewer than a window's rows left: they join"
     per_row = CostModel.initial(row_ms=0.46)
-    assert per_row.rows_within(100.0, 3000) == 217, "without a fixed part, pieces fit the budget"
+    assert per_row.rows_within(100.0, 3000) == 347, "without a fixed part, pieces fit 1.6 x the budget"
 
 
 def test_a_piece_and_the_writers_beside_it_keep_to_the_fetch_path():
