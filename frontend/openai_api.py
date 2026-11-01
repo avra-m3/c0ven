@@ -2,9 +2,9 @@
 
 Beside OpenAI's own fields it takes the ones llama.cpp's and vLLM's servers take: `top_k`, `min_p`,
 `repetition_penalty`, `reasoning_content` on assistant messages, and `chat_template_kwargs` (`enable_thinking`,
-`reasoning_effort`, `preserve_thinking`). OpenAI's `reasoning_effort` maps onto the template's three levels, and its
-`none` turns thinking off. A user message's `image_url` parts are read when they are `data:` URLs (frontend/images.py),
-and so are its `video_url` parts (frontend/video.py), as vLLM's server names them.
+`reasoning_effort`, `preserve_thinking`). OpenAI's `reasoning_effort` maps onto the nearest level the template
+accepts, and its `none` turns thinking off. A user message's `image_url` parts are read when they are `data:` URLs
+(frontend/images.py), and so are its `video_url` parts (frontend/video.py), as vLLM's server names them.
 """
 
 from __future__ import annotations
@@ -21,12 +21,12 @@ from frontend.body import array, boolean, number, obj, settings
 from frontend.generate import BadRequest, End, Finish, Request, Result
 from frontend.images import ImageError, from_data_url
 from frontend.output import Content, Piece, Reasoning, ToolCall, ToolCallStart
-from frontend.template import Conversation
+from frontend.template import Conversation, Efforts
 
 type JSONObject = dict[str, Any]
 
-# "none" maps to no level: thinking is turned off instead.
-EFFORTS = {"none": None, "minimal": "low", "low": "low", "medium": "medium", "high": "xhigh", "xhigh": "xhigh"}
+EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh")
+"""OpenAI's levels. "none" turns thinking off; each other becomes the nearest level the template accepts."""
 JSON_INSTRUCTION = "Answer with a single JSON value only, with no other text."
 
 _FINISH = {
@@ -156,8 +156,8 @@ def _tool_schemas(tools: list[JSONObject]) -> dict[str, Mapping[str, Any]]:
     return schemas
 
 
-def parse(body: JSONObject, defaults: protocol.Settings) -> tuple[Request, bool]:
-    """The request, and whether it streams."""
+def parse(body: JSONObject, defaults: protocol.Settings, efforts: Efforts) -> tuple[Request, bool]:
+    """The request, and whether it streams. `efforts`: the reasoning efforts the model's template accepts."""
     images: list[bytes] = []
     videos: list[bytes] = []
     messages = _messages(array(body.get("messages"), "messages"), images, videos)
@@ -172,7 +172,7 @@ def parse(body: JSONObject, defaults: protocol.Settings) -> tuple[Request, bool]
     if effort is None and isinstance(asked, str):
         if asked not in EFFORTS:
             raise BadRequest(f"reasoning_effort {asked!r} is not one of {sorted(EFFORTS)}")
-        effort = EFFORTS[asked]
+        effort = None if asked == "none" else efforts.nearest(asked)
     fmt = body.get("response_format")
     if isinstance(fmt, dict) and cast(JSONObject, fmt).get("type") in ("json_object", "json_schema"):
         messages = _with_json_instruction(messages, cast(JSONObject, fmt))
@@ -180,7 +180,7 @@ def parse(body: JSONObject, defaults: protocol.Settings) -> tuple[Request, bool]
         messages,
         tools or None,
         enable_thinking=boolean(kwargs.get("enable_thinking", False if asked == "none" else None)),
-        reasoning_effort=effort if isinstance(effort, str) else None,
+        reasoning_effort=efforts.given(effort),
         preserve_thinking=boolean(kwargs.get("preserve_thinking")),
     )
     stop = body.get("stop")

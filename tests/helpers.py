@@ -42,6 +42,31 @@ TINY_TEMPLATE = (
 )
 """A ChatML template with the model's thinking and tool-call formats, small enough to read in a test."""
 
+LEVEL_TEMPLATE = (
+    "{%- if enable_thinking is undefined or enable_thinking is true %}{%- set e = reasoning_effort|default('xhigh') %}"
+    "{%- if e not in ('xhigh', 'medium', 'low') %}{{- raise_exception('Unexpected effort ' ~ e) }}{%- endif %}"
+    "{{- 'effort ' ~ e ~ '\\n' }}{%- endif %}" + TINY_TEMPLATE
+)
+"""The tiny template with the model's reasoning efforts: xhigh (the default), medium and low, and an error on others.
+The effort it was given is written first."""
+
+BUDGET_TEMPLATE = (
+    "{%- if drop_thinking is not defined or drop_thinking is none %}{%- set drop_thinking = true %}{%- endif %}"
+    "{%- set e = reasoning_effort if reasoning_effort is defined and reasoning_effort is not none else 'high' %}"
+    "{%- set levels = {'low': 50, 'medium': 62, 'high': 75, 'max': 100} %}"
+    "{%- if e is string and e in levels %}{%- set budget = levels[e] %}"
+    "{%- elif e is integer and e >= 1 and e <= 100 %}{%- set budget = e %}"
+    "{%- else %}{{- raise_exception('Invalid reasoning effort: ' ~ e) }}{%- endif %}"
+    "{{- 'effort ' ~ budget ~ '\\n' }}"
+    "{%- for m in messages %}{{- '<|im_start|>' + m.role + '\\n' }}"
+    "{%- if m.reasoning_content and not drop_thinking %}{{- '<think>' + m.reasoning_content + '</think>' }}{%- endif %}"
+    "{{- m.content + '<|im_end|>\\n' }}{%- endfor %}"
+    "{%- if add_generation_prompt %}{{- '<|im_start|>assistant\\n' }}"
+    "{{- '</think>' if enable_thinking is defined and enable_thinking is false else '<think>' }}{%- endif %}"
+)
+"""A template with DeepSeek's reasoning efforts (low, medium, high, max, or an integer from 1 to 100, written as the
+number), a bare `<think>` to start the reasoning, and `drop_thinking`."""
+
 
 def tiny_tokenizer() -> Tokenizer:
     """One token per byte (ids 0-255), then the special and added tokens: every UTF-8 character of more than one

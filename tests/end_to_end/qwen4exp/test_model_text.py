@@ -14,7 +14,8 @@ from typing import Any
 import pytest
 
 from frontend.model import Model, load
-from frontend.template import Conversation
+from frontend.openai_api import EFFORTS
+from frontend.template import Conversation, Efforts
 from frontend.tokenizer import Detokenizer, encode
 
 pytestmark = pytest.mark.model
@@ -57,6 +58,13 @@ def test_streamed_text_is_the_whole_decode(model: Model):
 def by_id(name: str) -> str:
     (row,) = [r for r in PROMPT_ROWS if r["id"] == name]
     return row["text"]
+
+
+def test_template_efforts_map_openai_levels_onto_the_models(model: Model):
+    efforts = model.template.efforts
+    assert efforts == Efforts(("low", "medium", "xhigh"), integers=False)
+    levels = {level: efforts.nearest(level) for level in EFFORTS if level != "none"}
+    assert levels == {"minimal": "low", "low": "low", "medium": "medium", "high": "xhigh", "xhigh": "xhigh"}
 
 
 def test_template_renders_a_system_prompt(model: Model):

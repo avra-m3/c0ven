@@ -277,7 +277,7 @@ def create_app(
     async def chat_completions(request: Request) -> Response:
         admitting()
         body = await _body(request)
-        req, streaming = openai_api.parse(body, model.defaults)
+        req, streaming = openai_api.parse(body, model.defaults, model.template.efforts)
         prompt = await render(req)
         req = replace(req, max_tokens=generate.budget(engine, prompt, req.max_tokens, default_max_tokens))
         pieces = recorded(generate.stream(model, engine, req, prompt), "openai")
@@ -300,7 +300,7 @@ def create_app(
     async def messages(request: Request) -> Response:
         admitting()
         body = await _body(request)
-        req, streaming = anthropic_api.parse(body, model.defaults)
+        req, streaming = anthropic_api.parse(body, model.defaults, model.template.efforts)
         prompt = await render(req)
         req = replace(req, max_tokens=generate.budget(engine, prompt, req.max_tokens, default_max_tokens))
         pieces = recorded(generate.stream(model, engine, req, prompt), "anthropic")
@@ -323,7 +323,7 @@ def create_app(
         body = await _body(request)
         images: list[bytes] = []
         videos: list[bytes] = []
-        conv, _ = anthropic_api.conversation(body, images, videos)
+        conv, _ = anthropic_api.conversation(body, model.template.efforts, images, videos)
         req = generate.Request(conv, model.defaults, images=tuple(images), videos=tuple(videos))
         return JSONResponse({"input_tokens": len((await render(req)).ids)})
 

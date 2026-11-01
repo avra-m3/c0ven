@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from tokenizers import Tokenizer
 
+from frontend.openai_api import EFFORTS
 from frontend.output import (
     Content,
     OutputParser,
@@ -15,9 +16,9 @@ from frontend.output import (
     ToolCallStart,
     parse_tool_call,
 )
-from frontend.template import ChatTemplate, Conversation, TemplateFailed
+from frontend.template import LEVELS, ChatTemplate, Conversation, Efforts, TemplateFailed
 from frontend.tokenizer import Detokenizer, encode
-from tests.helpers import TINY_TEMPLATE
+from tests.helpers import BUDGET_TEMPLATE, LEVEL_TEMPLATE, TINY_TEMPLATE
 
 
 def test_added_tokens_are_matched_whole(tokenizer: Tokenizer):
@@ -57,6 +58,54 @@ def test_template_tojson_keeps_text_as_is():
 def test_template_errors():
     with pytest.raises(TemplateFailed, match="no"):
         ChatTemplate("{{ raise_exception('no') }}").render(Conversation([]))
+
+
+def mapping(efforts: Efforts) -> dict[str, str | None]:
+    return {level: efforts.nearest(level) for level in EFFORTS if level != "none"}
+
+
+def test_efforts_of_the_three_level_template_map_as_before():
+    efforts = ChatTemplate(LEVEL_TEMPLATE).efforts
+    assert efforts == Efforts(("low", "medium", "xhigh"), integers=False)
+    assert mapping(efforts) == {"minimal": "low", "low": "low", "medium": "medium", "high": "xhigh", "xhigh": "xhigh"}
+
+
+def test_efforts_of_the_budget_template():
+    efforts = ChatTemplate(BUDGET_TEMPLATE).efforts
+    assert efforts == Efforts(("low", "medium", "high", "max"), integers=True)
+    assert mapping(efforts) == {"minimal": "low", "low": "low", "medium": "medium", "high": "high", "xhigh": "max"}
+
+
+def test_a_template_that_ignores_the_effort_takes_every_level():
+    efforts = ChatTemplate(TINY_TEMPLATE).efforts
+    assert efforts == Efforts(LEVELS, integers=True)
+    assert mapping(efforts) == {level: level for level in EFFORTS if level != "none"}
+
+
+def test_a_template_that_refuses_the_probe_is_given_each_effort_as_asked():
+    assert ChatTemplate("{{ raise_exception('no') }}").efforts == Efforts(LEVELS, integers=True)
+
+
+def test_a_template_that_refuses_every_effort_is_given_none():
+    efforts = ChatTemplate("{% if reasoning_effort is defined %}{{ raise_exception('no') }}{% endif %}").efforts
+    assert efforts == Efforts((), integers=False)
+    assert efforts.nearest("high") is None
+
+
+def test_a_template_that_fails_on_a_level_still_loads():
+    # Comparing a string level with a number fails outside Jinja's own errors.
+    efforts = ChatTemplate(
+        "{% if reasoning_effort is defined and reasoning_effort > 50 %}deep{% endif %}{{ messages[0].content }}"
+    ).efforts
+    assert efforts == Efforts((), integers=True)
+
+
+def test_a_clients_own_effort_passes_as_a_string_or_an_accepted_integer():
+    assert Efforts(("low",), integers=False).given("anything") == "anything"
+    assert Efforts(("low",), integers=False).given(30) is None
+    assert Efforts(("low",), integers=True).given(30) == 30
+    assert Efforts(("low",), integers=True).given(True) is None
+    assert Efforts(("low",), integers=True).given(3.5) is None
 
 
 def pieces_of(out: str, thinking: bool, step: int, cut: bool = False, **kw: object) -> list[Piece]:

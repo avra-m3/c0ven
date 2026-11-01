@@ -6,6 +6,7 @@ import asyncio
 import json
 import time
 from collections.abc import AsyncGenerator, Iterator
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -16,7 +17,8 @@ from tokenizers import Tokenizer
 import protocol
 from frontend.app import KEEPALIVE, _kept_alive, create_app  # pyright: ignore[reportPrivateUsage]
 from frontend.model import Model
-from tests.helpers import FakeEngine
+from frontend.template import ChatTemplate
+from tests.helpers import BUDGET_TEMPLATE, LEVEL_TEMPLATE, FakeEngine
 
 CALL = "<tool_call>\n<function=get_weather>\n<parameter=city>\nParis\n</parameter>\n</function>\n</tool_call>"
 TOOL = {
@@ -83,6 +85,51 @@ def test_openai_reasoning_effort_none_turns_thinking_off(client: TestClient, eng
     body = chat(client, reasoning_effort="none")
     assert body["choices"][0]["message"]["content"] == "Hello."
     assert tokenizer.decode(engine.prompts[0], skip_special_tokens=False).endswith("<think>\n\n</think>\n\n")
+
+
+def prompt_with(
+    model: Model, engine: FakeEngine, tokenizer: Tokenizer, *, template: str, path: str, body: dict[str, object]
+) -> str:
+    """The prompt the engine got for one request, with the model's template replaced."""
+    messages = [{"role": "user", "content": "hi"}]
+    if path == "/v1/messages":
+        body = {"max_tokens": 50, **body}
+    with TestClient(create_app(replace(model, template=ChatTemplate(template)), engine)) as c:
+        r = c.post(path, json={"messages": messages, **body})
+    assert r.status_code == 200, r.text
+    return tokenizer.decode(engine.prompts[-1], skip_special_tokens=False)
+
+
+@pytest.mark.parametrize(
+    ("template", "path", "body", "effort"),
+    [
+        (LEVEL_TEMPLATE, "/v1/chat/completions", {}, "xhigh"),
+        (LEVEL_TEMPLATE, "/v1/chat/completions", {"reasoning_effort": "minimal"}, "low"),
+        (LEVEL_TEMPLATE, "/v1/chat/completions", {"reasoning_effort": "high"}, "xhigh"),
+        (LEVEL_TEMPLATE, "/v1/chat/completions", {"chat_template_kwargs": {"reasoning_effort": 30}}, "xhigh"),
+        (LEVEL_TEMPLATE, "/v1/messages", {"reasoning_effort": "high"}, "xhigh"),
+        (LEVEL_TEMPLATE, "/v1/messages", {"chat_template_kwargs": {"reasoning_effort": 30}}, "xhigh"),
+        (BUDGET_TEMPLATE, "/v1/chat/completions", {"reasoning_effort": "high"}, "75"),
+        (BUDGET_TEMPLATE, "/v1/chat/completions", {"reasoning_effort": "xhigh"}, "100"),
+        (BUDGET_TEMPLATE, "/v1/chat/completions", {"reasoning_effort": "minimal"}, "50"),
+        (BUDGET_TEMPLATE, "/v1/chat/completions", {"chat_template_kwargs": {"reasoning_effort": 30}}, "30"),
+        (BUDGET_TEMPLATE, "/v1/messages", {"reasoning_effort": "xhigh"}, "100"),
+        (BUDGET_TEMPLATE, "/v1/messages", {"chat_template_kwargs": {"reasoning_effort": 30}}, "30"),
+    ],
+)
+def test_reasoning_effort_becomes_a_level_the_template_accepts(
+    model: Model,
+    engine: FakeEngine,
+    tokenizer: Tokenizer,
+    *,
+    template: str,
+    path: str,
+    body: dict[str, object],
+    effort: str,
+):
+    engine.output = "Hello."
+    prompt = prompt_with(model, engine, tokenizer, template=template, path=path, body=body)
+    assert prompt.startswith(f"effort {effort}\n")
 
 
 def test_openai_tool_calls(client: TestClient, engine: FakeEngine):
