@@ -94,6 +94,26 @@ def card_notes(plan: MemoryPlan, experts_core: int) -> list[str]:
     return []
 
 
+def cpu_rows(host: Host, workers: int, read_bytes_per_s: float) -> list[Row]:
+    n, source = host.cpu_workers()
+    quota = f"{host.cpu_quota:g}" if host.cpu_quota is not None else "none"
+    return [
+        Row(
+            "cpu",
+            "CPU",
+            f"{host.cpu_model.replace(' ', '_')},{host.cpus}_CPUs,{host.physical_cores}_cores,quota:{quota}",
+            f"{n}_workers_by_{source}",
+            f"{workers}_workers",
+        ),
+        Row(
+            "host_read",
+            "the workers' read of the arena",
+            "",
+            core=f"{read_bytes_per_s / 1e9:.1f}GB/s" if read_bytes_per_s else "",
+        ),
+    ]
+
+
 def info(rows: list[Row]) -> dict[str, str]:
     """The rows as INFO facts: `fit_<key>=host/plan/core`, a part left out where there is none."""
     out: dict[str, str] = {}

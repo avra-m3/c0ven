@@ -408,6 +408,7 @@ class NativeEngine:
             timing_fd=-1,
             version=f"core-abi{info.api_version}",
             image_tokens_max=int(info.image_tokens_max),
+            host_read_bytes_per_s=float(info.host_read_bytes_per_s),
         )
 
     def sleep(self) -> None:

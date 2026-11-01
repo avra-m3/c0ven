@@ -245,7 +245,10 @@ void Model::load_cards(bool first) {
                std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(),
                first ? ", the arena with them" : "");
   reader_.reset();
-  if (first && opt_.anon_arena) settle_arena();
+  if (first && opt_.anon_arena) {
+    settle_arena();
+    info_.host_read_bytes_per_s = measure_host_read();
+  }
   for (auto &card : cards_) {
     for (uint32_t W : kStepWidths) {
       record(*card, W);
@@ -415,6 +418,29 @@ void Model::settle_arena() {
   std::fprintf(stderr, "engine: the arena: %llu of %llu 2 MiB ranges in huge pages, in %.2f s; %s\n",
                (unsigned long long)collapsed, (unsigned long long)ranges,
                std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(), lock.c_str());
+}
+
+// The rate the CPU's expert workers read the arena, the bound on its misses: one pass over up to 4 GiB of its pieces by
+// every worker, 4 MiB a task.
+double Model::measure_host_read() {
+  constexpr uint64_t kTask = 4ull << 20, kMost = 4ull << 30;
+  std::vector<const uint64_t *> tasks;
+  for (const AnonPiece &a : anon_pieces_)
+    for (uint64_t o = 0; o + kTask <= a.used && tasks.size() * kTask < kMost; o += kTask)
+      tasks.push_back(reinterpret_cast<const uint64_t *>(a.at + o));
+  if (tasks.empty()) return 0;
+  std::atomic<uint64_t> sink{0};
+  const auto t0 = std::chrono::steady_clock::now();
+  pool_->run(tasks.size(), [&](uint64_t i) {
+    uint64_t x = 0;
+    for (uint64_t w = 0; w < kTask / 8; w++) x ^= tasks[i][w];
+    sink.fetch_xor(x, std::memory_order_relaxed);
+  });
+  const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  const double rate = (double)(tasks.size() * kTask) / s;
+  std::fprintf(stderr, "engine: the CPU's %u workers read the arena at %.1f GB/s (%.2f GiB in %.3f s; %llx)\n",
+               pool_->size(), rate / 1e9, tasks.size() * kTask / 1073741824.0, s, (unsigned long long)sink.load());
+  return rate;
 }
 
 Model::~Model() {
