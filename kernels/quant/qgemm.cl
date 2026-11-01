@@ -6,6 +6,7 @@
 #include "decode.h"
 
 #include "moe_tile.h"
+#include "swiglu.h"
 
 #define QG_SG 4  // sub-groups per work-group: 64 rows
 #define MT (MOE_TILE / 8)  // dpas tiles of 8 assignments
@@ -155,7 +156,7 @@ REQD_SG __kernel void moe_gate_up_t(__global const uchar *base, ulong slot_bytes
     vstore8(au[i], 0, v);
     for (uint m = 0; m < 8; m++)
       if (8 * i + m < t.count) H[(ulong)(t.start + 8 * i + m) * rows + (hsigma ? sigma4(r) : r)] =
-            convert_half(silu(g[m]) * v[m]);
+            convert_half(SWIGLU(g[m], v[m]));
   }
 }
 

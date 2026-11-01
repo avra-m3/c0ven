@@ -7,6 +7,7 @@
 #include "a8.h"
 #include "decode.h"
 #include "moe_tile.h"
+#include "swiglu.h"
 
 #define A GROUP
 
@@ -245,7 +246,7 @@ REQD_SG __kernel void moe_gate_up_g(__global const uchar *cache, ulong slot_byte
     for (uint t = 0; t < A; t++) {
       float gv = sg_sum(ag[i * A + t]), uv = sg_sum(au[i * A + t]);
       if (t < na && r < rows && lane == 0) {
-        const float hv = silu(gv) * uv;
+        const float hv = SWIGLU(gv, uv);
         h[asg[t] * rows + r] = hv;
         hs[t][r % MOE_WG_ROWS] = hv;
       }

@@ -5,6 +5,7 @@
 // with a slot on this card. moe_down: y[m] = down h[m] for each such m, with its own activation.
 #include "decode.h"
 #include "moe_tile.h"
+#include "swiglu.h"
 
 #ifndef LANES
 #define LANES 16
@@ -106,7 +107,7 @@ REQD_SG __kernel void moe_gate_up(__global const uchar *cache, ulong slot_bytes,
   float g[MAXT], u[MAXT];
   row_dot(G, n, r, bpr, a, K, 0, 1, sg_lane() % LANES, LANES, g GRID_ARG);
   row_dot(G + up_off, n, r, bpr, a, K, 0, 1, sg_lane() % LANES, LANES, u GRID_ARG);
-  if (valid && sg_lane() % LANES == 0) h[m * rows + r] = silu(g[0]) * u[0];
+  if (valid && sg_lane() % LANES == 0) h[m * rows + r] = SWIGLU(g[0], u[0]);
 }
 
 // y[m] = down_m h[m]: the down slice starts down_off bytes into the slot, rows x K; h[m] is a8 at act + m * act_stride.
@@ -169,7 +170,7 @@ REQD_SG __kernel void moe_gate_up_g(__global const uchar *cache, ulong slot_byte
   row_dot_g(G + up_off, n, r, bpr, act, K, act_stride, per_tok, g.asg, g.n, uv GRID_ARG);
   if (valid && sg_lane() % LANES == 0)
     for (uint t = 0; t < MOE_GROUP_MAX; t++)
-      if (t < g.n) h[g.asg[t] * rows + r] = silu(gv[t]) * uv[t];
+      if (t < g.n) h[g.asg[t] * rows + r] = SWIGLU(gv[t], uv[t]);
 }
 
 REQD_SG __kernel void moe_down_g(__global const uchar *cache, ulong slot_bytes, __global const MoeGroup *groups,
