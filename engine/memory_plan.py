@@ -23,11 +23,13 @@ class PlanError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class ModelMemory:
-    """A model's sizes, per card for the tensor split. Every "per card" figure is one card's half or whole share."""
+    """A model's sizes on each of `cards` cards. Every "per card" figure is one card's share."""
 
+    cards: int
     weights_per_card: int
     """Every tensor outside the expert cache: dense weights, embedding, head, PLE."""
     draft_per_card: int
+    layers: int
     experts: int
     expert_bytes: int
     """The mean size of one expert, whole."""
@@ -45,13 +47,20 @@ class ModelMemory:
     checkpoint_bytes: int
     """A checkpoint: the running state only; the KV of its positions stays in its pages (ADR-0033)."""
     max_context: int
+    reference_vram: int
+    """One test-machine card's memory, bytes: the plan's card when none is read (the mock and the reference)."""
 
 
 @dataclass(frozen=True, slots=True)
 class PlanOptions:
     slots: int = 1
     context: int = 262_144
-    usable_vram: int = 24_385_683_456
+    cards: int = 2
+    """Cards the engine runs on: the tensor split's two, or one holding every weight whole."""
+    usable_vram: int | None = None
+    """The smallest card's memory, bytes, as Level Zero reports it; None: the model's reference card."""
+    draft: bool = True
+    """The draft layer is loaded, and takes its share of each card."""
     working_per_card: int = 1_600_663_296
     checkpoints: int = 8
     kv_tokens: int = 0
@@ -74,6 +83,9 @@ class PlanOptions:
 @dataclass(frozen=True, slots=True)
 class MemoryPlan:
     options: PlanOptions
+    cards: int
+    usable_vram: int
+    layers: int
     weights_per_card: int
     draft_per_card: int
     working_per_card: int
@@ -94,6 +106,11 @@ class MemoryPlan:
         return self.arena_bytes + self.streamed_kv_bytes + self.checkpoint_bytes
 
     @property
+    def experts_per_layer(self) -> int:
+        """The experts each layer caches, as the core reports its own count."""
+        return self.experts_cached // self.layers
+
+    @property
     def host_bytes(self) -> int:
         """The host memory the engine takes: the pinned total and the working estimate."""
         return self.pinned_bytes + self.options.host_working
@@ -105,7 +122,8 @@ class MemoryPlan:
         o = self.options
         return [
             ("sequences x context", f"{o.slots} x {o.context:,}"),
-            ("usable VRAM per card", gib(o.usable_vram)),
+            ("cards", str(self.cards)),
+            ("usable VRAM per card", gib(self.usable_vram)),
             ("weights per card", gib(self.weights_per_card)),
             ("draft layer per card (estimate)", gib(self.draft_per_card)),
             ("working memory per card (estimate)", gib(self.working_per_card)),
@@ -134,7 +152,12 @@ def reserve_per_sequence(m: ModelMemory, context: int) -> int:
 def plan(m: ModelMemory, o: PlanOptions) -> MemoryPlan:
     """The plan for the options. Raises PlanError, with options that fit where there are some, when the cards or the
     host's memory are too small."""
-    p = _plan(m, o)
+    try:
+        p = _plan(m, o)
+    except PlanError as exc:
+        if not exc.args[0].startswith("the cards are"):
+            raise
+        raise PlanError(f"{exc} {_what_fits(m, o, host_limit(o))}") from None
     limit = host_limit(o)
     if limit is not None and p.host_bytes > limit:
         raise PlanError(
@@ -157,9 +180,10 @@ def _limit_name(o: PlanOptions) -> str:
     return "the host can give (MemAvailable, or the cgroup's memory.max)"
 
 
-def _what_fits(m: ModelMemory, o: PlanOptions, limit: int) -> str:
-    """The largest options under the limit: fewer slots first, then a shorter context; or what to change when none
-    does. The arena holds every expert the cards leave out, so a smaller model file is the remaining way."""
+def _what_fits(m: ModelMemory, o: PlanOptions, limit: int | None) -> str:
+    """The largest options that fit the cards and the host limit: fewer slots first, then a shorter context, no
+    checkpoints, no draft layer; or what to change when none does. The arena holds every expert the cards leave out,
+    so a smaller model file is the remaining way."""
     fits: list[str] = []
     for slots in range(o.slots - 1, 0, -1):
         if _fits(m, replace(o, slots=slots, kv_tokens=0 if o.kv_tokens < o.context else o.kv_tokens), limit):
@@ -173,14 +197,16 @@ def _what_fits(m: ModelMemory, o: PlanOptions, limit: int) -> str:
             break
     if o.checkpoints and _fits(m, replace(o, checkpoints=0), limit):
         fits.append("--checkpoints 0")
+    if o.draft and _fits(m, replace(o, draft=False), limit):
+        fits.append("--no-draft")
     if not fits:
         return "No slot count or context fits: free host memory, or use a smaller model file."
     return "Options that fit: " + "; ".join(fits) + "; or a smaller model file."
 
 
-def _fits(m: ModelMemory, o: PlanOptions, limit: int) -> bool:
+def _fits(m: ModelMemory, o: PlanOptions, limit: int | None) -> bool:
     try:
-        return _plan(m, o).host_bytes <= limit
+        return limit is None or _plan(m, o).host_bytes <= limit
     except PlanError:
         return False
 
@@ -190,14 +216,20 @@ def _plan(m: ModelMemory, o: PlanOptions) -> MemoryPlan:
         raise PlanError("at least one slot")
     if not 0 < o.context <= m.max_context:
         raise PlanError(f"context {o.context} outside 1..{m.max_context}")
-    fixed = m.weights_per_card + m.draft_per_card + o.working_per_card
+    vram = o.usable_vram if o.usable_vram is not None else m.reference_vram
+    draft = m.draft_per_card if o.draft else 0
+    fixed = m.weights_per_card + draft + o.working_per_card
     per_sequence = reserve_per_sequence(m, o.context)
     reserve = o.slots * per_sequence
-    free = o.usable_vram - fixed - reserve
+    free = vram - fixed - reserve
     if free < 0:
-        raise PlanError(f"the cards are {-free:,} B short before any expert")
-    half = -(-m.expert_bytes // 2)
-    cached = min(m.experts, free // half)
+        raise PlanError(
+            f"the cards are {-free:,} B short before any expert: each has {vram / GIB:.2f} GiB, and the weights take "
+            f"{m.weights_per_card / GIB:.2f}, the draft layer {draft / GIB:.2f}, working memory "
+            f"{o.working_per_card / GIB:.2f} and {o.slots} x {o.context:,} positions {reserve / GIB:.2f}."
+        )
+    share = -(-m.expert_bytes // m.cards)
+    cached = min(m.experts, free // share)
     arena = (m.experts - cached) * m.expert_bytes
     pages_per_slot = -(-o.context // PAGE_CELLS)
     if 0 < o.kv_tokens < o.context:
@@ -208,8 +240,11 @@ def _plan(m: ModelMemory, o: PlanOptions) -> MemoryPlan:
     checkpoints = o.checkpoints * m.checkpoint_bytes
     return MemoryPlan(
         options=o,
+        cards=m.cards,
+        usable_vram=vram,
+        layers=m.layers,
         weights_per_card=m.weights_per_card,
-        draft_per_card=m.draft_per_card,
+        draft_per_card=draft,
         working_per_card=o.working_per_card,
         reserve_per_sequence=per_sequence,
         reserve_per_card=reserve,

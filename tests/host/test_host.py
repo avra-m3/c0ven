@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from engine.host import GIB, read
+from engine.host import GIB, Card, read
 
 
 def make_root(tmp_path: Path, cpu_max: str = "max 100000", memory_max: str = "max", smt: bool = True) -> Path:
@@ -59,3 +59,20 @@ def test_nothing_readable_gives_no_limits(tmp_path: Path):
     h = read(tmp_path, affinity={0, 1})
     assert (h.mem_available, h.cgroup_memory_max, h.memory_limit, h.cpu_quota) == (None, None, None, None)
     assert h.physical_cores == 2
+
+
+def test_a_cards_ip_version_and_link():
+    card = Card(
+        "Intel(R) Arc(TM) Pro B60 Graphics",
+        "0000:03:00.0",
+        24_385_683_456,
+        0xE211,
+        (20 << 22) | (1 << 14),
+        20,
+        5,
+        8,
+        -1,
+    )
+    assert card.ip == "20.1.0"
+    assert card.link == "PCIe 5.0 x8"
+    assert Card("x", "", 0, 0, 0, 0, -1, -1, -1).ip == "unknown"

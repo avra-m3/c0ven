@@ -58,6 +58,7 @@ from engine.api.interface import (
     TimingRecords,
     TimingStage,
 )
+from engine.host import Card
 
 log = logging.getLogger("engine.native")
 
@@ -123,6 +124,7 @@ def load_library(path: Path | None = None) -> ctypes.CDLL:
         "engine_last_error": ([_ctx], ctypes.c_char_p),
         "engine_close": ([_ctx], None),
         "engine_abi_layout": ([ctypes.POINTER(abi.CAbiRow), _u32], _u32),
+        "engine_cards": ([ctypes.POINTER(abi.CCard), _u32, _p_u32], ctypes.c_int),
     }
     for name, (argtypes, restype) in signatures.items():
         fn = getattr(lib, name)
@@ -137,6 +139,32 @@ def core_layout(lib: ctypes.CDLL) -> list[abi.LayoutRow]:
     rows = (abi.CAbiRow * n)()
     lib.engine_abi_layout(rows, n)
     return sorted(abi.LayoutRow((r.name or b"").decode(), int(r.offset), int(r.size)) for r in rows)
+
+
+def cards(path: Path | None = None) -> list[Card]:
+    """The cards the core sees, before any engine opens. Raises EngineError when the core finds none."""
+    lib = load_library(path)
+    if core_layout(lib) != abi.layout():
+        raise EngineError(ErrorCode.ABI_MISMATCH, "the core's struct layouts differ from engine/api/abi.py")
+    n = _u32()
+    if lib.engine_cards(None, 0, ctypes.byref(n)) == abi.Status.OK and n.value:
+        found = (abi.CCard * n.value)()
+        if lib.engine_cards(found, n.value, ctypes.byref(n)) == abi.Status.OK:
+            return [
+                Card(
+                    c.name.decode(errors="replace"),
+                    c.pci.decode(errors="replace"),
+                    int(c.memory),
+                    int(c.device_id),
+                    int(c.ip_version),
+                    int(c.xe_cores),
+                    int(c.pcie_gen),
+                    int(c.pcie_width),
+                    int(c.pcie_bytes_per_s),
+                )
+                for c in found[: n.value]
+            ]
+    raise EngineError(ErrorCode.INTERNAL, f"no card: {(lib.engine_last_error(None) or b'').decode(errors='replace')}")
 
 
 class Core(Protocol):

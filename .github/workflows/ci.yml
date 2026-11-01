@@ -140,7 +140,7 @@ jobs:
           from engine.api.native import library_path, load_library
           print(os.environ["ENGINE_LIBRARY"])
           load_library(library_path())
-          kernels = sorted(Path("build/kernels").glob("*.bin"))
+          kernels = sorted(Path("build/kernels").glob("*/*.bin"))
           assert kernels, "no kernels"
           print(len(kernels), "kernel modules")
           '
