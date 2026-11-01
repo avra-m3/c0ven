@@ -1,7 +1,7 @@
-// Level 3 (docs/TESTING.md): the matrix-vector kernels of every weight type the file holds, on real rows of the
-// model in the runs layout, against ggml's CPU dequantisation of the same rows multiplied in double precision by
-// the same a8 activations. Tolerance 1e-5 of the largest |reference| (TESTING.md, "Tolerances"). Also checks that
-// the runs layout is a permutation of the file's blocks.
+// Level 3 (docs/TESTING.md): the matrix-vector kernels of every weight type the engine reads on random blocks, and
+// of every type the file holds on real rows of the model, in the runs layout, against ggml's CPU dequantisation of the
+// same rows multiplied in double precision by the same a8 activations. Tolerance 1e-5 of the largest |reference|
+// (TESTING.md, "Tolerances"). Also checks that the runs layout is a permutation of the file's blocks.
 #include <cmath>
 #include <cstring>
 #include <random>
@@ -42,9 +42,6 @@ double a8_value(const std::vector<uint8_t> &a, size_t K, size_t i) {
 
 int main() {
   if (test::gpus() == 0) return test::no_gpu();
-  std::string path = test::model_path();
-  if (path.empty()) return test::skip("model not found under FLASH_MODEL_DIR");
-  GgufModel model(path);
   ze::Runtime rt;
   ze::Library lib(rt);
   const uint32_t card = 0;
@@ -52,30 +49,22 @@ int main() {
   ze::List up(rt, card, ze::List::immediate);
   up.copy(grids, codebooks().data(), QGRID_BYTES);
   up.synchronize();
-
-  // Every quantised type of the file; the first tensor of each, by name order.
-  std::set<uint32_t> types;
-  for (auto &[name, ti] : model.tensors())
-    if (quant_block_values(ti.type) > 1 && name.find("per_layer") == std::string::npos) types.insert(ti.type);
   std::mt19937 rng(1234);
   std::normal_distribution<float> normal(0.0f, 1.0f);
   int failures = 0;
-  for (uint32_t type : types) {
-    const GgufTensor *t = nullptr;
-    for (auto &[name, ti] : model.tensors())
-      if (ti.type == type && name.find("per_layer") == std::string::npos) { t = &ti; break; }
-    EXPECT(t, "no tensor of type %s", ggml_type_label(type));
-    const uint64_t K = t->shape[0], rows = std::min<uint64_t>(t->shape[1], 1000);
+
+  // The kernels on rows x K of type blocks (the file's layout), named what.
+  auto check = [&](uint32_t type, const std::string &what, const uint8_t *blocks, uint64_t rows, uint64_t K) {
     const uint64_t bpr = K / quant_block_values(type), n = rows * bpr;
     std::vector<uint8_t> runs(runs_bytes(type, n)), back(runs.size());
-    to_runs(type, {{t->data, t->row_bytes(), 0, rows, 0, bpr}}, runs.data());
+    to_runs(type, {{blocks, bpr * quant_block_bytes(type), 0, rows, 0, bpr}}, runs.data());
     from_runs(type, runs.data(), n, back.data());
-    EXPECT(std::memcmp(back.data(), t->data, back.size()) == 0, "%s: runs layout is not a permutation",
+    EXPECT(std::memcmp(back.data(), blocks, back.size()) == 0, "%s: runs layout is not a permutation",
            ggml_type_label(type));
 
     // Reference rows from ggml.
     std::vector<float> wref(rows * K);
-    ggml_get_type_traits((ggml_type)type)->to_float(t->data, wref.data(), (int64_t)(rows * K));
+    ggml_get_type_traits((ggml_type)type)->to_float(blocks, wref.data(), (int64_t)(rows * K));
 
     const uint32_t ntok = 4;
     std::vector<uint8_t> act;
@@ -124,13 +113,41 @@ int main() {
         bool ok = rel <= 1e-5;
         failures += !ok;
         std::printf("%-8s %-28s rows %4llu x %5llu, lanes %2u, K split %u, tokens %u: max error %.2e %s\n",
-                    ggml_type_label(type), t->name.c_str(), (unsigned long long)rows, (unsigned long long)K, lanes,
+                    ggml_type_label(type), what.c_str(), (unsigned long long)rows, (unsigned long long)K, lanes,
                     ks ? ks : 1, nt, rel, ok ? "ok" : "FAIL");
       }
     }
     rt.free(dW);
     rt.free(dA);
     rt.free(dY);
+  };
+
+  // Every type the engine reads, on random blocks: 300 rows of 2,560 values.
+  for (uint32_t type : test::quant_types()) {
+    const uint64_t rows = 300, K = 2560;
+    std::vector<uint8_t> blocks = test::random_blocks(type, rows * K / quant_block_values(type), rng);
+    check(type, "random blocks", blocks.data(), rows, K);
+  }
+
+  // Every quantised type of the file; the first tensor of each, by name order.
+  std::string path = test::model_path();
+  if (path.empty()) {
+    std::printf("model not found under FLASH_MODEL_DIR: the file's rows not checked\n");
+  } else {
+    GgufModel model(path);
+    std::set<uint32_t> types;
+    for (auto &[name, ti] : model.tensors())
+      if (quant_block_values(ti.type) > 1 && name.find("per_layer") == std::string::npos) types.insert(ti.type);
+    for (uint32_t type : types) {
+      const GgufTensor *t = nullptr;
+      for (auto &[name, ti] : model.tensors())
+        if (ti.type == type && name.find("per_layer") == std::string::npos) {
+          t = &ti;
+          break;
+        }
+      EXPECT(t, "no tensor of type %s", ggml_type_label(type));
+      check(type, t->name, t->data, std::min<uint64_t>(t->shape[1], 1000), t->shape[0]);
+    }
   }
   EXPECT(failures == 0, "%d case(s) over tolerance", failures);
   std::printf("PASS\n");

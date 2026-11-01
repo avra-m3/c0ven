@@ -5,9 +5,12 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <random>
 #include <string>
 #include <vector>
 
+#include "quant.h"
 #include "ze/ze.h"
 
 #define EXPECT(cond, ...)                                       \
@@ -39,6 +42,41 @@ inline std::string model_path() {
 inline int skip(const std::string &why) {
   std::printf("SKIP: %s\n", why.c_str());
   return 77;
+}
+
+// Every quantised weight type the engine reads, as kernels/CMakeLists.txt's ENGINE_QUANT_TYPES lists them.
+inline const std::vector<uint32_t> &quant_types() {
+  static const std::vector<uint32_t> t = {QT_Q8_0, QT_Q4_0, QT_Q5_0, QT_Q2_0, QT_IQ4_NL, QT_IQ4_XS,
+                                          QT_Q2_K, QT_Q3_K, QT_Q4_K, QT_Q5_K, QT_Q6_K, QT_IQ1_S,
+                                          QT_IQ1_M, QT_IQ2_XXS, QT_IQ2_XS, QT_IQ2_S, QT_IQ3_XXS, QT_IQ3_S};
+  return t;
+}
+
+// n blocks of a quantised type in the file's layout: random bytes, with each f16 scale a random finite value of
+// magnitude 2^-6 to 2^-2. Any bytes are a valid block of quant_types' types once their scales are finite, so the
+// kernels can be checked against ggml on types no file at hand holds.
+inline std::vector<uint8_t> random_blocks(uint32_t type, uint64_t n, std::mt19937 &rng) {
+  const uint32_t bb = quant_block_bytes(type);
+  std::vector<uint8_t> b(n * bb);
+  for (auto &x : b) x = (uint8_t)rng();
+  std::vector<uint32_t> f16;  // the f16 fields' offsets
+  switch (type) {
+    case QT_Q2_K: f16 = {80, 82}; break;
+    case QT_Q3_K: f16 = {108}; break;
+    case QT_Q4_K: case QT_Q5_K: f16 = {0, 2}; break;
+    case QT_Q6_K: f16 = {208}; break;
+    case QT_IQ1_M: break;  // d is the top nibbles of the scale words
+    default: f16 = {0};
+  }
+  for (uint64_t k = 0; k < n; k++) {
+    uint8_t *p = b.data() + k * bb;
+    for (uint32_t o : f16) {
+      const uint16_t h = (uint16_t)((rng() & 0x8000u) | ((9u + rng() % 5) << 10) | (rng() & 0x3ffu));
+      std::memcpy(p + o, &h, 2);
+    }
+    if (type == QT_IQ1_M) p[55] &= 0xbf;  // d's top exponent bit, bit 14 of the scale word at 54: d stays below 2
+  }
+  return b;
 }
 
 // The GPUs Level Zero lists, counted as ze::Runtime counts them: the first driver that has any.

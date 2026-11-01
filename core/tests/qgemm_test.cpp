@@ -1,8 +1,8 @@
-// Level 3 (docs/TESTING.md): the prompt path's quantised products of kernels/quant/qgemm.cl, on real weights of the
-// file, against ggml's CPU dequantisation of the same blocks multiplied in double precision by the same fp16
-// activations. dequant_f16 for every type the dense weights use; moe_gate_up_t and moe_down_t for every expert type,
-// in the runs layout (cached experts) and the file's (streamed experts), for card 1's half of an expert, so the
-// slices start mid-row. Tolerance 2e-3 of the largest |reference| (TESTING.md, "Tolerances": fp16 products).
+// Level 3 (docs/TESTING.md): the prompt path's quantised products of kernels/quant/qgemm.cl, on random blocks of
+// every type the engine reads and on real weights of the file, against ggml's CPU dequantisation of the same blocks
+// multiplied in double precision by the same fp16 activations. dequant_f16; moe_gate_up_t and moe_down_t in the runs
+// layout (cached experts) and the file's (streamed experts), for card 1's half of an expert, so the slices start
+// mid-row. Tolerance 2e-3 of the largest |reference| (TESTING.md, "Tolerances": fp16 products).
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -44,13 +44,16 @@ struct Checker {
   }
 };
 
+// The expert types with qgemm_<type>_file modules (kernels/CMakeLists.txt).
+bool has_file_layout(uint32_t t) {
+  return t == QT_Q8_0 || t == QT_Q2_0 || t == QT_IQ4_NL || t == QT_IQ4_XS || t == QT_Q2_K || t == QT_IQ1_S ||
+         t == QT_IQ1_M || t == QT_IQ2_XXS || t == QT_IQ2_XS || t == QT_IQ2_S || t == QT_IQ3_XXS || t == QT_IQ3_S;
+}
+
 }  // namespace
 
 int main() {
   if (test::gpus() == 0) return test::no_gpu();
-  std::string path = test::model_path();
-  if (path.empty()) return test::skip("model not found under FLASH_MODEL_DIR");
-  GgufModel model(path);
   ze::Runtime rt;
   ze::Library lib(rt);
   const uint32_t card = 0;
@@ -62,25 +65,13 @@ int main() {
   std::normal_distribution<float> normal(0.0f, 1.0f);
   Checker ck;
 
-  // dequant_f16 on the first 200 rows of a dense tensor of each quantised type the file has.
-  std::set<uint32_t> dense_types;
-  for (auto &[name, ti] : model.tensors())
-    if (quant_block_values(ti.type) > 1 && name.find("exps") == std::string::npos &&
-        name.find("per_layer") == std::string::npos)
-      dense_types.insert(ti.type);
-  for (uint32_t type : dense_types) {
-    const GgufTensor *t = nullptr;
-    for (auto &[name, ti] : model.tensors())
-      if (ti.type == type && name.find("exps") == std::string::npos && name.find("per_layer") == std::string::npos) {
-        t = &ti;
-        break;
-      }
-    EXPECT(t, "no dense tensor of type %s", ggml_type_label(type));
-    const uint32_t K = (uint32_t)t->shape[0], rows = 200, bpr = K / quant_block_values(type), units = K / 32;
+  // dequant_f16 on rows x K of type blocks (the file's layout).
+  auto dequant = [&](uint32_t type, const std::string &name, const uint8_t *blocks, uint32_t rows, uint32_t K) {
+    const uint32_t bpr = K / quant_block_values(type), units = K / 32;
     std::vector<uint8_t> runs(runs_bytes(type, (uint64_t)rows * bpr));
-    to_runs(type, {{t->data, t->row_bytes(), 0, rows, 0, bpr}}, runs.data());
+    to_runs(type, {{blocks, (uint64_t)bpr * quant_block_bytes(type), 0, rows, 0, bpr}}, runs.data());
     std::vector<float> wf((size_t)rows * K);
-    ggml_get_type_traits((ggml_type)type)->to_float(t->data, wf.data(), (int64_t)wf.size());
+    ggml_get_type_traits((ggml_type)type)->to_float(blocks, wf.data(), (int64_t)wf.size());
     auto *dW = static_cast<uint8_t *>(rt.alloc_device(card, runs.size()));
     auto *dO = static_cast<uint16_t *>(rt.alloc_host((size_t)rows * K * 2));
     L.copy(dW, runs.data(), runs.size());
@@ -89,146 +80,200 @@ int main() {
              {dW, rows, bpr, zero, units, dO, K, grids}, (rows * units + 63) / 64, 1, 1, 64);
     L.synchronize();
     std::vector<double> ref(wf.begin(), wf.end());
-    std::string what = std::string("dequant_f16 ") + ggml_type_label(type) + " " + t->name;
+    std::string what = std::string("dequant_f16 ") + ggml_type_label(type) + " " + name;
     ck.check(what.c_str(), ref, dO);
     rt.free(dW);
     rt.free(dO);
-  }
+  };
 
-  // The expert products: card 1's half of expert 7, 75 assignments in two tiles (64 + 11).
-  const uint32_t E = 2560, F = 640, half = 320, f0 = 320, e = 7, nasg = 75;
-  std::vector<uint16_t> X((size_t)nasg * E), Hh((size_t)nasg * half);
-  std::vector<double> xf(X.size()), hf(Hh.size());
+  // The expert products: card 1's half of an expert of F rows (gate and up) or F values a row (down), so the slices
+  // start mid-row; 75 assignments in two tiles (64 + 11).
+  const uint32_t E = 2560, nasg = 75;
+  std::vector<uint16_t> X((size_t)nasg * E);
+  std::vector<double> xf(X.size());
   for (size_t i = 0; i < X.size(); i++) {
     X[i] = ggml_fp32_to_fp16(normal(rng));
     xf[i] = ggml_fp16_to_fp32(X[i]);
   }
-  for (size_t i = 0; i < Hh.size(); i++) {
-    Hh[i] = ggml_fp32_to_fp16(normal(rng) * 0.1f);
-    hf[i] = ggml_fp16_to_fp32(Hh[i]);
-  }
   auto *dX = static_cast<uint16_t *>(rt.alloc_device(card, X.size() * 2));
-  auto *dH = static_cast<uint16_t *>(rt.alloc_device(card, Hh.size() * 2));
   auto *dOut = static_cast<uint16_t *>(rt.alloc_host((size_t)nasg * E * 2));
   auto *dTiles = static_cast<MoeTile *>(rt.alloc_host(2 * sizeof(MoeTile)));
   auto *dN = static_cast<uint32_t *>(rt.alloc_host(4));
-  dTiles[0] = {e, 0, 0, MOE_TILE};
-  dTiles[1] = {e, 0, MOE_TILE, nasg - MOE_TILE};
+  dTiles[0] = {0, 0, 0, MOE_TILE};
+  dTiles[1] = {0, 0, MOE_TILE, nasg - MOE_TILE};
   *dN = 2;
   // The expert kernels may take X and h with every 4 values permuted by sigma (shared/quant.h, quant_pairs_sigma),
   // and write h so; these are both orders.
   auto sigma = [](uint32_t i) { return (i & ~3u) | ((i & 1u) << 1) | ((i >> 1) & 1u); };
-  std::vector<uint16_t> Xp(X.size()), Hp(Hh.size());
+  std::vector<uint16_t> Xp(X.size());
   for (size_t i = 0; i < X.size(); i++) Xp[i] = X[i - i % E + sigma((uint32_t)(i % E))];
-  for (size_t i = 0; i < Hh.size(); i++) Hp[i] = Hh[i - i % half + sigma((uint32_t)(i % half))];
   auto *dXp = static_cast<uint16_t *>(rt.alloc_device(card, X.size() * 2));
-  auto *dHp = static_cast<uint16_t *>(rt.alloc_device(card, Hh.size() * 2));
   L.copy(dX, X.data(), X.size() * 2);
-  L.copy(dH, Hh.data(), Hh.size() * 2);
   L.copy(dXp, Xp.data(), X.size() * 2);
-  L.copy(dHp, Hp.data(), Hh.size() * 2);
   L.synchronize();
 
-  // One layer per gate type, and one per down type.
-  std::vector<uint32_t> gate_layers, down_layers;
-  std::vector<uint32_t> seen_g, seen_d;
-  for (uint32_t l = 0; l < 48; l++) {
-    uint32_t gt = model.tensor("blk." + std::to_string(l) + ".ffn_gate_exps.weight").type;
-    uint32_t dt = model.tensor("blk." + std::to_string(l) + ".ffn_down_exps.weight").type;
-    if (std::find(seen_g.begin(), seen_g.end(), gt) == seen_g.end()) seen_g.push_back(gt), gate_layers.push_back(l);
-    if (std::find(seen_d.begin(), seen_d.end(), dt) == seen_d.end()) seen_d.push_back(dt), down_layers.push_back(l);
-  }
-  for (bool file : {false, true}) {
-    for (uint32_t l : gate_layers) {
-      const GgufTensor &g = model.tensor("blk." + std::to_string(l) + ".ffn_gate_exps.weight");
-      const GgufTensor &u = model.tensor("blk." + std::to_string(l) + ".ffn_up_exps.weight");
-      const uint32_t type = g.type, bpr = E / quant_block_values(type);
-      const uint64_t eb = g.bytes / 512, rb = g.row_bytes();
-      std::vector<uint8_t> buf;
-      uint64_t up_off;
-      if (file) {
-        up_off = align256(half * rb);
-        buf.assign(2 * up_off, 0);
-        std::memcpy(buf.data(), g.data + e * eb + f0 * rb, half * rb);
-        std::memcpy(buf.data() + up_off, u.data + e * eb + f0 * rb, half * rb);
-      } else {
-        uint64_t sb = runs_bytes(type, (uint64_t)half * bpr);
-        up_off = align256(sb);
-        buf.assign(2 * up_off, 0);
-        to_runs(type, {{g.data + e * eb, rb, f0, half, 0, bpr}}, buf.data());
-        to_runs(type, {{u.data + e * eb, rb, f0, half, 0, bpr}}, buf.data() + up_off);
-      }
-      std::vector<float> gw((size_t)F * E), uw((size_t)F * E);
-      ggml_get_type_traits((ggml_type)type)->to_float(g.data + e * eb, gw.data(), (int64_t)gw.size());
-      ggml_get_type_traits((ggml_type)type)->to_float(u.data + e * eb, uw.data(), (int64_t)uw.size());
-      std::vector<double> ref((size_t)nasg * half);
-      for (uint32_t a = 0; a < nasg; a++)
-        for (uint32_t r = 0; r < half; r++) {
-          double gs = 0, us = 0;
-          for (uint32_t i = 0; i < E; i++) {
-            gs += (double)gw[(size_t)(f0 + r) * E + i] * xf[(size_t)a * E + i];
-            us += (double)uw[(size_t)(f0 + r) * E + i] * xf[(size_t)a * E + i];
-          }
-          ref[(size_t)a * half + r] = gs / (1 + std::exp(-gs)) * us;
-        }
-      auto *dW = static_cast<uint8_t *>(rt.alloc_device(card, buf.size()));
-      L.copy(dW, buf.data(), buf.size());
-      uint64_t slot_bytes = buf.size();
-      std::string mod = "qgemm_" + lower(ggml_type_label(type)) + (file ? "_file" : "");
-      const uint32_t sig = quant_pairs_sigma(type);
-      for (uint32_t hsig : {0u, 1u}) {  // h in its own order, or in sigma order for a down type that takes it
-        std::fill(dOut, dOut + (size_t)nasg * half, 0x7e00);
-        L.launch(lib.get(card, mod, "moe_gate_up_t"),
-                 {dW, slot_bytes, dTiles, dN, half, bpr, up_off, sig ? dXp : dX, E, E, dOut, hsig, grids}, half / 64, 2, 1,
-                 64);
-        L.synchronize();
-        std::vector<uint16_t> back((size_t)nasg * half);
-        for (size_t i = 0; i < back.size(); i++)
-          back[i] = dOut[i - i % half + (hsig ? sigma((uint32_t)(i % half)) : (uint32_t)(i % half))];
-        std::string what = std::string("moe_gate_up_t ") + ggml_type_label(type) + (file ? " file" : " runs") +
-                           " blk." + std::to_string(l) + (hsig ? " h sigma" : "");
-        ck.check(what.c_str(), ref, back.data());
-      }
-      rt.free(dW);
+  // moe_gate_up_t on rows f0 .. f0 + half of gate and up, F rows of E values each (the file's layout).
+  auto gate_up = [&](uint32_t type, const std::string &name, const uint8_t *gd, const uint8_t *ud, uint32_t half,
+                     uint32_t f0, bool file) {
+    const uint32_t bpr = E / quant_block_values(type);
+    const uint64_t rb = (uint64_t)bpr * quant_block_bytes(type);
+    std::vector<uint8_t> buf;
+    uint64_t up_off;
+    if (file) {
+      up_off = align256(half * rb);
+      buf.assign(2 * up_off, 0);
+      std::memcpy(buf.data(), gd + f0 * rb, half * rb);
+      std::memcpy(buf.data() + up_off, ud + f0 * rb, half * rb);
+    } else {
+      uint64_t sb = runs_bytes(type, (uint64_t)half * bpr);
+      up_off = align256(sb);
+      buf.assign(2 * up_off, 0);
+      to_runs(type, {{gd, rb, f0, half, 0, bpr}}, buf.data());
+      to_runs(type, {{ud, rb, f0, half, 0, bpr}}, buf.data() + up_off);
     }
-    for (uint32_t l : down_layers) {
-      const GgufTensor &d = model.tensor("blk." + std::to_string(l) + ".ffn_down_exps.weight");
-      const uint32_t type = d.type, qk = quant_block_values(type);
-      const uint64_t eb = d.bytes / 512, rb = d.row_bytes();
-      std::vector<uint8_t> buf;
-      uint32_t bpr, b0;
-      if (file) {
-        buf.assign(d.data + e * eb, d.data + (e + 1) * eb);
-        bpr = F / qk;
-        b0 = f0 / qk;
-      } else {
-        bpr = half / qk;
-        b0 = 0;
-        buf.assign(runs_bytes(type, (uint64_t)E * bpr), 0);
-        to_runs(type, {{d.data + e * eb, rb, 0, E, f0 / qk, bpr}}, buf.data());
-      }
-      std::vector<float> dw((size_t)E * F);
-      ggml_get_type_traits((ggml_type)type)->to_float(d.data + e * eb, dw.data(), (int64_t)dw.size());
-      std::vector<double> ref((size_t)nasg * E);
-      for (uint32_t a = 0; a < nasg; a++)
-        for (uint32_t r = 0; r < E; r++) {
-          double s = 0;
-          for (uint32_t i = 0; i < half; i++) s += (double)dw[(size_t)r * F + f0 + i] * hf[(size_t)a * half + i];
-          ref[(size_t)a * E + r] = s;
+    std::vector<float> gw((size_t)half * E), uw((size_t)half * E);
+    ggml_get_type_traits((ggml_type)type)->to_float(gd + f0 * rb, gw.data(), (int64_t)gw.size());
+    ggml_get_type_traits((ggml_type)type)->to_float(ud + f0 * rb, uw.data(), (int64_t)uw.size());
+    std::vector<double> ref((size_t)nasg * half);
+    for (uint32_t a = 0; a < nasg; a++)
+      for (uint32_t r = 0; r < half; r++) {
+        double gs = 0, us = 0;
+        for (uint32_t i = 0; i < E; i++) {
+          gs += (double)gw[(size_t)r * E + i] * xf[(size_t)a * E + i];
+          us += (double)uw[(size_t)r * E + i] * xf[(size_t)a * E + i];
         }
-      auto *dW = static_cast<uint8_t *>(rt.alloc_device(card, buf.size()));
-      L.copy(dW, buf.data(), buf.size());
-      std::fill(dOut, dOut + (size_t)nasg * E, 0x7e00);
-      uint64_t slot_bytes = buf.size(), down_off = 0;
-      std::string mod = "qgemm_" + lower(ggml_type_label(type)) + (file ? "_file" : "");
-      L.launch(lib.get(card, mod, "moe_down_t"),
-               {dW, slot_bytes, down_off, dTiles, dN, E, bpr, b0, quant_pairs_sigma(type) ? dHp : dH, half, dOut, grids},
-               E / 64, 2, 1, 64);
+        ref[(size_t)a * half + r] = gs / (1 + std::exp(-gs)) * us;
+      }
+    auto *dW = static_cast<uint8_t *>(rt.alloc_device(card, buf.size()));
+    L.copy(dW, buf.data(), buf.size());
+    uint64_t slot_bytes = buf.size();
+    std::string mod = "qgemm_" + lower(ggml_type_label(type)) + (file ? "_file" : "");
+    const uint32_t sig = quant_pairs_sigma(type);
+    for (uint32_t hsig : {0u, 1u}) {  // h in its own order, or in sigma order for a down type that takes it
+      std::fill(dOut, dOut + (size_t)nasg * half, 0x7e00);
+      L.launch(lib.get(card, mod, "moe_gate_up_t"),
+               {dW, slot_bytes, dTiles, dN, half, bpr, up_off, sig ? dXp : dX, E, E, dOut, hsig, grids}, half / 64, 2,
+               1, 64);
       L.synchronize();
-      std::string what = std::string("moe_down_t ") + ggml_type_label(type) + (file ? " file" : " runs") + " blk." +
-                         std::to_string(l);
-      ck.check(what.c_str(), ref, dOut);
-      rt.free(dW);
+      std::vector<uint16_t> back((size_t)nasg * half);
+      for (size_t i = 0; i < back.size(); i++)
+        back[i] = dOut[i - i % half + (hsig ? sigma((uint32_t)(i % half)) : (uint32_t)(i % half))];
+      std::string what = std::string("moe_gate_up_t ") + ggml_type_label(type) + (file ? " file " : " runs ") + name +
+                         (hsig ? " h sigma" : "");
+      ck.check(what.c_str(), ref, back.data());
+    }
+    rt.free(dW);
+  };
+
+  // moe_down_t on values f0 .. f0 + half of each of E rows of F values (the file's layout).
+  auto down = [&](uint32_t type, const std::string &name, const uint8_t *dd, uint32_t F, uint32_t half, uint32_t f0,
+                  bool file) {
+    const uint32_t qk = quant_block_values(type);
+    const uint64_t rb = (uint64_t)F / qk * quant_block_bytes(type);
+    std::vector<uint16_t> Hh((size_t)nasg * half), Hp(Hh.size());
+    std::vector<double> hf(Hh.size());
+    for (size_t i = 0; i < Hh.size(); i++) {
+      Hh[i] = ggml_fp32_to_fp16(normal(rng) * 0.1f);
+      hf[i] = ggml_fp16_to_fp32(Hh[i]);
+    }
+    for (size_t i = 0; i < Hh.size(); i++) Hp[i] = Hh[i - i % half + sigma((uint32_t)(i % half))];
+    const std::vector<uint16_t> &hin = quant_pairs_sigma(type) ? Hp : Hh;
+    std::vector<uint8_t> buf;
+    uint32_t bpr, b0;
+    if (file) {
+      buf.assign(dd, dd + E * rb);
+      bpr = F / qk;
+      b0 = f0 / qk;
+    } else {
+      bpr = half / qk;
+      b0 = 0;
+      buf.assign(runs_bytes(type, (uint64_t)E * bpr), 0);
+      to_runs(type, {{dd, rb, 0, E, f0 / qk, bpr}}, buf.data());
+    }
+    std::vector<float> dw((size_t)E * F);
+    ggml_get_type_traits((ggml_type)type)->to_float(dd, dw.data(), (int64_t)dw.size());
+    std::vector<double> ref((size_t)nasg * E);
+    for (uint32_t a = 0; a < nasg; a++)
+      for (uint32_t r = 0; r < E; r++) {
+        double s = 0;
+        for (uint32_t i = 0; i < half; i++) s += (double)dw[(size_t)r * F + f0 + i] * hf[(size_t)a * half + i];
+        ref[(size_t)a * E + r] = s;
+      }
+    auto *dH = static_cast<uint16_t *>(rt.alloc_device(card, hin.size() * 2));
+    auto *dW = static_cast<uint8_t *>(rt.alloc_device(card, buf.size()));
+    L.copy(dH, hin.data(), hin.size() * 2);
+    L.copy(dW, buf.data(), buf.size());
+    std::fill(dOut, dOut + (size_t)nasg * E, 0x7e00);
+    uint64_t slot_bytes = buf.size(), down_off = 0;
+    std::string mod = "qgemm_" + lower(ggml_type_label(type)) + (file ? "_file" : "");
+    L.launch(lib.get(card, mod, "moe_down_t"),
+             {dW, slot_bytes, down_off, dTiles, dN, E, bpr, b0, dH, half, dOut, grids}, E / 64, 2, 1, 64);
+    L.synchronize();
+    std::string what = std::string("moe_down_t ") + ggml_type_label(type) + (file ? " file " : " runs ") + name;
+    ck.check(what.c_str(), ref, dOut);
+    rt.free(dW);
+    rt.free(dH);
+  };
+
+  // Every type the engine reads, on random blocks: 200 rows of 2,560 values for dequant_f16; experts of 1,024 rows
+  // (gate and up) and of 1,024 values a row (down), whose halves of 512 hold whole blocks of every type.
+  for (uint32_t type : test::quant_types()) {
+    const uint32_t qk = quant_block_values(type), F = 1024;
+    std::vector<uint8_t> dense = test::random_blocks(type, 200 * E / qk, rng);
+    dequant(type, "random blocks", dense.data(), 200, E);
+    std::vector<uint8_t> g = test::random_blocks(type, F * E / qk, rng), u = test::random_blocks(type, F * E / qk, rng);
+    std::vector<uint8_t> d = test::random_blocks(type, E * F / qk, rng);
+    for (bool file : {false, true}) {
+      if (file && !has_file_layout(type)) continue;
+      gate_up(type, "random blocks", g.data(), u.data(), F / 2, F / 2, file);
+      down(type, "random blocks", d.data(), F, F / 2, F / 2, file);
+    }
+  }
+
+  std::string path = test::model_path();
+  if (path.empty()) {
+    std::printf("model not found under FLASH_MODEL_DIR: the file's weights not checked\n");
+  } else {
+    GgufModel model(path);
+    // dequant_f16 on the first 200 rows of a dense tensor of each quantised type the file has.
+    std::set<uint32_t> dense_types;
+    for (auto &[name, ti] : model.tensors())
+      if (quant_block_values(ti.type) > 1 && name.find("exps") == std::string::npos &&
+          name.find("per_layer") == std::string::npos)
+        dense_types.insert(ti.type);
+    for (uint32_t type : dense_types) {
+      const GgufTensor *t = nullptr;
+      for (auto &[name, ti] : model.tensors())
+        if (ti.type == type && name.find("exps") == std::string::npos && name.find("per_layer") == std::string::npos) {
+          t = &ti;
+          break;
+        }
+      EXPECT(t, "no dense tensor of type %s", ggml_type_label(type));
+      dequant(type, t->name, t->data, 200, (uint32_t)t->shape[0]);
+    }
+
+    // Expert 7 of one layer per gate type, and of one per down type: card 1's half of 640.
+    const uint32_t F = 640, e = 7;
+    std::vector<uint32_t> gate_layers, down_layers;
+    std::vector<uint32_t> seen_g, seen_d;
+    for (uint32_t l = 0; l < 48; l++) {
+      uint32_t gt = model.tensor("blk." + std::to_string(l) + ".ffn_gate_exps.weight").type;
+      uint32_t dt = model.tensor("blk." + std::to_string(l) + ".ffn_down_exps.weight").type;
+      if (std::find(seen_g.begin(), seen_g.end(), gt) == seen_g.end()) seen_g.push_back(gt), gate_layers.push_back(l);
+      if (std::find(seen_d.begin(), seen_d.end(), dt) == seen_d.end()) seen_d.push_back(dt), down_layers.push_back(l);
+    }
+    for (bool file : {false, true}) {
+      for (uint32_t l : gate_layers) {
+        const GgufTensor &g = model.tensor("blk." + std::to_string(l) + ".ffn_gate_exps.weight");
+        const GgufTensor &u = model.tensor("blk." + std::to_string(l) + ".ffn_up_exps.weight");
+        const uint64_t eb = g.bytes / 512;
+        gate_up(g.type, "blk." + std::to_string(l), g.data + e * eb, u.data + e * eb, F / 2, F / 2, file);
+      }
+      for (uint32_t l : down_layers) {
+        const GgufTensor &d = model.tensor("blk." + std::to_string(l) + ".ffn_down_exps.weight");
+        const uint64_t eb = d.bytes / 512;
+        down(d.type, "blk." + std::to_string(l), d.data + e * eb, F, F / 2, F / 2, file);
+      }
     }
   }
   EXPECT(ck.failures == 0, "%d case(s) over tolerance", ck.failures);
