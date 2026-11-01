@@ -13,7 +13,7 @@ from typing import Any
 
 import numpy as np
 
-from engine.api.interface import WINDOW_ROWS, TimingRecords, TimingStage
+from engine.api.interface import PROMPT_RUNS, WINDOW_ROWS, TimingRecords, TimingStage
 
 
 @dataclass(slots=True)
@@ -28,11 +28,16 @@ class Ewma:
 
 
 STRETCH = 1.6
-"""A prompt piece may run to this multiple of its time budget rather than be cut: each cut pays the fixed part again."""
-WHOLE_ROWS = 1024
+"""Beside writers, a plan's prompt pieces may be priced at up to this multiple of the budget before a piece is cut or
+another prompt stops joining, since each cut pays the fixed part again. It sets the writers' longest wait: the longest
+plans are prompts joined past 1,024 rows, which take longer than they are priced, and a larger stretch makes them
+longer for no more tokens a second (docs/measurements/MEASUREMENTS.md#2026-11-01-whole-rows-and-stretch)."""
+WHOLE_ROWS = 1024 - (PROMPT_RUNS - 1)
 """Beside writers, the most rows a prompt piece holds: a prompt of up to this many rows may be read whole, a longer one
-is cut, since the fixed part is most of a chunk only up to about this many rows and a longer chunk holds the writers
-for longer (docs/measurements/MEASUREMENTS.md#2026-10-17-prefill-timings)."""
+is cut. With the writers' rows that ride in its chunk, at most PROMPT_RUNS - 1, the chunk keeps to the core's
+kFetchRows (1,024), which fetches only the experts its router picks. A longer chunk copies every uncached expert: it
+holds the writers longer and reads no more rows a second until it is far longer
+(docs/measurements/MEASUREMENTS.md#2026-11-01-whole-rows-and-stretch)."""
 WINDOW_ROWS_RANGE = (8, 256)
 """The fewest and most rows CostModel.window_rows returns."""
 
