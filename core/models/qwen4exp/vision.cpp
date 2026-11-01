@@ -9,7 +9,7 @@
 #include <cstring>
 #include <stdexcept>
 
-#include "model_impl.h"
+#include "models/qwen4exp/model_impl.h"
 
 namespace engine::qwen4exp {
 
@@ -23,6 +23,7 @@ constexpr uint32_t kMerge = 4 * kVD, kVOut = Q_EMBD;
 constexpr uint32_t kStages = kVLayers + 2;  // the layers, then the merger's mm.0 and mm.2
 constexpr uint32_t kTokensMax = 4096;       // section 4.3
 constexpr uint32_t kFramesMax = 2;          // a pair of video frames (section 6)
+static_assert(kVPatch == kImageShape.patch_bytes);
 
 // The four products of a layer in its stage: qkv, out, up, down (rows of 4,320, the last 16 zero).
 struct LayerOffsets {
@@ -89,6 +90,7 @@ std::vector<uint16_t> gelu_table() {
 }
 
 }  // namespace
+
 
 void Model::set_images(uint32_t slot, const Image *images, uint32_t n) {
   if (slot >= opt_.slots) throw std::runtime_error("slot out of range");

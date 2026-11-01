@@ -13,7 +13,7 @@ uint64_t key(int32_t a, int32_t b, int32_t c) {
 }  // namespace
 
 std::vector<int32_t> Lookup::drafts(const std::vector<int32_t> &t, int32_t next, uint32_t cap,
-                                     bool (*stop)(int32_t)) {
+                                     const std::function<bool(int32_t)> &stop) {
   index(t);
   std::vector<int32_t> d;
   const uint32_t p = (uint32_t)t.size();  // next's position

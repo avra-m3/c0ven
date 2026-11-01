@@ -12,18 +12,14 @@
 #include <unordered_map>
 #include <vector>
 
+#include "api/model.h"
 #include "load/gguf.h"
 #include "util/parallel.h"
 
 namespace engine::qwen4exp {
 
-constexpr int32_t kNoToken = -1;
-
-struct NgramStats {
-  uint64_t rows = 0;    // rows asked for
-  uint64_t hits = 0;    // served by the cache
-  uint64_t reads = 0;   // read from the SSD
-};
+using engine::kNoToken;
+using engine::NgramStats;
 
 class Ngram {
  public:

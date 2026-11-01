@@ -13,20 +13,8 @@ engine_add_kernel_module(gemm_bf16_t4n1 SOURCE kernels/gemm.cl
 # columns (kernels/gemm.cl).
 engine_add_kernel_module(gemm_bf16_t4n2s11 SOURCE kernels/gemm.cl
                          OPTIONS -DBF16 -DTM=4 -DTN=2 -DGEMM_SG=11 -cl-intel-256-GRF-per-thread)
-engine_add_kernel_module(qwen4exp SOURCE kernels/models/qwen4exp/layer.cl
-                         OPTIONS -I${CMAKE_SOURCE_DIR}/core/models/qwen4exp -I${CMAKE_SOURCE_DIR}/kernels/models/qwen4exp)
-engine_add_kernel_module(qwen4exp_prompt SOURCE kernels/models/qwen4exp/prompt.cl
-                         OPTIONS -I${CMAKE_SOURCE_DIR}/core/models/qwen4exp -I${CMAKE_SOURCE_DIR}/kernels/models/qwen4exp)
-engine_add_kernel_module(qwen4exp_attn SOURCE kernels/models/qwen4exp/prompt_attn.cl
-                         OPTIONS -cl-intel-256-GRF-per-thread -I${CMAKE_SOURCE_DIR}/core/models/qwen4exp)
-engine_add_kernel_module(qwen4exp_gdn SOURCE kernels/models/qwen4exp/prompt_gdn.cl
-                         OPTIONS -I${CMAKE_SOURCE_DIR}/core/models/qwen4exp)
-# The DFlash 2 drafter's kernels between its products (core/models/qwen4exp/dflash.cpp).
-engine_add_kernel_module(qwen4exp_dflash SOURCE kernels/models/qwen4exp/dflash.cl
-                         OPTIONS -I${CMAKE_SOURCE_DIR}/core/models/qwen4exp)
-# The image encoder's steps between its products (docs/spec/MODEL_VISION.md).
-engine_add_kernel_module(qwen4exp_vision SOURCE kernels/models/qwen4exp/vision.cl)
-engine_add_kernel_module(qwen4exp_vision_attn SOURCE kernels/models/qwen4exp/vision.cl OPTIONS -cl-intel-256-GRF-per-thread)
+# Each architecture's own modules (ADR-0061).
+add_subdirectory(models/qwen4exp)
 
 # One matrix-vector module per weight type and lanes per row: matvec_<type>_l<lanes>.
 foreach(type Q8_0 Q4_0 Q5_0 Q2_0 IQ4_NL IQ4_XS Q3_K Q4_K Q5_K Q6_K IQ1_M IQ2_XXS IQ2_XS IQ2_S IQ3_XXS IQ3_S)

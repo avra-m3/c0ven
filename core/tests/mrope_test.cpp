@@ -6,7 +6,7 @@
 #include <cstdint>
 #include <vector>
 
-#include "mrope.h"
+#include "models/qwen4exp/mrope.h"
 #include "test_util.h"
 
 using engine::qwen4exp::ImageBlock;

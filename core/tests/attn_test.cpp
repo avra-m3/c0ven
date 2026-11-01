@@ -9,7 +9,7 @@
 #include <random>
 
 #include "ggml.h"
-#include "layout.h"
+#include "models/qwen4exp/layout.h"
 #include "step.h"
 #include "test_util.h"
 #include "ze/library.h"

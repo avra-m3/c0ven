@@ -4,6 +4,7 @@
 #ifndef QWEN4EXP_LAYOUT_H
 #define QWEN4EXP_LAYOUT_H
 
+#include "step.h"
 #include "types.h"
 
 #define Q_EMBD 2560
@@ -71,6 +72,21 @@ typedef struct {
 } MissJob;
 SHARED_ASSERT(sizeof(MissJob) == 128 + 4 * Q_EMBD, "MissJob layout");
 
+// A slot's rotation in a decode step (docs/spec/MODEL_VISION.md, section 4.2). With images in the prompt a position is
+// three numbers (time, height, width) and no longer the cell: a decode row at cell c turns by c - delta on all three.
+// The indexer's block that starts at cell blk turns by (t, h, w), the positions of that cell, which may lie in an
+// image; a later block turns by its first cell less delta. Without images delta is 0 and (t, h, w) = (blk, blk, blk).
+typedef struct {
+  u32 delta;
+  u32 blk;
+  u32 t, h, w;
+  u32 pad[3];
+} SlotRope;
+SHARED_ASSERT(sizeof(SlotRope) == 32, "SlotRope layout");
+
+// A prompt chunk's positions are (t, h, w, 0) per cell in host memory, from the first cell of the chunk's first block
+// (pos0 rounded down to a multiple of 4) to its last row.
+
 // Layer kinds: layer l is attention when (l + 1) % 4 == 0.
 #define Q_IS_ATTN(l) ((((l) + 1) & 3) == 0)
 
@@ -87,7 +103,7 @@ SHARED_ASSERT(sizeof(MissJob) == 128 + 4 * Q_EMBD, "MissJob layout");
 // raw and pooled keys live on card p % C at local page p / C, so logical page i maps only to a page with
 // p % C == i % C. The draft layer's KV is not paged: its kernels get no table, and slot s's logical page i is page
 // s npp + i of its own pool.
-#define KV_PAGE_CELLS Q_IDX_BLOCK
+SHARED_ASSERT(KV_PAGE_CELLS == Q_IDX_BLOCK, "a page is one indexer block");
 #define KV_NO_PAGE 0xffffffffu
 
 // A cell's index in the pool, from the page holding it and its position in the sequence.

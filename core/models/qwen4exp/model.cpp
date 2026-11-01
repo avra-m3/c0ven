@@ -1,5 +1,5 @@
 // qwen4exp's loading, its arena of uncached experts, and the decode step (model.h).
-#include "model_impl.h"
+#include "models/qwen4exp/model_impl.h"
 
 #include <array>
 #include <algorithm>
@@ -17,8 +17,8 @@
 #include <thread>
 
 #include "ggml.h"
-#include "layout.h"
 #include "load/runs.h"
+#include "models/qwen4exp/layout.h"
 #include "quant.h"
 #include "util/cache_dir.h"
 
@@ -122,6 +122,7 @@ Model::Mat Model::mat(Card &card, const GgufTensor &t, const Ranges &rows, const
 Model::Model(const std::string &path, const Options &opt) : opt_(opt), gguf_(path) {
   auto t0 = std::chrono::steady_clock::now();
   if (gguf_.get_string("general.architecture") != "qwen4exp") throw std::runtime_error("not a qwen4exp model");
+  if (!opt_.routing_profile) opt_.routing_profile = ENGINE_QWEN4EXP_ROUTING_PROFILE;
   if (opt_.max_ctx % Q_IDX_BLOCK) throw std::runtime_error("max_ctx must be a multiple of 4");
   rt_ = std::make_unique<ze::Runtime>(1);
   lib_ = std::make_unique<ze::Library>(*rt_);
@@ -893,13 +894,13 @@ void Model::load_experts(bool first) {
     }
     share_cards(first, budget, stg_bytes, count);
     n = nslots_cached_;
-    if (first && !opt_.routing_profile.empty()) profile = read_routing_profile(opt_.routing_profile);
+    if (first && !opt_.routing_profile->empty()) profile = read_routing_profile(*opt_.routing_profile);
   } else if (first) {
     n = std::min<uint64_t>(Q_EXPERTS, budget / per_set);
     while (n > 0 && n * per_set + staging(n) > budget) n--;
     if (opt_.experts_per_layer >= 0) n = std::min<uint64_t>(n, (uint64_t)opt_.experts_per_layer);
     nslots_cached_ = (uint32_t)n;
-    if (!opt_.routing_profile.empty()) profile = read_routing_profile(opt_.routing_profile);
+    if (!opt_.routing_profile->empty()) profile = read_routing_profile(*opt_.routing_profile);
   } else if (n * per_set + staging(n) > budget) {
     throw std::runtime_error("the cards no longer have room for the experts they cached before the sleep");
   }

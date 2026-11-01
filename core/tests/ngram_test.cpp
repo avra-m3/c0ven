@@ -5,7 +5,7 @@
 #include <random>
 #include <vector>
 
-#include "ngram.h"
+#include "models/qwen4exp/ngram.h"
 #include "test_util.h"
 
 using namespace engine;

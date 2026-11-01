@@ -26,7 +26,7 @@ The build makes:
 
 | Output | What it is |
 | --- | --- |
-| `build/kernels/<ip>/*.bin`, `*.spv`, `build/kernels/*.options` | the kernel modules, compiled ahead of time by `ocloc` for each chip in `ENGINE_AOT_DEVICES` (`bmg-g21` and `bmg-g31` by default), in a directory named for the chip's IP version (`20.1.0`, `20.2.0`), with each module's SPIR-V and the build options a card without its own binaries compiles it with at load ([ADR-0003](adr/0003-kernel-language.md), [ADR-0057](adr/0057-the-engine-reads-the-host-it-runs-on.md)); one per `engine_add_kernel_module` in [`kernels/CMakeLists.txt`](../kernels/CMakeLists.txt): the decode step's `matvec_<type>_l<lanes>` and `moe_<type>_g<group>`, the prompt path's `gemm_*`, `qgemm_<type>[_file]` and `qwen4exp_prompt`/`_attn`/`_gdn`, the image encoder's `qwen4exp_vision*`, the model's own `qwen4exp`, `common` and `smoke`, and the `*_limit10` variants `swiglu_limit_test` uses |
+| `build/kernels/<ip>/*.bin`, `*.spv`, `build/kernels/*.options` | the kernel modules, compiled ahead of time by `ocloc` for each chip in `ENGINE_AOT_DEVICES` (`bmg-g21` and `bmg-g31` by default), in a directory named for the chip's IP version (`20.1.0`, `20.2.0`), with each module's SPIR-V and the build options a card without its own binaries compiles it with at load ([ADR-0003](adr/0003-kernel-language.md), [ADR-0057](adr/0057-the-engine-reads-the-host-it-runs-on.md)); one per `engine_add_kernel_module` in [`kernels/CMakeLists.txt`](../kernels/CMakeLists.txt) and the model's [`kernels/models/qwen4exp/CMakeLists.txt`](../kernels/models/qwen4exp/CMakeLists.txt): the decode step's `matvec_<type>_l<lanes>` and `moe_<type>_g<group>`, the prompt path's `gemm_*`, `qgemm_<type>[_file]` and `qwen4exp_prompt`/`_attn`/`_gdn`, the image encoder's `qwen4exp_vision*`, the model's own `qwen4exp`, `common` and `smoke`, and the `*_limit10` variants `swiglu_limit_test` uses |
 | `build/core/libengine-<level>.so`, `build/core/libengine.so`, `build/core/cpu_levels.tsv` | the C ABI of [`include/engine_api.h`](../include/engine_api.h), one library for each CPU level, each with ggml built for that level. They export only the `engine_` symbols. `libengine.so` links to the first level's; given it, the control plane loads the first level in `cpu_levels.tsv` whose features the CPU has ([ADR-0059](adr/0059-a-library-for-each-cpu-level.md)). `ENGINE_LIBRARY` set to a `libengine-<level>.so` loads that level |
 | `build/core/libengine_core.a` | the core itself, which the tests link |
 | `build/core/tests/*` | the core's tests |
@@ -105,6 +105,10 @@ engines read, and under the host's reclaim a copy can reset a card's copy engine
 
 [DESIGN.md](DESIGN.md) is the architecture. In the code:
 
+- [`core/api/engine_api.cpp`](../core/api/engine_api.cpp), the C ABI, drives the model through `engine::Model`
+  ([`core/api/model.h`](../core/api/model.h)). `engine::open_model` builds the class the file's
+  `general.architecture` names, `qwen4exp::Model` for Flash-Next
+  ([ADR-0061](adr/0061-the-core-picks-its-model-by-the-files-architecture.md)).
 - `core/models/qwen4exp/model.cpp` loads each card's half of every layer and records the decode step as one regular
   command list per card for each width (1, 2, 3, 4, 6 and 8 rows), once. The step's first command copies the step plan
   ([`shared/step.h`](../shared/step.h)) from host memory to the card, and the kernels read that copy, so the same list

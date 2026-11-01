@@ -9,8 +9,8 @@
 #include "api/sampling.h"
 #include "test_util.h"
 
+using engine::Candidate;
 using engine::sample_p;
-using engine::qwen4exp::Candidate;
 
 namespace {
 

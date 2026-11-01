@@ -4,6 +4,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <unordered_map>
 #include <vector>
 
@@ -19,7 +20,8 @@ class Lookup {
   // next appended, at most cap of them and none from the first token stop holds for; empty when there is none. The
   // match is looked for at the last 4 places the last three tokens ended, and the newest wins a tie. tokens only
   // grows between calls, or the index is built again.
-  std::vector<int32_t> drafts(const std::vector<int32_t> &tokens, int32_t next, uint32_t cap, bool (*stop)(int32_t));
+  std::vector<int32_t> drafts(const std::vector<int32_t> &tokens, int32_t next, uint32_t cap,
+                              const std::function<bool(int32_t)> &stop);
   // Brings the index up to tokens, as drafts does first: called as a prompt is read, so that the first round after it
   // does not index the whole prompt.
   void index(const std::vector<int32_t> &tokens);
