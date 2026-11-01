@@ -17,20 +17,13 @@ APIs.
 
 Use C0ven if you have:
 
-- one or two Intel Battlemage cards in one Linux machine, with the `xe` kernel driver. The engine is tested on Arc
-  Pro B60 cards (24 GB each); other Battlemage cards likely work but are untested
+- one or two Intel Battlemage cards with at least 10 GB of VRAM each, in one Linux machine, with the `xe` kernel
+  driver. The engine is tested on Arc Pro B60 cards (24 GB each); other Battlemage cards likely work but are untested
   ([help test them](https://github.com/avra-m3/c0ven/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22)),
 - a CPU with AVX-512 (VNNI, VBMI and BF16 among it), which computes the experts the cards do not hold; the engine
   refuses to start on a CPU without them,
-- at least 10 GB of VRAM, with the smallest model file, Q2_0, at the default 262,144-token context. This is an
-  *estimate*, from that file's tensor sizes and what the engine allocates on a card; no card with less than 24 GB
-  has been tried,
-- enough VRAM and free RAM together to hold the model. The experts that do not fit on the cards wait in RAM, so RAM
-  makes up what the cards lack. With the default IQ3_S file that is about 68 GiB together: two B60s and 22.6 GiB of
-  RAM ([record](docs/measurements/MEASUREMENTS.md#2026-10-19-other-quants)), or one B60 and about 45 GiB at less
-  than half the speed ([record](docs/measurements/MEASUREMENTS.md#2026-10-19-one-card)). With Q2_0 it is about
-  45 GiB together, such as a 10 GB card and 36 GiB of RAM (*estimate*, as above). Leave room beyond this for the
-  system and your other programs; the test machine has 96 GiB,
+- enough RAM that RAM and VRAM together come to 68 GiB with the default model file, or 45 GiB with the smallest
+  ([below](#which-model-file-to-pick)),
 - one person, or a few requests at once, using the model.
 
 At start the engine reads each card's memory and chip, the host's available memory and the cgroup's limits, and the
