@@ -68,13 +68,13 @@ BUDGET_TEMPLATE = (
 number), a bare `<think>` to start the reasoning, and `drop_thinking`."""
 
 
-def tiny_tokenizer() -> Tokenizer:
+def tiny_tokenizer(pre: str = "qwen35") -> Tokenizer:
     """One token per byte (ids 0-255), then the special and added tokens: every UTF-8 character of more than one
-    byte spans several tokens, which is what the detokenizer must handle."""
+    byte spans several tokens, which is what the detokenizer must handle. `pre` is the GGUF's `tokenizer.ggml.pre`."""
     alphabet = sorted(pre_tokenizers.ByteLevel.alphabet())
     tokens = [*alphabet, *SPECIALS, *ADDED, *VISION]
     types = [1] * len(alphabet) + [CONTROL] * len(SPECIALS) + [USER_DEFINED] * len(ADDED) + [CONTROL] * len(VISION)
-    return from_vocabulary(tokens, [], types)
+    return from_vocabulary(tokens, [], types, pre)
 
 
 def tiny_model(tokenizer: Tokenizer) -> Model:

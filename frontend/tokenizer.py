@@ -1,9 +1,9 @@
 """The tokenizer and the incremental detokenizer (ADR-0004: Hugging Face `tokenizers`).
 
 The model ships a Hugging Face `tokenizer.json`. The GGUF carries the same vocabulary and merges
-(`tokenizer.ggml.*`), so without the JSON the tokenizer is rebuilt from them, as the JSON describes it: NFC, the
-pre-tokenizer regex of spec/MODEL_IO.md, section 4.1, byte-level BPE, and the added tokens matched whole. Either way,
-reference/prompts.jsonl checks it end to end (tests/end_to_end/qwen4exp/test_tokenizer.py).
+(`tokenizer.ggml.*`), so without the JSON the tokenizer is rebuilt from them, as the JSON describes it: the normalizer
+and pre-tokenizer that `tokenizer.ggml.pre` names, byte-level BPE, and the added tokens matched whole. For Flash-Next,
+reference/prompts.jsonl checks it end to end (tests/end_to_end/qwen4exp/test_model_text.py).
 """
 
 from __future__ import annotations
@@ -18,7 +18,20 @@ PRETOKENIZE = (
     r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+|\p{N}| ?[^\s\p{L}\p{M}\p{N}]+[\r\n]*|\s*[\r\n]+"
     r"|\s+(?!\S)|\s+"
 )
-"""tokenizer_config.json's `pretokenize_regex`."""
+"""Flash-Next's (`qwen35`): tokenizer_config.json's `pretokenize_regex`."""
+
+JOYAI_LLM = (
+    r"\p{N}{1,3}",
+    "[\u4e00-\u9fa5\u3040-\u309f\u30a0-\u30ff]+",
+    r"[!\"#$%&'()*+,\-./:;<=>?@\[\\\]^_`{|}~][A-Za-z]+|[^\r\n\p{L}\p{P}\p{S}]?[\p{L}\p{M}]+| ?[\p{P}\p{S}]+[\r\n]*"
+    r"|\s*[\r\n]+|\s+(?!\S)|\s+",
+)
+"""DeepSeek-V3's splits (`joyai-llm`), applied in turn: runs of up to three digits, CJK runs, then words and
+punctuation. DeepSeek-V4.1-Flash's tokenizer.json has these and no normalizer; llama.cpp gives `joyai-llm` the same
+(`src/llama-vocab.cpp:319-328` at 3cf0325)."""
+
+PRE_TOKENIZERS = ("qwen35", "joyai-llm")
+"""The `tokenizer.ggml.pre` values from_vocabulary builds."""
 
 CONTROL = 3
 USER_DEFINED = 4
@@ -29,8 +42,16 @@ def from_json(path: Path) -> Tokenizer:
     return Tokenizer.from_file(str(path))
 
 
-def from_vocabulary(tokens: Sequence[str], merges: Sequence[str], token_types: Sequence[int]) -> Tokenizer:
-    """The tokenizer the GGUF's `tokenizer.ggml.tokens`, `merges` and `token_type` describe."""
+def from_vocabulary(tokens: Sequence[str], merges: Sequence[str], token_types: Sequence[int], pre: str) -> Tokenizer:
+    """The tokenizer the GGUF's `tokenizer.ggml.tokens`, `merges`, `token_type` and `pre` describe.
+
+    Raises ValueError for a `pre` not in PRE_TOKENIZERS, a malformed merge, or an added token whose id is not its
+    index in `tokens`."""
+    if pre not in PRE_TOKENIZERS:
+        raise ValueError(
+            f"tokenizer.ggml.pre {pre!r} is not one the front end builds ({', '.join(PRE_TOKENIZERS)}); "
+            "give the model's tokenizer.json with --tokenizer"
+        )
     added = {i for i, t in enumerate(token_types) if t in (CONTROL, USER_DEFINED)}
     vocab = {tok: i for i, tok in enumerate(tokens)}
     pairs: list[tuple[str, str]] = []
@@ -40,10 +61,14 @@ def from_vocabulary(tokens: Sequence[str], merges: Sequence[str], token_types: S
             raise ValueError(f"bad merge: {m!r}")
         pairs.append((a, b))
     tk = Tokenizer(models.BPE(vocab=vocab, merges=pairs, fuse_unk=False, byte_fallback=False))
-    tk.normalizer = normalizers.NFC()
+    if pre == "qwen35":
+        tk.normalizer = normalizers.NFC()
+        splits = [PRETOKENIZE]
+    else:
+        splits = list(JOYAI_LLM)
     tk.pre_tokenizer = pre_tokenizers.Sequence(
         [
-            pre_tokenizers.Split(Regex(PRETOKENIZE), behavior="isolated", invert=False),
+            *(pre_tokenizers.Split(Regex(r), behavior="isolated", invert=False) for r in splits),
             pre_tokenizers.ByteLevel(add_prefix_space=False, use_regex=False),
         ]
     )
