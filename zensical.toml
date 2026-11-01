@@ -15,6 +15,7 @@ exclude_docs = """
 !/AGENTS.md
 !/docs/
 /docs/overrides/
+/docs/explainer/tools/
 """
 site_dir = "_site"
 extra_css = ["docs/stylesheets/logo-colours.css"]
