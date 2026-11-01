@@ -426,12 +426,12 @@ void Model::settle_arena() {
                std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(), lock.c_str());
 }
 
-// The loader's thread count: probed on the first shard, and kept in ENGINE_CACHE_DIR beside the draft layer's
-// cache, keyed by the file's device, inode, size and time, so a later start does not probe again. ENGINE_LOADER_THREADS
-// sets it.
+// The loader's thread count: probed on the largest shard, and kept in ENGINE_CACHE_DIR beside the draft layer's
+// cache, keyed by that shard's device, inode, size and time, so a later start does not probe again. A shard too short
+// to probe gives DirectReader's default, not kept. ENGINE_LOADER_THREADS sets it.
 unsigned Model::loader_threads() {
   if (const char *e = std::getenv("ENGINE_LOADER_THREADS")) return (unsigned)std::max(1, std::atoi(e));
-  const std::string &shard = gguf_.files().at(0);
+  const std::string shard = DirectReader::largest(gguf_.files());
   struct stat st;
   std::string cache;
   if (const char *dir = engine::cache_dir(); dir && ::stat(shard.c_str(), &st) == 0) {
@@ -453,6 +453,11 @@ unsigned Model::loader_threads() {
   double rate = 0;
   const unsigned n = DirectReader::probe_threads(shard, &rate);
   info_.loader_bytes_per_s = rate;
+  if (rate == 0) {
+    std::fprintf(stderr, "engine: the loader reads the model file with %u threads: %s is too short to probe\n", n,
+                 shard.c_str());
+    return n;
+  }
   std::fprintf(stderr, "engine: the loader reads the model file at %.2f GB/s with %u threads, the fastest of 4, 8 and 16\n",
                rate / 1e9, n);
   if (!cache.empty())

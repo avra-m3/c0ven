@@ -19,15 +19,21 @@ class DirectReader {
  public:
   static constexpr uint64_t kAlign = 4096;
   static constexpr uint64_t kPiece = 1 << 20;
+  static constexpr unsigned kThreads = 8;             // the thread count when there is no probe
+  static constexpr uint64_t kProbeSpan = 1ull << 30;  // the file size probe_threads needs
 
-  explicit DirectReader(const std::vector<std::string> &paths, unsigned threads = 8);
+  explicit DirectReader(const std::vector<std::string> &paths, unsigned threads = kThreads);
   ~DirectReader();
   DirectReader(const DirectReader &) = delete;
   DirectReader &operator=(const DirectReader &) = delete;
 
   // The thread count of 4, 8 and 16 that reads the file fastest: 256 MiB each, from different places so the disk's
-  // own cache does not serve them. rate: that count's bytes a second.
+  // own cache does not serve them. rate: that count's bytes a second. A file under kProbeSpan is not probed: kThreads,
+  // and a rate of 0.
   static unsigned probe_threads(const std::string &path, double *rate);
+  // The largest of the files, the first on a tie: the one to probe, since a split file's first shard may hold only
+  // metadata. Throws when there are none or one cannot be read.
+  static std::string largest(const std::vector<std::string> &paths);
 
   // Bytes a buffer needs to hold the read of [offset, offset + bytes): the range widened to kAlign at both ends.
   static uint64_t span(uint64_t offset, uint64_t bytes);

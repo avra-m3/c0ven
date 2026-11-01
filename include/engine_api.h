@@ -87,10 +87,12 @@ typedef struct {
   uint32_t kv_pages;           /* the KV cache's pages */
   uint32_t pages_per_slot;     /* logical pages a slot can map: the context's, rounded up to a multiple of the cards */
   double host_read_bytes_per_s; /* the CPU workers' read of the arena at open, bytes a second; 0: not measured */
-  uint32_t loader_threads;     /* threads reading the model file, the fastest of 4, 8 and 16 (ENGINE_LOADER_THREADS
-                                  sets it; the choice is kept in ENGINE_CACHE_DIR) */
+  uint32_t loader_threads;     /* threads reading the model file, the fastest of 4, 8 and 16 on its largest shard,
+                                  or 8 when that shard is under 1 GiB (ENGINE_LOADER_THREADS sets it; a probed choice
+                                  is kept in ENGINE_CACHE_DIR) */
   uint32_t ngram_in_ram;       /* 1: the n-gram table is in RAM */
-  double loader_bytes_per_s;   /* their read rate when chosen */
+  double loader_bytes_per_s;   /* their read rate in the probe; 0: not measured (ENGINE_LOADER_THREADS is set, or
+                                  the largest shard is too short to probe) */
   double ngram_read_us;        /* one 4 KiB row read from the file at open, microseconds; 0 with the table in RAM */
   double copy_bytes_per_s[2];  /* each card's copy engine reading pinned host memory at open, bytes a second */
   uint64_t expert_budget[2];   /* per card: the device memory left for the expert cache at load, once everything else

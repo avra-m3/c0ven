@@ -15,6 +15,7 @@ function(engine_test name)
 endfunction()
 
 engine_test(gguf_test SOURCES gguf_test.cpp)
+engine_test(direct_test SOURCES direct_test.cpp)
 engine_test(mrope_test SOURCES mrope_test.cpp)
 engine_test(sampling_test SOURCES sampling_test.cpp)
 engine_test(multirow_test SOURCES multirow_test.cpp)
