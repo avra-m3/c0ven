@@ -3,7 +3,8 @@
 It replays `reference/llamacpp-3cf0325-IQ3_S-greedy.jsonl`: the greedy tokens for each prompt of
 `reference/prompts.jsonl`. Behind the engine's interface it runs the same plans as the mock and checks them the same
 way, so the scheduler and the front end can run end to end against the model's real token ids. A prompt it has no
-record of fails with an ERROR event, and so does asking for more tokens than were recorded.
+record of fails with an ERROR event, and so does asking for more tokens than were recorded. The records are of one
+architecture, which their first line names; it refuses any other.
 """
 
 from __future__ import annotations
@@ -17,6 +18,12 @@ from engine.api.mock import MockEngine
 REFERENCE_DIR = Path(__file__).resolve().parents[2] / "reference"
 PROMPTS = REFERENCE_DIR / "prompts.jsonl"
 GREEDY = REFERENCE_DIR / "llamacpp-3cf0325-IQ3_S-greedy.jsonl"
+
+
+def recorded_arch(greedy: Path = GREEDY) -> str:
+    """The architecture the records are of: `arch` in the first line's `meta`."""
+    with greedy.open() as f:
+        return str(json.loads(f.readline())["meta"]["arch"])
 
 
 def load_reference(prompts: Path = PROMPTS, greedy: Path = GREEDY) -> dict[tuple[int, ...], tuple[int, ...]]:
@@ -37,7 +44,11 @@ def load_reference(prompts: Path = PROMPTS, greedy: Path = GREEDY) -> dict[tuple
 
 
 class ReferenceEngine(MockEngine):
-    def __init__(self, records: dict[tuple[int, ...], tuple[int, ...]] | None = None) -> None:
+    def __init__(self, records: dict[tuple[int, ...], tuple[int, ...]] | None = None, arch: str | None = None) -> None:
+        """records: prompts' token ids mapped to their greedy tokens; None: the committed ones. arch: the model's
+        architecture, or None not to check it. Raises ValueError when `arch` is not the records' architecture."""
+        if arch is not None and arch != (recorded := recorded_arch()):
+            raise ValueError(f"the reference backend has records of {recorded} only, not of {arch}")
         self._records = load_reference() if records is None else records
         self._prompt_lengths = sorted({len(p) for p in self._records})
         super().__init__(self._next)

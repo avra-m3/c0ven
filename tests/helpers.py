@@ -6,7 +6,9 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 
+import gguf
 from tokenizers import Tokenizer, pre_tokenizers
 
 import protocol
@@ -75,6 +77,21 @@ def tiny_tokenizer(pre: str = "qwen35") -> Tokenizer:
     tokens = [*alphabet, *SPECIALS, *ADDED, *VISION]
     types = [1] * len(alphabet) + [CONTROL] * len(SPECIALS) + [USER_DEFINED] * len(ADDED) + [CONTROL] * len(VISION)
     return from_vocabulary(tokens, [], types, pre)
+
+
+def write_gguf(path: Path, arch: str, template: str = "") -> None:
+    """A GGUF with no tensors: its architecture and, with a chat template, the vocabulary `a`, `b`, `ab`."""
+    w = gguf.GGUFWriter(path, arch)
+    if template:
+        w.add_token_list(["a", "b", "ab"])
+        w.add_token_merges(["a b"])
+        w.add_token_types([1, 1, 1])
+        w.add_tokenizer_pre("qwen35")
+        w.add_chat_template(template)
+    w.write_header_to_file()
+    w.write_kv_data_to_file()
+    w.write_tensors_to_file()
+    w.close()
 
 
 def tiny_model(tokenizer: Tokenizer) -> Model:

@@ -17,7 +17,7 @@ matter. So the reference is pinned to `-ub 512`, and the engine's prompt chunkin
 | --- | --- | ---: |
 | [`reference/prompts.jsonl`](../../reference/prompts.jsonl) | 24 prompts: id, kind, thinking on/off, effort, `max_tokens` for a benchmark run, the rendered text, and its token ids | 2.0 MB |
 | [`reference/messages.jsonl`](../../reference/messages.jsonl) | the chat messages and tools of the 12 prompts added on 2026-10-20, as `/v1/chat/completions` takes them; `tools/reference_prompts.py` renders them | 644 KB |
-| [`reference/llamacpp-3cf0325-IQ3_S-greedy.jsonl`](../../reference/llamacpp-3cf0325-IQ3_S-greedy.jsonl) | greedy output token ids per prompt, first line names the commit, the backend and the model files with their sha256 | 8 KB |
+| [`reference/llamacpp-3cf0325-IQ3_S-greedy.jsonl`](../../reference/llamacpp-3cf0325-IQ3_S-greedy.jsonl) | greedy output token ids per prompt, first line names the architecture, the commit, the backend and the model files with their sha256 | 8 KB |
 | The KL base (on the machine, not in Git) | llama.cpp's saved log-probabilities for 64 chunks of a fixed text | 8.1 GB |
 | [`reference/kl-set.jsonl`](../../reference/kl-set.jsonl) | the KL set: five segments of 1,000 tokens, each with its source, token ids and text; `tools/kl_set.py` makes it from `reference/kl-text/` and the files it names | 49 KB |
 | `kl-base-bf16.bin` (not in Git) | the BF16 checkpoint's log-probabilities on the KL set, in `kl_test`'s dump format | 41 MB |

@@ -26,7 +26,6 @@ import time
 from collections.abc import Callable
 from enum import Enum
 from pathlib import Path
-from types import ModuleType
 from typing import TextIO, cast
 
 import gguf
@@ -34,6 +33,7 @@ import gguf
 import protocol
 from engine import fit, host
 from engine.api.interface import CORE_RESERVE, IMAGE_PATCH_BYTES, Engine, EngineError, EngineFacts, Image, OpenConfig
+from engine.gguf_files import first_shard
 from engine.memory_plan import (
     GIB,
     MemoryPlan,
@@ -44,6 +44,7 @@ from engine.memory_plan import (
     working_file,
     write_working,
 )
+from engine.models import ModelSetup
 from engine.scheduler import CheckpointRule, Scheduler, SchedulerOptions
 from engine.timing import CostModel
 
@@ -97,21 +98,26 @@ class State(Enum):
 
 
 def architecture(model: Path) -> str:
-    reader = gguf.GGUFReader(model)
+    """The GGUF's `general.architecture`, read from the first shard. `model` is any shard."""
+    first = first_shard(model)
+    reader = gguf.GGUFReader(first)
     field = reader.get_field("general.architecture")
     if field is None:
-        raise SystemExit(f"{model} has no general.architecture")
+        raise SystemExit(f"{first} has no general.architecture")
     return str(field.contents())
 
 
-def model_module(arch: str) -> ModuleType:
+def model_module(arch: str) -> ModelSetup:
+    """The architecture's setup module, `engine.models.<arch>.setup`. Exits when there is none."""
     try:
-        return importlib.import_module(f"engine.models.{arch}.setup")
+        return cast("ModelSetup", importlib.import_module(f"engine.models.{arch}.setup"))
     except ModuleNotFoundError:
         raise SystemExit(f"architecture {arch!r} is not supported") from None
 
 
-def make_engine(backend: str, realtime: bool = False) -> Engine:
+def make_engine(backend: str, realtime: bool = False, arch: str | None = None) -> Engine:
+    """The backend's engine. arch: the model's architecture, which the reference must have records of. Exits on an
+    unknown backend or an architecture the reference has no records of."""
     match backend:
         case "native":
             from engine.api.native import NativeEngine  # noqa: PLC0415
@@ -124,7 +130,10 @@ def make_engine(backend: str, realtime: bool = False) -> Engine:
         case "reference":
             from engine.api.reference import ReferenceEngine  # noqa: PLC0415
 
-            return ReferenceEngine()
+            try:
+                return ReferenceEngine(arch=arch)
+            except ValueError as exc:
+                raise SystemExit(str(exc)) from None
         case _:
             raise SystemExit(f"unknown backend {backend!r}")
 
@@ -140,7 +149,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--checkpoints",
         type=int,
         default=8,
-        help="slot checkpoints in pinned host memory, each a slot's running state (118,038,528 B)",
+        help="slot checkpoints in pinned host memory, each a slot's running state",
     )
     p.add_argument(
         "--kv-tokens",
@@ -176,14 +185,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--draft-dir",
         type=Path,
-        help="the drafter's tensors, DFlash 2's or the MTP layer's; default: dflash/ beside the model file when it"
-        " holds dflash-manifest.json, else mtp/ when it holds mtp-manifest.json",
+        help="the drafter, a directory or a file; default: the one the model finds beside the model file",
     )
     p.add_argument("--no-draft", action="store_true", help="decode without the draft layer")
     p.add_argument(
         "--vision",
         type=Path,
-        help="the image encoder's file; default: the one mmproj-*.gguf beside the model file, when there is one",
+        help="the image encoder's file; default: the one the model finds beside the model file, when there is one",
     )
     p.add_argument("--no-vision", action="store_true", help="read no images")
     p.add_argument("--prompt-budget-ms", type=float, default=SchedulerOptions().prompt_budget_ms)
@@ -209,12 +217,6 @@ def _reader(stream: TextIO, commands: queue.Queue[protocol.Command]) -> None:
         except protocol.ProtocolError as exc:
             log.error("bad command: %s", exc)
     commands.put(protocol.Quit())
-
-
-def vision_file(model: Path) -> Path | None:
-    """The image encoder beside the model file: the one `mmproj-*.gguf` there, or None."""
-    found = sorted(model.parent.glob("mmproj-*.gguf"))
-    return found[0] if len(found) == 1 else None
 
 
 def read_image(img: protocol.Img) -> Image:
@@ -486,13 +488,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     draft: Path | None = None
     if native and not args.no_draft and args.model is not None:
-        draft = args.draft_dir or cast("Callable[[Path], Path | None]", model.draft_dir)(args.model)
+        draft = args.draft_dir or model.draft_dir(args.model)
     workers: dict[str, int] = {}
     if the_host is not None:
         n, source = the_host.cpu_workers()
         workers["cpu_workers"] = n
         log.info("CPU workers: %d, bounded by %s (ENGINE_CPU_WORKERS overrides)", n, source)
-    vision = None if args.no_vision or not native or args.model is None else args.vision or vision_file(args.model)
+    vision = (
+        None if args.no_vision or not native or args.model is None else args.vision or model.vision_file(args.model)
+    )
     # The core's working memory from an earlier load with the same options, in place of the estimate. It is kept
     # beside the draft layer's cache.
     working: Path | None = None
@@ -506,18 +510,14 @@ def main(argv: list[str] | None = None) -> int:
         if (kept := read_working(working)) is not None:
             options = dataclasses.replace(options, working_per_card=kept)
     try:
-        config, plan = cast(
-            "tuple[OpenConfig, MemoryPlan]",
-            model.open_config(
-                args.model if native else None, options, args.deterministic, draft, args.table_cache, **workers
-            ),
+        config, plan = model.open_config(
+            args.model if native else None, options, args.deterministic, draft, args.table_cache, **workers
         )
         mem_total = the_host.mem_total if the_host is not None else None
         if native and (args.ngram_ram == "on" or (args.ngram_ram == "auto" and ngram_fits(plan, mem_total))):
             options = dataclasses.replace(options, ngram_in_ram=True)
-            config, plan = cast(
-                "tuple[OpenConfig, MemoryPlan]",
-                model.open_config(args.model, options, args.deterministic, draft, args.table_cache, **workers),
+            config, plan = model.open_config(
+                args.model, options, args.deterministic, draft, args.table_cache, **workers
             )
     except PlanError as exc:
         print(protocol.Error(None, f"memory plan: {exc}").encode(), flush=True)
@@ -529,9 +529,9 @@ def main(argv: list[str] | None = None) -> int:
     sched = SchedulerOptions(
         prompt_budget_ms=args.prompt_budget_ms, decode_share=args.decode_share, chunk_rows=args.chunk_rows
     )
-    rule = cast("CheckpointRule", model.checkpoint_positions)
+    rule: CheckpointRule = model.checkpoint_positions
     return serve(
-        make_engine(args.backend, args.realtime),
+        make_engine(args.backend, args.realtime, arch),
         config,
         rule=rule,
         options=sched,

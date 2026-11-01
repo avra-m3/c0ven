@@ -17,10 +17,11 @@ import protocol
 from engine import fit
 from engine.api.interface import StepPlan
 from engine.api.mock import MockEngine
-from engine.process import cache_dir, read_cost, serve
+from engine.api.reference import ReferenceEngine
+from engine.process import architecture, cache_dir, make_engine, model_module, read_cost, serve
 from engine.scheduler import SchedulerOptions, every_16k
 from engine.timing import CostModel
-from tests.helpers import open_config
+from tests.helpers import open_config, write_gguf
 
 
 def run_engine(lines: list[str], *args: str) -> list[protocol.Event]:
@@ -408,3 +409,21 @@ def test_a_cost_file_that_does_not_read_is_left_for_the_estimates(tmp_path: Path
     assert read_cost(bad) is None
     bad.write_text(json.dumps({"row_ms": 1.0}))
     assert read_cost(bad) is None
+
+
+def test_the_architecture_is_read_from_the_first_shard(tmp_path: Path):
+    write_gguf(tmp_path / "m-00001-of-00006.gguf", "testarch")
+    (tmp_path / "m-00004-of-00006.gguf").write_bytes(b"")
+    assert architecture(tmp_path / "m-00004-of-00006.gguf") == "testarch"
+    assert architecture(tmp_path / "m-00001-of-00006.gguf") == "testarch"
+
+
+def test_an_architecture_without_a_setup_module_is_refused():
+    with pytest.raises(SystemExit, match="'testarch' is not supported"):
+        model_module("testarch")
+
+
+def test_the_reference_backend_refuses_an_architecture_it_has_no_records_of():
+    with pytest.raises(SystemExit, match="records of qwen4exp only, not of testarch"):
+        make_engine("reference", arch="testarch")
+    assert isinstance(make_engine("reference", arch="qwen4exp"), ReferenceEngine)

@@ -10,6 +10,8 @@ from pathlib import Path
 import pytest
 
 from frontend.__main__ import engine_argv, parse_args, table_cache, version
+from frontend.model import first_shard, load
+from tests.helpers import write_gguf
 
 
 def test_version_prints_the_projects_version(capsys: pytest.CaptureFixture[str]):
@@ -66,3 +68,13 @@ def test_the_default_limit_takes_a_token_count():
 def test_metrics_are_not_logged_unless_asked():
     assert parse_args([]).metrics_log == 0
     assert parse_args(["--metrics-log", "60"]).metrics_log == 60
+
+
+def test_the_model_is_read_from_the_first_shard_given_any(tmp_path: Path):
+    write_gguf(tmp_path / "m-00001-of-00003.gguf", "testarch", "{{ messages }}")
+    (tmp_path / "m-00003-of-00003.gguf").write_bytes(b"")
+    assert first_shard(tmp_path / "m-00003-of-00003.gguf") == tmp_path / "m-00001-of-00003.gguf"
+    assert first_shard(tmp_path / "m.gguf") == tmp_path / "m.gguf"
+    model = load(tmp_path / "m-00003-of-00003.gguf")
+    assert model.arch == "testarch"
+    assert model.path == str(tmp_path / "m-00003-of-00003.gguf")
