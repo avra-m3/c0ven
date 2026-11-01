@@ -15,6 +15,8 @@ from typing import Any, NoReturn
 from jinja2 import TemplateError, meta
 from jinja2.sandbox import ImmutableSandboxedEnvironment
 
+from frontend.output import ToolCallFormat, call_format
+
 type JSON = Any
 
 LEVELS = ("minimal", "low", "medium", "high", "xhigh", "max")
@@ -78,6 +80,8 @@ class ChatTemplate:
         env.filters["tojson"] = _tojson
         env.globals["raise_exception"] = _raise  # pyright: ignore[reportArgumentType]
         self.source = source
+        self.tool_calls: ToolCallFormat = call_format(source)
+        """The format the template teaches the model to write tool calls in."""
         parsed = env.parse(source)
         self._variables = meta.find_undeclared_variables(parsed)
         self._template = env.from_string(parsed)
