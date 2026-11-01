@@ -44,12 +44,6 @@ struct Checker {
   }
 };
 
-// The expert types with qgemm_<type>_file modules (kernels/CMakeLists.txt).
-bool has_file_layout(uint32_t t) {
-  return t == QT_Q8_0 || t == QT_Q2_0 || t == QT_IQ4_NL || t == QT_IQ4_XS || t == QT_Q2_K || t == QT_IQ1_S ||
-         t == QT_IQ1_M || t == QT_IQ2_XXS || t == QT_IQ2_XS || t == QT_IQ2_S || t == QT_IQ3_XXS || t == QT_IQ3_S;
-}
-
 }  // namespace
 
 int main() {
@@ -224,7 +218,6 @@ int main() {
     std::vector<uint8_t> g = test::random_blocks(type, F * E / qk, rng), u = test::random_blocks(type, F * E / qk, rng);
     std::vector<uint8_t> d = test::random_blocks(type, E * F / qk, rng);
     for (bool file : {false, true}) {
-      if (file && !has_file_layout(type)) continue;
       gate_up(type, "random blocks", g.data(), u.data(), F / 2, F / 2, file);
       down(type, "random blocks", d.data(), F, F / 2, F / 2, file);
     }

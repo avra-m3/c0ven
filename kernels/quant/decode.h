@@ -20,7 +20,7 @@
 #define FIELD(f, k) (W + quant_run_offset(QTYPE, f, n) + (ulong)(k) * quant_field_size(QTYPE, f))
 #endif
 
-// A 32-bit load from a field. File blocks keep 16-bit alignment only (18, 34 or 98 bytes long).
+// A 32-bit load from a field. File blocks keep 16-bit alignment only: every type's block is an even number of bytes.
 #ifdef LAYOUT_FILE
 static inline uint dec_u32(__global const uchar *p) { return (uint)ld_u16(p) | ((uint)ld_u16(p + 2) << 16); }
 #else
