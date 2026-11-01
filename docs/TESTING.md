@@ -66,6 +66,7 @@ says otherwise.
 | The check's long prompts, `check/long-255k.json` and `check/prompts-2x240k.json` (0.8 and 1.6 MB) | not in Git; `tools/check.py` holds their sha256 | `FLASH_REF_DIR` |
 | The encoder's reference rows | the machine, `$FLASH_REF_DIR/vision` ([record](measurements/MEASUREMENTS.md#2026-10-17-encoder-reference)) | `FLASH_REF_DIR` |
 | The model | the machine, `/models` in the container ([MODEL_FILES.md](MODEL_FILES.md)) | `FLASH_MODEL_DIR`, default `/models` |
+| DeepSeek-V4.1-Flash's first GGUF shard, for `tests/end_to_end/deepseek41/` | the machine | `DEEPSEEK41_MODEL_DIR`, no default |
 
 **A test whose data is missing, or fails its sha256 check, skips and names the file. It never passes**
 ([ADR-0012](adr/0012-correctness-reference.md), decision 5). A run reports how many tests it skipped.

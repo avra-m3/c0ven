@@ -17,14 +17,39 @@ from frontend.output import (
     parse_tool_call,
 )
 from frontend.template import LEVELS, ChatTemplate, Conversation, Efforts, TemplateFailed
-from frontend.tokenizer import Detokenizer, encode
-from tests.helpers import BUDGET_TEMPLATE, LEVEL_TEMPLATE, TINY_TEMPLATE
+from frontend.tokenizer import Detokenizer, encode, from_vocabulary
+from tests.helpers import BUDGET_TEMPLATE, LEVEL_TEMPLATE, TINY_TEMPLATE, tiny_tokenizer
 
 
 def test_added_tokens_are_matched_whole(tokenizer: Tokenizer):
     ids = encode(tokenizer, "<|im_start|>user\n<think>")
     assert ids[0] == tokenizer.token_to_id("<|im_start|>")
     assert ids[-1] == tokenizer.token_to_id("<think>")
+
+
+def pre_tokens(tokenizer: Tokenizer, text: str) -> list[str]:
+    """The pieces BPE works inside, for text NFC leaves as it is."""
+    assert tokenizer.pre_tokenizer is not None
+    return [text[a:b] for _, (a, b) in tokenizer.pre_tokenizer.pre_tokenize_str(text)]
+
+
+def test_qwen35_splits_single_digits_after_nfc(tokenizer: Tokenizer):
+    assert pre_tokens(tokenizer, "12345 中文abc") == ["1", "2", "3", "4", "5", " 中文abc"]
+    assert len(encode(tokenizer, "e\u0301")) == 2, "NFC makes it one two-byte character"
+
+
+def test_joyai_llm_splits_digits_in_threes_and_cjk_runs_without_normalizing():
+    tk = tiny_tokenizer("joyai-llm")
+    assert pre_tokens(tk, "12345 中文abc") == ["123", "45", " ", "中文", "abc"]
+    assert len(encode(tk, "e\u0301")) == 3, "no NFC: e, then the two-byte accent"
+    ids = encode(tk, "<|im_start|>user\n<think>")
+    assert ids[0] == tk.token_to_id("<|im_start|>")
+    assert ids[-1] == tk.token_to_id("<think>")
+
+
+def test_an_unknown_pre_tokenizer_is_an_error():
+    with pytest.raises(ValueError, match="'llama-bpe' is not one the front end builds"):
+        from_vocabulary(["a"], [], [1], "llama-bpe")
 
 
 def test_the_detokenizer_holds_back_a_split_character(tokenizer: Tokenizer):

@@ -76,5 +76,5 @@ testpaths = ["tests"]
 addopts = ["-ra", "--strict-markers", "--import-mode=importlib"]
 markers = [
     "gpu: needs both B60s (TESTING.md, where tests run)",
-    "model: needs the model files under FLASH_MODEL_DIR",
+    "model: needs model files (FLASH_MODEL_DIR, or DEEPSEEK41_MODEL_DIR for tests/end_to_end/deepseek41/)",
 ]

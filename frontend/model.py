@@ -75,7 +75,10 @@ def load(
         tokens = _array(reader, "tokenizer.ggml.tokens")
         merges = _array(reader, "tokenizer.ggml.merges")
         types = _array(reader, "tokenizer.ggml.token_type")
-        tokenizer = from_vocabulary([str(t) for t in tokens], [str(m) for m in merges], [int(t) for t in types])
+        pre = _field(reader, "tokenizer.ggml.pre")
+        if not isinstance(pre, str):
+            raise ValueError(f"{gguf_path} has no tokenizer.ggml.pre; give the model's tokenizer.json with --tokenizer")
+        tokenizer = from_vocabulary([str(t) for t in tokens], [str(m) for m in merges], [int(t) for t in types], pre)
     source = chat_template.read_text() if chat_template else _field(reader, "tokenizer.chat_template")
     if not isinstance(source, str):
         raise ValueError(f"{gguf_path} has no chat template")

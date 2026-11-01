@@ -216,8 +216,8 @@ so annotate every function's parameters and returns. A line that must break a ru
 
 `uv run pytest` runs every level that the computer at hand can run ([TESTING.md](TESTING.md)). A test whose data is
 missing skips, with a message that names what is missing: the core library (`build/core/libengine.so`, or
-`ENGINE_LIBRARY`) or the model (`FLASH_MODEL_DIR`, default `/models`). `-m "not model"` leaves out the tests that
-need the model.
+`ENGINE_LIBRARY`) or the model (`FLASH_MODEL_DIR`, default `/models`; `DEEPSEEK41_MODEL_DIR` for DeepSeek-V4.1-Flash's
+tokenizer check). `-m "not model"` leaves out the tests that need the model.
 
 The host tests need nothing but the repository. They run:
 

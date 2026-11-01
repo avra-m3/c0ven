@@ -44,6 +44,10 @@ it can be mounted read-only.
 | The image encoder | the one `mmproj-*.gguf` beside the model; with two or more, none | `--engine-arg=--vision=<file>`; `--engine-arg=--no-vision` reads no images |
 | The tokenizer and chat template | the GGUF's metadata | `--tokenizer <tokenizer.json>`, `--chat-template <chat_template.jinja>` |
 
+Without `--tokenizer`, the front end builds the tokenizer from the GGUF's vocabulary, merges and token types, with
+the pre-tokenizer that `tokenizer.ggml.pre` names: `qwen35` (Flash-Next's) or `joyai-llm` (DeepSeek-V3's splits, with
+no normalizer). It refuses a file with any other value or none; give that model's `tokenizer.json` instead.
+
 A missing drafter or encoder is not an error: the engine runs without it. The core takes a directory that holds
 `dflash-manifest.json` as DFlash 2's and any other as the MTP layer's.
 
