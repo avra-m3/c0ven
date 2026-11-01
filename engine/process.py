@@ -3,7 +3,8 @@
 The front end starts it as its child. One thread reads commands, one writes events, so the loop never blocks on
 I/O (vLLM's engine core does the same). The loop admits, plans and polls through the scheduler. On `SLEEP` it
 drains the scheduler and gives the cards back; on `WAKE` it loads them again with a new scheduler (ADR-0032). `STATS`
-is answered from the counters the core and the scheduler keep, awake or asleep.
+is answered from the counters the core and the scheduler keep, awake or asleep. With `ENGINE_CACHE_DIR` set, the
+scheduler's cost model is written there at each sleep and at exit, and the next start and wake begin from it.
 
     python -m engine --model /models/<file>-00001-of-00002.gguf --slots 4 --context 262144
     python -m engine --backend mock --arch <arch> --slots 4 --context 32768
@@ -14,6 +15,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import importlib
+import json
 import logging
 import os
 import queue
@@ -43,6 +45,7 @@ from engine.memory_plan import (
     write_working,
 )
 from engine.scheduler import CheckpointRule, Scheduler, SchedulerOptions
+from engine.timing import CostModel
 
 log = logging.getLogger("engine")
 
@@ -230,6 +233,34 @@ def _writer(stream: TextIO, events: queue.Queue[protocol.Event | None]) -> None:
     stream.flush()
 
 
+def read_cost(file: Path | None) -> CostModel | None:
+    """The cost model kept in `file`, or None if there is none to use."""
+    if file is None:
+        return None
+    try:
+        cost = CostModel.from_dict(json.loads(file.read_text()))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        log.info("the cost model in %s is not used: %s", file, exc)
+        return None
+    log.info("cost model from %s: %.2f ms a row, %.1f ms a chunk", file, cost.row_ms, cost.chunk_ms)
+    return cost
+
+
+def write_cost(file: Path | None, cost: CostModel) -> None:
+    """The cost model to `file`, replaced whole. A failure is logged only."""
+    if file is None:
+        return
+    try:
+        file.parent.mkdir(parents=True, exist_ok=True)
+        tmp = file.with_name(f"{file.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(cost.to_dict()) + "\n")
+        tmp.replace(file)
+    except OSError as exc:
+        log.warning("the cost model was not written to %s: %s", file, exc)
+
+
 def serve(
     engine: Engine,
     config: OpenConfig,
@@ -241,6 +272,7 @@ def serve(
     info: Callable[[], dict[str, str]] = dict,
     swapout_limit_mib: float | None = None,
     fit_report: Callable[[EngineFacts], tuple[list[fit.Row], list[str]]] | None = None,
+    cost_file: Path | None = None,
 ) -> int:
     events: queue.Queue[protocol.Event | None] = queue.Queue()
     commands: queue.Queue[protocol.Command] = queue.Queue()
@@ -291,7 +323,7 @@ def serve(
         return 1
     reader = threading.Thread(target=_reader, args=(stdin, commands), name="protocol-reader", daemon=True)
     reader.start()
-    scheduler = Scheduler(engine, facts, options, rule)
+    scheduler = Scheduler(engine, facts, options, rule, cost=read_cost(cost_file))
     images: dict[int, list[Image]] = {}
     """Each request's images from its IMG lines, until its GEN."""
     bad_images: dict[int, str] = {}
@@ -370,6 +402,7 @@ def serve(
                             events.put(e)
                 if scheduler.idle:
                     engine.sleep()
+                    write_cost(cost_file, scheduler.cost)
                     state = State.ASLEEP
                     events.put(protocol.Asleep((time.monotonic() - sleep_t0) * 1e3))
                     wake_now = wake_after
@@ -378,7 +411,7 @@ def serve(
                 facts = engine.wake()
                 if (failure := loaded(facts, load)) is not None:
                     raise RuntimeError(failure)
-                scheduler = Scheduler(engine, facts, options, rule)
+                scheduler = Scheduler(engine, facts, options, rule, cost=read_cost(cost_file))
                 state = State.AWAKE
             if not scheduler.idle:
                 for e in scheduler.tick(0.002):
@@ -388,6 +421,8 @@ def serve(
         events.put(protocol.Error(None, str(exc)))
         status = 1
     finally:
+        if state is not State.ASLEEP:  # asleep, it was written at the sleep
+            write_cost(cost_file, scheduler.cost)
         try:
             engine.close()
         except EngineError:
@@ -438,10 +473,13 @@ def main(argv: list[str] | None = None) -> int:
     # The core's working memory from an earlier load with the same options, in place of the estimate. It is kept
     # beside the draft layer's cache.
     working: Path | None = None
+    cost: Path | None = None
     if native and (cache := cache_dir()) and args.model is not None:
         working = working_file(
             Path(cache), args.model, options, f"draft={draft} vision={vision} deterministic={args.deterministic}"
         )
+        # The scheduler's cost model, under the same key: its times follow the model file, the engine and the options.
+        cost = working.with_name(f"cost-{working.name.removeprefix('working-')}")
         if (kept := read_working(working)) is not None:
             options = dataclasses.replace(options, working_per_card=kept)
     try:
@@ -479,6 +517,7 @@ def main(argv: list[str] | None = None) -> int:
         fit_report=(lambda facts: report(the_host, cards, plan, config.cpu_workers, facts, working=working))
         if the_host is not None
         else None,
+        cost_file=cost,
     )
 
 

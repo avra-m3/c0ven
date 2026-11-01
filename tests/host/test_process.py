@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import json
 import subprocess
 import sys
 import time
@@ -16,8 +17,9 @@ import protocol
 from engine import fit
 from engine.api.interface import StepPlan
 from engine.api.mock import MockEngine
-from engine.process import cache_dir, serve
+from engine.process import cache_dir, read_cost, serve
 from engine.scheduler import SchedulerOptions, every_16k
+from engine.timing import CostModel
 from tests.helpers import open_config
 
 
@@ -314,3 +316,60 @@ def test_the_cache_dir_is_read_under_its_new_name_then_its_old(monkeypatch: pyte
     assert cache_dir() == "/old"
     monkeypatch.setenv("ENGINE_CACHE_DIR", "/new")
     assert cache_dir() == "/new"
+
+
+def serve_lines(lines: list[str], cost_file: Path) -> int:
+    stdin = cast("TextIO", lines_apart(lines, apart_s=0.01, quit_after_s=0.3))
+    return serve(
+        MockEngine(),
+        open_config(),
+        rule=every_16k,
+        options=SchedulerOptions(),
+        stdin=stdin,
+        stdout=io.StringIO(),
+        cost_file=cost_file,
+    )
+
+
+def test_the_cost_model_is_kept_at_exit_and_read_at_the_next_start(tmp_path: Path):
+    file = tmp_path / "cache" / "cost-x.json"
+    assert serve_lines([protocol.Gen(1, 4, tuple(range(3, 300))).encode()], file) == 0
+    kept = read_cost(file)
+    assert kept is not None
+    assert kept.to_dict()["s"] != CostModel.initial().to_dict()["s"], "the mock's prompt chunk was fitted"
+    seen = CostModel.initial(decode_ms=3.0, row_ms=0.2, chunk_ms=50.0)
+    file.write_text(json.dumps(seen.to_dict()))
+    assert serve_lines([], file) == 0, "no plan: the model read at start is written back as it came"
+    back = read_cost(file)
+    assert back is not None
+    assert (back.row_ms, back.chunk_ms) == (0.2, 50.0)
+
+
+def test_the_cost_model_is_kept_at_a_sleep(tmp_path: Path):
+    file = tmp_path / "cost-x.json"
+    lines = [protocol.Gen(1, 4, tuple(range(3, 40))).encode(), protocol.Sleep().encode()]
+    stdin = cast("TextIO", lines_apart(lines, apart_s=0.2, quit_after_s=0.3))
+    serve(MockEngine(), open_config(), rule=every_16k, options=SchedulerOptions(), stdin=stdin, stdout=io.StringIO())
+    assert not file.exists(), "no file without the cache directory"
+    stdin = cast("TextIO", lines_apart(lines, apart_s=0.2, quit_after_s=0.3))
+    status = serve(
+        MockEngine(),
+        open_config(),
+        rule=every_16k,
+        options=SchedulerOptions(),
+        stdin=stdin,
+        stdout=io.StringIO(),
+        cost_file=file,
+    )
+    assert status == 0
+    assert read_cost(file) is not None
+
+
+def test_a_cost_file_that_does_not_read_is_left_for_the_estimates(tmp_path: Path):
+    assert read_cost(None) is None
+    assert read_cost(tmp_path / "none.json") is None
+    bad = tmp_path / "cost-x.json"
+    bad.write_text("{")
+    assert read_cost(bad) is None
+    bad.write_text(json.dumps({"row_ms": 1.0}))
+    assert read_cost(bad) is None

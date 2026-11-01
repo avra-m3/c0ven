@@ -84,7 +84,7 @@ What the `docker run` flags do:
 | `--read-only` | the image writes nothing to its root filesystem; it may be left out |
 | `-p 127.0.0.1:8080:8080` | the API, on the host's loopback only. The server inside listens on `--host 0.0.0.0 --port 8080` |
 | `-v /path/to/models:/models:ro` | the model files, read-only. `--model` names the GGUF's first shard inside the container |
-| `-v c0ven-cache:/cache`, `-e ENGINE_CACHE_DIR=/cache` | a named volume for what a load works out and the next reuses: the quantised draft layer, the loader's thread count, each card's working memory |
+| `-v c0ven-cache:/cache`, `-e ENGINE_CACHE_DIR=/cache` | a named volume for what a load works out and the next reuses: the quantised draft layer, the loader's thread count, each card's working memory, the scheduler's timings |
 
 The arguments after the image name are the server's [options](#options). To run it in the background, replace
 `--rm` with `-d --name c0ven`; `docker logs -f c0ven` follows it, and `docker stop c0ven` stops it.

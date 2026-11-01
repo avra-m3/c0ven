@@ -150,3 +150,26 @@ def test_attach_refuses_other_memory():
     with pytest.raises(ValueError, match="not an engine timing region"):
         Region.over(buffer)
     assert ctypes.sizeof(abi.CTimingRegion) == HEADER
+
+
+def test_the_cost_model_carries_from_one_run_to_the_next():
+    cost = CostModel.initial(decode_ms=10.0, row_ms=0.46)
+    for rows in (300, 2048, 300, 1024):
+        cost.observe(decoded=1, rows=rows, ms=10.0 + 600.0 + 0.07 * rows)
+    cost.observe(decoded=0, rows=64, ms=330.5, chunks=0)
+    again = CostModel.from_dict(cost.to_dict())
+    assert again.to_dict() == cost.to_dict()
+    assert again.window_rows() == cost.window_rows(), "the window plans seen carry too"
+    assert again.decode_ms.samples == 0, "the decode time is a start value: the first step replaces it"
+    again.observe(decoded=1, rows=0, ms=9.0)
+    assert again.decode_ms.value == 9.0
+
+
+def test_a_cost_model_that_is_not_one_is_refused():
+    good = CostModel.initial().to_dict()
+    with pytest.raises(ValueError, match="wrong size"):
+        CostModel.from_dict({**good, "s": [0.0] * 4})
+    with pytest.raises(ValueError, match="finite"):
+        CostModel.from_dict({**good, "row_ms": float("nan")})
+    with pytest.raises(KeyError):
+        CostModel.from_dict({k: v for k, v in good.items() if k != "window_row_ms"})
