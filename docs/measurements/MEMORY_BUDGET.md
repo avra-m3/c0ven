@@ -220,7 +220,7 @@ rows above unless labelled; the two cards are the same.
 | PLE (layer 1), half | 32,870,400 | computed |
 | Token embedding, half its columns | 168,857,600 | computed. It could live in host memory instead: one row per token |
 | Head and final mixer, half the vocabulary | 267,310,080 | computed |
-| Draft layer, half | 831,015,936 | computed from the layer's shapes as the core stores it (`numbers.draft_per_card`): its experts in IQ4_NL, 707,790,848 B with the slot map; the rest BF16, the norms F32 |
+| Draft layer, half | 831,015,936 | computed from the MTP manifest's shapes as the core stores them (`draft.draft_per_card`): its experts in IQ4_NL, 707,790,848 B with the slot map; the rest BF16, the norms F32 |
 | Working memory | 1,600,663,296 | *estimate* |
 | Left for the reserve and the experts | 19,696,917,504 | |
 

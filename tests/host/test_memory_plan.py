@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -17,7 +18,7 @@ from engine.memory_plan import (
     working_file,
     write_working,
 )
-from engine.models.qwen4exp import numbers
+from engine.models.qwen4exp.draft import draft_per_card, read_shapes
 from engine.models.qwen4exp.memory import model_memory
 from engine.models.qwen4exp.tensors import Category, from_tsv
 
@@ -58,10 +59,27 @@ def test_the_split_rules_keep_some_weights_whole():
 
 
 def test_the_draft_layer_as_the_core_stores_it():
-    """IQ4_NL experts, 1,382,400 B a slot on each of two cards, and the rest of the layer split as a main layer's."""
-    assert numbers.draft_per_card(2) == 831_015_936
-    assert numbers.draft_per_card(1) == 1_593_527_296
-    assert MODEL.draft_per_card == numbers.draft_per_card(2)
+    """From the committed MTP manifest: IQ4_NL experts, 1,382,400 B a slot on each of two cards, the indexer left
+    out, the norms in F32, and the rest split as a main layer's or whole."""
+    shapes = read_shapes()
+    assert len(shapes) == 31
+    assert draft_per_card(shapes, 2) == 831_015_936
+    assert draft_per_card(shapes, 1) == 1_593_527_296
+    assert MODEL.draft_per_card == 831_015_936
+
+
+def test_a_dflash_manifest(tmp_path: Path):
+    """DFlash 2's manifest lists its tensors; its projections split, its norms and base kernels widen to F32."""
+    tensors = [
+        {"name": "fc.weight", "dtype": "BF16", "shape": [2560, 12800]},
+        {"name": "norm.weight", "dtype": "BF16", "shape": [2560]},
+        {"name": "layers.0.self_attn.q_proj.weight", "dtype": "BF16", "shape": [4096, 2560]},
+        {"name": "layers.0.mlp.down_proj.weight", "dtype": "BF16", "shape": [2560, 7680]},
+        {"name": "layers.0.attention_conv.base_kernel", "dtype": "BF16", "shape": [4, 2560]},
+    ]
+    (tmp_path / "dflash-manifest.json").write_text(json.dumps({"tensors": tensors}))
+    shapes = read_shapes(tmp_path)
+    assert draft_per_card(shapes, 2) == 2 * 2560 * 12800 + 4 * 2560 + 4096 * 2560 + 2560 * 7680 + 4 * 4 * 2560
 
 
 def test_host_side():

@@ -150,7 +150,9 @@ fetch only those 5.2 GB:
 5. Check each file's sha256 against the sums in Strata's `tools/mtp_fetch.py` at `1678de3`, which are for the same
    revision. The Hub's sha256 covers whole shards, so it cannot check a byte range.
 6. Write `mtp/mtp-manifest.json`, listing for each tensor its dtype, shape, source shard, byte range and sha256.
-   The engine needs the file to find the directory, and keys its quantised cache by the file's bytes.
+   The engine needs the file to find the directory, and keys its quantised cache by the file's bytes. The memory
+   plan sizes the draft layer from its shapes; [model/mtp-manifest.json](model/mtp-manifest.json) is a copy, which the plan
+   uses when it has no directory.
 
 ### The DFlash 2 drafter
 
