@@ -45,6 +45,8 @@ commit [MODEL_LAYER.md](MODEL_LAYER.md) uses and the build the reference outputs
 | [IQ2_XXS](#iq2_xxs) | 16 | not in the IQ3_S file; experts gate+up in the IQ3_XXS and IQ2_XS files | 256 | 66 | 2.0625 | `iq2xxs_grid`, 256 x 8 B | - | q8_K |
 | [IQ2_XS](#iq2_xs) | 17 | not in the IQ3_S file; experts gate+up in the IQ3_XXS file | 256 | 74 | 2.3125 | `iq2xs_grid`, 512 x 8 B | - | q8_K |
 | [IQ1_M](#iq1_m) | 29 | not in the IQ3_S file; experts gate+up in the IQ2_XS file | 256 | 56 | 1.75 | `iq1s_grid`, 2048 x 8 B | - | q8_K |
+| [IQ1_S](#iq1_s) | 19 | not in the IQ3_S file; experts gate+up (10 layers) in Unsloth's UD-IQ2_XXS file of DeepSeek-V4.1-Flash-1017 | 256 | 50 | 1.5625 | `iq1s_grid`, 2048 x 8 B | - | q8_K |
+| [Q2_K](#q2_k) | 10 | not in the IQ3_S file; experts down (layer 0) in Unsloth's UD-IQ2_XXS file of DeepSeek-V4.1-Flash-1017 | 256 | 84 | 2.625 | none | - | q8_K |
 | [Q3_K](#q3_k) | 11 | not in the IQ3_S file; dense and the embedding in the Q2_0 file | 256 | 110 | 3.4375 | none | - | q8_K |
 | [Q4_K](#q4_k) | 12 | 47 dense | 256 | 144 | 4.5 | none | q8_1, DP4A | q8_K |
 | [Q5_K](#q5_k) | 13 | 35 dense | 256 | 176 | 5.5 | none | q8_1, DP4A | q8_K |
@@ -63,12 +65,13 @@ bytes = values / values-per-block x bytes-per-block with this table, and every r
 (checked against [tensors-IQ3_S.tsv](../model/tensors-IQ3_S.tsv); see [Sources](#sources-and-how-this-was-checked)).
 
 The rows marked "not in the IQ3_S file" are the types the other quants of the same repository add (the IQ3_XXS,
-IQ2_XS and Q2_0 folders, by their `tensor-allocation/*.rco-allocation.txt` lists); the engine reads them too, and their
-sections describe its own decoding rather than llama.cpp's GPU dot product.
+IQ2_XS and Q2_0 folders, by their `tensor-allocation/*.rco-allocation.txt` lists), and IQ1_S and Q2_K, which another
+model's file holds (by the tensor headers of its shards); the engine reads them too, and their sections describe its
+own decoding rather than llama.cpp's GPU dot product.
 
 The CPU column is each type's `vec_dot_type` in `ggml-cpu.c` (Q2_0 `:234`, Q4_0 `:243`, Q5_0 `:263`, Q8_0 `:272`,
-Q3_K `:308`, Q4_K `:311`, Q5_K `:321`, Q6_K `:327`, IQ2_XXS `:340`, IQ2_XS `:346`, IQ3_XXS `:349`, IQ3_S `:356`,
-IQ2_S `:362`, IQ1_M `:377`, IQ4_NL `:380`, IQ4_XS `:386`, BF16 `:395`, F16 `:222`). It
+Q2_K `:302`, Q3_K `:308`, Q4_K `:311`, Q5_K `:321`, Q6_K `:327`, IQ2_XXS `:340`, IQ2_XS `:346`, IQ3_XXS `:349`,
+IQ3_S `:356`, IQ2_S `:362`, IQ1_S `:371`, IQ1_M `:377`, IQ4_NL `:380`, IQ4_XS `:386`, BF16 `:395`, F16 `:222`). It
 matters because the correctness reference is llama.cpp's CPU backend ([ADR-0012](../adr/0012-correctness-reference.md),
 [REFERENCE_OUTPUTS.md](../measurements/REFERENCE_OUTPUTS.md)). There the activation meets a K- or i-quant as q8_K, not q8_1.
 
@@ -308,6 +311,40 @@ high. For 8 values with grid entry g (each byte −1, 0 or 1) and delta δ = ±1
 writes it as **(d · (2 · scale + 1) / 8) · (8g ± 1)**: whole numbers in −9..9, so a unit is 8 signed byte words and
 two scales with no offset term.
 
+### IQ1_S
+
+256 values in 50 B, 1.5625 bpw (`block_iq1_s`, `common.h:425-429`; `GGML_TYPE_IQ1_S = 19`, `ggml.h:409`).
+
+| Offset | Bytes | Field | Meaning |
+| ---: | ---: | --- | --- |
+| 0 | 2 | `d` (f16) | block scale |
+| 2 | 32 | `qs[32]` | per 8 values: the low 8 bits of an 11-bit index into `iq1s_grid` |
+| 34 | 16 | `qh[8]` | per 32 values, a 16-bit word: bits 3l to 3l + 2 the top 3 bits of index l, bits 12-14 a 3-bit scale, bit 15 the sign of the delta |
+| | **50** | | 2 + 32 + 16 |
+
+**Dequantisation** (`quants.c:2650-2673`): for 32 values with scale s and grid entries g (each byte −1, 0 or 1),
+**y = d · (2s + 1) · (g + δ)**, δ = −1/8 when bit 15 is set and +1/8 when it is not (`IQ1S_DELTA`, `common.h:1132`).
+As for IQ1_M, the engine writes it as **(d · (2s + 1) / 8) · (8g ± 1)**: a unit is 8 signed byte words and one scale.
+
+### Q2_K
+
+256 values in 84 B, 2.625 bpw (`block_q2_K`, `common.h:298-308`; `GGML_TYPE_Q2_K = 10`, `ggml.h:400`). Sixteen
+sub-blocks of 16, each with a 4-bit scale and a 4-bit minimum.
+
+| Offset | Bytes | Field | Meaning |
+| ---: | ---: | --- | --- |
+| 0 | 16 | `scales[16]` | byte i: the scale of sub-block i (low nibble) and its minimum (high nibble) |
+| 16 | 64 | `qs[64]` | the 2-bit codes: value v's are bits 2((v mod 128) / 32) of byte 32(v / 128) + v mod 32 |
+| 80 | 2 | `d` (f16) | scale of the scales |
+| 82 | 2 | `dmin` (f16) | scale of the minimums |
+| | **84** | | 16 + 64 + 2 + 2 |
+
+**Dequantisation** (`quants.c:961-991`): **y = d · sc · q − dmin · m**, q the 2-bit code and sc and m the scale and
+minimum of the value's sub-block, v / 16. A 32-value unit s takes the codes at bits 2(s mod 4) of bytes 32(s / 4) to
+32(s / 4) + 31, and scale bytes 2s and 2s + 1. Its two halves have minimums of their own, so the engine's unit has
+two (`mn` and `mh` in `kernels/quant/decode.h`), each times the sum of its half's activation codes; every other type
+has one minimum a unit or none.
+
 ## The dense types
 
 ### Q3_K
@@ -504,7 +541,7 @@ values in order, each packed little-endian in the table's C type, so anyone can 
 
 | `iq2xxs_grid` | IQ2_XXS | `uint64_t` x 256 | 2,048 | 560-625 | 8, 25, 43 | `05826b5d3e472a3a78f196be62ac78acf81df0f909626e12ab9fa2a5d490dd54` |
 | `iq2xs_grid` | IQ2_XS | `uint64_t` x 512 | 4,096 | 627-756 | 8, 25, 43 | `06e47aaca60b4dc1d9b5a3f34540437058a6b142b4d7a59d5ded769b4d1bf1de` |
-| `iq1s_grid` | IQ1_M | `uint64_t` x 2048 | 16,384 | 1135-1648 | −1, 0, 1 | `07540ffc1aeaf6ad4d97e96b0fcc765aae39671d4ae4a27bbd0e796fde167c6a` |
+| `iq1s_grid` | IQ1_S, IQ1_M | `uint64_t` x 2048 | 16,384 | 1135-1648 | −1, 0, 1 | `07540ffc1aeaf6ad4d97e96b0fcc765aae39671d4ae4a27bbd0e796fde167c6a` |
 
 The IQ3_S file's three grids together are 11,264 B; with the other quants' three the packed buffer the engine uploads
 is 33,808 B (`QGRID_BYTES`, shared/quant.h). The sign tables can be replaced by arithmetic (parity and shifts), as the
@@ -517,7 +554,7 @@ the file's layout. This section says what that means per type and what it costs.
 3.2-8.8 times faster than the file's layout for every type tried: IQ2_S 3.6x, IQ3_S 4.8x, IQ4_NL 3.2x, Q6_K 8.8x
 (measured with prototype kernels; machine, versions and method in the [kernel record](../measurements/MEASUREMENTS.md#2026-10-11-kernel-spike)).
 
-**The problem in the file's layout.** A block's fields are interleaved (array of structures), and six of the types
+**The problem in the file's layout.** A block's fields are interleaved (array of structures), and most of the types
 have a block size that is 2 mod 4. Their blocks, and the quants inside them, start only on 2-byte boundaries. For this
 reason the CUDA kernels read those types 16 bits at a time (`get_int_b2`, `vecdotq.cuh:18-25`) and only the 4-byte-aligned
 ones as words (`get_int_b4`, `:27-29`). A 16- or 32-byte load of quants crosses into the next block's scale.
@@ -531,7 +568,11 @@ ones as words (`get_int_b4`, `:27-29`). A 16- or 32-byte load of quants crosses 
 | IQ4_NL | 18 | 2 | 640 values, 20 blocks | 360 | 8 |
 | Q2_0 | 18 | 2 | 640 values, 10 blocks | 180 | 4 |
 | Q8_0 | 34 | 2 | 640 values, 20 blocks | 680 | 8 |
+| IQ1_S | 50 | 2 | 2,560 values, 10 blocks | 500 | 4 |
+| Q2_K (down) | 84 | 4 | 2,304 values, 9 blocks | 756 | 4 |
 | Q4_K / Q5_K / Q6_K | 144 / 176 / 210 | 16 / 16 / 2 | (dense) | | |
+
+The Q2_K row is a down row of the DeepSeek-V4.1-Flash-1017 UD-IQ2_XXS file; no IQ3_S file expert is Q2_K.
 
 **llama.cpp's SYCL "reorder".** At first use, SYCL rewrites a tensor in place as separate runs: all blocks' quants,
 then all scales (`reorder_qw`, `ggml-sycl.cpp:4619-4659`). For Q4_0 it is `qs` then `d` (`:4163-4200`); for Q8_0 the
@@ -541,7 +582,7 @@ byte range (`:4285-4327` for Q4_K; Q5_K and Q6_K at `:4330`, `:4379`). Each reor
 device buffer of the same size and scatters it back with a kernel (`:4163-4176`). The MoE reorder takes only Q4_K,
 Q5_K and Q6_K (`opt_for_reorder_id`, `:4705-4719`); no type the file's experts use is reordered.
 
-**The runs layout for the file's expert types.** Each expert slice is stored as runs in the order below: quants
+**The runs layout for the expert types.** Each expert slice is stored as runs in the order below: quants
 first, the largest run first, the f16 scales last. The byte counts are per expert: gate or up is 640 rows x 2,560
 values (6,400 super-blocks), down is 2,560 rows x 640 values.
 
@@ -554,6 +595,8 @@ values (6,400 super-blocks), down is 2,560 rows x 640 values.
 | IQ4_NL (down) | `qs` 16, `d` 2 | 819,200 + 102,400 | 921,600 |
 | Q2_0 (down) | `qs` 16, `d` 2 | 409,600 + 51,200 | 460,800 |
 | Q8_0 (down) | `qs` 32, `d` 2 | 1,638,400 + 102,400 | 1,740,800 |
+| IQ1_S | grid index low bits 32, `qh` 16, `d` 2 | 204,800 + 102,400 + 12,800 | 320,000 |
+| Q2_K (down) | `qs` 64, `scales` 16, `d` and `dmin` 4 | 409,600 + 102,400 + 25,600 | 537,600 |
 
 Every run length is a multiple of 256 B, so if a slice starts on a 256-B boundary every run does, with no padding.
 Within a run, block k's piece sits at k x its size: the 64- and 128-byte quant pieces are 64- and 128-byte aligned, and
@@ -586,5 +629,7 @@ Strata's CUDA kernels do not reorder: they read the GGUF's blocks unmodified, ro
 - **Codebook checksums:** a scratch script parses each table between its `GGML_TABLE_BEGIN` and `GGML_TABLE_END`
   lines, packs the values little-endian in the table's C type and takes the sha256. It also lists the distinct byte
   values of the grid tables.
-- **Tests on the B60:** `core/tests/matvec_test.cpp`, `moe_test.cpp` and `qgemm_test.cpp` check every type against
-  ggml's dequantisation.
+- **Tests on the B60:** `core/tests/matvec_test.cpp`, `moe_test.cpp` and `qgemm_test.cpp` check every type on random
+  blocks, and every type of the file they are given on its weights, against ggml's dequantisation.
+- **Tests without a card:** `core/tests/quant_test.cpp` checks each type's block size and fields against ggml's, the
+  runs layout, and ggml's CPU dot product.

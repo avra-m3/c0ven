@@ -15,7 +15,7 @@ Level Zero has no CPU device, so every kernel test needs a B60 ([ADR-0001](adr/0
 
 | Level | Checks | Against | Runs on | Time limit |
 | --- | --- | --- | --- | --- |
-| 1. Host | Python: the scheduler, admission, sequence state, the memory plan, the tensor table, the protocol, the front end on the mock engine ([ADR-0022](adr/0022-two-processes-python-and-cpp.md)). C++: layouts shared across the C ABI, ring buffers, the arena's free list | values written in the test; the C ABI's struct sizes and offsets, from both sides | anywhere, no card | 30 s |
+| 1. Host | Python: the scheduler, admission, sequence state, the memory plan, the tensor table, the protocol, the front end on the mock engine ([ADR-0022](adr/0022-two-processes-python-and-cpp.md)). C++: layouts shared across the C ABI, ring buffers, the arena's free list | values written in the test; the C ABI's struct sizes and offsets, from both sides; ggml, for the quantised types' tables and CPU dot products | anywhere, no card | 30 s |
 | 2. Wrapper | each Intel builtin in [ADR-0003](adr/0003-kernel-language.md)'s header (block reads, DPAS, sub-group shuffles) | results written in the test ([record](measurements/MEASUREMENTS.md#2026-10-11-kernel-spike)) | the machine | 1 min |
 | 3. Kernel | each kernel on fixed inputs: every expert type's decode, the dense products, DeltaNet, attention, the indexer, norms, sampling | ggml's CPU code for the same operation, through the pinned ggml, or a double-precision reference in the test | the machine | 5 min |
 | 4. Layer | one whole block of the model on fixed inputs. Only the image encoder has one | llama.cpp's rows for the same images ([record](measurements/MEASUREMENTS.md#2026-10-17-encoder-reference)) | the machine | 10 min |
@@ -34,7 +34,7 @@ The tests that exist ([DEVELOPING.md](DEVELOPING.md#tests) describes each):
 
 | Level | Tests | Missing |
 | --- | --- | --- |
-| 1 | `tests/host/`, `gguf_test`, `direct_test`, `mrope_test`, `experts_test` | ring buffers, the free list |
+| 1 | `tests/host/`, `gguf_test`, `direct_test`, `mrope_test`, `experts_test`, `quant_test` | ring buffers, the free list |
 | 2 | `ze_smoke_test`, `topk_test`, `gemm_test`'s DPAS layout check | some builtins |
 | 3 | `matvec_test`, `moe_test`, `gemm_test`, `qgemm_test`, `swiglu_limit_test`, `attn_test`, `vision_test` | |
 | 4 | `encoder_test` | a text layer |
@@ -51,6 +51,7 @@ says otherwise.
 | Integer work: decoding a quantised block, int8 dot products before scaling | exact | integers have one right answer |
 | FP32 results from quantised or BF16 weights (the decode kernels, given the reference's activations) | 1e-5 | only the order of float sums differs. Measured: 1.0e-7 to 1.4e-7 for all eight types ([record](measurements/MEASUREMENTS.md#2026-10-11-kernel-spike)) |
 | FP16 products on the XMX units (the prompt path) | 2e-3 | fp16 has 11 bits, a rounding of 4.9e-4 per value. Measured: 1e-7 to 3e-4 ([record, part 8](measurements/MEASUREMENTS.md#2026-10-13-design-inputs)) |
+| ggml's CPU dot product against the sum over its own dequantisation (`quant_test`), as a share of the sum of \|w x\| | 1e-4 | the sum is in single precision, and q8_1 keeps its own sum of the activations in f16, which rounds Q5_1's minimum term |
 | BF16 outputs (the image encoder's kernels that write a product's next input, [MODEL_VISION.md](spec/MODEL_VISION.md)) | 1e-2 | bf16 has 8 bits, a rounding of 3.9e-3 per value, plus the fp16 error where inputs are fp16 |
 | The DeltaNet recurrence over 2,048 tokens, FP32 state | 1e-5 | checked against double precision in the same record; the state does not grow, as its gate is below 1 |
 | End to end, the KL set against the BF16 checkpoint | mean KL at most 0.170, top-1 agreement at least 83.5% | the IQ3_S file read by the engine gives 0.158 and 84.7% ([record](measurements/MEASUREMENTS.md#2026-10-29-kl-bf16)); the gate catches breakage. A change that moves the distribution is judged by `kl_test --ab`, the change in mean KL with its 95% interval ([ADR-0054](adr/0054-the-bf16-checkpoint-is-the-end-to-end-reference.md)) |
