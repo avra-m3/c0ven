@@ -30,7 +30,7 @@ class Lookup {
 };
 
 // How a window's time grows with its rows, from the rounds the core runs: each width's running mean, and for a width
-// not seen yet a line through the nearest widths seen.
+// not seen yet a line through the nearest widths seen (past the widest, through the two widest).
 class WindowTimes {
  public:
   void add(uint32_t rows, double ms);
@@ -63,6 +63,11 @@ uint32_t choose_drafts(const DraftOdds &odds, uint32_t layer_drafts, uint32_t dr
 
 // The drafts each of several writing slots makes while the window times are not known.
 constexpr uint32_t kSharedDrafts = 2;
+
+// Every this many choices for several slots the core makes kSharedDrafts whatever choose_shared_drafts gives. Rounds
+// with fewer drafts, or none, do not measure the draft layer's acceptance or the wider windows' times, so a low
+// acceptance or a slow window measured once would otherwise keep the choice low for good.
+constexpr uint32_t kSharedCheck = 8;
 
 // The most drafts each of the slots makes in a round of several (one count for all; each makes at most its share of
 // the window's spare rows, as draft_share gives them): the count that gives the most tokens a millisecond, the slots' expected tokens (the row sampled last and the

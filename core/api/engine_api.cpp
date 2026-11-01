@@ -154,6 +154,7 @@ struct engine_ctx {
   bool idle_due = false;  // with swaps on, a plan has run since the idle rounds last settled (idle_rounds)
   bool prompt_ended = false;  // the plan being run read some slot's last prompt token
   uint32_t writers = 0;  // the slots the plan being run decoded
+  uint32_t shared_choices = 0;  // shared_most's choices, for its kSharedCheck; under mu
   engine::WindowTimes window_times;  // decode steps of one slot and rounds of any number, by their rows
   engine::SwapCadence swap_cadence;  // when the next swap round is due; under mu
   engine_stats stats{};  // the counters (include/engine_api.h); the model's are copied in at each plan's end
@@ -421,8 +422,10 @@ struct engine_ctx {
   }
 
   // The most drafts each of several writing slots makes, from their acceptance and the window times
-  // (docs/measurements/MEASUREMENTS.md#2026-10-19-draft-rounds-several-writers). Under mu.
-  uint32_t shared_most(const std::vector<StepIn> &rows) const {
+  // (docs/measurements/MEASUREMENTS.md#2026-10-19-draft-rounds-several-writers), and kSharedDrafts every
+  // kSharedCheck-th time. Under mu.
+  uint32_t shared_most(const std::vector<StepIn> &rows) {
+    if (++shared_choices % engine::kSharedCheck == 0) return std::min(engine::kSharedDrafts, draft_max);
     std::vector<engine::DraftOdds> odds;
     for (const StepIn &r : rows) odds.push_back(slots[r.slot].odds);
     return engine::choose_shared_drafts(odds, draft_max, STEP_MAX_ROWS, window_times);

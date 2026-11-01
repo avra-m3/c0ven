@@ -53,7 +53,14 @@ double WindowTimes::ms(uint32_t rows) const {
   while (lo > 0 && ms_[lo] == 0) lo--;
   while (hi < kWidths && ms_[hi] == 0) hi++;
   if (lo > 0 && hi < kWidths) return ms_[lo] + (ms_[hi] - ms_[lo]) * (rows - lo) / (hi - lo);
-  if (lo > 0) return ms_[lo] * rows / lo;  // past the widest seen: in proportion to the rows
+  if (lo > 0) {
+    // Past the widest seen: on the line through the two widest seen, so the fixed part of a window is not scaled with
+    // the rows. Times in proportion to the rows overprice a wide window, and a width never chosen is never measured.
+    uint32_t below = lo - 1;
+    while (below > 0 && ms_[below] == 0) below--;
+    if (below == 0) return ms_[lo] * rows / lo;
+    return ms_[lo] + std::max(0.0, (ms_[lo] - ms_[below]) / (lo - below)) * (rows - lo);
+  }
   if (hi < kWidths) return ms_[hi];        // below the narrowest seen: no faster than it
   return 0;
 }

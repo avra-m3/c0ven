@@ -89,7 +89,7 @@ int main() {
     EXPECT(lv.drafts(v, 119, 1, never) == std::vector<int32_t>({1}), "longer of two");
   }
 
-  // A window's time: seen widths, a line between them, and past the widest in proportion.
+  // A window's time: seen widths, a line between them, and past the widest the line through the two widest.
   {
     WindowTimes w;
     EXPECT(w.ms(4) == 0, "nothing seen");
@@ -97,7 +97,7 @@ int main() {
     w.add(4, 26.0);
     EXPECT(w.ms(1) == 16.0 && w.ms(4) == 26.0, "seen");
     EXPECT(w.ms(2) > 19.3 && w.ms(2) < 19.4, "between: %g", w.ms(2));
-    EXPECT(w.ms(8) == 52.0, "past: %g", w.ms(8));
+    EXPECT(w.ms(8) > 39.3 && w.ms(8) < 39.4, "past, on the line through 1 and 4: %g", w.ms(8));
     w.add(8, 64.0);
     EXPECT(w.ms(8) == 64.0 && w.ms(6) == 45.0, "after 8: %g %g", w.ms(8), w.ms(6));
     w.add(8, 80.0);
@@ -181,6 +181,14 @@ int main() {
     WindowTimes cheap = w;
     for (int i = 0; i < 200; i++) cheap.add(6, 24.0), cheap.add(8, 26.0);
     EXPECT(choose_shared_drafts(slots(2, 1, 2), 3, 8, cheap) == 2, "cheap: %u", choose_shared_drafts(slots(2, 1, 2), 3, 8, cheap));
+    // Only the widths a lone slot runs seen (1 to 4 rows): the wider windows are priced on the line through 1 and 4
+    // (39.1 ms for 8 rows), so 4 slots take 1 each (8 tokens, 0.205 a ms) and 3 slots 2 (8 tokens), not fewer.
+    WindowTimes lone;
+    lone.add(1, 15.5), lone.add(4, 25.6);
+    EXPECT(choose_shared_drafts(slots(4, 3, 3), 3, 8, lone) == 1, "lone widths, 4 slots: %u",
+           choose_shared_drafts(slots(4, 3, 3), 3, 8, lone));
+    EXPECT(choose_shared_drafts(slots(3, 3, 3), 3, 8, lone) == 2, "lone widths, 3 slots: %u",
+           choose_shared_drafts(slots(3, 3, 3), 3, 8, lone));
     WindowTimes dear = w;
     for (int i = 0; i < 200; i++) dear.add(4, 60.0), dear.add(6, 90.0), dear.add(8, 120.0);
     EXPECT(choose_shared_drafts(slots(2, 1, 2), 3, 8, dear) == 0, "dear: %u", choose_shared_drafts(slots(2, 1, 2), 3, 8, dear));
