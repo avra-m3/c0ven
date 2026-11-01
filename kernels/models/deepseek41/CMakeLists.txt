@@ -5,3 +5,13 @@ set(DEEPSEEK41_KERNEL_INCLUDES -I${CMAKE_SOURCE_DIR}/core/models/deepseek41
     -I${CMAKE_SOURCE_DIR}/kernels/models/deepseek41)
 
 engine_add_kernel_module(deepseek41 SOURCE kernels/models/deepseek41/layer.cl OPTIONS ${DEEPSEEK41_KERNEL_INCLUDES})
+engine_add_kernel_module(deepseek41_attn SOURCE kernels/models/deepseek41/attn.cl OPTIONS ${DEEPSEEK41_KERNEL_INCLUDES})
+
+# engine_add_kernel_module depends on the headers under kernels/ and shared/; these two lie outside them.
+foreach(module deepseek41 deepseek41_attn)
+  foreach(ip ${ENGINE_KERNEL_IPS})
+    add_custom_command(OUTPUT ${ENGINE_KERNEL_DIR}/${ip}/${module}.bin APPEND
+                       DEPENDS ${CMAKE_SOURCE_DIR}/core/models/deepseek41/layout.h
+                               ${CMAKE_SOURCE_DIR}/core/models/deepseek41/rope.h)
+  endforeach()
+endforeach()

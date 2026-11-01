@@ -68,6 +68,7 @@
 // positions j r .. j r + r - 1 and is rotated at position j r.
 #define D41_COMP_ROW (D41_HD + D41_IDX_D)
 #define D41_COMP_ROW_BYTES (2 * D41_COMP_ROW)
+#define D41_COMP_ROWF (D41_COMP_ROW + D41_HD)  // ds_compress's f32 output for tests: the row, then the unrotated latent
 
 // The compressed pool is paged as the KV cache is: a page is KV_PAGE_CELLS positions, so it holds 2 rows at ratio 2
 // and 4 at ratio 1. A row's index in its source's pool, from the page holding position j r.
@@ -85,6 +86,24 @@ static inline uint d41_page(__global const uint *pt, uint npp, uint slot, uint p
   return pt ? pt[i] : i;
 }
 #endif
+
+// One row of a step, as the kernels read it from the plan's copy on the card. A padded row has slot D41_NO_ROW and
+// writes no cache.
+#define D41_NO_ROW 0xffffffffu
+typedef struct {
+  u32 slot;
+  u32 pos;
+  u32 ring;  // pos % D41_RING, the window cell it writes
+  u32 prev;  // the row of this step holding the slot's position pos - 1, or D41_NO_ROW
+} D41Row;
+SHARED_ASSERT(sizeof(D41Row) == 16, "D41Row layout");
+
+// ds_qkv_norm's sub-groups a work-group: qr has 5 chunks of 64 in each, kv 2.
+#define D41_QKV_SGS 4
+#define D41_QR_A8_ROW (D41_QLR + D41_QLR / 8)  // bytes of a row of qr as a8 (kernels/include/a8.h)
+
+// A ratio-2 source's compressor ring: [slot][D41_CRING] cells of kv' then sc (D41_HD f32 each).
+#define D41_CRING_CELL (2 * D41_HD)
 
 // The decode step's doorbell with the CPU (ADR-0011): one work-item polls with a system-scope acquire fence, then a
 // volatile load, and gives up after 2.4e9 device-clock ticks, setting the stuck flag (ADR-0062 item 5). The posting

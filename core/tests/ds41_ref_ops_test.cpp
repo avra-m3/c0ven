@@ -1,8 +1,8 @@
 // Level 1 (docs/TESTING.md): deepseek41's scalar operations (core/models/deepseek41/ref_ops.h), which the kernel tests
-// take as their reference, checked where an operation has a closed form or an invariant: Sinkhorn's columns sum to 1,
-// and its rows too once the logits are close, its result against ggml's at any logits; the mixes' indexing; norms of
-// constant vectors; the Engram gate at a dot of 0 and at key = stream; the compressor's pooling; the indexer's relu and weights; top-k's ties; the candidate filter's pin; attention
-// against a sink; the router's bias; the SwiGLU clamp; the grouped output's blocks. No card.
+// take as their reference, checked where an operation has a closed form or an invariant: Sinkhorn's columns and rows,
+// its result against ggml's at any logits; the mixes' indexing; norms of constant vectors; the Engram gate at a dot of 0
+// and at key = stream; the compressor's pooling; the index key against ggml's product; the indexer's relu and weights;
+// top-k's ties; the candidate filter's pin; attention against a sink; the router's bias; the SwiGLU clamp; the output.
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -46,6 +46,23 @@ std::vector<float> ggml_comb(const float *m, uint32_t n, const float *scale, con
   ggml_build_forward_expand(gf, r);
   EXPECT(ggml_graph_compute_with_ctx(ctx, gf, 1) == GGML_STATUS_SUCCESS, "ggml's graph failed");
   std::vector<float> y((const float *)r->data, (const float *)r->data + (size_t)n * D41_HC * D41_HC);
+  ggml_free(ctx);
+  return y;
+}
+
+// attn_k . latent by ggml's mul_mat, as upstream's graph has it: BF16 weights and an F32 latent, which ggml converts.
+std::vector<float> ggml_attn_k(const std::vector<uint16_t> &ak, const float *latent) {
+  ggml_init_params ip = {16u << 20, nullptr, false};
+  ggml_context *ctx = ggml_init(ip);
+  ggml_tensor *w = ggml_new_tensor_2d(ctx, GGML_TYPE_BF16, D41_HD, D41_IDX_D);
+  ggml_tensor *l = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, D41_HD);
+  std::copy(ak.begin(), ak.end(), (uint16_t *)w->data);
+  std::copy(latent, latent + D41_HD, (float *)l->data);
+  ggml_tensor *r = ggml_mul_mat(ctx, w, l);
+  ggml_cgraph *gf = ggml_new_graph(ctx);
+  ggml_build_forward_expand(gf, r);
+  EXPECT(ggml_graph_compute_with_ctx(ctx, gf, 1) == GGML_STATUS_SUCCESS, "ggml's graph failed");
+  std::vector<float> y((const float *)r->data, (const float *)r->data + D41_IDX_D);
   ggml_free(ctx);
   return y;
 }
@@ -195,11 +212,41 @@ void compressor() {
   for (uint32_t i = 0; i < D41_IDX_D; i++) ak[(size_t)i * D41_HD + D41_HD - D41_IDX_D + i] = 1.0f;  // ik = latent tail
   ref::compressed_row(lat.data(), ak.data(), kn.data(), 20, row.data());
   std::vector<float> l2 = lat, ik(lat.end() - D41_IDX_D, lat.end());
+  for (float &v : ik) v = ggml_bf16_to_fp32(ggml_fp32_to_bf16(v));
   ref::rms_norm(ik.data(), nullptr, D41_IDX_D, ik.data());
   ref::rope_tail(ik.data(), D41_IDX_D, 20, true, false);
   ref::rope_tail(l2.data(), D41_HD, 20, true, false);
   for (uint32_t d = 0; d < D41_HD; d++) EXPECT(row[d] == l2[d], "row's latent %u", d);
   for (uint32_t d = 0; d < D41_IDX_D; d++) EXPECT(std::fabs(row[D41_HD + d] - ik[d]) < 1e-6f, "row's key %u", d);
+
+  // The key against ggml's product, and how far the same key lies when the latent is not rounded to bf16.
+  std::vector<uint16_t> akb(ak.size());
+  ak = randn(ak.size(), 0.05f);
+  for (size_t i = 0; i < ak.size(); i++) {
+    akb[i] = ggml_fp32_to_bf16(ak[i]).bits;
+    ak[i] = ggml_bf16_to_fp32(ggml_bf16_t{akb[i]});
+  }
+  kn = randn(D41_IDX_D, 0.5f);
+  std::vector<float> want_ik = ggml_attn_k(akb, lat.data()), plain(D41_IDX_D);
+  for (uint32_t i = 0; i < D41_IDX_D; i++) {
+    double s = 0;
+    for (uint32_t d = 0; d < D41_HD; d++) s += (double)ak[(size_t)i * D41_HD + d] * lat[d];
+    plain[i] = (float)s;
+  }
+  for (std::vector<float> *v : {&want_ik, &plain}) {
+    ref::rms_norm(v->data(), kn.data(), D41_IDX_D, v->data());
+    ref::rope_tail(v->data(), D41_IDX_D, 20, true, false);
+  }
+  ref::compressed_row(lat.data(), ak.data(), kn.data(), 20, row.data());
+  double mx = 0, err = 0, err_plain = 0;
+  for (uint32_t d = 0; d < D41_IDX_D; d++) {
+    mx = std::max(mx, (double)std::fabs(want_ik[d]));
+    err = std::max(err, (double)std::fabs(row[D41_HD + d] - want_ik[d]));
+    err_plain = std::max(err_plain, (double)std::fabs(plain[d] - want_ik[d]));
+  }
+  std::printf("index key against ggml's product %.2e, unrounded latent %.2e\n", err / mx, err_plain / mx);
+  EXPECT(err / mx < 1e-5, "index key against ggml's product: %g", err / mx);
+  EXPECT(err_plain / mx > 1e-4, "a latent not in bf16 should move the key past the kernel test's limit: %g", err_plain / mx);
 }
 
 void indexer() {

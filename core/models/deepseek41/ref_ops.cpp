@@ -1,6 +1,7 @@
 #include "models/deepseek41/ref_ops.h"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <limits>
 #include <numeric>
@@ -20,6 +21,13 @@ double dot(const float *a, const float *b, uint32_t n) {
 double rstd(const float *x, uint32_t n) { return 1.0 / std::sqrt(dot(x, x, n) / n + (double)D41_EPS); }
 
 double sigmoid(double x) { return 1.0 / (1.0 + std::exp(-x)); }
+
+// x at bf16's precision, to nearest with ties to even, as ggml converts it.
+float round_bf16(float x) {
+  if (std::isnan(x)) return x;
+  const uint32_t u = std::bit_cast<uint32_t>(x);
+  return std::bit_cast<float>(((u + (0x7fffu + ((u >> 16) & 1))) >> 16) << 16);
+}
 
 }  // namespace
 
@@ -135,7 +143,9 @@ void compress(const float *kv, const float *sc, uint32_t r, const float *w, floa
 void compressed_row(const float *latent, const float *attn_k, const float *k_norm, uint32_t pos, float *row) {
   // The index key is made from the latent before the latent's rotation (M orders the indexer first).
   float *ik = row + D41_HD;
-  for (uint32_t i = 0; i < D41_IDX_D; i++) ik[i] = (float)dot(attn_k + (size_t)i * D41_HD, latent, D41_HD);
+  float rounded[D41_HD];
+  for (uint32_t d = 0; d < D41_HD; d++) rounded[d] = round_bf16(latent[d]);
+  for (uint32_t i = 0; i < D41_IDX_D; i++) ik[i] = (float)dot(attn_k + (size_t)i * D41_HD, rounded, D41_HD);
   rms_norm(ik, k_norm, D41_IDX_D, ik);
   rope_tail(ik, D41_IDX_D, pos, true, false);
   std::copy(latent, latent + D41_HD, row);
