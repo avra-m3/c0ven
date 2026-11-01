@@ -34,8 +34,9 @@ gains AVX-512 paths in the dot products of a type the engine loads; or the engin
 
 - The core and its C ABI stay as they are, and ggml's symbols stay inside each library.
 - On the test machine nothing changes: it has every `zen4` feature and loads the same flags as before.
-- On `haswell` and `alderlake`, the levels of AVX2 CPUs, the experts' dot products run the same AVX2 code as on
-  `zen4`, so the tokens should be the same. Not measured yet.
+- On `haswell`, a level of AVX2 CPUs, the experts' dot products run the same AVX2 code as on `zen4`. `kl_test` on IQ3_S
+  writes the same bytes on both, 107 and 109 s
+  ([MEASUREMENTS.md](../measurements/MEASUREMENTS.md#2026-11-01-cpu-levels-check)). `alderlake` was not run.
 
 ## Options not chosen
 
@@ -48,8 +49,10 @@ gains AVX-512 paths in the dot products of a type the engine loads; or the engin
 
 ## Consequences
 
-- Any x86-64 CPU runs the engine. Arm and other architectures do not: the cards' driver stack is x86-64 only.
+- Any x86-64 CPU runs the engine. Arm and other architectures do not: the build's levels and the image are x86-64 only.
 - The build compiles ggml and links the engine's library nine times; `-DENGINE_CPU_LEVELS=zen4` builds one level.
-- Below `haswell`, ggml's dot products take their AVX, SSE or plain C paths, whose sums may round otherwise than the
-  reference's, and are slower. Neither is measured.
+- Below `haswell`, ggml's dot products take their AVX, SSE or plain C paths. On `x64`, `kl_test` gives mean KL 0.1629
+  against `zen4`'s 0.1584, inside its gate, and takes 152 s against 109 s, on a CPU whose multi-row dots still use AVX2
+  ([MEASUREMENTS.md](../measurements/MEASUREMENTS.md#2026-11-01-cpu-levels-check)). A CPU without AVX2 is slower still,
+  by an amount not measured. `sandybridge` and `sse42` were not run.
 - The tests check ggml's CPU code at the first level only, so a test on a CPU without AVX-512 still skips.
