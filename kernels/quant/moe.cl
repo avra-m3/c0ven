@@ -309,7 +309,7 @@ REQD_SG __kernel void moe_gate_up_g(__global const uchar *cache, ulong slot_byte
 // Down: short rows (the card's ff values). 4 lanes a row, lane l taking units l, l + 4, ...; a sub-group pass covers
 // 4 rows, and a sub-group makes MOE_DOWN_ROWS / 4 passes, rows base, base + 4, ...
 
-#if QTYPE == QT_IQ4_NL || QTYPE == QT_Q2_0 || QTYPE == QT_Q8_0 || QTYPE == QT_Q2_K
+#if QTYPE == QT_IQ4_NL || QTYPE == QT_Q2_0 || QTYPE == QT_Q8_0 || QTYPE == QT_Q2_K || QTYPE == QT_Q5_1
 
 #define DL 4
 
@@ -355,6 +355,19 @@ static inline float4 down_decode(__global const uchar *W, uint n, uint kr, uint 
   float dmin = vload_half(1, (__global const half *)(W + RUN(2) + k * 4));
   return (float4)(d * (float)(sc & 15u), d * (float)((sc >> 8) & 15u), dmin * (float)((sc >> 4) & 15u),
                   dmin * (float)(sc >> 12));
+#elif QTYPE == QT_Q5_1
+  // Q5_1: the codes 0-31, 4 bits in qs and the fifth in qh, with a minimum.
+  const uint k = kr + u;
+  uint4 qv = vload4(0, (__global const uint *)(W + RUN(0) + k * 16));
+  uint xw[4] = {qv.s0, qv.s1, qv.s2, qv.s3};
+  uint qh = ld_u32x(W + RUN(1) + k * 4);
+  for (uint j = 0; j < 4; j++) {
+    w[j] = (xw[j] & 0x0f0f0f0fu) | (spread4(qh >> (4 * j)) << 4);
+    w[4 + j] = ((xw[j] >> 4) & 0x0f0f0f0fu) | (spread4(qh >> (16 + 4 * j)) << 4);
+  }
+  float d = vload_half(0, (__global const half *)(W + RUN(2) + k * 4));
+  float m = vload_half(1, (__global const half *)(W + RUN(2) + k * 4));
+  return (float4)(d, d, -m, -m);
 #else
   // Q2_0: the codes 0-3 unsigned here; the caller subtracts the activation's sum for the -1.
   const uint k = kr + u / 2;
@@ -368,14 +381,14 @@ static inline float4 down_decode(__global const uchar *W, uint n, uint kr, uint 
 #endif
 }
 
-// The unit's sum, as unit_dot gives it, for down_decode's scales sc. qs0 and qs1: for Q2_0 and Q2_K, the sums of
+// The unit's sum, as unit_dot gives it, for down_decode's scales sc. qs0 and qs1: for Q2_0, Q2_K and Q5_1, the sums of
 // q[0..3] and q[4..7]. The dot products are summed in two loops apart: one loop that picks s0 or s1 by index gave
 // wrong sums for Q2_0 (IGC 2.20).
 static inline float down_dot(const uint w[8], const uint q[8], float4 sc, int qs0, int qs1) {
   int s0 = 0, s1 = 0;
   for (uint j = 0; j < 4; j++) s0 += dot4(w[j], q[j]);
   for (uint j = 4; j < 8; j++) s1 += dot4(w[j], q[j]);
-#if QTYPE == QT_Q2_K
+#if QTYPE == QT_Q2_K || QTYPE == QT_Q5_1
   float r = sc.s0 * (float)s0 + sc.s1 * (float)s1;
   r -= mins_term(sc.s2, sc.s3, qs0, qs1);
   return r;
@@ -391,7 +404,7 @@ static inline float down_dot(const uint w[8], const uint q[8], float4 sc, int qs
 
 static inline void q_sums(const uint q[8], int *qs0, int *qs1) {
   *qs0 = *qs1 = 0;
-#if QTYPE == QT_Q2_0 || QTYPE == QT_Q2_K
+#if QTYPE == QT_Q2_0 || QTYPE == QT_Q2_K || QTYPE == QT_Q5_1
   for (uint j = 0; j < 4; j++) *qs0 += dot4(q[j], 0x01010101u);
   for (uint j = 4; j < 8; j++) *qs1 += dot4(q[j], 0x01010101u);
 #endif

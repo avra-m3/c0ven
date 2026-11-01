@@ -485,7 +485,8 @@ K or V row of one head (256 values) is 8 blocks, 272 B.
 
 **Dequantisation** (`quants.c:459-477`, `:500-524`, `:526-551`): Q4_0 **y = d · (q − 8)**; Q5_0 **y = d · (q − 16)**
 with q's bit 4 from `qh`; Q5_1 **y = d · q + m**, q as Q5_0's. None has a codebook or a second scale. The engine's
-dot products take Q5_1's m as they take Q4_K's minimum, as a term times the activation's sum.
+dot products take Q5_1's m as they take Q4_K's minimum, as a term times the activation's sum, and `moe.cl` has its
+down kernels.
 
 ### BF16, F16, F32
 

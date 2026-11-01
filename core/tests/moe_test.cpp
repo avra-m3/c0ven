@@ -69,7 +69,7 @@ int main() {
   std::normal_distribution<float> normal(0.0f, 1.0f);
   int failures = 0;
   for (bool down : {false, true}) {
-    std::vector<uint32_t> types = down ? std::vector<uint32_t>{QT_IQ4_NL, QT_Q2_0, QT_Q8_0, QT_Q2_K}
+    std::vector<uint32_t> types = down ? std::vector<uint32_t>{QT_IQ4_NL, QT_Q2_0, QT_Q8_0, QT_Q2_K, QT_Q5_1}
                                        : std::vector<uint32_t>{QT_IQ2_S, QT_IQ3_XXS, QT_IQ3_S, QT_IQ4_XS, QT_IQ2_XXS,
                                                                   QT_IQ2_XS, QT_IQ1_S, QT_IQ1_M, QT_Q2_K};
     for (uint32_t type : types) {

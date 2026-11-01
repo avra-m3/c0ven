@@ -343,7 +343,7 @@ static inline void decode_unit(__global const uchar *W, ulong n, ulong k, uint s
 #endif
 }
 
-// Q2_K's term of a unit's sum for its two minimums, sa0 and sa1 the sums of the bytes of q[0..3] and q[4..7].
+// Q2_K's and Q5_1's term of a unit's sum for its minimums, sa0 and sa1 the sums of the bytes of q[0..3] and q[4..7].
 // matvec.cl and moe.cl both form it here, so their sums have the same bits.
 static inline float mins_term(float mn, float mh, int sa0, int sa1) { return mn * (float)sa0 + mh * (float)sa1; }
 
@@ -362,7 +362,7 @@ static inline float unit_dot(const uint w[8], const uint q[8], float lo, float h
   for (uint i = 0; i < 4; i++) s0 += dot4(w[i], q[i]);
   for (uint i = 4; i < 8; i++) s1 += dot4(w[i], q[i]);
   float r = lo * (float)s0 + hi * (float)s1;
-#if QTYPE == QT_Q2_K
+#if QTYPE == QT_Q2_K || QTYPE == QT_Q5_1
   int sa0 = 0, sa1 = 0;
   for (uint i = 0; i < 4; i++) sa0 += dot4(q[i], 0x01010101u);
   for (uint i = 4; i < 8; i++) sa1 += dot4(q[i], 0x01010101u);
