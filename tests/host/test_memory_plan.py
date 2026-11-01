@@ -3,10 +3,20 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
-from engine.memory_plan import PlanError, PlanOptions, ngram_fits, plan, reserve_per_sequence
+from engine.memory_plan import (
+    PlanError,
+    PlanOptions,
+    ngram_fits,
+    plan,
+    read_working,
+    reserve_per_sequence,
+    working_file,
+    write_working,
+)
 from engine.models.qwen4exp.memory import model_memory
 from engine.models.qwen4exp.tensors import Category, from_tsv
 
@@ -156,3 +166,29 @@ def test_the_ngram_table_moves_into_ram_only_with_room_to_spare():
     roomy = plan(MODEL, PlanOptions(slots=1, host_memory=80 * gib))
     assert ngram_fits(roomy, mem_total=90 * gib)
     assert not ngram_fits(plan(MODEL, PlanOptions(slots=1)), mem_total=90 * gib)
+
+
+def test_the_cores_expert_budget_gives_its_working_memory():
+    p = plan(MODEL, PlanOptions())
+    assert p.working_from(p.free_per_card) == p.working_per_card
+    assert p.working_from(p.free_per_card - 2**30) == p.working_per_card + 2**30
+    # Planned again with the core's figure, the plan leaves the core's budget for experts.
+    q = plan(MODEL, replace(PlanOptions(), working_per_card=p.working_from(p.free_per_card - 2**30)))
+    assert q.free_per_card == p.free_per_card - 2**30
+
+
+def test_the_working_memory_is_kept_per_model_and_options(tmp_path: Path):
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"x")
+    a = working_file(tmp_path, model, PlanOptions(slots=2), "draft=None")
+    assert read_working(a) is None
+    write_working(a, 1_700_000_000)
+    assert read_working(a) == 1_700_000_000
+    assert working_file(tmp_path, model, PlanOptions(slots=2), "draft=None") == a
+    assert working_file(tmp_path, model, PlanOptions(slots=4), "draft=None") != a
+    assert working_file(tmp_path, model, PlanOptions(slots=2), "draft=/m/mtp") != a
+    assert working_file(tmp_path, model, PlanOptions(slots=2, working_per_card=1), "draft=None") == a
+    a.write_text("{")
+    assert read_working(a) is None
+    a.write_text('{"working_per_card": -1}')
+    assert read_working(a) is None

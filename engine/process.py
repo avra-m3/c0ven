@@ -32,7 +32,16 @@ import gguf
 import protocol
 from engine import fit, host
 from engine.api.interface import IMAGE_PATCH_BYTES, Engine, EngineError, EngineFacts, Image, OpenConfig
-from engine.memory_plan import GIB, MemoryPlan, PlanError, PlanOptions, ngram_fits
+from engine.memory_plan import (
+    GIB,
+    MemoryPlan,
+    PlanError,
+    PlanOptions,
+    ngram_fits,
+    read_working,
+    working_file,
+    write_working,
+)
 from engine.scheduler import CheckpointRule, Scheduler, SchedulerOptions
 
 log = logging.getLogger("engine")
@@ -425,6 +434,16 @@ def main(argv: list[str] | None = None) -> int:
         n, source = the_host.cpu_workers()
         workers["cpu_workers"] = n
         log.info("CPU workers: %d, bounded by %s (ENGINE_CPU_WORKERS overrides)", n, source)
+    vision = None if args.no_vision or not native or args.model is None else args.vision or vision_file(args.model)
+    # The core's working memory from an earlier load with the same options, in place of the estimate. It is kept
+    # beside the draft layer's cache.
+    working: Path | None = None
+    if native and (cache := os.environ.get("ENGINE_MTP_CACHE_DIR")) and args.model is not None:
+        working = working_file(
+            Path(cache), args.model, options, f"draft={draft} vision={vision} deterministic={args.deterministic}"
+        )
+        if (kept := read_working(working)) is not None:
+            options = dataclasses.replace(options, working_per_card=kept)
     try:
         config, plan = cast(
             "tuple[OpenConfig, MemoryPlan]",
@@ -442,7 +461,6 @@ def main(argv: list[str] | None = None) -> int:
     except PlanError as exc:
         print(protocol.Error(None, f"memory plan: {exc}").encode(), flush=True)
         return 1
-    vision = None if args.no_vision or not native or args.model is None else args.vision or vision_file(args.model)
     if vision is not None:
         config = dataclasses.replace(config, vision_path=str(vision))
     sched = SchedulerOptions(
@@ -458,24 +476,34 @@ def main(argv: list[str] | None = None) -> int:
         stdout=sys.stdout,
         info=lambda: {"backend": args.backend, "arch": arch, "experts_planned": str(plan.experts_per_layer)},
         swapout_limit_mib=args.swapout_limit_mib,
-        fit_report=(lambda facts: report(the_host, cards, plan, config.cpu_workers, facts))
+        fit_report=(lambda facts: report(the_host, cards, plan, config.cpu_workers, facts, working=working))
         if the_host is not None
         else None,
     )
 
 
 def report(
-    the_host: host.Host, cards: list[host.Card], plan: MemoryPlan, workers: int, facts: EngineFacts
+    the_host: host.Host,
+    cards: list[host.Card],
+    plan: MemoryPlan,
+    workers: int,
+    facts: EngineFacts,
+    *,
+    working: Path | None = None,
 ) -> tuple[list[fit.Row], list[str]]:
-    """The fit report after a load: the cards, the host and the CPU, with the core's figures."""
+    """The fit report after a load: the cards, the host and the CPU, with the core's figures. The core's working
+    memory per card is kept in `working` for the next start's plan."""
+    working_core = plan.working_from(min(facts.expert_budget)) if facts.expert_budget else None
+    if working is not None and working_core is not None and working_core > 0:
+        write_working(working, working_core)
     rows = (
-        fit.card_rows(cards, plan, facts.experts_cached)
+        fit.card_rows(cards, plan, facts.experts_cached, working_core)
         + fit.host_rows(the_host, plan, facts.host_pinned, fit.rss())
         + fit.cpu_rows(the_host, workers, facts.host_read_bytes_per_s)
         + fit.storage_rows(plan, facts)
     )
     notes = (
-        fit.card_notes(plan, facts.experts_cached)
+        fit.card_notes(plan, facts.experts_cached, working_core)
         + fit.notes(the_host, bool(os.environ.get("ENGINE_UNLOCKED_ARENA")))
         + fit.storage_notes(facts)
     )

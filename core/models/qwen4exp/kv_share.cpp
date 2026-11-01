@@ -85,6 +85,11 @@ void Model::share_cards(bool first, uint64_t budget, const std::vector<uint64_t>
   };
   size_t kv_all = 0;
   for (uint32_t x = 0; x < cards_[0]->kv.size(); x++) kv_all += kv_blocks_for(x, kv_level(x, kv_pages_, kv_res_));
+  // The pool is backed from the same budget: what the experts have with all of it backed, as the plan counts it.
+  for (auto &card : cards_) {
+    uint64_t &b = info_.expert_budget[card->c];
+    b = b > kv_all * blk_ ? b - kv_all * blk_ : 0;
+  }
   auto fits = [&](uint64_t n) {
     uint64_t b = kv_all;
     for (uint32_t l = 0; l < Q_LAYERS; l++) b += cdiv(n * sb[l], blk_);
