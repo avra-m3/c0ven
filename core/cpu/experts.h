@@ -46,6 +46,10 @@ class CpuExperts {
   void compute_many(const ExpertShape &shape, const std::vector<Job> &jobs, uint32_t ntok, const float *x,
                     uint64_t x_stride, float *y, uint64_t y_stride);
 
+  // The rows of h compute_many makes at a time in its one pool job: 32, or one block of the down's dot-product type
+  // when that is longer. 0 when n_ff is not a multiple of them; compute_many then runs three pool jobs, which is slower.
+  static uint32_t h_rows(const ExpertShape &shape);
+
  private:
   Pool &pool_;
   std::vector<uint8_t> xq_, hq_;

@@ -52,6 +52,7 @@ docker exec engine-dev bash -c 'cd /src/build && ENGINE_EXPECT_GPUS=2 ctest -L g
 | `mrope_test` | 1 | the M-RoPE positions an image gives a prompt's cells, against transformers' rule; no card |
 | `experts_test` | 1 | the CPU's expert products with and without the SwiGLU limit, against the formula on ggml's dot products, 1e-5; no card |
 | `quant_test` | 1 | every quantised type's block size and fields against ggml's, the runs layout on random blocks, and ggml's CPU dot product against its dequantisation; no card |
+| `cpu_experts_test` | 1 | the CPU's expert path keeps its one pool job for every down type of the deepseek41 and Flash-Next files, and its results for several tokens at once equal one token's bit for bit, on random blocks; no card |
 | `ze_smoke_test` | 2 | a kernel runs on every card, and one card waits on another's event |
 | `matvec_test` | 3 | the weight products of every quantised type on random blocks, and of every type the file holds on its rows, against ggml's dequantisation, 1e-5 |
 | `moe_test` | 3 | the decode step's grouped expert products of `moe.cl` equal `matvec.cl`'s bit for bit, for every type `moe.cl` takes on random blocks and every one the file holds on its experts, and every group size |
