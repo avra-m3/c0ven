@@ -338,7 +338,11 @@ knowing.
 
 Everything on the cards and in pinned host memory is allocated when the engine loads or wakes. A request takes only a
 slot, pages and checkpoints from pools that already exist. Python's memory plan (`engine/memory_plan.py`) checks
-before load that the options fit the host, and gives the core its page count. The core fits as many experts per
+before load that the options fit the host, and gives the core its page count. The host's figures come from
+`engine/host.py`: the plan's pinned total and a working-set estimate must fit under the smaller of `MemAvailable`, the
+cgroup's `memory.max` and `--ram-max`, or the engine refuses to load and prints options that fit
+([ADR-0057](adr/0057-the-engine-reads-the-host-it-runs-on.md)). Each load prints a fit report, the values read beside
+the plan's figures and the core's, and sends it in INFO as `fit_*` facts. The core fits as many experts per
 layer on each card as its memory allows, after leaving `reserve_bytes` (512 MiB) free
 ([ADR-0027](adr/0027-the-c-abi-as-the-core-was-optimised.md), item 3).
 

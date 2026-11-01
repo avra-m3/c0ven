@@ -80,9 +80,30 @@ def test_a_pool_too_small_for_one_sequence():
         plan(MODEL, PlanOptions(slots=4, context=262_144, kv_tokens=262_143))
 
 
-def test_four_long_sequences_warn():
-    p = plan(MODEL, PlanOptions(slots=4, context=262_144))
-    assert any("swap" in w for w in p.warnings)
+def test_the_host_holds_every_page_of_the_pool():
+    """The host's K and V are the pool's pages, not each slot's whole context."""
+    p = plan(MODEL, PlanOptions(slots=4, context=262_144, kv_tokens=524_288))
+    assert p.streamed_kv_bytes == 13_056 * 524_288 + 4 * 35_651_584
+
+
+def test_a_plan_over_the_hosts_memory_is_refused_with_what_fits():
+    full = plan(MODEL, PlanOptions(slots=4, context=262_144))
+    with pytest.raises(PlanError, match="--slots 3") as exc:
+        plan(MODEL, PlanOptions(slots=4, context=262_144, host_memory=full.host_bytes - 1))
+    assert "the host can give" in str(exc.value)
+    assert plan(MODEL, PlanOptions(slots=4, context=262_144, host_memory=full.host_bytes)).host_bytes == full.host_bytes
+
+
+def test_ram_max_is_a_limit_of_its_own():
+    full = plan(MODEL, PlanOptions(slots=1, context=262_144))
+    with pytest.raises(PlanError, match="--ram-max allows") as exc:
+        plan(MODEL, PlanOptions(slots=1, context=262_144, ram_max=full.host_bytes - 1, host_memory=2**50))
+    assert "--context 131072" in str(exc.value)
+
+
+def test_a_limit_nothing_fits_names_a_smaller_file():
+    with pytest.raises(PlanError, match="smaller model file"):
+        plan(MODEL, PlanOptions(slots=1, context=4096, host_memory=2**30))
 
 
 @pytest.mark.parametrize("options", [PlanOptions(slots=0), PlanOptions(context=300_000), PlanOptions(slots=40)])

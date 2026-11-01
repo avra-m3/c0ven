@@ -48,9 +48,3 @@ DRAFT_PER_CARD = 614_446_848
 """*Estimate*: half the draft layer, made before its storage was chosen (MEMORY_BUDGET.md)."""
 WORKING_PER_CARD = 1_600_663_296
 """*Estimate*: working buffers per card."""
-
-# The host (MEMORY_BUDGET.md, "RAM for the tensor split"; docs/measurements/MEASUREMENTS.md#2026-10-13-design-inputs).
-PINNED_CLEAN = 12 * 2**30
-"""Host memory given in 256 KiB pieces before the host's free 2 MiB blocks ran out."""
-PINNED_LIMIT = 25 * 2**30
-"""Host memory given before the test host began to swap."""

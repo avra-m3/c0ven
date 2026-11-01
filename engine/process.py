@@ -17,6 +17,7 @@ import importlib
 import logging
 import os
 import queue
+import resource
 import sys
 import threading
 import time
@@ -29,8 +30,9 @@ from typing import TextIO, cast
 import gguf
 
 import protocol
+from engine import fit, host
 from engine.api.interface import IMAGE_PATCH_BYTES, Engine, EngineError, EngineFacts, Image, OpenConfig
-from engine.memory_plan import MemoryPlan, PlanError, PlanOptions
+from engine.memory_plan import GIB, MemoryPlan, PlanError, PlanOptions
 from engine.scheduler import CheckpointRule, Scheduler, SchedulerOptions
 
 log = logging.getLogger("engine")
@@ -134,6 +136,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=0,
         help="the KV pool the slots share, in tokens (512k = 524,288), at least --context; default: slots x context",
     )
+    p.add_argument(
+        "--ram-max",
+        type=float,
+        help="GiB of host memory the engine may plan for at most; a plan over it is refused with options that fit",
+    )
     p.add_argument("--table-cache", type=Path, help="a directory that keeps the model's tensor table between starts")
     p.add_argument(
         "--swapout-limit-mib",
@@ -217,6 +224,8 @@ def serve(
     stdout: TextIO,
     info: Callable[[], dict[str, str]] = dict,
     swapout_limit_mib: float | None = None,
+    fit_rows: Callable[[EngineFacts], list[fit.Row]] | None = None,
+    fit_notes: tuple[str, ...] = (),
 ) -> int:
     events: queue.Queue[protocol.Event | None] = queue.Queue()
     commands: queue.Queue[protocol.Command] = queue.Queue()
@@ -229,6 +238,9 @@ def serve(
         pages = int(measured.get("pswpout", "0"))
         if swapout_limit_mib is not None and pages * 4096 > swapout_limit_mib * 2**20:
             return f"the host swapped out {pages * 4096 / 2**20:.0f} MiB while loading, over {swapout_limit_mib:g}"
+        rows = fit_rows(facts) if fit_rows is not None else []
+        if rows:
+            fit.write(rows, list(fit_notes))
         facts_info = {
             "version": facts.version,
             "cards": str(facts.cards),
@@ -242,6 +254,7 @@ def serve(
             "image_tokens_max": str(facts.image_tokens_max),
             **measured,
             **info(),
+            **fit.info(rows),
         }
         events.put(protocol.Info(facts_info))
         events.put(protocol.Ready(facts.max_context, facts.slots))
@@ -305,7 +318,10 @@ def serve(
                         for e in scheduler.cancel(rid):
                             events.put(e)
                     case protocol.Stats():
-                        events.put(protocol.StatsReport(scheduler.report()))
+                        report = scheduler.report()
+                        # Major faults: pages read back from swap or from a file, an unlocked arena's among them.
+                        report["major_faults"] = str(resource.getrusage(resource.RUSAGE_SELF).ru_majflt)
+                        events.put(protocol.StatsReport(report))
                     case protocol.Sleep(drain_ms=drain_ms) if state is State.AWAKE:
                         state, sleep_t0, cancelled, wake_after = State.DRAINING, time.monotonic(), False, False
                         deadline = sleep_t0 + drain_ms / 1e3
@@ -371,13 +387,17 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=args.log_level, stream=sys.stderr, format="%(asctime)s %(name)s %(message)s")
     arch = args.arch or architecture(args.model)  # the front end passes --arch, so the GGUF is read once
     model = model_module(arch)
+    native = args.backend == "native"
+    # Only the native backend takes host memory; the mock and the reference plan with no host limit.
+    the_host = host.read() if native else None
     options = PlanOptions(
         slots=args.slots,
         context=args.context,
         checkpoints=args.checkpoints,
         kv_tokens=args.kv_tokens,
+        host_memory=the_host.memory_limit if the_host is not None else None,
+        ram_max=round(args.ram_max * GIB) if args.ram_max is not None else None,
     )
-    native = args.backend == "native"
     draft: Path | None = None
     if native and not args.no_draft and args.model is not None:
         draft = args.draft_dir or cast("Callable[[Path], Path | None]", model.draft_dir)(args.model)
@@ -389,8 +409,6 @@ def main(argv: list[str] | None = None) -> int:
     except PlanError as exc:
         print(protocol.Error(None, f"memory plan: {exc}").encode(), flush=True)
         return 1
-    for warning in plan.warnings:
-        log.warning("memory plan: %s", warning)
     vision = None if args.no_vision or not native or args.model is None else args.vision or vision_file(args.model)
     if vision is not None:
         config = dataclasses.replace(config, vision_path=str(vision))
@@ -407,4 +425,8 @@ def main(argv: list[str] | None = None) -> int:
         stdout=sys.stdout,
         info=lambda: {"backend": args.backend, "arch": arch, "experts_planned": str(plan.experts_cached)},
         swapout_limit_mib=args.swapout_limit_mib,
+        fit_rows=(lambda facts: fit.host_rows(the_host, plan, facts.host_pinned, fit.rss()))
+        if the_host is not None
+        else None,
+        fit_notes=tuple(fit.notes(the_host, bool(os.environ.get("ENGINE_UNLOCKED_ARENA")))) if the_host else (),
     )
