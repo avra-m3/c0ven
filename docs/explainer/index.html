@@ -127,6 +127,37 @@ button:focus-visible { outline: 2px solid var(--sodium); outline-offset: 2px; }
 .anchor.think { background: var(--cool); }
 .anchor.think::after { border-top-color: var(--cool); }
 
+.tags { position: fixed; inset: 0; pointer-events: none; }
+/* Floor 3's name tags. --c is the adviser's colour; the bar along the foot (.n) is their tally. */
+.tag { position: fixed; left: 0; top: 0; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; overflow: hidden;
+  font-family: var(--font-hud); font-weight: 600; letter-spacing: 0.06em; font-size: 0.86rem; text-transform: uppercase;
+  background: var(--panel); color: var(--text); border: 1px solid var(--panel-edge); border-radius: 4px; padding: 3px 8px 5px;
+  pointer-events: none; transition: border-color 0.15s ease, background 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease; }
+.tag i { width: 9px; height: 9px; border-radius: 50%; display: inline-block; background: var(--c); }
+.tag small { font-family: var(--font-data); font-size: 0.66rem; color: var(--muted); letter-spacing: 0.02em; text-transform: none; font-weight: 400; }
+.tag .n { position: absolute; left: 0; bottom: 0; height: 3px; width: 0; background: var(--c); transition: width 0.3s ease; }
+.tags.live .tag { pointer-events: auto; cursor: pointer; }
+.tags.live .tag:hover { border-color: var(--muted); }
+.tag::after { font-family: var(--font-data); font-size: 0.62rem; letter-spacing: 0.02em; text-transform: none; font-weight: 500; }
+.tag.hot::after { content: "\25B2"; color: var(--sodium); font-size: 0.7rem; }
+.tag.need { border-color: var(--c); background: rgba(40, 46, 58, 0.95); background: color-mix(in srgb, var(--c) 30%, rgba(14, 18, 25, 0.94));
+  box-shadow: 0 0 0 1px var(--c), 0 0 16px color-mix(in srgb, var(--c) 65%, transparent); }
+.tag.sel { border-color: var(--sodium); background: var(--sodium); color: #151a21; }
+.tag.sel small { color: #4a3510; }
+.tags.picking .tag:not(.sel):not(.can):not(.queued) { opacity: 0.4; }
+.tag.can { border: 1px dashed var(--sodium); background: rgba(232, 163, 61, 0.18); }
+.tag.queued { border-color: var(--cool); }
+.tag.queued::after { content: "next"; background: var(--cool); color: #10151c; border-radius: 3px; padding: 0 4px; font-size: 0.62rem; }
+.tag.moving { opacity: 0.8; border-color: var(--sodium); }
+.tag.moving::after { content: none; }
+.tag:disabled { cursor: default; }
+@media (pointer: coarse) { .tags.live .tag { min-height: 34px; padding: 5px 10px 7px; } }
+@media (prefers-reduced-motion: no-preference) { .tag.need { animation: need 0.8s ease-in-out infinite alternate; } }
+@keyframes need { to { box-shadow: 0 0 0 2px var(--c), 0 0 24px var(--c); } }
+.hint { font-family: var(--font-data); font-size: 0.78rem; color: var(--muted); background: var(--panel); border: 1px solid var(--panel-edge); border-radius: 4px; padding: 6px 10px; text-align: center; max-width: min(640px, 100%); }
+.hint b { font-weight: 500; }
+.watch.hold .time { color: var(--sodium); }
+.anchor.wrap { white-space: normal; width: max-content; max-width: min(15rem, 42vw); text-align: center; line-height: 1.3; }
 .start { position: fixed; inset: 0; display: grid; place-items: center; background: radial-gradient(ellipse at center, rgba(18,22,29,0.55), rgba(10,12,16,0.92));
   padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
 .start[hidden] { display: none !important; }
@@ -146,6 +177,9 @@ button:focus-visible { outline: 2px solid var(--sodium); outline-offset: 2px; }
   .reveal { max-height: 34vh; }
   .opt { font-size: 0.95rem; padding: 9px 12px; }
   .brand span { font-size: 0.78rem; }
+  .tag small { display: none; }
+  .tag { font-size: 0.8rem; letter-spacing: 0.04em; }
+  .hint { font-size: 0.72rem; }
 }
 @media (prefers-reduced-motion: reduce) {
   .caption .w { transition: none; }
@@ -155,6 +189,7 @@ button:focus-visible { outline: 2px solid var(--sodium); outline-offset: 2px; }
 </style>
 </head>
 <body>
+
 <div id="stage"></div>
 <div id="fade"></div>
 
@@ -170,7 +205,7 @@ button:focus-visible { outline: 2px solid var(--sodium); outline-offset: 2px; }
   <div class="middle">
     <div class="side">
       <section class="panel watch" aria-label="Stopwatch">
-        <div class="watch-head"><span class="ph">Time to stamp one word</span><span class="time" id="time">0.0 s</span></div>
+        <div class="watch-head"><span class="ph" id="watchHead">Time to stamp one word</span><span class="time" id="time">0.0 s</span></div>
         <div class="bar"><div class="f" id="liveF" style="width:0%"></div><div class="t" id="liveT" style="width:0%"></div></div>
         <div class="key"><span style="--c: var(--sodium)" id="keyF">Fetching</span><span style="--c: var(--cool)" id="keyT">Thinking</span></div>
         <div class="history" id="history"></div>
@@ -186,6 +221,7 @@ button:focus-visible { outline: 2px solid var(--sodium); outline-offset: 2px; }
   </div>
 
   <div class="bottom">
+    <div class="hint" id="hint3" hidden>Pick a name in the annex, then one in the office, to swap them</div>
     <div class="choices" id="choices"></div>
     <div class="caption" id="caption" hidden role="status" aria-live="polite"></div>
   </div>
@@ -203,15 +239,22 @@ button:focus-visible { outline: 2px solid var(--sodium); outline-offset: 2px; }
 <div class="anchor" id="aExpert">an expert</div>
 <div class="anchor slow" id="aFax">the question: about 10 KB</div>
 <div class="anchor slow" id="aVan">an expert's weights: megabytes</div>
+<div class="anchor wrap" id="aDesk3">graphics card: room for some experts</div>
+<div class="anchor wrap" id="aAnnex3">main memory: every expert</div>
+<div class="anchor think wrap" id="aBoard">use counts, fading each round</div>
+<div class="anchor slow wrap" id="aMover">swapped in: copied onto the card</div>
+
+<div class="tags" id="tags" hidden></div>
 
 <div class="start" id="start">
   <div class="start-card">
     <span class="k">Meridian Words Ltd. · Night shift</span>
     <h1>Meridian Words</h1>
-    <p>A 48-floor building that writes one word at a time. Two floors are open. Sound on for the narrator; captions are always shown.</p>
+    <p>A 48-floor building that writes one word at a time. Three floors are open. Sound on for the narrator; captions are always shown.</p>
     <div class="floors">
       <button class="opt primary" id="begin1" type="button">Floor 1 · The Shelf Room <small>3 min</small></button>
       <button class="opt" id="begin2" type="button">Floor 2 · The Annex <small>2 min</small></button>
+      <button class="opt" id="begin3" type="button">Floor 3 · Musical Desks <small>3 min</small></button>
     </div>
   </div>
 </div>
@@ -225,8 +268,8 @@ button:focus-visible { outline: 2px solid var(--sodium); outline-offset: 2px; }
   // ---------- Narration: one audio file per stretch between choices, captions cued inside it ----------
   // CHUNKS: each file's length, and for each caption line the time each of its words is spoken, in seconds
   // (from a speech recogniser's word timestamps).
-  const LINES = {"intro1": "Meridian Words is a building of 48 floors that never sleeps. All night, people across the city send it questions, and by morning it has written their answers.", "intro2": "It writes them one word at a time. And no word may leave the building until every floor has stamped it. Every floor.", "intro3": "The advisers on each floor have worked here longer than anyone can remember. They are very good at their jobs. Nobody has ever asked them to hurry. Until tonight.", "intro4": "You are the night courier. You carry each word up the building, floor by floor, to the roof. Tonight there are a great many words. I do hope you're up to it.", "intro5": "This is floor 1. A desk, an adviser, and a shelf of manuals nobody has dusted since the building opened. Lovely, isn't it?", "bet1": "Before you hand the word over, a small bet. Just between us.", "bet2": "To stamp it, the adviser looks something up in a manual, then thinks about your word. Where will most of the time go?", "watch": "Hand the envelope over. Watch the clock. I certainly will.", "right": "Correct. Nearly all of it went on the walk to the shelf and back. The thinking took a moment. Clever. I'll remember that.", "wrong": "Not quite. The thinking took a moment. Nearly all of the time went on the walk to the shelf and back. Don't worry. I won't tell anyone.", "upgrade": "Management will pay for one upgrade on this floor. I'd choose carefully. Management keeps notes.", "faster1": "The adviser is back from a weekend course, thinking twice as fast. Watch the clock.", "faster2": "Your word arrived 0.3 seconds sooner. Out of 4.0.", "faster3": "Nobody on this floor was ever slow at thinking. But you knew that. Didn't you?", "closer1": "Management has had a word with the shelf. It's agreed to come to you. This once.", "closer2": "1.4 seconds. The same adviser, thinking at the same speed. Only the walk changed. Well done.", "reveal1": "The office freezes. The labels peel off. You weren't supposed to see this part.", "reveal2": "To write each word, an AI model reads a huge pile of numbers from memory, and does a little maths with them. The maths is quick. The reading is slow.", "reveal3": "So a faster AI engine mostly reads less, or reads from somewhere closer. Each of the next floors is one of its tricks. I'll be waiting on floor 2.", "f2a1": "Floor 2. You'll notice it's busier.", "f2a2": "Meridian Words employs far more advisers than it has desks. Hundreds on every floor. Each word only needs a handful of them.", "f2a3": "The popular ones work here, in the main office. Everyone else works at the annex, across town. It's cheaper. Nobody visits.", "f2a4": "Tonight, your word needs someone from the annex.", "f2a5": "So. Another small bet, between friends. Is it faster to drive the adviser over here, manuals and all? Or to send them a fax?", "f2d1": "Excellent. I'll call the van. They'll need their manuals, of course. They never go anywhere without them. Watch the clock.", "f2d2": "7.4 seconds. Most of it in traffic, with four crates of paper on the roof.", "f2d3": "And tomorrow, somebody has to drive them back.", "f2x1": "A fax. How old-fashioned. I like it. Your adviser sends the question. Only the question. Watch the clock.", "f2x2": "1.6 seconds. The annex adviser is slower at sums. Older equipment.", "f2x3": "It hardly matters. Nothing heavy moved. One page went across town, and one page came back.", "f2r1": "The office freezes again. I really must speak to maintenance.", "f2r2": "The main office is the graphics card. Fast, but small. The annex is the computer's main processor, and its memory. Slower, but enormous. Each adviser is one expert: a small part of the model.", "f2r3": "c0ven keeps the busiest experts on the card, and lets the processor work out the rest, right where they live. The knowledge stays put. Only the question travels.", "f2r4": "Floor 3 is next. I've been rearranging the desks."};
-  const CHUNKS = {"intro": {"dur": 86.88, "lines": [["intro1", [0.0, 0.72, 1.2, 1.44, 1.6, 2.0, 2.24, 2.96, 3.76, 4.0, 4.32, 5.52, 5.84, 6.56, 6.88, 7.44, 7.68, 8.0, 8.48, 8.8, 9.68, 9.92, 10.16, 10.96, 11.2, 11.44, 11.92, 12.16]], ["intro2", [13.44, 13.76, 14.56, 14.96, 15.28, 15.92, 16.24, 16.56, 17.44, 17.76, 18.08, 18.56, 18.8, 19.28, 19.52, 20.16, 21.04, 21.36, 22.0, 22.24, 23.04, 23.68, 24.24]], ["intro3", [25.76, 26.0, 26.8, 27.04, 27.44, 28.16, 28.48, 29.04, 29.36, 29.92, 30.24, 30.88, 31.2, 32.16, 32.48, 32.8, 33.12, 33.36, 33.68, 33.92, 35.04, 35.68, 35.92, 36.48, 36.88, 37.12, 37.36, 38.56, 39.36]], ["intro4", [40.8, 41.12, 41.44, 41.68, 42.16, 43.36, 43.6, 44.16, 44.64, 45.12, 45.36, 45.6, 46.48, 47.04, 47.36, 48.0, 48.16, 48.4, 49.44, 50.4, 50.72, 51.04, 51.36, 51.68, 52.0, 53.28, 53.6, 53.92, 54.24, 54.8, 55.12, 55.36]], ["intro5", [56.0, 56.56, 56.88, 57.68, 58.48, 58.8, 59.52, 59.84, 60.88, 61.12, 61.28, 61.76, 62.08, 63.04, 63.6, 63.92, 64.56, 64.96, 65.2, 66.08, 67.68, 68.56, 69.12]], ["bet1", [69.76, 70.16, 70.4, 70.8, 71.12, 71.76, 72.4, 72.72, 73.36, 74.48, 75.04, 75.68]], ["bet2", [76.88, 77.12, 77.6, 78.0, 78.24, 79.04, 79.44, 79.76, 79.92, 80.08, 80.32, 81.12, 81.44, 82.08, 82.4, 82.72, 83.92, 84.56, 84.88, 85.2, 85.52, 85.84, 86.16]]]}, "watch": {"dur": 4.91, "lines": [["watch", [0.0, 0.4, 0.56, 1.36, 2.0, 2.4, 2.64, 3.44, 3.68, 4.4]]]}, "right": {"dur": 18.91, "lines": [["right", [0.16, 1.04, 1.52, 1.76, 1.92, 2.16, 2.4, 2.56, 2.72, 3.12, 3.28, 3.44, 4.24, 4.56, 5.2, 5.44, 5.92, 6.32, 6.56, 7.44, 8.56, 9.04, 9.76]], ["upgrade", [10.4, 11.2, 11.44, 11.84, 12.08, 12.4, 13.12, 13.44, 13.68, 14.64, 15.04, 15.52, 16.8, 17.68, 18.16]]]}, "wrong": {"dur": 19.98, "lines": [["wrong", [0.08, 0.48, 1.28, 1.52, 2.0, 2.32, 2.56, 3.52, 4.0, 4.24, 4.4, 4.64, 4.96, 5.28, 5.44, 5.6, 5.92, 6.08, 6.32, 6.88, 7.2, 8.08, 8.64, 9.36, 9.6, 10.16, 10.4]], ["upgrade", [11.52, 12.32, 12.56, 12.96, 13.2, 13.44, 14.16, 14.4, 14.64, 15.6, 16.08, 16.56, 17.76, 18.64, 19.2]]]}, "faster1": {"dur": 6.66, "lines": [["faster1", [0.0, 0.24, 0.88, 1.12, 1.36, 1.52, 1.68, 2.48, 3.12, 3.68, 4.32, 4.64, 5.44, 5.84, 6.08]]]}, "faster2": {"dur": 12.59, "lines": [["faster2", [0.0, 0.48, 0.8, 1.57, 2.35, 3.12, 4.0, 4.56, 5.2]], ["faster3", [5.84, 6.48, 6.72, 7.04, 7.44, 7.68, 8.16, 8.72, 8.96, 9.84, 10.16, 10.48, 10.96, 11.6, 12.08]]]}, "closer1": {"dur": 7.05, "lines": [["closer1", [0.0, 0.8, 1.04, 1.2, 1.36, 1.68, 1.92, 2.16, 3.04, 3.44, 4.08, 4.4, 4.72, 4.96, 5.76, 6.24]]]}, "closer2": {"dur": 9.9, "lines": [["closer2", [0.16, 1.28, 2.4, 2.64, 2.88, 3.92, 4.48, 4.72, 5.04, 5.36, 6.32, 6.72, 6.96, 7.52, 8.72, 9.2]]]}, "reveal": {"dur": 34.87, "lines": [["reveal1", [0.16, 0.32, 0.8, 2.0, 2.24, 3.04, 3.6, 4.48, 4.72, 5.28, 5.84, 6.16, 6.48, 6.8]], ["reveal2", [7.76, 8.0, 8.4, 8.88, 9.52, 9.84, 10.4, 10.88, 11.28, 11.52, 11.92, 12.4, 12.64, 13.04, 13.28, 14.16, 14.48, 14.72, 14.88, 15.12, 15.84, 16.16, 16.8, 17.04, 17.6, 17.84, 18.64, 18.96, 19.6, 19.92]], ["reveal3", [21.12, 21.44, 21.68, 22.32, 23.44, 24.08, 24.64, 25.12, 25.84, 26.08, 26.56, 26.88, 27.44, 28.56, 28.88, 29.12, 29.36, 29.68, 30.32, 30.56, 30.8, 30.96, 31.28, 32.4, 32.8, 32.96, 33.44, 33.68, 34.24]]]}, "f2intro": {"dur": 42.76, "lines": [["f2a1", [0.08, 0.64, 1.28, 1.68, 2.08, 2.48]], ["f2a2", [3.52, 4.32, 4.88, 5.6, 6.0, 6.32, 7.04, 7.28, 7.52, 7.84, 8.8, 9.6, 9.92, 10.24, 11.2, 11.68, 12.24, 12.56, 12.96, 13.2, 13.92, 14.16]], ["f2a3", [14.72, 14.96, 15.6, 16.16, 16.48, 17.04, 17.28, 17.44, 17.92, 18.8, 19.44, 19.76, 20.08, 20.32, 20.48, 21.36, 21.92, 22.72, 23.12, 24.24, 24.8]], ["f2a4", [26.0, 26.96, 27.36, 27.84, 28.24, 28.72, 28.96, 29.12]], ["f2a5", [30.56, 31.36, 32.0, 32.64, 33.2, 33.76, 34.96, 35.2, 35.44, 36.0, 36.24, 36.72, 36.88, 37.92, 38.16, 38.8, 39.76, 40.08, 40.72, 40.96, 41.2, 41.6, 41.76, 41.92]]]}, "f2drive1": {"dur": 9.43, "lines": [["f2d1", [0.0, 1.2, 1.68, 1.84, 2.08, 2.8, 3.28, 3.52, 3.76, 4.48, 4.72, 5.36, 5.68, 6.0, 6.24, 7.04, 7.52, 8.16, 8.56, 8.8]]]}, "f2drive2": {"dur": 11.1, "lines": [["f2d2", [0.16, 1.36, 2.56, 2.88, 3.12, 3.28, 3.44, 4.24, 4.56, 4.88, 5.44, 5.6, 6.0, 6.16, 6.4]], ["f2d3", [7.52, 7.68, 8.8, 9.36, 9.6, 9.76, 10.32, 10.56]]]}, "f2fax1": {"dur": 9.51, "lines": [["f2x1", [0.0, 0.32, 1.2, 1.44, 2.64, 2.96, 3.28, 3.92, 4.24, 4.96, 5.52, 5.84, 6.48, 7.04, 7.36, 8.24, 8.64, 8.88]]]}, "f2fax2": {"dur": 15.02, "lines": [["f2x2", [0.6, 1.2, 2.24, 2.48, 3.04, 3.6, 3.84, 4.32, 4.56, 5.44, 5.92]], ["f2x3", [7.12, 7.36, 7.84, 8.8, 9.28, 9.84, 10.64, 11.04, 11.52, 11.84, 12.32, 12.96, 13.28, 13.6, 14.16, 14.48]]]}, "f2reveal": {"dur": 43.7, "lines": [["f2r1", [0.0, 0.32, 0.72, 1.84, 2.48, 2.8, 3.12, 3.52, 3.92, 4.16]], ["f2r2", [5.68, 5.92, 6.32, 6.72, 6.96, 7.2, 7.92, 8.8, 9.68, 10.0, 10.88, 11.12, 11.76, 12.0, 12.24, 12.88, 13.36, 14.32, 14.64, 14.96, 15.92, 16.88, 17.2, 18.56, 18.96, 20.0, 20.32, 20.64, 21.76, 22.08, 22.56, 22.8, 23.04, 23.28]], ["f2r3", [24.12, 24.96, 25.2, 25.36, 26.16, 26.72, 26.96, 27.2, 27.92, 28.16, 28.48, 28.72, 29.6, 29.84, 30.16, 30.4, 31.12, 31.44, 31.92, 32.16, 33.04, 33.36, 34.08, 34.96, 35.6, 36.24, 36.56, 37.12]], ["f2r4", [38.56, 39.28, 39.76, 40.08, 40.96, 41.28, 41.6, 42.48, 42.72]]]}};
+  const LINES = {"intro1": "Meridian Words is a building of 48 floors that never sleeps. All night, people across the city send it questions, and by morning it has written their answers.", "intro2": "It writes them one word at a time. And no word may leave the building until every floor has stamped it. Every floor.", "intro3": "The advisers on each floor have worked here longer than anyone can remember. They are very good at their jobs. Nobody has ever asked them to hurry. Until tonight.", "intro4": "You are the night courier. You carry each word up the building, floor by floor, to the roof. Tonight there are a great many words. I do hope you're up to it.", "intro5": "This is floor 1. A desk, an adviser, and a shelf of manuals nobody has dusted since the building opened. Lovely, isn't it?", "bet1": "Before you hand the word over, a small bet. Just between us.", "bet2": "To stamp it, the adviser looks something up in a manual, then thinks about your word. Where will most of the time go?", "watch": "Hand the envelope over. Watch the clock. I certainly will.", "right": "Correct. Nearly all of it went on the walk to the shelf and back. The thinking took a moment. Clever. I'll remember that.", "wrong": "Not quite. The thinking took a moment. Nearly all of the time went on the walk to the shelf and back. Don't worry. I won't tell anyone.", "upgrade": "Management will pay for one upgrade on this floor. I'd choose carefully. Management keeps notes.", "faster1": "The adviser is back from a weekend course, thinking twice as fast. Watch the clock.", "faster2": "Your word arrived 0.3 seconds sooner. Out of 4.0.", "faster3": "Nobody on this floor was ever slow at thinking. But you knew that. Didn't you?", "closer1": "Management has had a word with the shelf. It's agreed to come to you. This once.", "closer2": "1.4 seconds. The same adviser, thinking at the same speed. Only the walk changed. Well done.", "reveal1": "The office freezes. The labels peel off. You weren't supposed to see this part.", "reveal2": "To write each word, an AI model reads a huge pile of numbers from memory, and does a little maths with them. The maths is quick. The reading is slow.", "reveal3": "So a faster AI engine mostly reads less, or reads from somewhere closer. Each of the next floors is one of its tricks. I'll be waiting on floor 2.", "f2a1": "Floor 2. You'll notice it's busier.", "f2a2": "Meridian Words employs far more advisers than it has desks. Hundreds on every floor. Each word only needs a handful of them.", "f2a3": "The popular ones work here, in the main office. Everyone else works at the annex, across town. It's cheaper. Nobody visits.", "f2a4": "Tonight, your word needs someone from the annex.", "f2a5": "So. Another small bet, between friends. Is it faster to drive the adviser over here, manuals and all? Or to send them a fax?", "f2d1": "Excellent. I'll call the van. They'll need their manuals, of course. They never go anywhere without them. Watch the clock.", "f2d2": "7.4 seconds. Most of it in traffic, with four crates of paper on the roof.", "f2d3": "And tomorrow, somebody has to drive them back.", "f2x1": "A fax. How old-fashioned. I like it. Your adviser sends the question. Only the question. Watch the clock.", "f2x2": "1.6 seconds. The annex adviser is slower at sums. Older equipment.", "f2x3": "It hardly matters. Nothing heavy moved. One page went across town, and one page came back.", "f2r1": "The office freezes again. I really must speak to maintenance.", "f2r2": "The main office is the graphics card. Fast, but small. The annex is the computer's main processor, and its memory. Slower, but enormous. Each adviser is one expert: a small part of the model.", "f2r3": "c0ven keeps the busiest experts on the card, and lets the processor work out the rest, right where they live. The knowledge stays put. Only the question travels.", "f2r4": "Floor 3 is next. I've been rearranging the desks.", "f3a1": "Floor 3. I did say I'd been rearranging the desks.", "f3a2": "Same company. Same annex, just across the lane. The main office still has four desks. Whoever sits at one answers quickly. Everyone else answers by fax.", "f3a3": "Tonight, the questions change as the night goes on. They always do. The tally board keeps count of who's being asked, and the chalk fades. Nobody remembers yesterday.", "f3a4": "So tonight, you manage the desks. Pick someone in the annex, then someone in the office, and they'll swap. The office waits while they move. Choose well.", "f3a5": "I'll be watching.", "f3idle1": "You are allowed to touch the desks. I did say.", "f3idle2": "Take your time. The fax machine is enjoying itself.", "f3idle3": "Some managers lead by example. You're leading by… absence.", "f3idle4": "I'll just note that down. No reason.", "f3idle5": "Still thinking about it. Lovely.", "f3behind1": "That's the sixth trip to the annex. I'm counting. Someone has to.", "f3behind2": "The wire's getting warm. Is it meant to smell like that?", "f3behind3": "Between us, the legal people have been sitting in the annex all night. Waiting. For someone.", "f3behind4": "Ooh. Another fax. They do add up, don't they?", "f3thrash1": "Musical desks! I love this game. Nobody's sitting down long enough to answer anything, but I love it.", "f3thrash2": "You've moved Margaret three times. She has a bad back, you know.", "f3thrash3": "Moving a desk isn't free. It's cheap. It isn't free.", "f3thrash4": "You put him back where he started. Bold.", "f3well1": "Oh. You're… quite good at this.", "f3well2": "Very efficient. I'll remember that.", "f3well3": "Keep going like this and they'll give you my job. Wouldn't that be something.", "f3well4": "Hm. The fax machine's gone quiet. I don't like it when it's quiet.", "f3shift": "Ah. Legal questions. All of a sudden. Funny, that.", "f3noticed": "You noticed. Most people don't notice.", "f3cheat": "Hold on. They were at their desks before the letter came. Either you've been reading my post, or you've been here before. Nobody predicts the future in this building. Except me.", "f3look": "Look at the tally board. Go on. Look at it.", "f3final1": "Nearly time.", "f3final2": "Last few envelopes. No pressure. Well. Some pressure.", "f3afterBehind": "Not bad for a first night. Now let me show you how it's done.", "f3afterAhead": "Impressive. Let's see if you can do it again… when I'm doing it.", "f3p1": "My turn. Same night, same questions. Watch the board. I don't move anyone on a hunch.", "f3p2": "The letter tells me who the night will need. Margaret and Hugh are clearly busier now, so they're moving in. Their bags are packed while they work.", "f3p3": "And there they go. Nobody stopped working.", "f3w1": "19.6 seconds. Nobody waited for anyone.", "f3w2": "You weren't slow. You just kept stopping the office. I never do.", "f3w3": "You weren't slow. You were late. The board told you who was coming.", "f3l1": "19.6 seconds. I'll be adjusting the scoring.", "f3l2": "Still. I'm the one who told you the questions were changing. Remember that.", "f3again": "Again? Lovely. Same night. Same questions. I'll keep my time where it is.", "f3r1": "And it's frozen again. I've written to maintenance. Twice.", "f3r2": "The desks in the main office are the graphics card's room for experts. There's only room for some. The tally board counts which experts the last few words have used. The chalk fades, so old habits don't linger.", "f3r3": "Every few words, c0ven lets the busiest experts in the annex take the places of the quietest. Only when they're clearly busier, so nobody gets moved back and forth. The copying happens while the card keeps working, so a swap costs almost nothing.", "f3r4": "Floor 4 is next. I've stopped reading the instructions out loud."};
+  const CHUNKS = {"intro": {"dur": 86.88, "lines": [["intro1", [0.0, 0.72, 1.2, 1.44, 1.6, 2.0, 2.24, 2.96, 3.76, 4.0, 4.32, 5.52, 5.84, 6.56, 6.88, 7.44, 7.68, 8.0, 8.48, 8.8, 9.68, 9.92, 10.16, 10.96, 11.2, 11.44, 11.92, 12.16]], ["intro2", [13.44, 13.76, 14.56, 14.96, 15.28, 15.92, 16.24, 16.56, 17.44, 17.76, 18.08, 18.56, 18.8, 19.28, 19.52, 20.16, 21.04, 21.36, 22.0, 22.24, 23.04, 23.68, 24.24]], ["intro3", [25.76, 26.0, 26.8, 27.04, 27.44, 28.16, 28.48, 29.04, 29.36, 29.92, 30.24, 30.88, 31.2, 32.16, 32.48, 32.8, 33.12, 33.36, 33.68, 33.92, 35.04, 35.68, 35.92, 36.48, 36.88, 37.12, 37.36, 38.56, 39.36]], ["intro4", [40.8, 41.12, 41.44, 41.68, 42.16, 43.36, 43.6, 44.16, 44.64, 45.12, 45.36, 45.6, 46.48, 47.04, 47.36, 48.0, 48.16, 48.4, 49.44, 50.4, 50.72, 51.04, 51.36, 51.68, 52.0, 53.28, 53.6, 53.92, 54.24, 54.8, 55.12, 55.36]], ["intro5", [56.0, 56.56, 56.88, 57.68, 58.48, 58.8, 59.52, 59.84, 60.88, 61.12, 61.28, 61.76, 62.08, 63.04, 63.6, 63.92, 64.56, 64.96, 65.2, 66.08, 67.68, 68.56, 69.12]], ["bet1", [69.76, 70.16, 70.4, 70.8, 71.12, 71.76, 72.4, 72.72, 73.36, 74.48, 75.04, 75.68]], ["bet2", [76.88, 77.12, 77.6, 78.0, 78.24, 79.04, 79.44, 79.76, 79.92, 80.08, 80.32, 81.12, 81.44, 82.08, 82.4, 82.72, 83.92, 84.56, 84.88, 85.2, 85.52, 85.84, 86.16]]]}, "watch": {"dur": 4.91, "lines": [["watch", [0.0, 0.4, 0.56, 1.36, 2.0, 2.4, 2.64, 3.44, 3.68, 4.4]]]}, "right": {"dur": 18.91, "lines": [["right", [0.16, 1.04, 1.52, 1.76, 1.92, 2.16, 2.4, 2.56, 2.72, 3.12, 3.28, 3.44, 4.24, 4.56, 5.2, 5.44, 5.92, 6.32, 6.56, 7.44, 8.56, 9.04, 9.76]], ["upgrade", [10.4, 11.2, 11.44, 11.84, 12.08, 12.4, 13.12, 13.44, 13.68, 14.64, 15.04, 15.52, 16.8, 17.68, 18.16]]]}, "wrong": {"dur": 19.98, "lines": [["wrong", [0.08, 0.48, 1.28, 1.52, 2.0, 2.32, 2.56, 3.52, 4.0, 4.24, 4.4, 4.64, 4.96, 5.28, 5.44, 5.6, 5.92, 6.08, 6.32, 6.88, 7.2, 8.08, 8.64, 9.36, 9.6, 10.16, 10.4]], ["upgrade", [11.52, 12.32, 12.56, 12.96, 13.2, 13.44, 14.16, 14.4, 14.64, 15.6, 16.08, 16.56, 17.76, 18.64, 19.2]]]}, "faster1": {"dur": 6.66, "lines": [["faster1", [0.0, 0.24, 0.88, 1.12, 1.36, 1.52, 1.68, 2.48, 3.12, 3.68, 4.32, 4.64, 5.44, 5.84, 6.08]]]}, "faster2": {"dur": 12.59, "lines": [["faster2", [0.0, 0.48, 0.8, 1.57, 2.35, 3.12, 4.0, 4.56, 5.2]], ["faster3", [5.84, 6.48, 6.72, 7.04, 7.44, 7.68, 8.16, 8.72, 8.96, 9.84, 10.16, 10.48, 10.96, 11.6, 12.08]]]}, "closer1": {"dur": 7.05, "lines": [["closer1", [0.0, 0.8, 1.04, 1.2, 1.36, 1.68, 1.92, 2.16, 3.04, 3.44, 4.08, 4.4, 4.72, 4.96, 5.76, 6.24]]]}, "closer2": {"dur": 9.9, "lines": [["closer2", [0.16, 1.28, 2.4, 2.64, 2.88, 3.92, 4.48, 4.72, 5.04, 5.36, 6.32, 6.72, 6.96, 7.52, 8.72, 9.2]]]}, "reveal": {"dur": 34.87, "lines": [["reveal1", [0.16, 0.32, 0.8, 2.0, 2.24, 3.04, 3.6, 4.48, 4.72, 5.28, 5.84, 6.16, 6.48, 6.8]], ["reveal2", [7.76, 8.0, 8.4, 8.88, 9.52, 9.84, 10.4, 10.88, 11.28, 11.52, 11.92, 12.4, 12.64, 13.04, 13.28, 14.16, 14.48, 14.72, 14.88, 15.12, 15.84, 16.16, 16.8, 17.04, 17.6, 17.84, 18.64, 18.96, 19.6, 19.92]], ["reveal3", [21.12, 21.44, 21.68, 22.32, 23.44, 24.08, 24.64, 25.12, 25.84, 26.08, 26.56, 26.88, 27.44, 28.56, 28.88, 29.12, 29.36, 29.68, 30.32, 30.56, 30.8, 30.96, 31.28, 32.4, 32.8, 32.96, 33.44, 33.68, 34.24]]]}, "f2intro": {"dur": 42.76, "lines": [["f2a1", [0.08, 0.64, 1.28, 1.68, 2.08, 2.48]], ["f2a2", [3.52, 4.32, 4.88, 5.6, 6.0, 6.32, 7.04, 7.28, 7.52, 7.84, 8.8, 9.6, 9.92, 10.24, 11.2, 11.68, 12.24, 12.56, 12.96, 13.2, 13.92, 14.16]], ["f2a3", [14.72, 14.96, 15.6, 16.16, 16.48, 17.04, 17.28, 17.44, 17.92, 18.8, 19.44, 19.76, 20.08, 20.32, 20.48, 21.36, 21.92, 22.72, 23.12, 24.24, 24.8]], ["f2a4", [26.0, 26.96, 27.36, 27.84, 28.24, 28.72, 28.96, 29.12]], ["f2a5", [30.56, 31.36, 32.0, 32.64, 33.2, 33.76, 34.96, 35.2, 35.44, 36.0, 36.24, 36.72, 36.88, 37.92, 38.16, 38.8, 39.76, 40.08, 40.72, 40.96, 41.2, 41.6, 41.76, 41.92]]]}, "f2drive1": {"dur": 9.43, "lines": [["f2d1", [0.0, 1.2, 1.68, 1.84, 2.08, 2.8, 3.28, 3.52, 3.76, 4.48, 4.72, 5.36, 5.68, 6.0, 6.24, 7.04, 7.52, 8.16, 8.56, 8.8]]]}, "f2drive2": {"dur": 11.1, "lines": [["f2d2", [0.16, 1.36, 2.56, 2.88, 3.12, 3.28, 3.44, 4.24, 4.56, 4.88, 5.44, 5.6, 6.0, 6.16, 6.4]], ["f2d3", [7.52, 7.68, 8.8, 9.36, 9.6, 9.76, 10.32, 10.56]]]}, "f2fax1": {"dur": 9.51, "lines": [["f2x1", [0.0, 0.32, 1.2, 1.44, 2.64, 2.96, 3.28, 3.92, 4.24, 4.96, 5.52, 5.84, 6.48, 7.04, 7.36, 8.24, 8.64, 8.88]]]}, "f2fax2": {"dur": 15.02, "lines": [["f2x2", [0.6, 1.2, 2.24, 2.48, 3.04, 3.6, 3.84, 4.32, 4.56, 5.44, 5.92]], ["f2x3", [7.12, 7.36, 7.84, 8.8, 9.28, 9.84, 10.64, 11.04, 11.52, 11.84, 12.32, 12.96, 13.28, 13.6, 14.16, 14.48]]]}, "f2reveal": {"dur": 43.7, "lines": [["f2r1", [0.0, 0.32, 0.72, 1.84, 2.48, 2.8, 3.12, 3.52, 3.92, 4.16]], ["f2r2", [5.68, 5.92, 6.32, 6.72, 6.96, 7.2, 7.92, 8.8, 9.68, 10.0, 10.88, 11.12, 11.76, 12.0, 12.24, 12.88, 13.36, 14.32, 14.64, 14.96, 15.92, 16.88, 17.2, 18.56, 18.96, 20.0, 20.32, 20.64, 21.76, 22.08, 22.56, 22.8, 23.04, 23.28]], ["f2r3", [24.12, 24.96, 25.2, 25.36, 26.16, 26.72, 26.96, 27.2, 27.92, 28.16, 28.48, 28.72, 29.6, 29.84, 30.16, 30.4, 31.12, 31.44, 31.92, 32.16, 33.04, 33.36, 34.08, 34.96, 35.6, 36.24, 36.56, 37.12]], ["f2r4", [38.56, 39.28, 39.76, 40.08, 40.96, 41.28, 41.6, 42.48, 42.72]]]}, "f3intro": {"dur": 48.51, "lines": [["f3a1", [0.0, 0.64, 1.52, 1.76, 2.0, 2.24, 2.56, 2.72, 3.52, 3.76]], ["f3a2", [4.96, 5.36, 6.4, 6.8, 7.76, 8.0, 8.56, 8.8, 9.68, 9.92, 10.32, 10.8, 11.12, 11.44, 11.76, 12.64, 13.12, 13.6, 13.84, 14.08, 14.8, 15.84, 16.4, 16.8, 17.52, 18.28]], ["f3a3", [19.04, 20.08, 20.4, 21.04, 21.52, 21.76, 22.0, 22.4, 22.96, 23.52, 24.16, 24.8, 25.44, 25.81, 26.19, 26.56, 27.04, 27.28, 27.6, 28.24, 28.56, 29.44, 29.68, 29.84, 30.4, 31.68, 32.24, 33.04]], ["f3a4", [34.32, 34.56, 35.44, 35.76, 36.16, 36.48, 37.08, 37.68, 38.08, 38.24, 38.4, 39.28, 39.6, 40.0, 40.16, 40.32, 41.04, 41.2, 41.6, 42.64, 42.88, 43.28, 43.84, 44.32, 44.56, 45.36, 46.24]], ["f3a5", [47.12, 47.52, 47.68]]]}, "f3win": {"dur": 10.81, "lines": [["f3w1", [0.24, 1.68, 2.88, 3.52, 4.16, 4.48]], ["f3w2", [5.44, 5.6, 6.16, 7.04, 7.2, 7.52, 7.92, 8.48, 8.72, 9.6, 9.92, 10.24]]]}, "f3winLate": {"dur": 11.34, "lines": [["f3w1", [0.24, 1.68, 2.88, 3.52, 4.08, 4.4]], ["f3w3", [5.52, 5.76, 6.4, 7.28, 7.52, 7.84, 8.64, 8.88, 9.44, 9.92, 10.16, 10.4, 10.64]]]}, "f3lose": {"dur": 10.58, "lines": [["f3l1", [0.16, 1.52, 2.8, 3.12, 3.28, 3.84, 4.16]], ["f3l2", [5.28, 6.24, 6.56, 6.8, 6.96, 7.2, 7.52, 7.68, 7.92, 8.4, 8.56, 9.52, 10.08]]]}, "f3reveal": {"dur": 52.64, "lines": [["f3r1", [0.0, 0.32, 0.56, 1.68, 2.32, 2.72, 3.12, 3.36, 4.64]], ["f3r2", [5.92, 6.16, 6.72, 6.88, 7.04, 7.44, 8.0, 8.24, 8.48, 9.12, 9.68, 10.16, 10.48, 11.68, 12.08, 12.4, 13.04, 13.36, 14.0, 14.24, 14.72, 15.2, 15.84, 16.16, 16.88, 17.2, 17.52, 17.92, 18.64, 18.96, 19.6, 19.92, 20.56, 21.44, 21.76, 22.16, 22.88, 23.28]], ["f3r3", [24.4, 24.88, 25.28, 26.04, 26.8, 27.04, 27.28, 28.0, 28.64, 28.8, 28.96, 29.84, 30.16, 30.48, 30.88, 31.12, 31.36, 32.8, 33.2, 33.44, 33.84, 34.32, 35.2, 35.52, 36.08, 36.48, 37.04, 37.36, 37.68, 38.56, 38.8, 39.68, 40.16, 40.56, 40.8, 41.36, 41.92, 42.72, 42.96, 43.2, 43.92, 44.72, 45.6]], ["f3r4", [46.56, 47.32, 48.08, 48.4, 49.36, 49.76, 50.16, 50.56, 50.8, 51.6, 51.92]]]}, "f3idle1": {"dur": 3.81, "lines": [["f3idle1", [0.0, 0.24, 0.48, 0.96, 1.2, 1.52, 1.76, 2.72, 2.96, 3.2]]]}, "f3idle2": {"dur": 4.62, "lines": [["f3idle2", [0.0, 0.64, 0.96, 1.6, 1.76, 2.24, 2.88, 3.12, 3.84]]]}, "f3idle3": {"dur": 6.16, "lines": [["f3idle3", [0.0, 0.4, 1.2, 1.68, 2.0, 3.12, 3.52, 4.32, 5.12]]]}, "f3idle4": {"dur": 3.94, "lines": [["f3idle4", [0.88, 1.28, 1.6, 2.08, 2.4, 3.04, 3.28]]]}, "f3idle5": {"dur": 2.98, "lines": [["f3idle5", [0.0, 0.56, 1.12, 1.36, 2.0]]]}, "f3behind1": {"dur": 5.28, "lines": [["f3behind1", [0.0, 0.4, 0.64, 1.12, 1.44, 1.6, 1.76, 2.72, 3.12, 4.0, 4.56, 4.8]]]}, "f3behind2": {"dur": 3.79, "lines": [["f3behind2", [0.0, 0.24, 0.72, 1.04, 1.84, 2.08, 2.24, 2.48, 2.64, 3.04, 3.28]]]}, "f3behind3": {"dur": 7.86, "lines": [["f3behind3", [0.0, 0.64, 1.2, 1.44, 2.08, 2.4, 2.56, 2.8, 3.2, 3.36, 3.52, 4.4, 4.64, 5.52, 6.64, 6.96]]]}, "f3behind4": {"dur": 4.26, "lines": [["f3behind4", [0.16, 0.88, 1.64, 2.4, 2.64, 2.96, 3.2, 3.52, 3.76]]]}, "f3thrash1": {"dur": 8.52, "lines": [["f3thrash1", [0.0, 0.88, 1.84, 2.16, 2.48, 2.8, 3.68, 4.32, 4.72, 4.96, 5.28, 5.6, 5.76, 6.32, 7.12, 7.44, 7.76, 8.0]]]}, "f3thrash2": {"dur": 4.86, "lines": [["f3thrash2", [0.0, 0.4, 0.72, 1.6, 1.92, 2.8, 3.04, 3.28, 3.44, 3.84, 4.24, 4.4]]]}, "f3thrash3": {"dur": 5.72, "lines": [["f3thrash3", [0.0, 0.56, 0.8, 1.2, 1.76, 2.64, 3.12, 4.24, 4.48, 5.04]]]}, "f3thrash4": {"dur": 3.58, "lines": [["f3thrash4", [0.08, 0.4, 0.64, 0.88, 1.2, 1.52, 1.76, 2.72]]]}, "f3well1": {"dur": 3.5, "lines": [["f3well1", [0.0, 0.88, 2.0, 2.48, 2.72, 2.96]]]}, "f3well2": {"dur": 3.13, "lines": [["f3well2", [0.0, 0.56, 1.6, 2.08, 2.64]]]}, "f3well3": {"dur": 5.25, "lines": [["f3well3", [0.0, 0.48, 0.72, 1.04, 1.36, 1.52, 1.92, 2.16, 2.4, 2.72, 3.52, 4.08, 4.32, 4.64]]]}, "f3well4": {"dur": 6.69, "lines": [["f3well4", [0.08, 1.12, 1.36, 1.84, 2.48, 2.96, 4.24, 4.48, 4.88, 5.12, 5.28, 5.52, 5.84]]]}, "f3shift": {"dur": 5.17, "lines": [["f3shift", [0.0, 0.8, 1.6, 2.48, 2.72, 2.96, 3.12, 4.0, 4.56]]]}, "f3noticed": {"dur": 3.42, "lines": [["f3noticed", [0.0, 0.32, 1.52, 2.08, 2.4, 2.72]]]}, "f3cheat": {"dur": 17.5, "lines": [["f3cheat", [0.08, 0.64, 1.52, 1.84, 2.08, 2.4, 2.72, 3.36, 3.84, 4.16, 4.8, 5.84, 6.32, 6.8, 7.04, 7.52, 7.84, 8.72, 8.96, 9.68, 9.92, 10.24, 11.68, 12.48, 13.12, 13.44, 14.08, 14.4, 14.64, 15.76, 16.72]]]}, "f3look": {"dur": 4.21, "lines": [["f3look", [0.0, 0.32, 0.48, 0.64, 1.2, 2.16, 2.64, 3.28, 3.52, 3.76]]]}, "f3final1": {"dur": 1.54, "lines": [["f3final1", [0.24, 0.8]]]}, "f3final2": {"dur": 4.73, "lines": [["f3final2", [0.0, 0.4, 0.64, 1.44, 1.68, 2.88, 3.68, 4.0]]]}, "f3afterBehind": {"dur": 5.17, "lines": [["f3afterBehind", [0.0, 0.4, 0.64, 0.88, 1.2, 1.52, 2.4, 3.04, 3.28, 3.52, 3.76, 4.0, 4.24, 4.64]]]}, "f3afterAhead": {"dur": 6.37, "lines": [["f3afterAhead", [0.24, 1.6, 2.08, 2.24, 2.48, 2.72, 2.96, 3.28, 3.52, 4.4, 4.96, 5.52, 5.84]]]}, "f3p1": {"dur": 9.06, "lines": [["f3p1", [0.24, 0.64, 1.6, 1.92, 2.8, 3.44, 4.48, 4.96, 5.28, 6.24, 6.48, 6.88, 7.44, 8.0, 8.24, 8.4]]]}, "f3p2": {"dur": 10.19, "lines": [["f3p2", [0.0, 0.24, 0.64, 0.88, 1.12, 1.36, 1.52, 2.0, 2.32, 2.96, 3.6, 3.76, 4.16, 4.4, 4.8, 5.44, 5.92, 6.16, 6.56, 7.04, 7.68, 8.0, 8.48, 8.64, 9.12, 9.44, 9.68]]]}, "f3p3": {"dur": 3.32, "lines": [["f3p3", [0.0, 0.32, 0.64, 0.96, 1.6, 2.16, 2.56]]]}, "f3again": {"dur": 7.31, "lines": [["f3again", [0.24, 1.2, 2.32, 2.64, 3.44, 4.0, 4.96, 5.44, 5.68, 6.0, 6.32, 6.56, 6.8]]]}};
   const audio = new Audio();
   audio.preload = "auto";
   let soundOn = true, skipLine = null;
@@ -327,14 +370,14 @@ button:focus-visible { outline: 2px solid var(--sodium); outline-offset: 2px; }
     draw(c.getContext("2d"), w, h);
     const t = new THREE.CanvasTexture(c); t.encoding = THREE.sRGBEncoding; return t;
   }
-  function sign(text, w, h, x, y, z, bg = "#e9ebe6", fg = "#1a1f27") {
+  function sign(text, w, h, x, y, z, bg = "#e9ebe6", fg = "#1a1f27", parent = scene) {
     const tex = canvasTex(512, Math.round(512 * h / w), (g, cw, ch) => {
       g.fillStyle = bg; g.fillRect(0, 0, cw, ch);
       g.fillStyle = fg; g.font = `700 ${Math.round(ch * 0.62)}px 'Barlow Condensed', Arial Narrow, sans-serif`;
       g.textAlign = "center"; g.textBaseline = "middle"; g.fillText(text, cw / 2, ch * 0.54);
     });
     const s = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshStandardMaterial({ map: tex, roughness: 0.6 }));
-    s.position.set(x, y, z); scene.add(s); return s;
+    s.position.set(x, y, z); parent.add(s); return s;
   }
   // Lit windows of buildings at night, shared by both floors.
   const windowsTex = canvasTex(1024, 128, (g) => {
@@ -427,9 +470,11 @@ button:focus-visible { outline: 2px solid var(--sodium); outline-offset: 2px; }
       box(0.07, 0.025, 0.2, fabric, sx, 0.775, 0.04, chair);
     }
     chair.position.set(x, 0, z);
+    return chair;
   }
   // An adviser. The frame loop poses them from walking, walkPhase, sit (0 standing, 1 seated), carry, reach, busy
   // (typing at a desk), lift (extra height) and heading (the yaw they turn towards). `old` gives a stoop and a shuffle.
+  // Optional: cheer (seated, both arms up) and watch (a point whose x and z the head turns to).
   function makeAdviser({ x = 0, z = 0, suit = 0x56657d, hair = 0x3b322b, tie = 0xe8a33d, skin = 0xc9b39d, nodPhase = 0, old = false } = {}) {
     const g = new THREE.Group(); scene.add(g); g.position.set(x, 0, z);
     const suitM = mat(suit), trousers = mat(0x2b303a), shoe = mat(0x23272f), skinM = mat(skin), hairM = mat(hair), dark = mat(0x1a1f27);
@@ -503,13 +548,15 @@ button:focus-visible { outline: 2px solid var(--sodium); outline-offset: 2px; }
     // Arms seated: both at the keyboard when busy, else one on the desk and one at the chin.
     let sL = 1.15, sR = 1.25, seL = 0.45, seR = 2.1 + nod * 0.05, sezR = -0.7;
     if (A.busy) { sL = sR = 1.05; seL = 0.55 + Math.sin(t * 13 + A.nodPhase) * 0.07; seR = 0.55 + Math.cos(t * 13 + A.nodPhase) * 0.07; sezR = 0; }
+    if (A.cheer) { sL = sR = 2.75; seL = seR = 0.3 + (reduced ? 0 : Math.sin(t * 20 + A.nodPhase) * 0.15); sezR = 0; }
     A.armL.rotation.set(-blend(aL, sL), 0, blend(zL, 0)); A.armL.elbow.rotation.set(-blend(eL, seL), 0, blend(ezL, 0));
     A.armR.rotation.set(-blend(aR, sR), 0, blend(zR, 0)); A.armR.elbow.rotation.set(-blend(eR, seR), 0, blend(ezR, sezR));
     const stoop = A.old ? 0.22 * (1 - 0.5 * s) : 0;
     A.body.rotation.x = 0.1 * w + Math.sin(s * Math.PI) * 0.4 + stoop;
     A.body.rotation.z = (reduced ? 0 : Math.sin(t * 0.8 + A.nodPhase) * 0.015) * (1 - w) + Math.sin(ph) * (A.old ? 0.07 : 0.035) * w - clamp1(turn, 0.5) * 0.3;
     A.head.rotation.x = nod * 0.12 - stoop * 0.8 - 0.05 * w;
-    A.head.rotation.y = A.busy ? Math.sin(t * 0.45 + A.nodPhase) * 0.35 : reduced ? 0 : Math.sin(t * 0.35 + A.nodPhase) * 0.12 * (1 - w);
+    A.head.rotation.y = A.watch ? clamp1(wrapAngle(Math.atan2(A.watch.x - g.position.x, A.watch.z - g.position.z) - g.rotation.y), 1.3)
+      : A.busy ? Math.sin(t * 0.45 + A.nodPhase) * 0.35 : reduced ? 0 : Math.sin(t * 0.35 + A.nodPhase) * 0.12 * (1 - w);
     const b = reduced ? 0 : Math.sin(t * 1.6 + A.nodPhase) * 0.012;
     A.torso.scale.set(1 + b, 1 + b * 0.5, 1 + b);
     g.position.y = w * (0.5 - 0.5 * Math.cos(2 * ph)) * 0.045 - 0.29 * s + A.lift;
@@ -741,6 +788,7 @@ button:focus-visible { outline: 2px solid var(--sodium); outline-offset: 2px; }
     box(0.06, 0.03, 0.26, dark, 0.17, 0.15, 0, g);
     for (const dz of [-0.11, 0.11]) box(0.07, 0.035, 0.06, dark, 0.17, 0.135, dz, g);
     box(0.04, 0.02, 0.02, mat(0x4fb36b, { emissive: 0x4fb36b, emissiveIntensity: 0.8 }), 0.16, 0.12, 0.16, g);
+    return g;
   }
 
   function setTraffic(on) { for (const [n, l] of Object.entries(trafficLamps)) { l.m.emissiveIntensity = n === on ? 1.4 : 0.05; l.halo.material.opacity = n === on ? 0.8 : 0; } }
@@ -837,20 +885,576 @@ button:focus-visible { outline: 2px solid var(--sodium); outline-offset: 2px; }
     E2.group.position.copy(ENV2_OUT); E2.stamp.visible = false;
   }
 
+
+  // ======================= Floor 3: musical desks, around x = X3 =======================
+  // Two rooms of four desks, the main office and the annex, either side of a lane ("row") or, on a tall screen, one
+  // behind the other ("stack"). Each room is built around its own origin and layout3 places them. Slots 0-3 are the
+  // office's chairs and 4-7 the annex's, each room's in the order back left, back right, front left, front right.
+  // A desk sits 1.2 in front of its chair.
+  const X3 = 120;
+  const COL = 1.3, ROWZ = [-1.8, 0.4], RW = 6.0, RD = 5.2, LANE = 3.4;
+  const SLOTS = Array.from({ length: 8 }, () => [0, 0]);
+  const STAFF = [
+    { name: "Pat", topic: "Cooking", color: 0xe07a3b, suit: 0x56657d, hair: 0x3b322b, skin: 0xe0c3a8, hat: "toque" },
+    { name: "Dev", topic: "Sport", color: 0x4fb36b, suit: 0x5b6f63, hair: 0x2a2420, skin: 0x8d5a3b, hat: "cap", he: true },
+    { name: "Ines", topic: "Travel", color: 0x4f8fd0, suit: 0x6a5f78, hair: 0x6b4a2e, skin: 0xb98a64, hat: "beret" },
+    { name: "Otto", topic: "Weather", color: 0x7fcfd0, suit: 0x4d5868, hair: 0x8a7a62, skin: 0xd9b9a0, hat: "souwester", he: true },
+    { name: "Margaret", topic: "Law", color: 0xb05ac0, suit: 0x6b5a48, hair: 0xc4c4bf, skin: 0xe3cbb5, hat: "wig", old: true },
+    { name: "Hugh", topic: "Contracts", color: 0xd2556b, suit: 0x3f4a5c, hair: 0x4a3b2c, skin: 0xa77555, hat: "bowler", he: true },
+    { name: "Rosa", topic: "Music", color: 0xe0c050, suit: 0x7a5a5a, hair: 0x2a2020, skin: 0x6e4630, hat: "phones" },
+    { name: "Bram", topic: "Gardens", color: 0x9aa64a, suit: 0x55604a, hair: 0x6b5a3a, skin: 0xd2a789, hat: "straw", he: true },
+  ];
+  const hex = (c) => "#" + c.toString(16).padStart(6, "0");
+  const MFAX = new THREE.Vector3(), AFAX = new THREE.Vector3();
+  // The layout in use and what hangs off it: each room's aisle, the board's face, the label points, who the
+  // current question needs (need), who the rule would move in (hot) and who the reveal's mover label follows.
+  const L3 = { mode: "", aisle: [0, 0], board: new THREE.Vector3(), office: new THREE.Vector3(), annex: new THREE.Vector3(), need: null, mover: null, letterMark: false, hot: new Set() };
+  const rooms = [new THREE.Group(), new THREE.Group()];
+  const R3 = {};
+  // The tally board: a chalkboard redrawn from the counts, lit from within so it reads at a distance.
+  const boardTex = canvasTex(1024, 640, () => {});
+  const boardMat = new THREE.MeshStandardMaterial({ map: boardTex, emissiveMap: boardTex, emissive: 0xffffff, emissiveIntensity: 0.32, roughness: 0.9 });
+  const BW = 3.2, BH = 2.0;
+
+  // Tiled surfaces, 256 pixels to a unit; rep() gives a surface its own repeat.
+  function tile(draw) { const t = canvasTex(256, 256, draw); t.wrapS = t.wrapT = THREE.RepeatWrapping; return t; }
+  const rep = (t, x, y) => { const c = t.clone(); c.needsUpdate = true; c.repeat.set(x, y); return c; };
+  const carpetTex = tile((g) => {
+    for (let i = 0; i < 4; i++) { g.fillStyle = i === 1 || i === 2 ? "#2a3240" : "#2f3846"; g.fillRect((i % 2) * 128, (i >> 1) * 128, 128, 128); }
+    for (let k = 0; k < 1600; k++) { g.fillStyle = k % 3 ? "rgba(70,84,104,0.5)" : "rgba(14,18,24,0.5)"; g.fillRect((k * 53) % 256, (k * 97 + (k >> 3)) % 256, 2, 2); }
+    g.fillStyle = "rgba(10,13,18,0.55)"; g.fillRect(0, 0, 256, 2); g.fillRect(0, 128, 256, 2); g.fillRect(0, 0, 2, 256); g.fillRect(128, 0, 2, 256);
+  });
+  const boardsTex = tile((g) => {
+    for (let r = 0; r < 5; r++) {
+      const y = Math.round(r * 51.2);
+      g.fillStyle = ["#4c3828", "#563f2c", "#45332a", "#513b29", "#4a3729"][r]; g.fillRect(0, y, 256, 52);
+      g.strokeStyle = "rgba(255,226,190,0.05)"; g.lineWidth = 2;
+      for (let k = 0; k < 4; k++) { g.beginPath(); g.moveTo(0, y + 10 + k * 10); g.bezierCurveTo(80, y + 5 + k * 11, 170, y + 15 + k * 9, 256, y + 10 + k * 10); g.stroke(); }
+      g.fillStyle = "rgba(18,11,7,0.7)"; g.fillRect(0, y, 256, 2); g.fillRect((r * 89 + 40) % 256, y, 2, 52);
+    }
+  });
+  const brickTex = tile((g) => {
+    g.fillStyle = "#33231e"; g.fillRect(0, 0, 256, 256);
+    for (let r = 0; r < 12; r++) for (let c = -1; c < 4; c++) {
+      g.fillStyle = ["#5e3d33", "#664236", "#563a30", "#6b4639"][(r * 3 + c * 5 + 8) % 4];
+      g.fillRect(c * 64 + (r % 2) * 32 + 2, Math.round(r * 21.33) + 2, 60, 18);
+    }
+  });
+  const cobbleTex = tile((g) => {
+    g.fillStyle = "#121519"; g.fillRect(0, 0, 256, 256);
+    for (let r = 0; r < 5; r++) for (let c = -1; c < 5; c++) {
+      g.fillStyle = ["#2a2e35", "#31353c", "#25292f", "#363a41"][(r * 7 + c * 3 + 8) % 4];
+      g.beginPath(); g.ellipse(c * 64 + (r % 2) * 32 + 32, r * 51.2 + 25.6, 28, 22, 0, 0, Math.PI * 2); g.fill();
+    }
+  });
+  const slabTex = tile((g) => {
+    g.fillStyle = "#3a3f47"; g.fillRect(0, 0, 256, 256);
+    g.fillStyle = "#30353c"; g.fillRect(0, 0, 256, 3); g.fillRect(0, 0, 3, 256);
+    for (let k = 0; k < 500; k++) { g.fillStyle = k % 2 ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.08)"; g.fillRect((k * 71) % 256, (k * 113) % 256, 3, 3); }
+  });
+  // Light that a lamp throws on a surface: an additive disc, so no real light is needed.
+  const poolTex = canvasTex(128, 128, (g) => {
+    const r = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+    r.addColorStop(0, "rgba(255,255,255,0.85)"); r.addColorStop(0.45, "rgba(255,255,255,0.35)"); r.addColorStop(1, "rgba(255,255,255,0)");
+    g.fillStyle = r; g.fillRect(0, 0, 128, 128);
+  });
+  function pool(parent, color, r, x, y, z, opacity) {
+    const p = new THREE.Mesh(new THREE.PlaneGeometry(r * 2, r * 2), new THREE.MeshBasicMaterial({ map: poolTex, color, transparent: true, opacity, blending: THREE.AdditiveBlending, depthWrite: false }));
+    p.rotation.x = -Math.PI / 2; p.position.set(x, y, z); parent.add(p); return p;
+  }
+  // A side wall, cut away towards the front so the room stays open to the camera.
+  function sideWall(parent, x, m, back, front) {
+    const sh = new THREE.Shape();
+    sh.moveTo(-RD / 2, 0); sh.lineTo(RD / 2, 0); sh.lineTo(RD / 2, front); sh.lineTo(-RD / 2, back); sh.closePath();
+    const w = new THREE.Mesh(new THREE.ExtrudeGeometry(sh, { depth: 0.12, bevelEnabled: false }), m);
+    // The shape's x runs along z, back to front; the extrusion is the wall's thickness, along -x.
+    w.rotation.y = -Math.PI / 2; w.position.set(x + 0.06, 0, 0); w.castShadow = w.receiveShadow = true;
+    parent.add(w); return w;
+  }
+
+  // A desk centred at (x, z) of a room, the adviser behind it facing out. The office's: pale laminate, a slim lamp, a
+  // laptop. The annex's: dark oak, a green banker's lamp, books. Lamps are emissive with a halo and a pool of light.
+  const laminate = mat(0x9ba1a9, { roughness: 0.5 }), steel3 = mat(0x6d737c, { metalness: 0.5, roughness: 0.45 }), plastic = mat(0x23272f, { roughness: 0.5 });
+  const oak = mat(0x4a3324, { roughness: 0.6 }), leather = mat(0x2d4a39, { roughness: 0.7 }), brass = mat(0xb08a4a, { metalness: 0.7, roughness: 0.35 });
+  function desk3(room, x, z, annex) {
+    const top = box(1.8, 0.07, 0.9, annex ? oak : laminate, x, 0.985, z, room);
+    top.castShadow = true;
+    if (annex) {
+      box(1.4, 0.006, 0.55, leather, x - 0.1, 1.022, z + 0.05, room);
+      box(1.7, 0.8, 0.05, oak, x, 0.53, z + 0.4, room);
+      for (const sx of [-0.85, 0.85]) box(0.07, 0.95, 0.86, oak, x + sx, 0.475, z, room);
+      for (const [w, h, c, dy] of [[0.3, 0.07, 0x6b3a32, 0], [0.27, 0.06, 0x2f4a5c, 0.065], [0.29, 0.05, 0x7a6a3a, 0.12]]) {
+        const b = box(w, h, 0.21, mat(c), x + 0.62, 1.055 + dy, z - 0.2, room); b.rotation.y = 0.1 - dy;
+      }
+      // Banker's lamp: brass stem, green half-shade lit from under.
+      const base = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.09, 0.03, 16), brass); base.position.set(x - 0.62, 1.035, z - 0.22); room.add(base);
+      box(0.02, 0.26, 0.02, brass, x - 0.62, 1.17, z - 0.22, room);
+      const shade = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, 0.38, 16, 1, true, 0, Math.PI), mat(0x2f7a4c, { side: THREE.DoubleSide, emissive: 0x2f7a4c, emissiveIntensity: 0.35, roughness: 0.4 }));
+      shade.rotation.z = Math.PI / 2; shade.position.set(x - 0.62, 1.31, z - 0.18); room.add(shade);
+      box(0.34, 0.01, 0.12, mat(0xffe2a8, { emissive: 0xffc070, emissiveIntensity: 1.4 }), x - 0.62, 1.305, z - 0.18, room);
+      halo(0xffb45c, 0.6, x - 0.62, 1.27, z - 0.1, room, 0.42);
+      pool(room, 0xffb060, 0.6, x - 0.4, 1.027, z + 0.05, 0.45);
+      pool(room, 0xffa040, 1.1, x - 0.3, 0.106, z + 0.75, 0.16);
+    } else {
+      for (const sx of [-0.82, 0.82]) {
+        for (const dz of [-0.38, 0.38]) box(0.045, 0.95, 0.045, steel3, x + sx, 0.475, z + dz, room);
+        box(0.045, 0.045, 0.8, steel3, x + sx, 0.08, z, room);
+      }
+      box(0.46, 0.6, 0.78, mat(0x5a606a, { roughness: 0.55 }), x + 0.6, 0.62, z, room);
+      for (const dy of [0.48, 0.74]) box(0.14, 0.02, 0.02, steel3, x + 0.6, dy, z + 0.4, room);
+      // A laptop open towards the adviser; the screen's glow spills round the lid.
+      box(0.36, 0.02, 0.25, plastic, x + 0.02, 1.03, z - 0.14, room);
+      const lid = box(0.36, 0.24, 0.014, plastic, x + 0.02, 1.15, z - 0.02, room); lid.rotation.x = 0.22;
+      halo(0x9fc4ff, 0.5, x + 0.02, 1.16, z - 0.12, room, 0.3);
+      // Slim arm lamp, cool white.
+      box(0.14, 0.02, 0.14, steel3, x - 0.72, 1.03, z - 0.28, room);
+      const arm = box(0.022, 0.44, 0.022, steel3, x - 0.7, 1.24, z - 0.24, room); arm.rotation.x = 0.25;
+      box(0.24, 0.04, 0.09, mat(0xdde3ea, { emissive: 0xeaf2ff, emissiveIntensity: 1.2 }), x - 0.62, 1.44, z - 0.16, room);
+      halo(0xdfeaff, 0.6, x - 0.62, 1.4, z - 0.13, room, 0.38);
+      pool(room, 0xbcd4ff, 0.6, x - 0.45, 1.027, z - 0.02, 0.38);
+      pool(room, 0x9fb8e0, 1.1, x - 0.3, 0.106, z + 0.75, 0.12);
+    }
+    const stack = box(0.28, 0.03, 0.21, paperM, x - 0.15, 1.035, z + 0.22, room); stack.rotation.y = 0.18;
+    const mug = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.04, 0.1, 12), mat(annex ? 0xd9d2c0 : 0xe8a33d, { roughness: 0.5 }));
+    mug.position.set(x + 0.32, 1.07, z + 0.2); mug.castShadow = true; room.add(mug);
+  }
+
+  // Hats and headphones, one per adviser, so each reads at a glance; they ride on the head and turn with it.
+  function dress3(A, kind, color) {
+    const h = A.head, m = (c, o) => mat(c, o);
+    const cyl = (rt, rb, ht, c, y, seg = 18) => { const k = new THREE.Mesh(new THREE.CylinderGeometry(rt, rb, ht, seg), c); k.position.y = y; k.castShadow = true; h.add(k); return k; };
+    const ball = (r, c, x, y, z, sx = 1, sy = 1, sz = 1) => { const b = new THREE.Mesh(new THREE.SphereGeometry(r, 16, 10), c); b.position.set(x, y, z); b.scale.set(sx, sy, sz); b.castShadow = true; h.add(b); return b; };
+    if (kind === "toque") { cyl(0.13, 0.15, 0.18, m(0xf2f2ec), 0.36); ball(0.17, m(0xf2f2ec), 0, 0.47, 0, 1.05, 0.55, 1.05); }
+    if (kind === "cap") { ball(0.172, m(color), 0, 0.17, 0, 1, 0.75, 1); const b = box(0.24, 0.016, 0.16, m(color), 0, 0.21, 0.17, h); b.rotation.x = 0.12; }
+    if (kind === "beret") { const b = ball(0.19, m(color), 0.02, 0.29, -0.01, 1.05, 0.32, 1.05); b.rotation.z = 0.25; ball(0.02, m(color), 0.03, 0.36, 0); }
+    if (kind === "souwester") { cyl(0.11, 0.17, 0.13, m(color, { roughness: 0.35 }), 0.31); cyl(0.26, 0.26, 0.015, m(color, { roughness: 0.35 }), 0.245, 24); }
+    if (kind === "wig") {
+      const wig = m(0xece8dc, { roughness: 0.95 });
+      ball(0.18, wig, 0, 0.2, -0.01, 1, 0.75, 1);
+      for (const sx of [-1, 1]) for (let k = 0; k < 3; k++) ball(0.045, wig, sx * 0.165, 0.18 - k * 0.075, -0.03, 1, 0.8, 1);
+    }
+    if (kind === "bowler") { cyl(0.2, 0.2, 0.014, m(0x1c2027), 0.255, 24); ball(0.14, m(0x1c2027), 0, 0.27, 0, 1, 0.85, 1); cyl(0.142, 0.142, 0.03, m(color), 0.275); }
+    if (kind === "phones") {
+      const band = new THREE.Mesh(new THREE.TorusGeometry(0.18, 0.018, 6, 20, Math.PI), m(0x23272f)); band.position.y = 0.15; h.add(band);
+      for (const sx of [-1, 1]) { const cup = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.05, 14), m(color)); cup.rotation.z = Math.PI / 2; cup.position.set(sx * 0.175, 0.14, 0); h.add(cup); }
+    }
+    if (kind === "straw") { cyl(0.3, 0.3, 0.014, m(0xd8c27a, { roughness: 0.9 }), 0.25, 24); cyl(0.13, 0.15, 0.12, m(0xd8c27a, { roughness: 0.9 }), 0.31); cyl(0.152, 0.152, 0.035, m(color), 0.275); }
+  }
+
+  (() => {
+    const [office, annex] = rooms;
+    scene.add(office, annex);
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(70, 50), mat(0x13161b, { roughness: 1 }));
+    ground.rotation.x = -Math.PI / 2; ground.position.set(X3, 0, 0); ground.receiveShadow = true; scene.add(ground);
+
+    // The main office: blue-grey carpet, plaster walls, a tube overhead, windows onto the city
+    const plaster = mat(0x3e495a), trimM = mat(0x2a313d);
+    box(RW, 0.1, RD, mat(0xffffff, { map: rep(carpetTex, RW, RD), roughness: 1 }), 0, 0.05, 0, office);
+    box(RW, 4.6, 0.12, plaster, 0, 2.3, -RD / 2, office);
+    box(RW, 0.07, 0.05, trimM, 0, 1.05, -RD / 2 + 0.08, office);
+    box(RW, 0.14, 0.03, mat(0x1d222b), 0, 0.17, -RD / 2 + 0.075, office);
+    for (const sx of [-1, 1]) sideWall(office, sx * RW / 2, plaster, 4.6, 1.3);
+    R3.officeSign = sign("MAIN OFFICE", 2.4, 0.42, 0, 4.22, -RD / 2 + 0.07, undefined, undefined, office);
+    R3.officeWin = new THREE.Group(); office.add(R3.officeWin);
+    for (const sx of [-1, 1]) {
+      const t = rep(windowsTex, 0.22, 1); t.offset.x = sx > 0 ? 0.55 : 0.12;
+      const w = new THREE.Mesh(new THREE.PlaneGeometry(1.4, 1.15), new THREE.MeshBasicMaterial({ map: t, color: 0xaab4c2 }));
+      w.position.set(sx * 1.75, 2.75, -RD / 2 + 0.07); R3.officeWin.add(w);
+      for (const [fw, fh, fx, fy] of [[1.5, 0.07, 0, 0.6], [1.5, 0.1, 0, -0.6], [0.07, 1.2, -0.72, 0], [0.07, 1.2, 0.72, 0], [0.04, 1.15, 0, 0]]) box(fw, fh, 0.05, trimM, sx * 1.75 + fx, 2.75 + fy, -RD / 2 + 0.09, R3.officeWin);
+    }
+    const clock = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.04, 24), mat(0xe9ebe6, { emissive: 0x30343a, emissiveIntensity: 0.3 }));
+    clock.rotation.x = Math.PI / 2; clock.position.set(-2.4, 3.6, -RD / 2 + 0.09); office.add(clock);
+    const rim = new THREE.Mesh(new THREE.TorusGeometry(0.22, 0.025, 6, 24), mat(0x1a1f27)); rim.position.set(-2.4, 3.6, -RD / 2 + 0.11); office.add(rim);
+    for (let k = 0; k < 12; k++) box(0.015, k % 3 ? 0.03 : 0.05, 0.01, mat(0x1a1f27), -2.4 + Math.sin(k * Math.PI / 6) * 0.17, 3.6 + Math.cos(k * Math.PI / 6) * 0.17, -RD / 2 + 0.115, office).rotation.z = -k * Math.PI / 6;
+    for (const [len, rot] of [[0.16, 1.05], [0.1, 2.15]]) { const hnd = box(0.018, len, 0.01, mat(0x1a1f27), -2.4 + Math.sin(rot) * len / 2, 3.6 + Math.cos(rot) * len / 2, -RD / 2 + 0.12, office); hnd.rotation.z = -rot; }
+    // Hanging tube: emissive with a glow; the room's one real light sits under it.
+    const tubeM = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.05, 0.16), new THREE.MeshBasicMaterial({ color: 0xe6efe9 }));
+    tubeM.position.set(0, 3.75, -0.7); office.add(tubeM); tubes.push(tubeM);
+    halo(0xdfe9e4, 1.6, 0, 3.7, -0.65, office, 0.16);
+    for (const wx of [-1.0, 1.0]) box(0.01, 0.85, 0.01, steel3, wx, 4.2, -0.7, office);
+    const cool = new THREE.PointLight(0xdfe9e4, 0.55, 10, 1.6); cool.position.set(0, 3.5, 0.2); office.add(cool);
+    pool(office, 0xc8daf0, 2.6, 0, 0.104, -0.4, 0.1);
+    // Water cooler, plant, filing cabinet, coat stand
+    box(0.34, 0.9, 0.34, mat(0xc9ccc4, { roughness: 0.5 }), -2.55, 0.55, -2.15, office);
+    const bottle = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.13, 0.42, 16), mat(0x7fb3d9, { transparent: true, opacity: 0.75, roughness: 0.15, emissive: 0x1d3a52, emissiveIntensity: 0.5 }));
+    bottle.position.set(-2.55, 1.21, -2.15); office.add(bottle);
+    box(0.36, 0.4, 0.36, mat(0x55473a), 2.55, 0.3, -2.2, office);
+    const plant = new THREE.Mesh(new THREE.IcosahedronGeometry(0.4, 0), mat(0x3f5a4b, { flatShading: true }));
+    plant.position.set(2.55, 0.86, -2.2); plant.scale.y = 1.3; plant.castShadow = true; office.add(plant);
+    box(0.5, 1.15, 0.5, mat(0x4d535c, { roughness: 0.5 }), -2.68, 0.68, -0.6, office);
+    for (const dy of [0.45, 0.8, 1.1]) box(0.02, 0.02, 0.16, steel3, -2.42, dy, -0.6, office);
+    const stand = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.03, 1.8, 8), mat(0x3b3029)); stand.position.set(2.7, 1.0, 2.25); office.add(stand);
+    const coat = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.17, 0.8, 10), mat(0x6a4a3a)); coat.position.set(2.62, 1.35, 2.25); office.add(coat);
+
+    // The annex: floorboards, brick, every manual nobody visits, warm lamps
+    box(RW, 0.1, RD, mat(0xffffff, { map: rep(boardsTex, RW, RD), roughness: 0.8 }), 0, 0.05, 0, annex);
+    R3.annexBack = new THREE.Group(); annex.add(R3.annexBack);
+    box(RW, 4.6, 0.12, mat(0xffffff, { map: rep(brickTex, RW, 4.6), roughness: 0.95 }), 0, 2.3, -RD / 2, R3.annexBack);
+    const library = canvasTex(1024, 640, (g, w, h) => {
+      g.fillStyle = "#2c2520"; g.fillRect(0, 0, w, h);
+      const cols = ["#5d6b7f", "#7a6a55", "#4f6a63", "#6d7486", "#8a5a48", "#3f4e66", "#6b5a3a"];
+      let n = 0;
+      for (let row = 0; row < 5; row++) {
+        const y1 = 14 + row * 126 + 108;
+        let x = 10;
+        while (x < w - 16) {
+          const bw = 9 + ((n * 7) % 6) * 3, bh = 80 + ((n * 5) % 7) * 4;
+          g.fillStyle = cols[n % cols.length]; g.fillRect(x, y1 - bh, bw, bh);
+          x += bw + 2; n++;
+        }
+        g.fillStyle = "#4a3d31"; g.fillRect(0, y1, w, 12);
+      }
+    });
+    const lib = new THREE.Mesh(new THREE.PlaneGeometry(RW - 0.7, 3.1), new THREE.MeshStandardMaterial({ map: library, roughness: 0.9 }));
+    lib.position.set(0, 1.75, -RD / 2 + 0.07); R3.annexBack.add(lib);
+    for (const lx of [-1, 1]) { const rail = box(0.05, 3.3, 0.05, mat(0x6b5845), 2.1 + lx * 0.2, 1.65, -RD / 2 + 0.35, R3.annexBack); rail.rotation.x = -0.1; }
+    for (let k = 0; k < 7; k++) box(0.45, 0.03, 0.04, mat(0x6b5845), 2.1, 0.3 + k * 0.45, -RD / 2 + 0.35 - 0.04 * k + 0.12, R3.annexBack);
+    sign("ANNEX", 1.4, 0.42, 0, 4.22, -RD / 2 + 0.07, "#d9c9a8", "#3a2a22", R3.annexBack);
+    R3.annexSides = [-1, 1].map((sx) => sideWall(annex, sx * RW / 2, mat(0xffffff, { map: brickTex, roughness: 0.95 }), 4.6, 1.3));
+    // On a tall screen the annex stands in front: a low parapet with a gap at the aisle replaces its back wall.
+    R3.parapet = new THREE.Group(); annex.add(R3.parapet);
+    for (const sx of [-1, 1]) box(RW / 2 - 0.62, 0.5, 0.16, mat(0xffffff, { map: rep(brickTex, 2.4, 0.5), roughness: 0.95 }), sx * (RW / 4 + 0.31), 0.25, -RD / 2, R3.parapet);
+    sign("ANNEX", 1.1, 0.33, -1.6, 0.72, -RD / 2 + 0.09, "#d9c9a8", "#3a2a22", R3.parapet);
+    const rug = canvasTex(128, 256, (g, w, h) => {
+      g.fillStyle = "#5a2a2a"; g.fillRect(0, 0, w, h);
+      g.strokeStyle = "#b08a4a"; g.lineWidth = 5; g.strokeRect(10, 10, w - 20, h - 20);
+      g.strokeStyle = "#3a1c1e"; g.lineWidth = 3; g.strokeRect(22, 22, w - 44, h - 44);
+      g.fillStyle = "#7a3a36"; for (let k = 0; k < 5; k++) { g.beginPath(); g.ellipse(64, 48 + k * 40, 22, 12, 0, 0, Math.PI * 2); g.fill(); }
+    });
+    const rugM = new THREE.Mesh(new THREE.PlaneGeometry(1.3, 3.8), new THREE.MeshStandardMaterial({ map: rug, roughness: 1 }));
+    rugM.rotation.x = -Math.PI / 2; rugM.position.set(0, 0.104, -0.3); rugM.receiveShadow = true; annex.add(rugM);
+    const warm = new THREE.PointLight(0xffc27a, 0.75, 10, 1.6); warm.position.set(0, 3.4, 0.4); annex.add(warm);
+    // Books piled by the wall, and the annex cat asleep on them
+    for (const [bx, bz, n] of [[2.65, 0.4, 5], [2.62, -0.25, 3], [-2.66, -0.5, 4]]) for (let k = 0; k < n; k++) {
+      const b = box(0.34 - (k % 2) * 0.04, 0.07, 0.26, mat([0x6b3a32, 0x2f4a5c, 0x7a6a3a, 0x4f6a63][(k + n) % 4]), bx, 0.135 + k * 0.07, bz, annex); b.rotation.y = (k * 0.7) % 0.5 - 0.25;
+    }
+    const fur = mat(0x9a7b5a, { roughness: 1 });
+    const cat = new THREE.Group(); cat.position.set(2.65, 0.47, 0.4); cat.rotation.y = -0.6; annex.add(cat);
+    const body = new THREE.Mesh(new THREE.SphereGeometry(0.15, 14, 10), fur); body.scale.set(1.3, 0.62, 1); body.castShadow = true; cat.add(body);
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.08, 12, 10), fur); head.position.set(0.17, 0.0, 0.05); cat.add(head);
+    for (const ez of [-0.035, 0.035]) { const ear = new THREE.Mesh(new THREE.ConeGeometry(0.025, 0.05, 6), fur); ear.position.set(0.18, 0.07, 0.05 + ez); cat.add(ear); }
+    const tail = new THREE.Mesh(new THREE.TorusGeometry(0.13, 0.022, 6, 14, Math.PI * 1.1), fur); tail.rotation.x = Math.PI / 2; tail.position.set(-0.02, -0.04, 0.02); cat.add(tail);
+    R3.cat = body;
+
+    for (const [r, room] of rooms.entries()) for (const row of ROWZ) for (const sx of [-1, 1]) desk3(room, sx * COL, row + 1.2, r === 1);
+
+    // A side table with a fax machine, at each room's lane side; layout3 places them.
+    R3.fax = rooms.map((room, r) => {
+      const g = new THREE.Group(); room.add(g);
+      box(0.6, 0.06, 0.5, r ? oak : laminate, 0, 0.75, 0, g);
+      for (const [dx, dz] of [[-0.25, -0.2], [0.25, -0.2], [-0.25, 0.2], [0.25, 0.2]]) box(0.04, 0.72, 0.04, r ? oak : steel3, dx, 0.36, dz, g);
+      g.add(makeFax(0, 0.79, 0, r ? 0.5 : -0.5));
+      return g;
+    });
+
+    // The lane between the rooms, the pavement in front, and the road beyond (side by side only)
+    R3.lane = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshStandardMaterial({ map: rep(cobbleTex, 1, 1), roughness: 0.55, metalness: 0.1 }));
+    R3.lane.rotation.x = -Math.PI / 2; R3.lane.receiveShadow = true; scene.add(R3.lane);
+    // The street lamp's reflection in a wet patch of the lane.
+    R3.puddle = pool(scene, 0xffb45c, 0.5, 0, 0.02, 0, 0.3); R3.puddle.scale.set(0.9, 2.2, 1);
+    R3.street = new THREE.Group(); scene.add(R3.street);
+    box(34, 0.06, 1.6, mat(0xffffff, { map: rep(slabTex, 34 / 0.8, 2), roughness: 0.9 }), 0, 0.03, RD / 2 + 0.8, R3.street);
+    box(34, 0.12, 0.14, mat(0x4a4f58), 0, 0.06, RD / 2 + 1.65, R3.street);
+    box(34, 0.02, 4.0, mat(0x181b21, { roughness: 0.95 }), 0, 0.01, RD / 2 + 3.7, R3.street);
+    for (let x = -16; x <= 16; x += 1.4) box(0.7, 0.025, 0.08, mat(0xd8d2b8, { roughness: 0.8 }), x, 0.025, RD / 2 + 3.4, R3.street);
+
+    // Two telephone poles and the line the fax travels on; one pole carries a street lamp.
+    R3.poles = [0, 1].map(() => {
+      const g = new THREE.Group(); scene.add(g);
+      const p = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, 3.7, 10), mat(0x3b3029)); p.position.y = 1.85; p.castShadow = true; g.add(p);
+      g.arm = new THREE.Group(); g.add(g.arm);
+      box(0.6, 0.06, 0.06, mat(0x3b3029), 0, 3.55, 0, g.arm);
+      return g;
+    });
+    // The lamp's arm points along its local +z; layout3 turns it into the lane.
+    R3.lamp = new THREE.Group(); R3.poles[0].add(R3.lamp);
+    box(0.06, 0.05, 0.55, steel3, 0, 3.15, 0.27, R3.lamp);
+    box(0.26, 0.08, 0.2, steel3, 0, 3.12, 0.55, R3.lamp);
+    box(0.22, 0.03, 0.16, mat(0xffd59a, { emissive: 0xffb45c, emissiveIntensity: 1.3 }), 0, 3.07, 0.55, R3.lamp);
+    halo(0xffb45c, 1.4, 0, 3.02, 0.6, R3.lamp, 0.42);
+    R3.lampPool = pool(scene, 0xffa850, 1.6, 0, 0.03, 0, 0.32);
+    R3.wire = new THREE.Line(new THREE.BufferGeometry(), wireMat); scene.add(R3.wire);
+
+    // The board on its frame. Side by side it stands at the back of the lane on two posts; one behind the other it
+    // leans against the office's back wall.
+    R3.board = new THREE.Group(); scene.add(R3.board);
+    R3.boardFace = new THREE.Group(); R3.board.add(R3.boardFace);
+    const face = new THREE.Mesh(new THREE.PlaneGeometry(BW, BH), boardMat); R3.boardFace.add(face);
+    for (const [w, h, x, y] of [[BW + 0.16, 0.08, 0, BH / 2 + 0.04], [BW + 0.16, 0.08, 0, -BH / 2 - 0.04], [0.08, BH, -BW / 2 - 0.04, 0], [0.08, BH, BW / 2 + 0.04, 0]]) box(w, h, 0.07, wood, x, y, 0, R3.boardFace);
+    box(BW, 0.04, 0.12, woodDark, 0, -BH / 2 - 0.08, 0.06, R3.boardFace);
+    R3.boardPosts = new THREE.Group(); R3.board.add(R3.boardPosts);
+    for (const sx of [-1, 1]) box(0.1, 2.0, 0.1, woodDark, sx * (BW / 2 - 0.2), 1.0, -0.06, R3.boardPosts);
+
+    const cityMat = new THREE.MeshBasicMaterial({ map: windowsTex, color: 0x8a93a0 });
+    [[-15, 7, 3], [-10, 10, 3.5], [-4, 6, 4], [2.5, 12, 3], [8, 8, 4], [13, 11, 3.2], [18, 7, 3]].forEach(([dx, h, w]) => {
+      const b = new THREE.Mesh(new THREE.BoxGeometry(w, h, 2), [mat(0x161a21), mat(0x161a21), mat(0x161a21), mat(0x161a21), cityMat, mat(0x161a21)]);
+      b.position.set(X3 + dx, h / 2, -15); scene.add(b);
+    });
+    // A broad, soft key light over both rooms, for shadows; no hard pool on the ground.
+    const key = new THREE.SpotLight(0xe8f0ea, 1.0, 50, 0.85, 1, 1);
+    key.position.set(X3 + 1.5, 15, 10); key.target.position.set(X3, 0, 0);
+    key.castShadow = true; key.shadow.mapSize.set(1024, 1024); key.shadow.bias = -0.0005;
+    scene.add(key, key.target);
+  })();
+
+  // Legs that fold out from under a chair's seat; the same scaling trick as the shelf's.
+  function chairLegs(chair) {
+    const legs = [];
+    for (const [x, z, phase] of [[-0.17, 0.15, 0], [0.17, -0.15, 0], [0.17, 0.15, Math.PI], [-0.17, -0.15, Math.PI]]) {
+      const pivot = new THREE.Group(); pivot.position.set(x, 0.44, z); chair.add(pivot);
+      const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.022, 1, 8), mat(0x2b2620, { roughness: 0.7 }));
+      leg.position.y = -0.5; leg.castShadow = true; pivot.add(leg);
+      const foot = new THREE.Group(); foot.position.y = -1; pivot.add(foot);
+      box(0.09, 0.05, 0.14, mat(0xb8893a, { metalness: 0.4, roughness: 0.4 }), 0, 0.01, 0.035, foot);
+      pivot.visible = false;
+      legs.push({ pivot, foot, phase });
+    }
+    return legs;
+  }
+  function setChairLegs(legs, len) {
+    const L = Math.max(len, 0.001);
+    for (const l of legs) { l.pivot.visible = len > 0.01; l.pivot.scale.y = L; l.foot.scale.y = 1 / L; }
+  }
+  const cardboard = mat(0xa07a4e, { roughness: 0.9 });
+  // The box an adviser packs while a move is planned: open flaps, a label in their colour.
+  function packBox(color) {
+    const g = new THREE.Group(); scene.add(g);
+    box(0.34, 0.24, 0.28, cardboard, 0, 0, 0, g);
+    box(0.2, 0.08, 0.005, mat(color), 0, 0.02, 0.142, g);
+    const flaps = [[0, 0.12, 0.14, 0.34, 0.14], [0, 0.12, -0.14, 0.34, 0.14]].map(([x, y, z, w, d]) => {
+      const p = new THREE.Group(); p.position.set(x, y, z); g.add(p);
+      box(w, 0.01, d, cardboard, 0, 0, Math.sign(z) * d / 2, p); return p;
+    });
+    g.visible = false;
+    return { group: g, flaps };
+  }
+  for (const [i, s] of STAFF.entries()) {
+    s.chair = makeChair(0, 0);
+    s.chair.rotation.order = "YXZ";
+    // The chair's fabric in the adviser's colour, so a moving pair is easy to follow.
+    s.chair.traverse((o) => { if (o.material && o.material.color && o.material.color.getHex() === 0x2f3644) o.material.color.setHex(s.color).lerp(new THREE.Color(0x1c2027), 0.45); });
+    s.legs = chairLegs(s.chair);
+    s.A = makeAdviser({ suit: s.suit, hair: s.hair, tie: s.color, skin: s.skin, nodPhase: i * 0.9, old: !!s.old });
+    s.A.group.rotation.order = "YXZ";
+    dress3(s.A, s.hat, s.color);
+    s.A.sit = 1;
+    s.slot = i;
+    s.box = packBox(s.color);
+    // A ring on the floor: their colour while a question waits for them, amber while picked.
+    s.ring = new THREE.Mesh(new THREE.RingGeometry(0.42, 0.6, 32), new THREE.MeshBasicMaterial({ color: s.color, transparent: true, opacity: 0, side: THREE.DoubleSide, depthWrite: false }));
+    s.ring.rotation.x = -Math.PI / 2; scene.add(s.ring);
+  }
+  // A column of light on whoever the current question needs.
+  const beamTex = canvasTex(16, 128, (g, w, h) => {
+    const l = g.createLinearGradient(0, 0, 0, h); l.addColorStop(0, "rgba(255,255,255,0)"); l.addColorStop(1, "rgba(255,255,255,0.9)");
+    g.fillStyle = l; g.fillRect(0, 0, w, h);
+  });
+  const beam3 = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.62, 3.4, 24, 1, true), new THREE.MeshBasicMaterial({ map: beamTex, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }));
+  scene.add(beam3);
+  // Dust kicked up where a chair sets off and lands.
+  const puffs = [0, 1, 2, 3].map(() => {
+    const p = new THREE.Sprite(new THREE.SpriteMaterial({ map: haloTex, color: 0xb9bdc4, transparent: true, opacity: 0, depthWrite: false }));
+    scene.add(p); return p;
+  });
+  let puffAt = 0;
+  function puff(x, z) {
+    if (reduced) return;
+    const p = puffs[puffAt++ % puffs.length];
+    p.position.set(x, 0.25, z);
+    tween(0.5, (u) => { p.scale.setScalar(0.4 + u * 0.9); p.material.opacity = 0.5 * (1 - u); });
+  }
+  // A streak behind a chair on the narrator's quick moves.
+  const streaks = STAFF.map((s) => {
+    const k = new THREE.Sprite(new THREE.SpriteMaterial({ map: haloTex, color: s.color, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false }));
+    k.scale.set(1.6, 0.4, 1); scene.add(k); return k;
+  });
+
+  // Places the rooms for a layout and recomputes what hangs off them.
+  function layout3(mode) {
+    const row = mode === "row";
+    L3.mode = mode;
+    const half = RW / 2 + LANE / 2;
+    const o = row ? [X3 - half, 0] : [X3, -(RD / 2 + 0.9)], a = row ? [X3 + half, 0] : [X3, RD / 2 + 0.9];
+    rooms[0].position.set(o[0], 0, o[1]); rooms[1].position.set(a[0], 0, a[1]);
+    L3.aisle = [o[0], a[0]];
+    for (let i = 0; i < 8; i++) {
+      const [rx, rz] = i < 4 ? o : a;
+      SLOTS[i][0] = rx + (i % 2 ? COL : -COL); SLOTS[i][1] = rz + ROWZ[(i >> 1) & 1];
+    }
+    R3.annexBack.visible = row; R3.parapet.visible = !row;
+    for (const w of R3.annexSides) w.scale.y = row ? 1 : 0.3;
+    R3.officeWin.visible = R3.officeSign.visible = row;
+    R3.street.visible = row;
+    R3.street.position.x = X3;
+    // The fax tables sit at each room's lane side.
+    R3.fax[0].position.set(RW / 2 - 0.45, 0, 1.95); R3.fax[0].rotation.y = 0;
+    R3.fax[1].position.set(row ? -(RW / 2 - 0.45) : RW / 2 - 0.45, 0, row ? 1.95 : -1.95); R3.fax[1].rotation.y = 0;
+    MFAX.set(o[0] + R3.fax[0].position.x, 1.05, o[1] + R3.fax[0].position.z);
+    AFAX.set(a[0] + R3.fax[1].position.x, 1.05, a[1] + R3.fax[1].position.z);
+    const P = row ? [[X3 - LANE / 2 + 0.12, 2.3], [X3 + LANE / 2 - 0.12, 2.3]] : [[X3 + RW / 2 + 0.3, -1.1], [X3 + RW / 2 + 0.3, 1.1]];
+    // Cross-arms square to the wire; the lamp leans over the lane, or over the rooms' side.
+    R3.poles.forEach((p, k) => { p.position.set(P[k][0], 0, P[k][1]); p.arm.rotation.y = row ? Math.PI / 2 : 0; });
+    R3.lamp.rotation.y = row ? Math.PI / 2 : -Math.PI / 2;
+    R3.lampPool.position.set(P[0][0] + (row ? 0.55 : -0.55), 0.03, P[0][1]);
+    const p0 = new THREE.Vector3(P[0][0], 3.55, P[0][1]), p1 = new THREE.Vector3(P[1][0], 3.55, P[1][1]);
+    const mid = p0.clone().lerp(p1, 0.5); mid.y = 3.15;
+    R3.wire.geometry.dispose();
+    R3.wire.geometry = new THREE.BufferGeometry().setFromPoints(new THREE.QuadraticBezierCurve3(p0, mid, p1).getPoints(30));
+    const rise = (f, p) => new THREE.Vector3(lerp(f.x, p.x, 0.7), 2.9, lerp(f.z, p.z, 0.7));
+    L3.faxRoute = new THREE.CatmullRomCurve3([MFAX.clone(), rise(MFAX, p0), p0.clone().setY(3.62), mid.clone().setY(3.3), p1.clone().setY(3.62), rise(AFAX, p1), AFAX.clone()]);
+    R3.lane.position.set(X3, 0.012, 0);
+    R3.lane.scale.set(row ? LANE : RW, row ? RD : 1.8, 1);
+    R3.lane.material.map.repeat.set(row ? LANE : RW, row ? RD : 1.8);
+    R3.puddle.position.set(row ? X3 - LANE / 2 + 0.75 : X3 + RW / 2 - 0.3, 0.02, row ? 1.4 : 0);
+    // The board: on posts at the back of the lane, or leaning on the office's back wall.
+    R3.board.position.set(X3, 0, row ? -RD / 2 + 0.35 : o[1] - RD / 2 + 0.22);
+    R3.boardFace.position.y = row ? 3.0 : 3.5;
+    R3.boardFace.rotation.x = row ? 0 : -0.16;
+    R3.boardPosts.visible = row;
+    L3.board.set(X3, R3.boardFace.position.y, R3.board.position.z + 0.08);
+    L3.office.set(o[0], 4.5, o[1] - RD / 2 + 0.1);
+    L3.annex.set(row ? a[0] : a[0] - 1.6, row ? 4.5 : 0.95, a[1] - RD / 2 + 0.1);
+  }
+  function placeAt(s, i) {
+    const [x, z] = SLOTS[i];
+    s.slot = i;
+    s.chair.position.set(x, 0, z); s.chair.rotation.set(0, 0, 0);
+    s.A.group.position.set(x, 0, z + 0.05); s.A.group.rotation.set(0, 0, 0); s.A.heading = 0;
+    s.A.lift = 0; s.A.sit = 1; s.A.busy = false; s.A.walking = 0; s.A.cheer = false;
+    s.box.group.position.set(x + 0.5, 1.15, z + 1.25); s.box.group.rotation.set(0, -0.2, 0);
+    setChairLegs(s.legs, 0);
+  }
+  function pack(s, on) {
+    const B = s.box;
+    if (B.group.visible === on) return;
+    B.group.visible = on;
+    for (const f of B.flaps) f.rotation.x = -Math.sign(f.position.z) * 1.2;
+    if (on) { B.group.scale.setScalar(0.01); tween(0.35, (u) => B.group.scale.setScalar(Math.max(0.01, backOut(u)))); }
+  }
+
+  const E3 = makeEnvelope(); E3.group.visible = false; E3.group.scale.setScalar(1.5);
+  // A band across the envelope in the colour of whoever it's for.
+  const E3band = new THREE.Mesh(new THREE.BoxGeometry(0.43, 0.016, 0.07), new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xffffff, emissiveIntensity: 0.35 }));
+  E3band.position.set(0, 0.002, 0.09); E3.group.add(E3band);
+  const page3 = pageG.clone(); scene.add(page3); page3.visible = false;
+  const page3Sheet = page3.children[1];
+  // The letter that opens the night's second half: a fat envelope that drops onto the tally board, sealed in the
+  // colours of the two advisers it is about.
+  const letter3 = new THREE.Group(); letter3.visible = false; scene.add(letter3);
+  box(0.7, 0.08, 0.48, paperM, 0, 0, 0, letter3);
+  for (const [i, c] of [[0, 0xb05ac0], [1, 0xd2556b]]) {
+    const st = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 0.01, 20), mat(c, { emissive: c, emissiveIntensity: 0.8 }));
+    st.position.set(0.2 - i * 0.16, 0.045, -0.1); letter3.add(st);
+  }
+
+  function resetFloor3() {
+    const want = pickLayout3();
+    if (want !== L3.mode) layout3(want);
+    STAFF.forEach((s, i) => { s.moves = 0; s.moving = false; s.ready = 0; s.A.watch = null; placeAt(s, i); pack(s, false); });
+    E3.group.visible = false; page3.visible = false; letter3.visible = false;
+    L3.need = null; L3.letterMark = false; L3.hot.clear();
+  }
+
   // ---------- Frame loop ----------
   const CAMS = {
     1: { look: new THREE.Vector3(2.4, 1.05, 0), wide: new THREE.Vector3(2.6, 3.0, 8.2), narrow: new THREE.Vector3(2.2, 3.4, 10.5), fog: [11, 24], par: 1 },
     2: { look: new THREE.Vector3(X2 + 0.6, 0.8, 1.6), wide: new THREE.Vector3(X2 + 0.6, 6.2, 15.5), fit: 8.8, fog: [20, 46], par: 1.6 },
+    3: { look: new THREE.Vector3(X3, 1.3, 0.6), fit3: true, fog: [20, 46], par: 0.7 },
   };
   let floor = 1;
   let pointer = { x: 0, y: 0 };
   addEventListener("pointermove", (e) => { pointer.x = e.clientX / innerWidth - 0.5; pointer.y = e.clientY / innerHeight - 0.5; });
+
+  // Floor 3's camera looks down at a fixed pitch from whatever distance and screen offset fit the layout's outline
+  // into the part of the screen the HUD leaves clear: beside the side panel or under it, whichever shows it larger.
+  const fit3 = { key: "", at: 0, fov: 36, d: 20, snap: true, pos: new THREE.Vector3(), look: new THREE.Vector3(), off: [0, 0], tPos: new THREE.Vector3(), tLook: new THREE.Vector3(), tOff: [0, 0] };
+  const FIT3 = { row: { pitch: 0.44, pts: [] }, stack: { pitch: 0.82, pts: [] } };
+  for (const [m, hx, z0, z1, hb, hf] of [["row", 7.75, -2.6, RD / 2 + 1.5, 4.7, 1.8], ["stack", RW / 2 + 0.4, -RD - 0.9, RD + 0.9, 4.7, 1.6]])
+    for (const sx of [-1, 1]) FIT3[m].pts.push(new THREE.Vector3(X3 + sx * hx, 0, z0), new THREE.Vector3(X3 + sx * hx, hb, z0), new THREE.Vector3(X3 + sx * hx, 0, z1), new THREE.Vector3(X3 + sx * hx, hf, z1));
+  const probe = new THREE.PerspectiveCamera(), pv = new THREE.Vector3();
+  function freeRects() {
+    const W = innerWidth, H = innerHeight, narrow = W <= 720, g = 12;
+    const top = document.querySelector(".topbar").getBoundingClientRect().bottom + 6;
+    const sd = document.querySelector(".side").getBoundingClientRect();
+    const bottom = H - (narrow ? 172 : 104);
+    const under = { x: g, y: sd.bottom + 6, w: W - 2 * g, h: bottom - sd.bottom - 6 };
+    return narrow ? [under] : [{ x: g, y: top, w: sd.left - 2 * g, h: bottom - top }, under];
+  }
+  function fitPoints(m, rect) {
+    const { pitch, pts } = FIT3[m], W = innerWidth, H = innerHeight;
+    probe.fov = fit3.fov; probe.aspect = W / H; probe.near = 0.1; probe.far = 300; probe.updateProjectionMatrix();
+    const lo3 = pts[0].clone(), hi3 = pts[0].clone();
+    for (const p of pts) { lo3.min(p); hi3.max(p); }
+    const c = lo3.add(hi3).multiplyScalar(0.5), dir = new THREE.Vector3(0, Math.sin(pitch), Math.cos(pitch));
+    const ext = (d) => {
+      probe.position.copy(c).addScaledVector(dir, d); probe.lookAt(c); probe.updateMatrixWorld();
+      let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+      for (const p of pts) {
+        pv.copy(p).project(probe);
+        const x = (pv.x + 1) * W / 2, y = (1 - pv.y) * H / 2;
+        x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y);
+      }
+      return [x0, x1, y0, y1];
+    };
+    let lo = 4, hi = 200;
+    const w = Math.max(rect.w, 40), h = Math.max(rect.h, 40);
+    for (let k = 0; k < 26; k++) { const d = (lo + hi) / 2, e = ext(d); if (e[1] - e[0] <= w && e[3] - e[2] <= h) hi = d; else lo = d; }
+    const e = ext(hi);
+    return { c, dir, d: hi, off: [(e[0] + e[1]) / 2 - (rect.x + rect.w / 2), (e[2] + e[3]) / 2 - (rect.y + rect.h / 2)], scale: 1 / hi };
+  }
+  const bestFit = (m, rects) => rects.map((r) => fitPoints(m, r)).reduce((a, b) => (b.scale > a.scale ? b : a));
+  // One behind the other wins only where it shows the rooms clearly larger.
+  function pickLayout3() {
+    const rects = freeRects();
+    return bestFit("stack", rects).scale > bestFit("row", rects).scale * 1.12 ? "stack" : "row";
+  }
+  function cam3(dt) {
+    const now = performance.now();
+    if (!fit3.key || now - fit3.at > 200) {
+      fit3.at = now;
+      const rects = freeRects(), key = L3.mode + innerWidth + "x" + innerHeight + rects.map((r) => [r.x, r.y, r.w, r.h].map(Math.round).join(",")).join("|");
+      if (key !== fit3.key) {
+        fit3.key = key;
+        const b = bestFit(L3.mode, rects);
+        fit3.tPos.copy(b.c).addScaledVector(b.dir, b.d); fit3.tLook.copy(b.c); fit3.tOff = b.off; fit3.d = b.d;
+      }
+    }
+    const k = fit3.snap || reduced ? 1 : 1 - Math.exp(-dt * 4);
+    fit3.snap = false;
+    fit3.pos.lerp(fit3.tPos, k); fit3.look.lerp(fit3.tLook, k);
+    fit3.off[0] += (fit3.tOff[0] - fit3.off[0]) * k; fit3.off[1] += (fit3.tOff[1] - fit3.off[1]) * k;
+    camera.setViewOffset(innerWidth, innerHeight, fit3.off[0], fit3.off[1], innerWidth, innerHeight);
+    CAMS[3].look.copy(fit3.look);
+    scene.fog.near = fit3.d * 0.95; scene.fog.far = fit3.d * 2.4;
+    return fit3.pos;
+  }
+
+  // Screen boxes {x (centre), y (top), w, h} nudged apart vertically; a few passes settle small clusters.
+  function declutter(items, gap = 4) {
+    for (let pass = 0; pass < 4; pass++) for (let i = 0; i < items.length; i++) for (let j = i + 1; j < items.length; j++) {
+      const a = items[i], b = items[j];
+      if (Math.abs(a.x - b.x) * 2 >= a.w + b.w + gap) continue;
+      const [t, u] = a.y <= b.y ? [a, b] : [b, a], over = t.y + t.h + gap - u.y;
+      if (over > 0) { t.y -= over / 2; u.y += over / 2; }
+    }
+  }
+  // Element sizes, read once after a change rather than every frame.
+  const tagSize = new Map();
+  const sizeOf = (el) => { let s = tagSize.get(el); if (!s) { s = [el.offsetWidth, el.offsetHeight]; tagSize.set(el, s); } return s; };
+
+  let baseFov = 42;
   function resize() {
     const w = innerWidth, h = innerHeight;
     renderer.setSize(w, h, false);
     camera.aspect = w / h;
-    camera.fov = w / h < 0.9 ? 62 : 42;
+    baseFov = camera.fov = w / h < 0.9 ? 62 : 42;
     camera.updateProjectionMatrix();
+    tagSize.clear(); fit3.key = "";
+    // Between nights a turned or resized screen may suit the other layout.
+    if (floor === 3 && !nightOn) {
+      const want = pickLayout3();
+      if (want !== L3.mode) { layout3(want); STAFF.forEach((s) => placeAt(s, s.slot)); fit3.snap = true; }
+    }
   }
   addEventListener("resize", resize); resize();
 
@@ -867,8 +1471,61 @@ button:focus-visible { outline: 2px solid var(--sodium); outline-offset: 2px; }
     [$("aExpert"), () => up(N.group, 2.2)],
     [$("aFax"), () => new THREE.Vector3(X2 + 0.95, 3.75, -0.3)],
     [$("aVan"), () => up(van, 2.0)],
+    [$("aDesk3"), () => L3.office],
+    [$("aAnnex3"), () => L3.annex],
+    [$("aBoard"), () => L3.board.clone().setY(L3.board.y + BH / 2 + 0.12)],
+    [$("aMover"), () => up((L3.mover || STAFF[4]).A.group, 2.0)],
   ];
+  const ANCHORS3 = new Set(["aDesk3", "aAnnex3", "aBoard", "aMover"]);
   const v = new THREE.Vector3();
+  const toScreen = (p) => { v.copy(p).project(camera); return [(v.x * 0.5 + 0.5) * innerWidth, (-v.y * 0.5 + 0.5) * innerHeight]; };
+
+  // Floor 3, before each render: the rings and the column of light, the cat's breathing, and a queued chair's legs
+  // peeking out and jittering, ready to run.
+  function scene3(t, dt) {
+    const k = reduced ? 1 : Math.min(1, dt * 10), pulse = reduced ? 0.5 : 0.5 + 0.5 * Math.sin(t * 7);
+    for (const [i, s] of STAFF.entries()) {
+      const need = L3.need === s, picked = sel === i && tagsLive;
+      s.ring.position.set(s.chair.position.x, 0.11, s.chair.position.z + 0.35);
+      s.ring.material.color.setHex(picked ? 0xe8a33d : s.color);
+      s.ring.material.opacity = need ? 0.6 + 0.35 * pulse : picked ? 0.9 : s.queued ? 0.45 : 0;
+      if (s.moving) continue;
+      const r0 = s.ready;
+      s.ready += ((s.queued ? 1 : 0) - s.ready) * k;
+      if (s.ready < 0.002 && r0 < 0.002) continue;
+      setChairLegs(s.legs, 0.22 * s.ready);
+      for (const l of s.legs) l.pivot.rotation.x = reduced ? 0 : Math.sin(t * 26 + l.phase) * 0.5 * s.ready;
+      s.chair.position.x = SLOTS[s.slot][0] + (reduced ? 0 : Math.sin(t * 41 + i) * 0.018 * s.ready);
+    }
+    const n = L3.need;
+    beam3.material.opacity = n ? 0.26 + 0.14 * pulse : 0;
+    if (n) { beam3.position.set(n.A.group.position.x, 1.75, n.A.group.position.z + 0.1); beam3.material.color.setHex(n.color); }
+    if (!reduced) R3.cat.scale.y = 0.62 + Math.sin(t * 1.7) * 0.025;
+  }
+  // Floor 3, after each render: the name tags, and the reveal's labels, kept from covering one another. Side by
+  // side, the front row's tags sit on the floor in front of their desks and the back row's above their heads; one
+  // behind the other, all above their heads.
+  function dom3() {
+    if (!tagsBox.hidden) {
+      const items = STAFF.map((s) => {
+        const front = L3.mode === "row" && s.slot % 4 >= 2 && !s.moving, g = s.A.group.position;
+        const [x, y] = front ? toScreen(v.set(g.x, 0.1, g.z + 1.95)) : toScreen(v.set(g.x, 2.02 + s.A.lift, g.z));
+        const [w, h] = sizeOf(s.tag);
+        return { s, x, w, h, y: front ? y : y - h };
+      });
+      declutter(items);
+      for (const it of items) it.s.tag.style.transform = `translate(${Math.round(Math.min(innerWidth - it.w - 4, Math.max(4, it.x - it.w / 2)))}px, ${Math.round(it.y)}px)`;
+    }
+    const labs = [];
+    for (const [el, at] of anchors) {
+      if (!ANCHORS3.has(el.id) || !el.classList.contains("on")) continue;
+      const [x, y] = toScreen(at()), [w, h] = sizeOf(el);
+      labs.push({ el, x, w, h: h + 6, y: y - h - 6 });
+    }
+    declutter(labs, 6);
+    for (const it of labs) it.el.style.transform = `translate(${Math.round(Math.min(innerWidth - it.w / 2 - 6, Math.max(it.w / 2 + 6, it.x)))}px, ${Math.round(it.y + it.h)}px) translate(-50%, -100%)`;
+  }
+
   // shake: the camera's jolt when the shelf lands, decaying each frame.
   let shake = 0;
   // Backs the camera off until `fit` units either side of the look point are in view, at any aspect.
@@ -886,13 +1543,17 @@ button:focus-visible { outline: 2px solid var(--sodium); outline-offset: 2px; }
   function frame(now) {
     const t = now / 1000, dt = Math.min(0.1, (now - lastNow) / 1000); lastNow = now;
     const C = CAMS[floor];
-    if (!C.fit && camera.view && camera.view.enabled) camera.clearViewOffset();
-    const base = C.fit ? fitCam(C) : innerWidth / innerHeight < 0.9 ? C.narrow : C.wide;
+    if (!C.fit && !C.fit3 && camera.view && camera.view.enabled) camera.clearViewOffset();
+    const fov = C.fit3 ? fit3.fov : baseFov;
+    if (camera.fov !== fov) { camera.fov = fov; camera.updateProjectionMatrix(); }
+    const base = C.fit3 ? cam3(dt) : C.fit ? fitCam(C) : innerWidth / innerHeight < 0.9 ? C.narrow : C.wide;
     const px = reduced ? 0 : pointer.x * 0.6 * C.par, py = reduced ? 0 : pointer.y * 0.3 * C.par;
     camera.position.set(base.x + px + (Math.random() - 0.5) * shake, base.y - py + (Math.random() - 0.5) * shake, base.z);
     camera.lookAt(C.look);
     shake *= 0.86;
     for (const A of [A1, M, N, ...colleagues]) poseAdviser(A, t, dt);
+    for (const s of STAFF) poseAdviser(s.A, t, dt);
+    if (floor === 3) scene3(t, dt);
     // Wheels turn with the van's travel along its own length.
     const fwd = (van.position.x - vanLast.x) * Math.cos(van.rotation.y) - (van.position.z - vanLast.z) * Math.sin(van.rotation.y);
     vanLast.copy(van.position);
@@ -904,8 +1565,9 @@ button:focus-visible { outline: 2px solid var(--sodium); outline-offset: 2px; }
     }
     tubes.forEach((m, i) => { m.material.color.setScalar(((t * 0.37 + i * 0.31) % 7) < 0.06 ? 0.55 : 0.92); });
     renderer.render(scene, camera);
+    if (floor === 3) dom3();
     for (const [el, at] of anchors) {
-      if (!el.classList.contains("on")) continue;
+      if (!el.classList.contains("on") || ANCHORS3.has(el.id)) continue;
       v.copy(at()).project(camera);
       el.style.transform = `translate(${(v.x * 0.5 + 0.5) * innerWidth}px, ${(-v.y * 0.5 + 0.5) * innerHeight}px) translate(-50%, -100%)`;
     }
@@ -938,13 +1600,27 @@ button:focus-visible { outline: 2px solid var(--sodium); outline-offset: 2px; }
         ["The fax", "sending the word's numbers to the CPU and back: about 10 KB"],
       ],
       lesson: "c0ven keeps the busiest experts on the graphics card. When a word needs one that isn't there, the CPU works it out where it already sits, and only the small answer comes back. Moving the question is far cheaper than moving the knowledge.",
-      next: "Floor 3 · Musical Desks · coming next.",
+      next: "Floor 3 · Musical Desks · open now.",
+    },
+    3: {
+      brand: "Floor 03 / 48 · Musical Desks", scale: 30, keys: ["Moving", "Thinking"], watch: "Time for the night's words",
+      labels: ["aDesk3", "aAnnex3", "aBoard", "aMover"],
+      map: [
+        ["Desks", "the graphics card's room for experts: only some fit"],
+        ["Annex", "main memory, which holds every expert; the CPU works out the ones not on the card"],
+        ["Tally board", "how often each expert was used lately; the counts fade every round"],
+        ["A move", "a swap: copying an expert onto the card, in place of a quiet one"],
+        ["The letter", "a new prompt: the experts it used count too, and a round follows it"],
+      ],
+      lesson: "Which experts a conversation needs changes as it goes. c0ven counts what each word uses, and every few words swaps the busiest outsiders in for the quietest residents, but only when the difference is clear. The copying runs alongside the work, so the card pauses for only a moment.",
+      next: "Floor 4 · coming next.",
     },
   };
   function setFloorHud(n) {
     const F = FLOORS[n];
     $("brandFloor").textContent = F.brand;
     $("keyF").textContent = F.keys[0]; $("keyT").textContent = F.keys[1];
+    $("watchHead").textContent = F.watch || "Time to stamp one word";
     $("revealMap").innerHTML = F.map.map(([o, s]) => `<div><span class="o">${o}</span><span>${s}</span></div>`).join("");
     $("revealLesson").textContent = F.lesson;
   }
@@ -1191,7 +1867,7 @@ button:focus-visible { outline: 2px solid var(--sodium); outline-offset: 2px; }
       bx.appendChild(b);
     });
   }
-  const endings = { 1: new Set(), 2: new Set() };
+  const endings = { 1: new Set(), 2: new Set(), 3: new Set() };
   function showEndings() { $("endings").innerHTML = `Endings <em>${endings[floor].size}</em>/2`; }
   function findEnding(id, name) {
     if (endings[floor].has(id)) return;
@@ -1202,7 +1878,8 @@ button:focus-visible { outline: 2px solid var(--sodium); outline-offset: 2px; }
     setTimeout(() => $("toast").classList.remove("on"), 3200);
   }
   function labels(on) {
-    for (const n of [1, 2]) for (const id of FLOORS[n].labels) $(id).classList.toggle("on", on && n === floor);
+    for (const n of [1, 2, 3]) for (const id of FLOORS[n].labels) $(id).classList.toggle("on", on && n === floor);
+    tagSize.clear();
     pathLine.material.opacity = on && floor === 1 ? 0.95 : 0;
     wireMat.color.setHex(on && floor === 2 ? 0xe8a33d : 0x14171c);
     stage.classList.toggle("frozen", on);
@@ -1224,14 +1901,15 @@ button:focus-visible { outline: 2px solid var(--sodium); outline-offset: 2px; }
     await sleep(0.6);
     floor = n;
     const C = CAMS[n];
+    fit3.snap = true; fit3.key = "";
     scene.fog.near = C.fog[0]; scene.fog.far = C.fog[1];
     setFloorHud(n);
     $("history").innerHTML = ""; ran.clear();
     setClock(0, 0); showEndings();
-    if (n === 1) resetFloor1(); else resetFloor2();
+    if (n === 1) resetFloor1(); else if (n === 2) resetFloor2(); else { resetFloor3(); counts.fill(0); drawBoard(); }
     $("fade").classList.remove("on");
     await sleep(0.4);
-    if (n === 1) intro(); else f2Intro();
+    if (n === 1) intro(); else if (n === 2) f2Intro(); else f3Intro();
   }
 
   // ---------- Floor 1 ----------
@@ -1314,9 +1992,528 @@ button:focus-visible { outline: 2px solid var(--sodium); outline-offset: 2px; }
     $("reveal").hidden = false;
     $("caption").hidden = true;
     revealButtons([
-      ...(more ? [["Try the other door", drive, true]] : []),
+      ["Take the lift to floor 3", () => goFloor(3), true],
+      ...(more ? [["Try the other door", drive]] : []),
       ["Replay floor 2", () => { endings[2].clear(); goFloor(2); }],
       ["Back to floor 1", () => goFloor(1)],
+    ]);
+  }
+
+
+  // ---------- Floor 3 ----------
+  // The night: who each question needs, by STAFF index. The first twelve spread over the office; then a letter
+  // arrives and the questions turn legal.
+  const NIGHT = [0, 2, 1, 0, 2, 3, 0, 2, 6, 0, 2, 1, 4, 5, 4, 4, 5, 0, 4, 5, 2, 4, 5, 4, 0, 5, 4, 5];
+  const SHIFT_AT = 12;
+  // Seconds on the stopwatch. A desk answers in LOCAL; a fax goes out, is thought over in the annex, and comes back.
+  // The player's swap stops the office for SWAP; the narrator's round holds it for ROUND, its packing done behind.
+  const T3 = { LOCAL: 0.5, FAX_OUT: 0.35, FAX_THINK: 0.9, SWAP: 1.0, ROUND: 0.1 };
+  // The narrator's chairs move in ZIP: the round's ROUND on the clock, the rest during the next question.
+  const ZIP = 0.3;
+  // The swap rule of the engine (core/models/qwen4exp/swap.cpp), at the scale of eight advisers: a round every 3
+  // questions and one after the letter; counts fade by 0.8 a round; a newcomer replaces the quietest resident only
+  // with a count of at least 2 and over 1.5 times theirs plus 1; a round's choice moves in at the next round.
+  const ROUND_EVERY = 3, FADE = 0.8, LETTER_WEIGHT = 3;
+  const counts = new Array(STAFF.length).fill(0);
+  const inOffice = (s) => s.slot < 4;
+
+  function chooseSwaps() {
+    const ins = STAFF.filter((s) => !inOffice(s)).sort((a, b) => counts[STAFF.indexOf(b)] - counts[STAFF.indexOf(a)]);
+    const outs = STAFF.filter(inOffice).sort((a, b) => counts[STAFF.indexOf(a)] - counts[STAFF.indexOf(b)]);
+    const out = [];
+    for (let n = 0; n < ins.length && n < outs.length; n++) {
+      const ui = counts[STAFF.indexOf(ins[n])], uo = counts[STAFF.indexOf(outs[n])];
+      if (ui < 2 || ui < 1.5 * uo + 1) break;
+      out.push([ins[n], outs[n]]);
+    }
+    return out;
+  }
+  // The narrator's night without the animation: its total, and the time after each question.
+  function engineNight() {
+    const saved = STAFF.map((s) => s.slot), c0 = counts.slice();
+    counts.fill(0);
+    let t = 0, since = 0, pending = [];
+    const after = [];
+    NIGHT.forEach((e, i) => {
+      if (i === SHIFT_AT) { counts[4] += LETTER_WEIGHT; counts[5] += LETTER_WEIGHT; since = ROUND_EVERY - 1; }
+      t += inOffice(STAFF[e]) ? T3.LOCAL : T3.FAX_OUT * 2 + T3.FAX_THINK;
+      counts[e] += 1;
+      if (++since >= ROUND_EVERY) {
+        since = 0;
+        if (pending.length) { t += T3.ROUND; for (const [a, b] of pending) [a.slot, b.slot] = [b.slot, a.slot]; }
+        pending = chooseSwaps();
+        for (let k = 0; k < counts.length; k++) counts[k] *= FADE;
+      }
+      after.push(t);
+    });
+    STAFF.forEach((s, i) => { s.slot = saved[i]; });
+    counts.splice(0, counts.length, ...c0);
+    return { total: Math.round(t * 10) / 10, after };
+  }
+  const ENGINE = engineNight();
+
+  // Real-time tweens: the shift's pace is the stopwatch's, with or without reduced motion.
+  function rt(seconds, fn) {
+    return new Promise((done) => {
+      const t0 = performance.now();
+      const tick = (now) => { const u = Math.min(1, Math.max(0, (now - t0) / (seconds * 1000))); fn(u); if (u < 1) requestAnimationFrame(tick); else done(); };
+      requestAnimationFrame(tick);
+    });
+  }
+  const until = (cond) => new Promise((r) => { const c = () => cond() ? r() : setTimeout(c, 80); c(); });
+
+  // The board in two columns, desks and annex, each row a bar of its adviser's colour. An annex row in L3.hot is
+  // ringed, with an arrow; `packing` are the ones the narrator has boxed up. Tags get the same bars and arrows.
+  function drawBoard(packing = []) {
+    const c = boardTex.image, g = c.getContext("2d"), w = c.width, h = c.height;
+    g.fillStyle = "#1c2925"; g.fillRect(0, 0, w, h);
+    g.fillStyle = "rgba(236,236,226,0.035)";
+    for (let k = 0; k < 9; k++) { g.beginPath(); g.ellipse((k * 211) % w, 110 + (k * 137) % (h - 140), 160, 40, (k % 3) * 0.3, 0, Math.PI * 2); g.fill(); }
+    const chalk = "rgba(236,236,226,0.94)", font = (wt, px) => `${wt} ${px}px 'Barlow Condensed', 'Arial Narrow', sans-serif`;
+    g.textBaseline = "alphabetic";
+    g.fillStyle = chalk; g.font = font(600, 58); g.fillText("WHO'S BEEN ASKED", 30, 70);
+    g.fillStyle = "rgba(236,236,226,0.6)"; g.font = font(500, 38);
+    g.fillText("AT A DESK", 30, 132); g.fillText("IN THE ANNEX", 540, 132);
+    g.fillRect(511, 104, 3, h - 130);
+    const cols = [STAFF.filter(inOffice), STAFF.filter((s) => !inOffice(s))].map((l) => l.sort((a, b) => a.slot - b.slot));
+    const MAXC = 7, BAR = 300;
+    cols.forEach((list, ci) => list.forEach((s, r) => {
+      const i = STAFF.indexOf(s), x0 = ci ? 540 : 30, y0 = 214 + r * 112, n = Math.min(counts[i], MAXC), hot = L3.hot.has(s);
+      if (hot) {
+        g.strokeStyle = "rgba(232,163,61,0.95)"; g.lineWidth = 6;
+        g.beginPath(); g.ellipse(x0 + 222, y0 - 2, 232, 52, -0.01, 0, Math.PI * 2); g.stroke();
+      }
+      g.fillStyle = hex(s.color);
+      g.beginPath(); g.arc(x0 + 16, y0 - 34, 16, 0, Math.PI * 2); g.fill();
+      g.fillStyle = chalk; g.font = font(600, 50);
+      g.fillText(s.name.toUpperCase(), x0 + 42, y0 - 16);
+      // The bar, laid on in chalky strokes; the faint track behind it is the scale.
+      const len = BAR * n / MAXC, bx = x0 + 10, by = y0 - 4;
+      g.fillStyle = "rgba(236,236,226,0.09)"; g.fillRect(bx, by, BAR, 36);
+      g.fillStyle = hex(s.color);
+      for (let k = 0; k < 4; k++) { g.globalAlpha = 0.6 + k * 0.1; g.fillRect(bx, by + k * 9, Math.max(0, len - (k % 2) * 7), 7); }
+      g.globalAlpha = 1;
+      if (L3.letterMark && (i === 4 || i === 5)) { g.fillStyle = "#f2d38a"; g.font = font(700, 46); g.fillText("+3", bx + BAR + 18, by + 34); }
+      else if (hot) { g.fillStyle = "rgba(232,163,61,1)"; g.beginPath(); g.moveTo(bx + BAR + 34, by - 4); g.lineTo(bx + BAR + 52, by + 34); g.lineTo(bx + BAR + 16, by + 34); g.fill(); }
+      if (packing.includes(s)) {
+        const px = x0 + 50 + g.measureText(s.name.toUpperCase()).width + 30;
+        g.fillStyle = "#a07a4e"; g.fillRect(px, y0 - 58, 46, 40);
+        g.strokeStyle = "#5a4024"; g.lineWidth = 4; g.strokeRect(px, y0 - 58, 46, 40); g.beginPath(); g.moveTo(px, y0 - 46); g.lineTo(px + 46, y0 - 46); g.stroke();
+      }
+      s.bar.style.width = (100 * n / MAXC).toFixed(1) + "%";
+      s.tag.classList.toggle("hot", hot);
+    }));
+    boardTex.needsUpdate = true;
+  }
+  // Who the rule would move in now, from the counts as they stand before a round's fade.
+  const markHot = () => { L3.hot = new Set(chooseSwaps().map(([a]) => a)); };
+
+  // Name tags on the advisers: buttons while the player runs the desks. Each shows the name, the topic on wide
+  // screens, and the tally as a bar along its foot.
+  const tagsBox = $("tags");
+  STAFF.forEach((s, i) => {
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "tag";
+    b.style.setProperty("--c", hex(s.color));
+    b.innerHTML = `<i></i>${s.name}<small>${s.topic}</small><span class="n"></span>`;
+    b.setAttribute("aria-label", `${s.name}, ${s.topic}`);
+    b.addEventListener("click", () => tapTag(i));
+    s.tag = b; s.bar = b.querySelector(".n"); tagsBox.appendChild(b);
+  });
+  let tagsLive = false, sel = -1, queue = [], react = null, nightOn = false;
+  const swapping = new Set();
+  function showTags(on, live) {
+    tagsBox.hidden = !on; tagsLive = !!live; sel = -1; queue = []; swapping.clear();
+    tagsBox.classList.toggle("live", !!live);
+    paintTags();
+  }
+  const queuedHas = (i) => queue.some(([a, b]) => a === i || b === i);
+  function paintTags() {
+    const picking = tagsLive && sel >= 0;
+    tagsBox.classList.toggle("picking", picking);
+    STAFF.forEach((s, i) => {
+      s.queued = queuedHas(i);
+      s.tag.classList.toggle("sel", sel === i);
+      s.tag.classList.toggle("queued", s.queued);
+      s.tag.classList.toggle("moving", swapping.has(i));
+      s.tag.classList.toggle("can", picking && sel !== i && !s.queued && !swapping.has(i) && inOffice(STAFF[sel]) !== inOffice(s));
+      s.tag.disabled = !tagsLive;
+    });
+    hint3();
+    tagSize.clear();
+  }
+  // The line under the scene says what a tap will do next.
+  function hint3() {
+    const h = $("hint3");
+    h.hidden = !tagsLive;
+    if (!tagsLive) return;
+    const nm = (k) => `<b style="color:${hex(STAFF[k].color)}">${STAFF[k].name}</b>`;
+    if (swapping.size) h.innerHTML = "The office is on hold while they move";
+    else if (sel >= 0) h.innerHTML = `Now pick someone ${inOffice(STAFF[sel]) ? "in the annex" : "in the office"} for ${nm(sel)}`;
+    else if (queue.length) h.innerHTML = `${queue.map(([a, b]) => `${nm(a)} ⇄ ${nm(b)}`).join(", ")} after this question: the office stops ${queue.length * T3.SWAP} s. Tap a name again to cancel`;
+    else h.innerHTML = "Pick a name in the annex, then one in the office, to swap them";
+  }
+  function tapTag(i) {
+    if (!tagsLive || swapping.has(i)) return;
+    const q = queue.findIndex(([a, b]) => a === i || b === i);
+    if (q >= 0) queue.splice(q, 1);   // a queued name cancels its swap
+    else if (sel < 0 || sel === i) sel = sel === i ? -1 : i;
+    else if (inOffice(STAFF[sel]) === inOffice(STAFF[i])) sel = i;
+    else { queue.push([sel, i]); if (react) react.queued(sel, i); sel = -1; }
+    paintTags();
+  }
+
+  // A chair moves from slot `from` to slot `to`, out along its room's aisle, across, and in; k picks one of two
+  // tracks, so the two chairs of a swap pass each other. The player's swap: legs pop out, the chair scurries and lands,
+  // its rider's arms up. The narrator's: the packed chair zips across with the box on the rider's lap.
+  function route3(from, to, k) {
+    const [x0, z0] = SLOTS[from], [x1, z1] = SLOTS[to];
+    if (L3.mode === "row") {
+      const g0 = L3.aisle[from < 4 ? 0 : 1], g1 = L3.aisle[to < 4 ? 0 : 1], lz = RD / 2 + 0.65 + 0.5 * k;
+      return [[x0, z0], [g0, z0], [g0, lz], [g1, lz], [g1, z1], [x1, z1]];
+    }
+    const tx = X3 + (k ? 0.28 : -0.28);
+    return [[x0, z0], [tx, z0], [tx, z1], [x1, z1]];
+  }
+  const LEG3 = 0.78;
+  async function scoot(s, from, to, style, k, clockFn) {
+    const pts = route3(from, to, k), lens = [];
+    let total = 0;
+    for (let n = 1; n < pts.length; n++) { const d = Math.hypot(pts[n][0] - pts[n - 1][0], pts[n][1] - pts[n - 1][1]); lens.push(d); total += d; }
+    const player = style === "player", streak = streaks[STAFF.indexOf(s)];
+    let h = 0, last = performance.now(), px = pts[0][0], pz = pts[0][1];
+    s.moving = true; s.ready = 0; s.A.busy = false; s.A.watch = null;
+    if (player) puff(pts[0][0], pts[0][1]);
+    await rt(player ? T3.SWAP : ZIP, (u) => {
+      const now = performance.now(), dt = Math.min(0.05, (now - last) / 1000); last = now;
+      // Player: legs out in the first 16%, run to 86%, land. Narrator: one smooth glide.
+      const run = player ? Math.min(1, Math.max(0, (u - 0.16) / 0.7)) : u;
+      let d = ease(run) * total, n = 0;
+      while (n < lens.length - 1 && d > lens[n]) { d -= lens[n]; n++; }
+      const [ax, az] = pts[n], [bx, bz] = pts[n + 1], f = lens[n] ? Math.min(1, d / lens[n]) : 1;
+      const x = lerp(ax, bx, f), z = lerp(az, bz, f), moving = run > 0 && run < 1;
+      const want = moving ? Math.atan2(bx - ax, bz - az) : 0;
+      h += reduced ? wrapAngle(want - h) : wrapAngle(want - h) * Math.min(1, dt * 16);
+      const speed = Math.hypot(x - px, z - pz) / Math.max(dt, 0.001); px = x; pz = z;
+      let lift = 0, lean = 0;
+      if (player) {
+        const len = LEG3 * (u < 0.16 ? backOut(u / 0.16) : u > 0.86 ? 1 - ease((u - 0.86) / 0.14) : 1);
+        const ph = ease(run) * total * 8, amp = reduced ? 0 : Math.min(1, run * 8, (1 - run) * 8);
+        setChairLegs(s.legs, len);
+        for (const l of s.legs) l.pivot.rotation.x = Math.sin(ph + l.phase) * 0.6 * amp;
+        lift = Math.max(0, len - 0.44) + Math.abs(Math.sin(ph)) * 0.06 * amp;
+        lean = reduced ? 0 : 0.12 * amp + (u < 0.16 ? -0.15 * Math.sin(u / 0.16 * Math.PI) : 0);
+        s.A.cheer = u > 0.06 && u < 0.9;
+      } else {
+        lift = 0.08 * Math.sin(u * Math.PI);
+        lean = reduced ? 0 : 0.2 * Math.sin(u * Math.PI);
+        if (!reduced) {
+          streak.position.set(x - Math.sin(h) * 0.7, 0.75, z - Math.cos(h) * 0.7);
+          streak.material.opacity = Math.min(0.55, speed / 40);
+          // The streak lies along the motion as seen on screen.
+          const a = v.set(x, 0.75, z).project(camera), b2 = new THREE.Vector3(x - Math.sin(h), 0.75, z - Math.cos(h)).project(camera);
+          streak.material.rotation = Math.atan2((a.y - b2.y) / camera.aspect, a.x - b2.x);
+        }
+        s.box.group.position.set(x + Math.sin(h) * 0.25, 0.92 + lift, z + Math.cos(h) * 0.25);
+        s.box.group.rotation.set(0, h, 0);
+      }
+      s.chair.position.set(x, lift, z); s.chair.rotation.set(lean, h, 0);
+      s.A.group.position.set(x + Math.sin(h) * 0.05, 0, z + Math.cos(h) * 0.05);
+      s.A.group.rotation.set(lean, h, 0); s.A.heading = h; s.A.lift = lift;
+      if (clockFn) clockFn(u);
+    });
+    streak.material.opacity = 0;
+    pack(s, false);
+    placeAt(s, to);
+    s.moving = false;
+    if (player) { puff(pts[pts.length - 1][0], pts[pts.length - 1][1]); if (!reduced) shake = 0.03; }
+  }
+  // The pair's places swap the moment the swap starts; their chairs catch up.
+  async function swapPair(a, b, style, clockFn) {
+    const ia = a.slot, ib = b.slot;
+    a.moves++; b.moves++;
+    a.slot = ib; b.slot = ia;
+    await Promise.all([scoot(a, ia, ib, style, 0, clockFn), scoot(b, ib, ia, style, 1)]);
+  }
+  // While the player's swap stops the office, everyone else downs tools and watches the chairs go.
+  function hold3(on, movers) {
+    document.querySelector(".watch").classList.toggle("hold", on);
+    for (const s of STAFF) if (!movers.includes(s)) { s.A.watch = on ? movers[0].chair.position : null; if (on) s.A.busy = false; }
+  }
+
+  // One question, from the envelope's drop to its stamp. The clock counts st.mov and st.th.
+  async function answer(e, st) {
+    const s = STAFF[e], [x, z] = SLOTS[s.slot];
+    E3.stamp.material.color.setHex(s.color); E3.stamp.material.emissive.setHex(s.color);
+    E3band.material.color.setHex(s.color); E3band.material.emissive.setHex(s.color);
+    E3.stamp.visible = false; E3.group.visible = true;
+    s.tag.classList.add("need"); L3.need = s;
+    const m0 = st.mov, t0 = st.th;
+    if (inOffice(s)) {
+      const from = new THREE.Vector3(x - 0.3, 4.6, z + 1.25), to = new THREE.Vector3(x - 0.3, 1.04, z + 1.25);
+      s.A.busy = true;
+      await rt(T3.LOCAL, (u) => {
+        E3.group.position.lerpVectors(from, to, ease(Math.min(1, u / 0.35)));
+        E3.stamp.visible = u > 0.75;
+        st.th = t0 + T3.LOCAL * u; setClock(st.mov, st.th);
+      });
+      st.th = t0 + T3.LOCAL;
+      st.faxRun = 0; st.localRun++;
+    } else {
+      const from = new THREE.Vector3(MFAX.x, 4.6, MFAX.z), to = MFAX.clone().add(new THREE.Vector3(0, 0.2, 0));
+      page3.visible = false;
+      wireMat.color.setHex(0xe8a33d);
+      const place = (u) => {
+        const end = Math.min(1, u * 8, (1 - u) * 8);
+        page3.position.copy(L3.faxRoute.getPointAt(u));
+        page3Sheet.position.y = -0.3 * end; page3Sheet.scale.setScalar(0.3 + 0.7 * end);
+        page3Sheet.rotation.set(-0.2 + 0.15 * Math.sin(u * 9), 0.35 + Math.sin(u * 7) * 0.3, Math.sin(u * 13) * 0.12);
+      };
+      await rt(T3.FAX_OUT, (u) => {
+        const a = Math.min(1, u / 0.3);
+        E3.group.position.lerpVectors(from, to, ease(a));
+        if (u > 0.3) { E3.group.visible = false; page3.visible = true; place((u - 0.3) / 0.7); }
+        st.mov = m0 + T3.FAX_OUT * u; setClock(st.mov, st.th);
+      });
+      page3.visible = false; wireMat.color.setHex(0x14171c);
+      s.A.busy = true;
+      await rt(T3.FAX_THINK, (u) => { st.th = t0 + T3.FAX_THINK * u; setClock(st.mov, st.th); });
+      s.A.busy = false;
+      wireMat.color.setHex(0xe8a33d); page3.visible = true;
+      await rt(T3.FAX_OUT, (u) => { place(1 - u); st.mov = m0 + T3.FAX_OUT * (1 + u); setClock(st.mov, st.th); });
+      page3.visible = false; wireMat.color.setHex(0x14171c);
+      st.mov = m0 + 2 * T3.FAX_OUT; st.th = t0 + T3.FAX_THINK;
+      E3.group.position.copy(to); E3.group.visible = true; E3.stamp.visible = true;
+      await rt(0.12, () => {});
+      st.faxes++; st.faxRun++; st.localRun = 0; st.faxTimes.push(performance.now() / 1000);
+      if (e === 4 || e === 5) st.legalFaxes++;
+    }
+    s.A.busy = false;
+    s.tag.classList.remove("need"); L3.need = null;
+    E3.group.visible = false;
+  }
+  // The letter drops onto the board; Margaret's and Hugh's counts jump and the board flashes. Not on the clock.
+  async function dropLetter() {
+    const B = L3.board, from = B.clone().add(new THREE.Vector3(0, 2.6, 1.4)), to = B.clone().add(new THREE.Vector3(0, 0, 0.12));
+    letter3.visible = true;
+    await rt(0.6, (u) => {
+      letter3.position.lerpVectors(from, to, ease(u));
+      letter3.rotation.set(Math.PI / 2 * ease(u), 0, reduced ? 0 : Math.sin(u * 6) * 0.2);
+      letter3.scale.setScalar(1 - 0.6 * Math.max(0, u - 0.7) / 0.3);
+    });
+    letter3.visible = false;
+    counts[4] += LETTER_WEIGHT; counts[5] += LETTER_WEIGHT;
+    L3.letterMark = true;
+    markHot(); drawBoard();
+    await rt(0.6, (u) => { boardMat.emissiveIntensity = 0.32 + (reduced ? 0.3 : 0.9) * (1 - u); });
+    boardMat.emissiveIntensity = 0.32;
+  }
+
+  // The night, run by the player ("player") or by the narrator ("engine"). Resolves to the night's counters.
+  async function night(mode, hooks = {}) {
+    resetFloor3();
+    nightOn = true;
+    counts.fill(0); drawBoard();
+    const st = { mov: 0, th: 0, since: 0, pending: [], faxes: 0, legalFaxes: 0, faxRun: 0, localRun: 0, faxTimes: [], i: 0, swaps: 0 };
+    const zips = [];
+    setClock(0, 0);
+    showTags(true, mode === "player");
+    for (let i = 0; i < NIGHT.length; i++) {
+      st.i = i;
+      if (i === SHIFT_AT) {
+        if (hooks.letter) await hooks.letter(st);
+        await dropLetter();
+        st.since = ROUND_EVERY - 1;
+        if (hooks.afterLetter) hooks.afterLetter(st);
+      }
+      if (i === SHIFT_AT + 3) { L3.letterMark = false; drawBoard(st.pending.flat()); }
+      while (mode === "player" && queue.length) {
+        const [ia, ib] = queue.shift(), a = STAFF[ia], b = STAFF[ib];
+        if (inOffice(a) === inOffice(b)) { paintTags(); continue; }
+        swapping.add(ia); swapping.add(ib); paintTags();
+        const m0 = st.mov;
+        hold3(true, [a, b]);
+        await swapPair(a, b, "player", (u) => { st.mov = m0 + T3.SWAP * u; setClock(st.mov, st.th); });
+        hold3(false, [a, b]);
+        st.mov = m0 + T3.SWAP; st.swaps++;
+        swapping.delete(ia); swapping.delete(ib);
+        markHot(); drawBoard();
+        if (hooks.swapped) hooks.swapped(a, b, st);
+        paintTags();
+      }
+      await answer(NIGHT[i], st);
+      counts[NIGHT[i]] += 1;
+      markHot();
+      if (++st.since >= ROUND_EVERY) {
+        st.since = 0;
+        if (mode === "engine") {
+          if (st.pending.length) {
+            if (hooks.beforeApply) await hooks.beforeApply(st.pending, st);
+            const m0 = st.mov, moving = st.pending;
+            // The boxes close and the chairs set off: the round holds the office for ROUND; they land during the
+            // next question.
+            for (const s of moving.flat()) tween(0.12, (u) => { for (const f of s.box.flaps) f.rotation.x = -Math.sign(f.position.z) * lerp(1.2, Math.PI, u); });
+            zips.push(Promise.all(moving.map(([a, b]) => swapPair(a, b, "engine"))));
+            await rt(T3.ROUND, (u) => { st.mov = m0 + T3.ROUND * u; setClock(st.mov, st.th); });
+            st.mov = m0 + T3.ROUND;
+            if (hooks.applied) hooks.applied(moving, st);
+            markHot();
+          }
+          st.pending = chooseSwaps();
+          for (const s of st.pending.flat()) pack(s, true);
+          if (st.pending.length && hooks.chose) hooks.chose(st.pending, st);
+        }
+        for (let k = 0; k < counts.length; k++) counts[k] *= FADE;
+      }
+      drawBoard(st.pending.flat());
+      if (hooks.answered) hooks.answered(i, st);
+    }
+    await Promise.all(zips);
+    showTags(false);
+    nightOn = false;
+    return st;
+  }
+
+  // The narrator's remarks while the player runs the night: each at most once, one at most every 5.5 s.
+  function makeReact() {
+    const now = () => performance.now() / 1000;
+    const R = { used: new Set(), last: -1e9, talking: false, shiftT: null, legalIn: null, swapTs: [], lastSwap: now(), hold: false };
+    R.say = (id, force) => {
+      if (R.talking || R.used.has(id) || R.hold) return false;
+      if (!force && now() - R.last < 5.5) return false;
+      R.used.add(id); R.talking = true; R.last = now();
+      speak(id).then(() => {
+        R.talking = false;
+        setTimeout(() => { if (!R.talking && !skipLine && floor === 3) $("caption").hidden = true; }, 900);
+      });
+      return true;
+    };
+    R.any = (ids, force) => {
+      const free = ids.filter((x) => !R.used.has(x));
+      return free.length ? R.say(free[Math.floor(Math.random() * free.length)], force) : false;
+    };
+    R.queued = (a, b) => {
+      const t = now();
+      R.swapTs.push(t); R.lastSwap = t;
+      const A = STAFF[a], B = STAFF[b], incoming = inOffice(A) ? B : A;
+      if (R.shiftT && (incoming === STAFF[4] || incoming === STAFF[5]) && !R.legalIn) R.legalIn = t;
+      if (STAFF[4].moves >= 2 && (A === STAFF[4] || B === STAFF[4])) { R.say("f3thrash2"); return; }
+      if (R.swapTs.filter((x) => t - x < 6).length >= 3) R.any(["f3thrash1", "f3thrash3"]);
+    };
+    R.swapped = (a, b) => {
+      // Back in the seat they started the night in, after more than one move.
+      const back = [a, b].find((s) => s.slot === STAFF.indexOf(s) && s.moves >= 2 && s.he);
+      if (back) R.say("f3thrash4");
+      if (inOffice(STAFF[4]) && inOffice(STAFF[5]) && R.shiftT && now() - R.shiftT < 9) R.say("f3well1");
+    };
+    R.tick = (st) => {
+      if (R.talking || R.hold) return;
+      const t = now(), recentFax = st.faxTimes.filter((x) => t - x < 8).length;
+      if (st.i >= SHIFT_AT - 2 && !R.shiftT) return;  // the floor is kept clear for the letter
+      // Once the shift line is over, a player who has not reached for the legal advisers hears the nudge first.
+      if (R.lookDue()) { if (t - R.shiftT > 3.5) R.say("f3look", true); return; }
+      if (t - R.lastSwap > 8 && recentFax >= 2) R.any(["f3idle1", "f3idle2", "f3idle3", "f3idle4", "f3idle5"]);
+    };
+    R.lookDue = () => R.shiftT && !R.legalIn && !R.used.has("f3look") && !inOffice(STAFF[4]) && !inOffice(STAFF[5]);
+    R.answered = (i, st) => {
+      if (R.talking) return;
+      if (i === NIGHT.length - 3) { R.any(["f3final1", "f3final2"], true); return; }
+      if (R.lookDue()) return;
+      if (st.faxes === 6 && st.faxRun > 0) { R.say("f3behind1"); return; }
+      if (st.faxRun >= 3) { R.say("f3behind2"); return; }
+      if (R.shiftT && st.legalFaxes >= 2 && st.faxRun > 0) { R.say("f3behind3"); return; }
+      if (R.shiftT && st.legalFaxes >= 4 && st.faxRun > 0) { R.say("f3behind4"); return; }
+      if (R.shiftT && st.localRun >= 5) { R.say("f3well4"); return; }
+      if (R.shiftT && st.localRun >= 4) { R.say("f3well2"); return; }
+      if (i >= SHIFT_AT + 6 && st.mov + st.th <= ENGINE.after[i]) R.say("f3well3");
+    };
+    return R;
+  }
+
+  let f3Tries = 0, f3Replayed = false;
+  async function f3Intro() {
+    f3Tries = 0; f3Replayed = false;
+    await speak("f3intro");
+    $("caption").hidden = true;
+    await f3Shift();
+  }
+  async function f3Shift() {
+    clearStage();
+    f3Tries++;
+    const R = react = makeReact();
+    let cur = { i: 0, faxTimes: [] };
+    const timer = setInterval(() => R.tick(cur), 250);
+    const st = await night("player", {
+      letter: async () => { await until(() => !R.talking); },
+      afterLetter: (s) => {
+        R.shiftT = performance.now() / 1000;
+        // A legal adviser already at a desk means the player got there before the letter: he says so instead.
+        if (inOffice(STAFF[4]) || inOffice(STAFF[5])) { R.used.add("f3noticed"); R.say("f3cheat", true); return; }
+        R.say("f3shift", true);
+        // Spoken once the line about the letter is over, if the player moved the legal advisers in quickly.
+        until(() => !R.talking).then(() => { if (R.legalIn && R.legalIn - R.shiftT < 4) R.say("f3noticed", true); });
+      },
+      swapped: R.swapped,
+      answered: (i, s) => { cur = s; R.answered(i, s); },
+    });
+    clearInterval(timer);
+    R.hold = true;
+    await until(() => !R.talking);
+    react = null;
+    const mine = { label: f3Tries > 1 ? `Your night (${f3Tries})` : "Your night", fetch: st.mov, think: st.th };
+    addHistory(mine);
+    const T = Math.round((st.mov + st.th) * 10) / 10;
+    if (!f3Replayed) {
+      await speak(T <= ENGINE.total + 1 ? "f3afterAhead" : "f3afterBehind");
+      await f3Replay();
+    }
+    const beat = T < ENGINE.total;
+    // Losing with more than the two moves that matter is the stopping; with fewer, it was being late.
+    await speak(beat ? "f3lose" : st.swaps > 2 ? "f3win" : "f3winLate");
+    if (beat) findEnding("beat", "Employee of the Month");
+    else findEnding("second", "Second Place");
+    choose([["What just happened?", reveal3]]);
+  }
+  // The narrator's night. His lines wait for their moments: the night pauses for him at the letter and before his
+  // move, never on the clock, and "there they go" starts as the chairs do.
+  async function f3Replay() {
+    f3Replayed = true;
+    let narr = speak("f3p1");
+    const st = await night("engine", {
+      letter: async () => { await narr; },
+      chose: () => { narr = narr.then(() => speak("f3p2")); },
+      // While he finishes explaining, the office keeps typing; nothing is on the clock.
+      beforeApply: async () => {
+        const office = STAFF.filter(inOffice);
+        for (const s of office) s.A.busy = true;
+        await narr;
+        for (const s of office) s.A.busy = false;
+        narr = speak("f3p3");
+      },
+    });
+    await narr;
+    addHistory({ label: "The narrator", fetch: st.mov, think: st.th });
+  }
+  async function f3Again() {
+    clearStage();
+    await speak("f3again");
+    $("caption").hidden = true;
+    await f3Shift();
+  }
+  async function reveal3() {
+    // The mover label follows someone the last night moved into the office, else Margaret.
+    L3.mover = STAFF.find((s, i) => i >= 4 && inOffice(s)) || STAFF[4];
+    labels(true);
+    const more = !(endings[3].has("beat") && endings[3].has("second"));
+    $("nextNote").textContent = FLOORS[3].next + (more ? " One ending on this floor is still hidden." : " Both endings found.");
+    revealButtons([]);
+    await speak("f3reveal", (line) => { if (line === "f3r2") $("reveal").hidden = false; });
+    $("reveal").hidden = false;
+    $("caption").hidden = true;
+    revealButtons([
+      [endings[3].has("beat") ? "Run the night again" : "Try to beat him", f3Again, !endings[3].has("beat")],
+      ["Replay floor 3", () => { endings[3].clear(); goFloor(3); }],
+      ["Back to floor 2", () => goFloor(2)],
     ]);
   }
 
@@ -1325,6 +2522,7 @@ button:focus-visible { outline: 2px solid var(--sodium); outline-offset: 2px; }
     if (!$("start").hidden) {
       if (e.key === "Enter" || e.key === "1") $("begin1").click();
       if (e.key === "2") $("begin2").click();
+      if (e.key === "3") $("begin3").click();
       return;
     }
     if (e.key === " " && skipLine) { e.preventDefault(); skipLine(); return; }
@@ -1343,9 +2541,12 @@ button:focus-visible { outline: 2px solid var(--sodium); outline-offset: 2px; }
   }
   $("begin1").addEventListener("click", () => begin(1));
   $("begin2").addEventListener("click", () => begin(2));
-  if (location.hash === "#floor2") { $("begin2").classList.add("primary"); $("begin1").classList.remove("primary"); }
+  $("begin3").addEventListener("click", () => begin(3));
+  for (const n of [2, 3]) if (location.hash === `#floor${n}`) { $(`begin${n}`).classList.add("primary"); $("begin1").classList.remove("primary"); }
   setFloorHud(1);
   resetFloor2();
+  resetFloor3();
+  drawBoard();
   setPath();
 })();
 </script>
