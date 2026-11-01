@@ -33,6 +33,9 @@ class ModelMemory:
     weights_per_card: int
     """Every tensor outside the expert cache: dense weights, embedding, head, PLE."""
     draft_per_card: int
+    working_per_card: int
+    """*Estimate*: each card's memory outside the weights, the draft layer, the sequences' reserve and the expert
+    cache, which the plan takes unless PlanOptions.working_per_card gives the core's figure."""
     layers: int
     experts: int
     expert_bytes: int
@@ -67,9 +70,9 @@ class PlanOptions:
     """The smallest card's memory, bytes, as Level Zero reports it; None: the model's reference card."""
     draft: bool = True
     """The draft layer is loaded, and takes its share of each card."""
-    working_per_card: int = 1_600_663_296
-    """Each card's memory outside the weights, the draft layer, the sequences' reserve and the expert cache: the
-    core's figure from an earlier load when `ENGINE_CACHE_DIR` keeps one (working_file), else an estimate."""
+    working_per_card: int | None = None
+    """Each card's working memory, as ModelMemory.working_per_card: the core's figure from an earlier load when
+    `ENGINE_CACHE_DIR` keeps one (working_file); None: the model's estimate."""
     checkpoints: int = 8
     kv_tokens: int = 0
     """The KV pool the slots share, in tokens; 0: every slot's own context, plus cached_prefix_pages. It is
@@ -285,7 +288,8 @@ def _plan(m: ModelMemory, o: PlanOptions) -> MemoryPlan:
         raise PlanError(f"context {o.context} outside 1..{m.max_context}")
     vram = o.usable_vram if o.usable_vram is not None else m.reference_vram
     draft = m.draft_per_card if o.draft else 0
-    fixed = m.weights_per_card + draft + o.working_per_card
+    working = o.working_per_card if o.working_per_card is not None else m.working_per_card
+    fixed = m.weights_per_card + draft + working
     per_sequence = reserve_per_sequence(m, o.context)
     reserve = o.slots * per_sequence
     free = vram - fixed - reserve
@@ -293,7 +297,7 @@ def _plan(m: ModelMemory, o: PlanOptions) -> MemoryPlan:
         raise PlanError(
             f"the cards are {-free:,} B short before any expert: each has {vram / GIB:.2f} GiB, and the weights take "
             f"{m.weights_per_card / GIB:.2f}, the draft layer {draft / GIB:.2f}, working memory "
-            f"{o.working_per_card / GIB:.2f} and {o.slots} x {o.context:,} positions {reserve / GIB:.2f}."
+            f"{working / GIB:.2f} and {o.slots} x {o.context:,} positions {reserve / GIB:.2f}."
         )
     share = -(-m.expert_bytes // m.cards)
     cached = min(m.experts, free // share)
@@ -312,7 +316,7 @@ def _plan(m: ModelMemory, o: PlanOptions) -> MemoryPlan:
         layers=m.layers,
         weights_per_card=m.weights_per_card,
         draft_per_card=draft,
-        working_per_card=o.working_per_card,
+        working_per_card=working,
         reserve_per_sequence=per_sequence,
         reserve_per_card=reserve,
         free_per_card=free,

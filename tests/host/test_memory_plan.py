@@ -18,6 +18,7 @@ from engine.memory_plan import (
     working_file,
     write_working,
 )
+from engine.models.qwen4exp import numbers
 from engine.models.qwen4exp.draft import draft_per_card, read_shapes
 from engine.models.qwen4exp.memory import model_memory
 from engine.models.qwen4exp.tensors import Category, from_tsv
@@ -192,6 +193,14 @@ def test_the_ngram_table_moves_into_ram_only_with_room_to_spare():
     roomy = plan(MODEL, PlanOptions(slots=1, host_memory=80 * gib))
     assert ngram_fits(roomy, mem_total=90 * gib)
     assert not ngram_fits(plan(MODEL, PlanOptions(slots=1)), mem_total=90 * gib)
+
+
+def test_the_working_memory_is_the_models_estimate_unless_the_options_give_one():
+    assert MODEL.working_per_card == numbers.WORKING_PER_CARD
+    assert plan(MODEL, PlanOptions()).working_per_card == numbers.WORKING_PER_CARD
+    given = plan(MODEL, PlanOptions(working_per_card=numbers.WORKING_PER_CARD + 2**30))
+    assert given.working_per_card == numbers.WORKING_PER_CARD + 2**30
+    assert given.free_per_card == plan(MODEL, PlanOptions()).free_per_card - 2**30
 
 
 def test_the_cores_expert_budget_gives_its_working_memory():
