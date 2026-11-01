@@ -1,13 +1,20 @@
 #include "ngram.h"
 
 #include <fcntl.h>
+#include <sys/mman.h>
 #include <unistd.h>
+
+#include <algorithm>
+#include <chrono>
+#include <cstdio>
+#include <random>
 
 #include <cstdlib>
 #include <cstring>
 #include <stdexcept>
 
 #include "ggml.h"
+#include "load/direct.h"
 #include "quant.h"
 
 namespace engine::qwen4exp {
@@ -17,7 +24,7 @@ constexpr uint64_t kPage = 4096;
 constexpr uint64_t kEmpty = ~0ull;
 }  // namespace
 
-Ngram::Ngram(const GgufModel &model, uint32_t cache_rows, unsigned readers) {
+Ngram::Ngram(const GgufModel &model, uint32_t cache_rows, unsigned readers, bool in_ram, unsigned loader_threads) {
   auto m = model.get_ints("qwen4exp.ple.layer_multipliers");
   auto v = model.get_ints("qwen4exp.ple.head_vocab_sizes");
   auto o = model.get_ints("qwen4exp.ple.head_offsets");
@@ -37,10 +44,42 @@ Ngram::Ngram(const GgufModel &model, uint32_t cache_rows, unsigned readers) {
   tag_.assign(slots_, kEmpty);
   data_.resize((size_t)slots_ * row_bytes_);
   readers_ = std::make_unique<Pool>(readers > 1 ? readers - 1 : 0);
+  rows_ = t.bytes / row_bytes_;
+  if (in_ram) {
+    ram_bytes_ = (t.bytes + DirectReader::kAlign - 1) / DirectReader::kAlign * DirectReader::kAlign;
+    void *m = mmap(nullptr, ram_bytes_, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (m == MAP_FAILED) throw std::runtime_error("cannot map " + std::to_string(t.bytes) + " B for the n-gram table");
+    madvise(m, ram_bytes_, MADV_HUGEPAGE);
+    ram_ = static_cast<uint8_t *>(m);
+    // The table read in 1 GiB ranges, each widened to the file's alignment into a buffer, then copied in place.
+    DirectReader reader(model.files(), loader_threads);
+    constexpr uint64_t kRange = 1ull << 30;
+    auto buf = aligned_buffer(kRange + 2 * DirectReader::kAlign);
+    const auto t0 = std::chrono::steady_clock::now();
+    for (uint64_t at = 0; at < t.bytes; at += kRange) {
+      const uint64_t n = std::min(kRange, t.bytes - at);
+      std::memcpy(ram_ + at, reader.read(t.shard, data_offset_ + at, n, buf.get()), n);
+    }
+    std::fprintf(stderr, "engine: the n-gram table in RAM: %.2f GB read in %.2f s\n", t.bytes / 1e9,
+                 std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+  }
 }
 
 Ngram::~Ngram() {
   if (fd_ >= 0) close(fd_);
+  if (ram_) munmap(ram_, ram_bytes_);
+}
+
+double Ngram::read_latency_us() {
+  alignas(kPage) static uint8_t buf[kPage];
+  std::mt19937_64 rng(7);
+  constexpr int kReads = 256;
+  const auto t0 = std::chrono::steady_clock::now();
+  for (int i = 0; i < kReads; i++) {
+    const uint64_t off = data_offset_ + (rng() % rows_) * row_bytes_;
+    if (pread(fd_, buf, kPage, (off_t)(off & ~(kPage - 1))) < 0) return 0;
+  }
+  return std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count() / kReads;
 }
 
 std::array<uint64_t, 16> Ngram::rows(int32_t t, int32_t p1, int32_t p2) const {
@@ -59,6 +98,10 @@ std::array<uint64_t, 16> Ngram::rows(int32_t t, int32_t p1, int32_t p2) const {
 
 // Reads the rows ids[i] into out + i * row_bytes, in parallel: one aligned read of the page(s) holding each row.
 void Ngram::read_rows(const std::vector<uint64_t> &ids, uint8_t *out) {
+  if (ram_) {
+    for (size_t i = 0; i < ids.size(); i++) std::memcpy(out + i * row_bytes_, ram_ + ids[i] * row_bytes_, row_bytes_);
+    return;
+  }
   readers_->run(ids.size(), [&](uint64_t i) {
     alignas(kPage) static thread_local uint8_t buf[2 * kPage];
     uint64_t off = data_offset_ + ids[i] * row_bytes_, page = off & ~(kPage - 1);

@@ -84,5 +84,6 @@ def open_config(
         vocab_size=numbers.VOCAB,
         deterministic=deterministic,
         draft_dir=str(draft) if draft is not None else "",
+        ngram_in_ram=options.ngram_in_ram,
     )
     return config, mp

@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
@@ -54,6 +55,23 @@ DirectReader::DirectReader(const std::vector<std::string> &paths, unsigned threa
 
 DirectReader::~DirectReader() {
   for (int fd : fds_) ::close(fd);
+}
+
+unsigned DirectReader::probe_threads(const std::string &path, double *rate) {
+  constexpr uint64_t kProbe = 256ull << 20;
+  const unsigned counts[] = {4, 8, 16};
+  auto buf = aligned_buffer(kProbe);
+  unsigned best = 8;
+  double best_rate = 0;
+  for (unsigned i = 0; i < 3; i++) {
+    DirectReader r({path}, counts[i]);
+    const auto t0 = std::chrono::steady_clock::now();
+    r.read(0, (1 + i) * kProbe, kProbe, buf.get());
+    const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    if (kProbe / s > best_rate) best_rate = kProbe / s, best = counts[i];
+  }
+  if (rate) *rate = best_rate;
+  return best;
 }
 
 uint64_t DirectReader::span(uint64_t offset, uint64_t bytes) {

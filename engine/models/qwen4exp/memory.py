@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from engine.api.interface import SplitKind
 from engine.memory_plan import ModelMemory
 from engine.models.qwen4exp import numbers
-from engine.models.qwen4exp.split import bytes_per_card
+from engine.models.qwen4exp.split import bytes_per_card, split_of
 from engine.models.qwen4exp.tensors import Category, TensorTable
 
 
@@ -30,5 +31,6 @@ def model_memory(table: TensorTable, cards: int = 2) -> ModelMemory:
         draft_kv_host=numbers.DRAFT_KV_BYTES,
         checkpoint_bytes=numbers.STATE_BYTES,
         max_context=numbers.CONTEXT,
+        ngram_bytes=sum(t.nbytes for t in table.tensors if split_of(t.name) is SplitKind.FILE),
         reference_vram=numbers.USABLE_VRAM,
     )

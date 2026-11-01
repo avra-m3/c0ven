@@ -330,8 +330,8 @@ No card is kept busy to hold its clock up. In decode both cards stay at 2,400 MH
 | Each card's VRAM (`zeMemAllocDevice`) | The card's half of every layer's weights and of each cached expert, its KV pages and state heads, its buffers and recorded lists |
 | Pinned host memory (`zeMemAllocHost`) | Each card's K and V of every KV page. What both cards or the CPU read: step plans, the misses' jobs and answers, the one-row exchanges, the step's n-gram rows, the cards' candidates, the checkpoints, the image encoder's weights |
 | The expert arena: the engine's own memory, from `mmap` in 1 GiB pieces with huge pages | Every expert no card caches, each in one place. The CPU reads it for misses and copies from it for short prompt chunks, and the copy engines read it in place for longer chunks and swaps. The driver cannot move this memory under the host's reclaim, and it counts against the engine's cgroup ([ADR-0035](adr/0035-the-arena-in-the-engines-own-memory.md); [known limits](../README.md#known-limits)) |
-| RAM | The n-gram rows already read, in a cache |
-| The SSD | The n-gram table, 28.8 GB, read with `O_DIRECT` past the page cache ([ADR-0015](adr/0015-ngram-table-on-the-ssd.md)) |
+| RAM | The n-gram rows already read, in a cache; or the whole n-gram table, when the host has room for it ([ADR-0057](adr/0057-the-engine-reads-the-host-it-runs-on.md)) |
+| The SSD | The n-gram table, 28.8 GB, read with `O_DIRECT` past the page cache ([ADR-0015](adr/0015-ngram-table-on-the-ssd.md)), unless it is in RAM |
 
 The engine never uses shared memory (`zeMemAllocShared`), because the driver moves its pages without the engine
 knowing.

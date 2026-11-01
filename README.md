@@ -166,8 +166,9 @@ whole of it in host memory, and the VRAM the rest would take caches experts. The
 pinned at load: 13,056 bytes a token of the KV cache, 13.7 GB for four 262,144-token slots.
 
 `ZE_AFFINITY_MASK` limits which cards the engine sees. Useful engine flags through `--engine-arg`: `--no-draft`,
-`--no-vision`, `--deterministic`, `--checkpoints N` and `--ram-max GiB`, which refuses a configuration that would take
-more host memory (`python -m engine --help` lists them all).
+`--no-vision`, `--deterministic`, `--checkpoints N`, `--ram-max GiB`, which refuses a configuration that would take
+more host memory, and `--ngram-ram on|off`, which holds the n-gram table (28.8 GB) in RAM or leaves it in the file; by
+default it is in RAM when the host has room for it (`python -m engine --help` lists them all).
 
 ## API
 
