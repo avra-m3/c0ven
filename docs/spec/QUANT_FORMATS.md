@@ -45,15 +45,16 @@ commit [MODEL_LAYER.md](MODEL_LAYER.md) uses and the build the reference outputs
 | [IQ2_XXS](#iq2_xxs) | 16 | not in the IQ3_S file; experts gate+up in the IQ3_XXS and IQ2_XS files | 256 | 66 | 2.0625 | `iq2xxs_grid`, 256 x 8 B | - | q8_K |
 | [IQ2_XS](#iq2_xs) | 17 | not in the IQ3_S file; experts gate+up in the IQ3_XXS file | 256 | 74 | 2.3125 | `iq2xs_grid`, 512 x 8 B | - | q8_K |
 | [IQ1_M](#iq1_m) | 29 | not in the IQ3_S file; experts gate+up in the IQ2_XS file | 256 | 56 | 1.75 | `iq1s_grid`, 2048 x 8 B | - | q8_K |
-| [IQ1_S](#iq1_s) | 19 | not in the IQ3_S file; experts gate+up (10 layers) in Unsloth's UD-IQ2_XXS file of DeepSeek-V4.1-Flash-1017 | 256 | 50 | 1.5625 | `iq1s_grid`, 2048 x 8 B | - | q8_K |
+| [IQ1_S](#iq1_s) | 19 | not in the IQ3_S file; experts gate+up in [Unsloth's other files](../MODEL_FILES.md#unsloths-other-files), and (10 layers) in Unsloth's UD-IQ2_XXS file of DeepSeek-V4.1-Flash-1017 | 256 | 50 | 1.5625 | `iq1s_grid`, 2048 x 8 B | - | q8_K |
 | [Q2_K](#q2_k) | 10 | not in the IQ3_S file; experts down (layer 0) in Unsloth's UD-IQ2_XXS file of DeepSeek-V4.1-Flash-1017 | 256 | 84 | 2.625 | none | - | q8_K |
 | [Q3_K](#q3_k) | 11 | not in the IQ3_S file; dense and the embedding in the Q2_0 file | 256 | 110 | 3.4375 | none | - | q8_K |
-| [Q4_K](#q4_k) | 12 | 47 dense | 256 | 144 | 4.5 | none | q8_1, DP4A | q8_K |
-| [Q5_K](#q5_k) | 13 | 35 dense | 256 | 176 | 5.5 | none | q8_1, DP4A | q8_K |
-| [Q6_K](#q6_k) | 14 | 128 dense, the head | 256 | 210 | 6.5625 | none | q8_1, DP4A | q8_K |
+| [Q4_K](#q4_k) | 12 | 47 dense; experts gate+up in [Unsloth's other files](../MODEL_FILES.md#unsloths-other-files) | 256 | 144 | 4.5 | none | q8_1, DP4A | q8_K |
+| [Q5_K](#q5_k) | 13 | 35 dense; experts gate+up in [Unsloth's other files](../MODEL_FILES.md#unsloths-other-files) | 256 | 176 | 5.5 | none | q8_1, DP4A | q8_K |
+| [Q6_K](#q6_k) | 14 | 128 dense, the head; experts gate+up in [Unsloth's other files](../MODEL_FILES.md#unsloths-other-files) | 256 | 210 | 6.5625 | none | q8_1, DP4A | q8_K |
 | [Q8_0](#q8_0) | 8 | 1 dense (`blk.47.ffn_down_shexp`); the KV cache; in Unsloth's UD-IQ4_XS file, experts down (5 layers) and most dense tensors | 32 | 34 | 8.5 | none | q8_1, DP4A | q8_0 |
-| [Q4_0](#q4_0-and-q5_0) | 2 | not in the IQ3_S file; 16 dense in the Q2_0 file | 32 | 18 | 4.5 | none | - | q8_0 |
-| [Q5_0](#q4_0-and-q5_0) | 6 | not in the IQ3_S file; 7 dense in the Q2_0 file | 32 | 22 | 5.5 | none | - | q8_0 |
+| [Q4_0](#q4_0-q5_0-and-q5_1) | 2 | not in the IQ3_S file; 16 dense in the Q2_0 file | 32 | 18 | 4.5 | none | - | q8_0 |
+| [Q5_0](#q4_0-q5_0-and-q5_1) | 6 | not in the IQ3_S file; 7 dense in the Q2_0 file | 32 | 22 | 5.5 | none | - | q8_0 |
+| [Q5_1](#q4_0-q5_0-and-q5_1) | 7 | not in the IQ3_S file; experts down in [Unsloth's other files](../MODEL_FILES.md#unsloths-other-files) | 32 | 24 | 6 | none | - | q8_1 |
 | [BF16](#bf16-f16-f32) | 30 | 484 (dense, head, PLE) | 1 | 2 | 16 | none | float kernels | bf16 |
 | [F16](#bf16-f16-f32) | 1 | 1 (`blk.1.ple_conv1d`) | 1 | 2 | 16 | none | float kernels | f16 |
 | [F32](#bf16-f16-f32) | 0 | 292 (norms and other small tensors) | 1 | 4 | 32 | none | float kernels | f32 |
@@ -65,13 +66,17 @@ bytes = values / values-per-block x bytes-per-block with this table, and every r
 (checked against [tensors-IQ3_S.tsv](../model/tensors-IQ3_S.tsv); see [Sources](#sources-and-how-this-was-checked)).
 
 The rows marked "not in the IQ3_S file" are the types the other quants of the same repository add (the IQ3_XXS,
-IQ2_XS and Q2_0 folders, by their `tensor-allocation/*.rco-allocation.txt` lists), and IQ1_S and Q2_K, which another
-model's file holds (by the tensor headers of its shards); the engine reads them too, and their sections describe its
-own decoding rather than llama.cpp's GPU dot product.
+IQ2_XS and Q2_0 folders, by their `tensor-allocation/*.rco-allocation.txt` lists), Unsloth's files of the same model
+([MODEL_FILES.md](../MODEL_FILES.md#unsloths-other-files)), and the UD-IQ2_XXS file of another model,
+[`unsloth/DeepSeek-V4.1-Flash-1017-GGUF`](https://huggingface.co/unsloth/DeepSeek-V4.1-Flash-1017-GGUF) at revision
+`8a6ec9cf118e785a362ea94ee123c61c70553be6` (by the tensor headers of its shards); the engine reads them too, and their
+sections describe its own decoding rather than llama.cpp's GPU dot product. IQ1_S and Q5_1 are only in Unsloth's files,
+and Q2_K only in the other model's.
 
-The CPU column is each type's `vec_dot_type` in `ggml-cpu.c` (Q2_0 `:234`, Q4_0 `:243`, Q5_0 `:263`, Q8_0 `:272`,
-Q2_K `:302`, Q3_K `:308`, Q4_K `:311`, Q5_K `:321`, Q6_K `:327`, IQ2_XXS `:340`, IQ2_XS `:346`, IQ3_XXS `:349`,
-IQ3_S `:356`, IQ2_S `:362`, IQ1_S `:371`, IQ1_M `:377`, IQ4_NL `:380`, IQ4_XS `:386`, BF16 `:395`, F16 `:222`). It
+The CPU column is each type's `vec_dot_type` in `ggml-cpu.c` (Q2_0 `:234`, Q4_0 `:243`, Q5_0 `:263`, Q5_1 `:269`,
+Q8_0 `:272`, Q2_K `:302`, Q3_K `:308`, Q4_K `:311`, Q5_K `:321`, Q6_K `:327`, IQ2_XXS `:340`, IQ2_XS `:346`,
+IQ3_XXS `:349`, IQ3_S `:356`, IQ2_S `:362`, IQ1_S `:371`, IQ1_M `:377`, IQ4_NL `:380`, IQ4_XS `:386`, BF16 `:395`,
+F16 `:222`). It
 matters because the correctness reference is llama.cpp's CPU backend ([ADR-0012](../adr/0012-correctness-reference.md),
 [REFERENCE_OUTPUTS.md](../measurements/REFERENCE_OUTPUTS.md)). There the activation meets a K- or i-quant as q8_K, not q8_1.
 
@@ -95,7 +100,8 @@ The general shape, for one weight block or sub-block meeting one q8_1 block of 3
   Σ w_i a_i = (d_w s) · d_a · Σ c_i q_i  (one DP4A chain for Σ c_i q_i)
 
 where c_i is the weight's small integer (code, or codebook value with its sign) and s its sub-block scale. Formats
-with a per-block *minimum* (Q4_K, Q5_K) add a second term, d_min m · d_a · Σ q_i, from the activation's sum.
+with a per-block *minimum* (Q4_K, Q5_K, and in the engine's kernels Q2_K and Q5_1) add a second term,
+d_min m · d_a · Σ q_i, from the activation's sum.
 
 The SYCL backend has the same functions (`vecdotq.hpp`: Q2_0 `:1006`, Q8_0 `:1155`, Q4_K `:1225`, Q5_K `:1285`, Q6_K
 `:1375`, IQ2_S `:1492`, IQ3_XXS `:1546`, IQ3_S `:1588`, IQ4_NL `:1694`, IQ4_XS `:1721`). Where it differs from CUDA in
@@ -464,19 +470,22 @@ d · d_a · sumi. In attention, llama.cpp's vector flash-attention kernel quanti
 (`vec_dot_fattn_vec_KQ_q8_0`, `:304-329`); it dequantizes Q8_0 values to f16 or f32 (`dequantize_V_q8_0`, `:588`). One
 K or V row of one head (256 values) is 8 blocks, 272 B.
 
-### Q4_0 and Q5_0
+### Q4_0, Q5_0 and Q5_1
 
-32 values with one f16 scale, 4.5 and 5.5 bpw (`block_q4_0`, `common.h:194-198`; `block_q5_0`, `common.h:230-234`;
-`GGML_TYPE_Q4_0 = 2`, `GGML_TYPE_Q5_0 = 6`, `ggml.h:392`, `:396`).
+32 values with one f16 scale, 4.5 and 5.5 bpw; Q5_1 adds an f16 minimum, 6 bpw (`block_q4_0`, `common.h:194-198`;
+`block_q5_0`, `common.h:230-234`; `block_q5_1`, `common.h:238-248`; `GGML_TYPE_Q4_0 = 2`, `GGML_TYPE_Q5_0 = 6`,
+`GGML_TYPE_Q5_1 = 7`, `ggml.h:392`, `:396`, `:397`). Q5_1 is the down experts' type in Unsloth's UD-Q4_K_XL file.
 
 | Type | Offset | Bytes | Field | Meaning |
 | --- | ---: | ---: | --- | --- |
-| both | 0 | 2 | `d` (f16) | block scale |
-| Q5_0 | 2 | 4 | `qh[4]` | bit j: the fifth bit of value j |
-| both | 2 (Q4_0), 6 (Q5_0) | 16 | `qs[16]` | byte j: value j (low nibble), value j + 16 (high nibble) |
+| all | 0 | 2 | `d` (f16) | block scale |
+| Q5_1 | 2 | 2 | `m` (f16) | block minimum |
+| Q5_0, Q5_1 | 2 (Q5_0), 4 (Q5_1) | 4 | `qh[4]` | bit j: the fifth bit of value j |
+| all | 2 (Q4_0), 6 (Q5_0), 8 (Q5_1) | 16 | `qs[16]` | byte j: value j (low nibble), value j + 16 (high nibble) |
 
-**Dequantisation** (`quants.c:459-477`, `:500-524`): Q4_0 **y = d · (q − 8)**; Q5_0 **y = d · (q − 16)** with q's
-bit 4 from `qh`. Neither has a codebook or a second scale.
+**Dequantisation** (`quants.c:459-477`, `:500-524`, `:526-551`): Q4_0 **y = d · (q − 8)**; Q5_0 **y = d · (q − 16)**
+with q's bit 4 from `qh`; Q5_1 **y = d · q + m**, q as Q5_0's. None has a codebook or a second scale. The engine's
+dot products take Q5_1's m as they take Q4_K's minimum, as a term times the activation's sum.
 
 ### BF16, F16, F32
 
@@ -570,7 +579,8 @@ ones as words (`get_int_b4`, `:27-29`). A 16- or 32-byte load of quants crosses 
 | Q8_0 | 34 | 2 | 640 values, 20 blocks | 680 | 8 |
 | IQ1_S | 50 | 2 | 2,560 values, 10 blocks | 500 | 4 |
 | Q2_K (down) | 84 | 4 | 2,304 values, 9 blocks | 756 | 4 |
-| Q4_K / Q5_K / Q6_K | 144 / 176 / 210 | 16 / 16 / 2 | (dense) | | |
+| Q5_1 | 24 | 8 | 640 values, 20 blocks | 480 | 0 |
+| Q4_K / Q5_K / Q6_K | 144 / 176 / 210 | 16 / 16 / 2 | 2,560 values, 10 blocks | 1,440 / 1,760 / 2,100 | 0 / 0 / 4 |
 
 The Q2_K row is a down row of the DeepSeek-V4.1-Flash-1017 UD-IQ2_XXS file; no IQ3_S file expert is Q2_K.
 
@@ -596,7 +606,11 @@ values (6,400 super-blocks), down is 2,560 rows x 640 values.
 | Q2_0 (down) | `qs` 16, `d` 2 | 409,600 + 51,200 | 460,800 |
 | Q8_0 (down) | `qs` 32, `d` 2 | 1,638,400 + 102,400 | 1,740,800 |
 | IQ1_S | grid index low bits 32, `qh` 16, `d` 2 | 204,800 + 102,400 + 12,800 | 320,000 |
-| Q2_K (down) | `qs` 64, `scales` 16, `d` and `dmin` 4 | 409,600 + 102,400 + 25,600 | 537,600 |
+| Q2_K (down), 5,120 rows x 2,304 values, the DeepSeek file's shape | `qs` 64, `scales` 16, `d` and `dmin` 4 | 2,949,120 + 737,280 + 184,320 | 3,870,720 |
+| Q4_K | `qs` 128, `scales` 12, `d` and `dmin` 4 | 819,200 + 76,800 + 25,600 | 921,600 |
+| Q5_K | `qs` 128, `qh` 32, `scales` 12, `d` and `dmin` 4 | 819,200 + 204,800 + 76,800 + 25,600 | 1,126,400 |
+| Q6_K | `ql` 128, `qh` 64, `scales` 16, `d` 2 | 819,200 + 409,600 + 102,400 + 12,800 | 1,344,000 |
+| Q5_1 (down) | `qs` 16, `qh` 4, `d` and `m` 4 | 819,200 + 204,800 + 204,800 | 1,228,800 |
 
 Every run length is a multiple of 256 B, so if a slice starts on a 256-B boundary every run does, with no padding.
 Within a run, block k's piece sits at k x its size: the 64- and 128-byte quant pieces are 64- and 128-byte aligned, and

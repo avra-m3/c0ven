@@ -51,7 +51,7 @@ docker exec engine-dev bash -c 'cd /src/build && ENGINE_EXPECT_GPUS=2 ctest -L g
 | `direct_test` | 1 | the loader's thread probe reads the largest shard, and gives 8 threads without reading a file under 1 GiB; no card, no model |
 | `mrope_test` | 1 | the M-RoPE positions an image gives a prompt's cells, against transformers' rule; no card |
 | `experts_test` | 1 | the CPU's expert products with and without the SwiGLU limit, against the formula on ggml's dot products, 1e-5; no card |
-| `quant_test` | 1 | every quantised type's block size and fields against ggml's, the runs layout on random blocks, and ggml's CPU dot product against its dequantisation; no card |
+| `quant_test` | 1 | every quantised type's block size and fields against ggml's, the runs layout on random blocks, those blocks' values within the size of the files' weights, and ggml's CPU dot product against its dequantisation; no card |
 | `cpu_experts_test` | 1 | the CPU's expert path keeps its one pool job for every down type of the deepseek41 and Flash-Next files, and its results for several tokens at once equal one token's bit for bit, on random blocks; no card |
 | `ze_smoke_test` | 2 | a kernel runs on every card, and one card waits on another's event |
 | `matvec_test` | 3 | the weight products of every quantised type on random blocks, and of every type the file holds on its rows, against ggml's dequantisation, 1e-5 |
@@ -72,7 +72,9 @@ A test whose model is missing skips (exit code 77), except `matvec_test`, `qgemm
 check random blocks only. Tests find the model at `FLASH_MODEL_DIR`, by default `/models`; ctest gives `api_test` the
 path `/models/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf`. `FLASH_MODEL` names another file's first shard
 instead: `matvec_test`, `qgemm_test` and `moe_test` then also check the kernels of every quantised type that file has
-on its weights (`gguf_test` and `kl_test` hold the IQ3_S file's own numbers).
+on its weights (`gguf_test` and `kl_test` hold the IQ3_S file's own numbers). A type the IQ3_S file lacks needs a file
+that has it, such as UD-IQ4_XS for the Q8_0 down experts ([MODEL_FILES.md](MODEL_FILES.md#unsloths-other-files) lists
+the expert types of Unsloth's files).
 A GPU test also skips when Level Zero lists no GPU, unless `ENGINE_EXPECT_GPUS` is set; then it fails. `api_test`
 checks only for the model, since the C ABI does not say why `engine_open` failed.
 
