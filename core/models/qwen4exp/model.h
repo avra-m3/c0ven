@@ -16,12 +16,13 @@
 #include <unordered_map>
 #include <vector>
 
+#include "api/model.h"
 #include "cpu/experts.h"
 #include "load/direct.h"
 #include "load/gguf.h"
-#include "mrope.h"
-#include "ngram.h"
-#include "layout.h"
+#include "models/qwen4exp/layout.h"
+#include "models/qwen4exp/mrope.h"
+#include "models/qwen4exp/ngram.h"
 #include "quant.h"
 #include "step.h"
 #include "util/parallel.h"
@@ -30,108 +31,41 @@
 
 namespace engine::qwen4exp {
 
-struct Options {
-  uint32_t slots = 1;                       // sequences resident at once
-  uint32_t max_ctx = 32768;                 // positions per sequence, a multiple of 4
-  uint32_t kv_pages = 0;                    // the KV cache's pool, in pages of 4 cells (layout.h); 0: every slot's
-                                            // whole context
-  uint32_t kv_resident = 0;                 // K and V cells per slot kept in VRAM, the rest in host memory (ADR-0008
-                                            // item 3, kv_share.cpp's note); 0: every cell
-  uint32_t max_cards = 2;                   // 1 runs the whole model on card 0
-  uint64_t reserve_bytes = 512ull << 20;    // device memory left free on each card, beyond what the engine counts
-  int32_t experts_per_layer = -1;           // experts cached per layer; -1: as many as fit
-  unsigned cpu_threads = 16;                // the CPU's expert workers, with the host thread
-  uint32_t candidates = 64;                 // logits returned per step, the largest
-  uint32_t prompt_chunk = 4352;             // tokens per prompt pass at most, a multiple of 64; 0: one token per
-                                            // step
-  bool trace = false;                       // the lists time every kernel (prompt_trace, step_trace, df_trace)
-  bool profile_routing = false;             // the prompt path counts each expert's rows (routing_counts)
-  bool adapt_swaps = false;                 // count the routing, for swap_round (swap.cpp)
-  // The pages of the KV pool not in use lend their memory to the expert cache (kv_share.cpp); needs adapt_swaps.
-  bool share_kv = false;
-  // The arena in the process's own memory, which the copy engines read in place (ADR-0035). false, or a card without
-  // shared system USM: the driver's buffers, which xe moves out of GTT under reclaim and so stalls the CPU's experts
-  // (docs/measurements/MEASUREMENTS.md#2026-10-17-decode-stalls-eviction). options() gives the value the engine took.
-  bool anon_arena = true;
-  bool ngram_in_ram = false;                // the whole n-gram table in RAM (ngram.h)
-  // A profile to choose the cached experts by (tools/route_profile.cpp); empty: the first experts of each layer.
-  std::string routing_profile = ENGINE_ROUTING_PROFILE;
-  // The draft (MTP) layer's tensors (docs/MODEL_FILES.md, "The MTP layer"); empty: no drafting.
-  std::string mtp_dir;
-  // The image encoder's file (docs/spec/MODEL_VISION.md, section 1); empty: no images. Needs prompt_chunk.
-  std::string vision_path;
-};
+using engine::Candidate;
+using engine::Image;
+using engine::ImageShape;
+using engine::kNoToken;
+using engine::LoadInfo;
+using engine::NgramStats;
+using engine::Options;
+using engine::StepIn;
+using engine::StepStats;
+using engine::TraceRow;
 
-// One kernel's share of a traced list's last run.
-struct TraceRow {
-  std::string kernel;
-  uint32_t launches = 0;
-  double ms = 0;  // from the end of the launch before it, so waits on events count to the kernel after them
-};
+// The image and video tokens, and 16-pixel patches of 768 bytes merged 2 x 2 (docs/spec/MODEL_VISION.md, sections 2,
+// 4.1 and 6).
+constexpr ImageShape kImageShape{248056, 248057, 768, 2};
+// The drafts a round makes by default: the draft layer's; DFlash 2 drafts a whole window in one pass.
+constexpr uint32_t kDraftMaxLayer = 3, kDraftMaxCap = STEP_MAX_ROWS - 1;
 
-struct Candidate {
-  int32_t token;
-  float logit;
-};
-
-struct LoadInfo {
-  uint32_t cards = 0;
-  uint32_t experts_per_layer = 0;
-  uint32_t vocab = 0;
-  uint64_t device_bytes[2] = {0, 0};
-  uint64_t arena_bytes = 0;  // host memory holding the experts not on the cards
-  uint64_t expert_budget[2] = {0, 0};  // device memory each card had left for the expert cache with the whole KV pool
-                                       // backed (load_experts, share_cards)
-  bool arena_anon = false;   // the arena is the process's own memory (Options::anon_arena)
-  double seconds = 0;
-  double host_read_bytes_per_s = 0;  // the CPU workers' read of the arena at the first load; 0: not measured
-  unsigned loader_threads = 0;       // the loader's threads, from DirectReader::probe_threads
-  double loader_bytes_per_s = 0;     // their read rate in the probe
-  bool ngram_in_ram = false;
-  double ngram_read_us = 0;          // one 4 KiB row read from the file, when the table is not in RAM
-  double copy_bytes_per_s[2] = {0, 0};  // each card's copy engine reading pinned host memory
-};
-
-// One row of a decode step: a token of a sequence at its position; p1 and p2 are the two tokens before it (kNoToken
-// when absent).
-struct StepIn {
-  uint32_t slot = 0, pos = 0;
-  int32_t token = 0, p1 = -1, p2 = -1;
-};
-
-// An image in a slot's prompt (docs/spec/MODEL_VISION.md): its block of h w / 4 placeholder tokens starts at prompt
-// index first; grid_h and grid_w are its size in patches (both even). frames is 1 for a still image, 2 for a pair of
-// video frames (section 6). pixels holds its grid_h x grid_w patches in the encoder's order (section 2.2), each
-// frames x 768 bytes of 8-bit RGB, frame, channel, row, column; null when only the positions are wanted.
-struct Image {
-  uint32_t first = 0;
-  uint32_t frames = 1, grid_h = 0, grid_w = 0;
-  const uint8_t *pixels = nullptr;
-};
-
-struct StepStats {
-  uint32_t misses = 0;          // routed experts the CPU computed
-  uint32_t layers_missed = 0;   // layers with at least one miss
-};
-
-class Model {
+class Model final : public engine::Model {
  public:
   Model(const std::string &path, const Options &opt);
-  ~Model();
+  ~Model() override;
   Model(const Model &) = delete;
   Model &operator=(const Model &) = delete;
 
-  // Zeroes a slot's recurrent state, before a new sequence, and forgets its images.
-  void reset_slot(uint32_t slot);
+  // Zeroes the slot's recurrent state too.
+  void reset_slot(uint32_t slot) override;
 
-  // The images of the prompt a slot reads (vision.cpp), in order, their blocks apart; they set the positions of every
-  // cell from the first image on (docs/spec/MODEL_VISION.md, section 4.2). The pixels are read when the first prompt
-  // chunk that holds part of an image's block runs, so they must live until then.
-  void set_images(uint32_t slot, const Image *images, uint32_t n);
+  // vision.cpp. The images set the positions of every cell from the first image on (docs/spec/MODEL_VISION.md,
+  // section 4.2).
+  void set_images(uint32_t slot, const Image *images, uint32_t n) override;
   // A cell's positions (time, height, width): (cell, cell, cell) for text before any image.
   std::array<uint32_t, 3> position(uint32_t slot, uint32_t cell) const;
   // The most tokens an image may have: 0 without Options::vision_path.
-  uint32_t image_tokens_max() const { return vmax_tokens_; }
+  uint32_t image_tokens_max() const override { return vmax_tokens_; }
+  ImageShape image_shape() const override { return kImageShape; }
   // An image's rows of the text model's input (vision.cpp), image_tokens rows of 2,560 into out: what the prompt path
   // reads at the image's block. For tests; prompt() runs it itself.
   void encode_image(const Image &im, float *out);
@@ -140,52 +74,35 @@ class Model {
   // KV and state go into the slot. Returns the largest logits, highest first.
   std::vector<Candidate> step(uint32_t slot, uint32_t pos, int32_t token, int32_t p1, int32_t p2);
 
-  // One step of n rows (1 to STEP_MAX_ROWS): rows of several sequences, or consecutive positions of one, in order.
-  // Returns each row's largest logits, highest first. With window, the rows are runs of consecutive positions, one run
-  // a sequence, and their recurrent state waits for commit, which keeps each run's first rows' (the accepted drafts
-  // and the row before them) and forgets the rest. Their KV is overwritten when their positions come again. With
-  // prompt, the rows are prompt tokens, counted for adaptive swaps as the prompt path counts them.
-  std::vector<std::vector<Candidate>> step(const StepIn *rows, uint32_t n, bool window = false, bool prompt = false);
-  // Returns before the cards finish; the next call on a slot's state waits for it (draft-layer passes run beside it).
-  // commit: one run, the window's first n rows. commit_runs: n runs of the window, each its own sequence's.
-  void commit(uint32_t slot, uint32_t pos0, uint32_t n);
-  void commit_runs(const CommitRun *runs, uint32_t n);
+  // With window, the recurrent state is what waits for commit; the KV is written in place.
+  std::vector<std::vector<Candidate>> step(const StepIn *rows, uint32_t n, bool window = false,
+                                           bool prompt = false) override;
+  // Draft-layer passes run beside a commit's work on the cards.
+  void commit(uint32_t slot, uint32_t pos0, uint32_t n) override;
+  void commit_runs(const CommitRun *runs, uint32_t n) override;
 
-  // The draft layer (mtp.cpp). mtp_catchup: rows r = (slot, position i, the token at i + 1), the hidden input the
-  // main model's final residual of the last step's row r (row from[r] with from). Every row writes its cell; only the
-  // rows in keep run the rest of the layer, and it returns their draft candidates (for i + 2) in keep's order. A draft
-  // from keep[j] reads src_row j. mtp_draft: one more draft for such a row, the hidden input the draft layer's own
-  // residual of row src_row of its last pass (whose cell was i - 1).
-  bool drafting() const { return mtp_on_ || df_on_; }
+  // The draft layer (mtp.cpp).
+  bool drafting() const override { return mtp_on_ || df_on_; }
   std::vector<std::vector<Candidate>> mtp_catchup(const StepIn *rows, uint32_t n, const std::vector<uint32_t> &keep,
-                                                  const uint32_t *from = nullptr);
-  std::vector<Candidate> mtp_draft(uint32_t slot, uint32_t pos, int32_t token, uint32_t src_row);
-  // mtp_drafts: mtp_draft for rows of distinct sequences in one pass, row r's input row src_rows[r] of the last pass.
-  std::vector<std::vector<Candidate>> mtp_drafts(const StepIn *rows, uint32_t n, const uint32_t *src_rows);
-  // mtp_catchup_prompt: mtp_catchup over the n rows before row `end` of the last prompt chunk (a run's last rows),
-  // from the prompt path's residuals. mtp_start: the slot's first cell the draft layer attends to (earlier ones were
-  // never computed).
+                                                  const uint32_t *from = nullptr) override;
+  std::vector<Candidate> mtp_draft(uint32_t slot, uint32_t pos, int32_t token, uint32_t src_row) override;
+  std::vector<std::vector<Candidate>> mtp_drafts(const StepIn *rows, uint32_t n, const uint32_t *src_rows) override;
   std::vector<std::vector<Candidate>> mtp_catchup_prompt(const StepIn *rows, uint32_t n, uint32_t end,
-                                                         const std::vector<uint32_t> &keep);
+                                                         const std::vector<uint32_t> &keep) override;
+  // The slot's first cell the draft layer attends to (earlier ones were never computed).
   void mtp_start(uint32_t slot, uint32_t first);
 
-  // The DFlash 2 drafter (dflash.cpp), in place of the draft layer when Options::mtp_dir holds its files. A pass takes
-  // context rows first: row r = (slot, position), with the features of the last decode step's row r, into the slot's
-  // ring. Then each block: n rows from position pos of a slot (its token there, then mask tokens) that attend to the
-  // slot's ring from the position draft_start set. Returns each block's candidates for positions pos + 1 .. pos + n - 1.
-  // Blocks of distinct slots, at most STEP_MAX_ROWS rows in all; a pass may have no context rows or no blocks.
-  struct DraftBlock {
-    uint32_t slot, pos;
-    int32_t token;
-    uint32_t n;
-  };
-  bool dflash() const { return df_on_; }
+  // The DFlash 2 drafter (dflash.cpp), in place of the draft layer when Options::mtp_dir holds its files. Context
+  // rows put the features of the decode step's rows into the slot's ring; a block's rows after its token are mask
+  // tokens, and attend to the ring.
+  bool dflash() const override { return df_on_; }
   std::vector<std::vector<std::vector<Candidate>>> df_pass(const StepIn *ctx, uint32_t nctx, const DraftBlock *blocks,
-                                                           uint32_t nblocks);
-  // df_pass's context rows only, from the n rows before row end of the last prompt chunk (a run's last rows).
-  void df_context_prompt(const StepIn *rows, uint32_t n, uint32_t end);
-  // The slot's first position the drafter reads (earlier ones were never computed): mtp_start, or DFlash 2's.
-  void draft_start(uint32_t slot, uint32_t first);
+                                                           uint32_t nblocks) override;
+  void df_context_prompt(const StepIn *rows, uint32_t n, uint32_t end) override;
+  // mtp_start, or DFlash 2's.
+  void draft_start(uint32_t slot, uint32_t first) override;
+  uint32_t draft_max_default() const override { return df_on_ ? kDraftMaxCap : kDraftMaxLayer; }
+  uint32_t draft_max_cap() const override { return kDraftMaxCap; }
   // For tests: card 0's features of the last decode step's row r (DF_FEAT bf16 values), and the last block pass's
   // final normed rows (STEP_MAX_ROWS x Q_EMBD).
   std::vector<uint16_t> df_features(uint32_t row);
@@ -199,22 +116,12 @@ class Model {
   // while this chunk runs, and the next call takes them if its chunk is that one.
   std::vector<Candidate> prompt(uint32_t slot, uint32_t pos0, const int32_t *tokens, uint32_t n, int32_t p1,
                                 int32_t p2, const int32_t *next = nullptr, uint32_t next_n = 0);
-  // One sequence's run of a prompt chunk: n tokens from position pos0, p1 and p2 as for prompt.
-  struct PromptRun {
-    uint32_t slot, pos0;
-    const int32_t *tokens;
-    uint32_t n;
-    int32_t p1, p2;
-  };
-  // Runs of 1 to PROMPT_MAX_RUNS sequences, each of them once, in one pass: the experts are staged once for all
-  // their rows, at most prompt_chunk() of them. Each run's state and KV are as prompt gives them, bit for bit. Returns
-  // each run's last token's largest logits. next and next_n as for prompt, with one run.
+  // The experts are staged once for all the runs' rows. Each run's state and KV are as prompt gives them, bit for
+  // bit. next and next_n as for prompt.
   std::vector<std::vector<Candidate>> prompt_runs(const PromptRun *runs, uint32_t nruns, const int32_t *next = nullptr,
-                                                  uint32_t next_n = 0);
-  uint32_t prompt_chunk() const { return tmax_; }
-  // The most rows a chunk may have and fetch only the uncached experts its router picks (kFetchRows); a longer one
-  // copies every uncached expert. 0 when the cards cache every expert, and every chunk is staged one way.
-  uint32_t fetch_rows() const;
+                                                  uint32_t next_n = 0) override;
+  uint32_t prompt_chunk() const override { return tmax_; }
+  uint32_t fetch_rows() const override;
   // With Options::trace: the last prompt chunk's (or decode step's) time on a card per kernel, largest first.
   std::vector<TraceRow> prompt_trace(uint32_t card) const;
   std::vector<TraceRow> step_trace(uint32_t card) const;
@@ -222,63 +129,49 @@ class Model {
   // With Options::profile_routing: rows routed to each expert, [layer][expert], by the prompts read so far.
   std::vector<uint32_t> routing_counts() const;
 
-  // A slot's fixed state as one block (state.cpp): the DeltaNet layers' and the PLE history, not the KV, which stays in
-  // its pages. Its size, and copies to and from host memory (the block must be host memory every card reaches:
-  // alloc_pinned).
-  uint64_t slot_state_bytes();
-  void save_slot(uint32_t slot, uint8_t *dst);
-  void load_slot(uint32_t slot, const uint8_t *src);
-  void *alloc_pinned(size_t bytes);
-  void free_pinned(void *p);
+  // A slot's fixed state (state.cpp): the DeltaNet layers' and the PLE history.
+  uint64_t slot_state_bytes() override;
+  void save_slot(uint32_t slot, uint8_t *dst) override;
+  void load_slot(uint32_t slot, const uint8_t *src) override;
+  void *alloc_pinned(size_t bytes) override;
+  void free_pinned(void *p) override;
 
-  // Sleep (ADR-0032): sleep frees all the model holds on the cards and keeps the runtime, kernels, host buffers and
-  // arena. wake loads the cards as the constructor did, with the experts cached at the sleep, and throws, leaving
-  // the model asleep, when they no longer fit. Slots are empty after a wake. Neither runs during a step or a prompt
-  // chunk, and while asleep no other call may run.
-  void sleep();
-  void wake();
+  // wake loads the cards as the constructor did, with the experts cached at the sleep.
+  void sleep() override;
+  void wake() override;
   bool asleep() const { return asleep_; }
 
-  // The KV cache's pages (layout.h). The pool holds kv_pages() pages, a multiple of the cards; a slot's row of the page
-  // table has pages_per_slot() entries. At load, slot s's logical page i is page s pages_per_slot() + i while that is
-  // in the pool, and page 0 past it. set_pages maps n logical pages of a slot from first; copy_cells copies the first
-  // cells cells (fewer than a page) of page from into page to, every attention layer on every card (state.cpp).
-  // Between steps: neither waits for a window's commit, which reads no KV.
-  uint32_t kv_pages() const { return kv_pages_; }
-  uint32_t pages_per_slot() const { return npp_; }
-  void set_pages(uint32_t slot, uint32_t first, const uint32_t *pages, uint32_t n);
-  void copy_cells(uint32_t from, uint32_t to, uint32_t cells);
-  // With Options::share_kv (kv_share.cpp), the pool's pages from in_use up hold nothing to read again, and the
-  // expert cache may take their memory. kv_need backs every page below in_use before it returns, taking memory back
-  // from the cache if it must; kv_ahead chooses what the cache gives up for the next pages, behind the steps. Call
-  // both between steps. Streamed (Options::kv_resident), the ring of resident K and V pages is sized the same way:
-  // resident is the pages the slots in use read, and the ring holds at most that many (up to its size) once the
-  // steps have claimed them. kvs_drop takes a slot's first `pages` logical pages out of the ring: an idle slot's,
-  // so they no longer count. Between steps.
-  void kv_need(uint32_t in_use, uint32_t resident = UINT32_MAX);
-  void kv_ahead();
-  void kvs_drop(uint32_t slot, uint32_t pages);
+  // The pool (layout.h) is a multiple of the cards. At load, slot s's logical page i is page s pages_per_slot() + i
+  // while that is in the pool, and page 0 past it. copy_cells copies every attention layer on every card (state.cpp).
+  // Neither set_pages nor copy_cells waits for a window's commit, which reads no KV.
+  uint32_t kv_pages() const override { return kv_pages_; }
+  uint32_t pages_per_slot() const override { return npp_; }
+  void set_pages(uint32_t slot, uint32_t first, const uint32_t *pages, uint32_t n) override;
+  void copy_cells(uint32_t from, uint32_t to, uint32_t cells) override;
+  // With Options::share_kv (kv_share.cpp) the expert cache may take the memory of the pool's pages from in_use up,
+  // and kv_need takes it back when it must. Streamed (Options::kv_resident), the ring of resident K and V pages holds
+  // at most `resident` pages (up to its size) once the steps have claimed them; kvs_drop is for an idle slot.
+  void kv_need(uint32_t in_use, uint32_t resident = UINT32_MAX) override;
+  void kv_ahead() override;
+  void kvs_drop(uint32_t slot, uint32_t pages) override;
 
-  // Adaptive swaps (swap.cpp): adds the last prompt chunk's routing to the counts, and makes up to max_swaps swaps
-  // where the counts say so, the clearest first. Returns the swaps made. Call between steps. A round while no plan
-  // runs passes decay false: the counts have not changed since the last round, so they are not decayed.
-  void note_prompt_routing();
-  uint32_t swap_round(uint32_t max_swaps = 64, bool decay = true);
-  // Whether the swap and move threads are done, so that a round would not wait for them.
-  bool swaps_ready() const { return swap_busy_.load() == 0; }
-  // Whether the last round chose nothing for the next: no swaps, refills or evictions. After swaps_ready.
-  bool swaps_settled() const { return swap_next_.empty() && evict_next_.empty(); }
+  // Adaptive swaps (swap.cpp): a round makes the clearest swaps first.
+  void note_prompt_routing() override;
+  uint32_t swap_round(uint32_t max_swaps = 64, bool decay = true) override;
+  // The swap and move threads are done.
+  bool swaps_ready() const override { return swap_busy_.load() == 0; }
+  // No swaps, refills or evictions. After swaps_ready.
+  bool swaps_settled() const override { return swap_next_.empty() && evict_next_.empty(); }
   uint64_t swaps() const { return swaps_; }
 
-  const LoadInfo &info() const { return info_; }
-  const StepStats &last_stats() const { return stats_; }
-  // Experts cached per layer now, the mean over the layers as LoadInfo counts it: with Options::share_kv the cache
-  // gives blocks to the KV pool and takes them back. Between steps, on the engine thread. experts_floor is the
-  // count the load keeps room for whatever the pool holds (kv_share.cpp).
-  uint32_t experts_cached() const;
-  uint32_t experts_floor() const { return nslots_cached_; }
-  // The n-gram table's counters (ngram.h); zeros without the table. Between steps, on the engine thread.
-  NgramStats ngram_stats() const { return ngram_ ? ngram_->stats() : NgramStats{}; }
+  const LoadInfo &info() const override { return info_; }
+  const StepStats &last_stats() const override { return stats_; }
+  // With Options::share_kv the cache gives blocks to the KV pool and takes them back (kv_share.cpp). On the engine
+  // thread.
+  uint32_t experts_cached() const override;
+  uint32_t experts_floor() const override { return nslots_cached_; }
+  // ngram.h. On the engine thread.
+  NgramStats ngram_stats() const override { return ngram_ ? ngram_->stats() : NgramStats{}; }
   const Options &options() const { return opt_; }
 
  public:
@@ -452,7 +345,7 @@ class Model {
   StepPlan *plan_ = nullptr;
   StepPlan *head_plan_ = nullptr;  // one row: the prompt path's head
   CommitPlan *cplan_ = nullptr;    // a window's commit
-  SlotRope *rope_ = nullptr;       // [slot] the decode step's rotation (step.h)
+  SlotRope *rope_ = nullptr;       // [slot] the decode step's rotation (layout.h)
   std::vector<std::vector<Image>> images_;        // [slot]
   std::vector<std::vector<ImageBlock>> blocks_;  // [slot] their blocks
   bool commit_pending_ = false;    // the last commit was executed and not yet waited for

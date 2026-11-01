@@ -78,7 +78,7 @@ CMD ["bash"]
 LABEL project=c0ven
 
 # The checkout, the build and the venv, owned by root and read-only to the user, so the root filesystem can be
-# mounted read-only. The build's paths are compiled into the core (ENGINE_KERNEL_DIR, ENGINE_ROUTING_PROFILE), so
+# mounted read-only. The build's paths are compiled into the core (ENGINE_KERNEL_DIR, ENGINE_QWEN4EXP_ROUTING_PROFILE), so
 # they never move. ocloc compiles the kernels without a card (ADR-0028).
 FROM engine AS serve
 USER root

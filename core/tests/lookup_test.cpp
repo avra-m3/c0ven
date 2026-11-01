@@ -66,6 +66,10 @@ int main() {
     Lookup lk;
     EXPECT(lk.drafts(t, 119, 7, is_99).empty(), "stop at once");
     EXPECT(lk.drafts(t, 119, 7, never) == std::vector<int32_t>({99, 1, 2, 500, 501, 502, 503}), "no stop");
+    // A stop that holds state, as the C ABI's code passes for the model's image tokens.
+    const int32_t at = 2;
+    EXPECT(lk.drafts(t, 119, 7, [&at](int32_t x) { return x == at; }) == std::vector<int32_t>({99, 1}),
+           "a lambda's stop");
     // The run's start right after itself: the drafts run up to next and stop there.
     const std::vector<int32_t> u = cat(run(100, 20), run(100, 19));
     Lookup lu;

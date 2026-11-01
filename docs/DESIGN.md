@@ -220,7 +220,7 @@ layers, whose state has a fixed size.
 | Part | What it does | Code |
 | --- | --- | --- |
 | Bookkeeping, in Python | Slots, the page table, reference counts, reservations, the checkpoint pool, finding a shared prefix. It handles only integers | `engine/seqstate/` |
-| Layout, one header | A page is 4 cells, one indexer block. Where each cell's K, V and indexer key sit. The kernels and the C++ code include the same header | `core/models/qwen4exp/layout.h` |
+| Layout, one header | A page is 4 cells (`KV_PAGE_CELLS`, `shared/step.h`), one indexer block. Where each cell's K, V and indexer key sit. The kernels and the C++ code include the same header | `core/models/qwen4exp/layout.h` |
 | Bytes, in the core | Applies a plan's page changes, writes each slot's row of the page table to both cards, copies partial pages, saves and restores the fixed state | `core/models/qwen4exp/state.cpp`, `core/api/engine_api.cpp` |
 
 The rules ([ADR-0033](adr/0033-paged-kv-kept-by-python.md)):

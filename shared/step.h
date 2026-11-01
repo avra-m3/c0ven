@@ -85,21 +85,11 @@ typedef struct {
 
 SHARED_ASSERT(sizeof(PromptPlan) == 16, "PromptPlan layout");
 
-// A slot's rotation in a decode step (docs/spec/MODEL_VISION.md, section 4.2). With images in the prompt a position is
-// three numbers (time, height, width) and no longer the cell: a decode row at cell c turns by c - delta on all three.
-// The indexer's block that starts at cell blk turns by (t, h, w), the positions of that cell, which may lie in an
-// image; a later block turns by its first cell less delta. Without images delta is 0 and (t, h, w) = (blk, blk, blk).
-typedef struct {
-  u32 delta;
-  u32 blk;
-  u32 t, h, w;
-  u32 pad[3];
-} SlotRope;
-
-// A prompt chunk's positions are (t, h, w, 0) per cell in host memory, from the first cell of the chunk's first block
-// (pos0 rounded down to a multiple of 4) to its last row.
 SHARED_ASSERT(sizeof(StepRow) == 16, "StepRow layout");
-SHARED_ASSERT(sizeof(SlotRope) == 32, "SlotRope layout");
 SHARED_ASSERT(sizeof(StepPlan) == 16 + 16 * STEP_MAX_ROWS, "StepPlan layout");
+
+// The KV cache's page, for every model: a row of the page table maps a sequence's cells this many at a time
+// (include/engine_api.h, docs/DESIGN.md section 4).
+#define KV_PAGE_CELLS 4
 
 #endif

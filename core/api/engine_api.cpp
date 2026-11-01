@@ -22,21 +22,19 @@
 #include <vector>
 
 #include "api/lookup.h"
+#include "api/model.h"
 #include "api/sampling.h"
 #include "api/swap_cadence.h"
 #include "cpu/features.h"
-#include "models/qwen4exp/model.h"
+#include "ze/ze.h"
 
+using engine::Candidate;
+using engine::kNoToken;
 using engine::penalised;
 using engine::sample_p;
-using engine::qwen4exp::Candidate;
-using engine::qwen4exp::kNoToken;
-using engine::qwen4exp::StepIn;
+using engine::StepIn;
 
 namespace {
-
-constexpr int32_t kImageToken = 248056;  // <|image_pad|> (docs/spec/MODEL_VISION.md, section 4.1)
-constexpr int32_t kVideoToken = 248057;  // <|video_pad|>: a pair of video frames (section 6)
 
 // An image or frame pair of a slot's prompt; its pixels are shared with the checkpoints taken while it was in the slot.
 struct SlotImage {
@@ -113,29 +111,17 @@ uint64_t now_ns() {
              std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
-bool media(int32_t tok) { return tok == kImageToken || tok == kVideoToken; }
-
-// The last tokens of hist the penalties count, oldest first, without image and video tokens, which llama.cpp's server
-// leaves out too (docs/spec/MODEL_IO.md, section 2.4); empty without penalties.
-std::vector<int32_t> penalty_window(const std::vector<int32_t> &hist, const engine_settings &s) {
-  std::vector<int32_t> w;
-  if (!penalised(s)) return w;
-  for (size_t i = hist.size(); i > 0 && w.size() < s.penalty_last_n; i--)
-    if (!media(hist[i - 1])) w.push_back(hist[i - 1]);
-  std::reverse(w.begin(), w.end());
-  return w;
-}
-
 constexpr size_t kTimingRing = 4096;
 
 }  // namespace
 
 struct engine_ctx {
-  std::unique_ptr<engine::qwen4exp::Model> model;
+  std::unique_ptr<engine::Model> model;
+  engine::ImageShape image_shape;  // the model's
   engine_info info{};
   std::vector<Slot> slots;
   std::vector<Checkpoint> checkpoints;
-  uint32_t draft_max = 3;
+  uint32_t draft_max = 0;  // drafts per round at most: engine_config.draft_max, or the model's default
   double draft_min_p = 0.5;
   bool swaps = false;  // ENGINE_CONFIG_SWAPS
   std::mutex mu;
@@ -173,6 +159,19 @@ struct engine_ctx {
   void record(engine_timing t) {
     if (timing.size() == kTimingRing) timing.pop_front();
     timing.push_back(t);
+  }
+
+  bool media(int32_t tok) const { return engine::is_media(image_shape, tok); }
+
+  // The last tokens of hist the penalties count, oldest first, without image and video tokens, which llama.cpp's
+  // server leaves out too (docs/spec/MODEL_IO.md, section 2.4); empty without penalties.
+  std::vector<int32_t> penalty_window(const std::vector<int32_t> &hist, const engine_settings &s) const {
+    std::vector<int32_t> w;
+    if (!penalised(s)) return w;
+    for (size_t i = hist.size(); i > 0 && w.size() < s.penalty_last_n; i--)
+      if (!media(hist[i - 1])) w.push_back(hist[i - 1]);
+    std::reverse(w.begin(), w.end());
+    return w;
   }
 
   // The positions slot s has pages for. Under mu.
@@ -389,7 +388,7 @@ struct engine_ctx {
   // each position's uniform, stopping below draft_min_p. Runs on the engine thread.
   std::vector<std::vector<int32_t>> df_drafts(const StepIn *ctx, uint32_t nctx, std::vector<DfSeed> &seeds) {
     std::vector<std::vector<int32_t>> d(seeds.size());
-    std::vector<engine::qwen4exp::Model::DraftBlock> blocks;
+    std::vector<engine::Model::DraftBlock> blocks;
     std::vector<size_t> of;
     for (size_t i = 0; i < seeds.size(); i++) {
       const DfSeed &sd = seeds[i];
@@ -433,7 +432,7 @@ struct engine_ctx {
 
   // A draft round's window of n rows that took ns, and a slot's run in it: k drafts verified, a accepted, from the
   // lookup or the draft layer. Under mu.
-  void count_round(size_t n, uint64_t ns, const engine::qwen4exp::StepStats &ss) {
+  void count_round(size_t n, uint64_t ns, const engine::StepStats &ss) {
     stats.rounds++;
     stats.round_rows += n;
     stats.round_ns += ns;
@@ -570,7 +569,7 @@ struct engine_ctx {
       std::lock_guard<std::mutex> lk(mu);
       add_writers(pieces);
     }
-    std::vector<engine::qwen4exp::Model::PromptRun> runs;
+    std::vector<engine::Model::PromptRun> runs;
     uint32_t n = 0, wrote = 0;
     for (const Piece &pi : pieces) {
       runs.push_back({pi.slot, pi.pos0, pi.toks.data(), pi.n, pi.p1, pi.p2});
@@ -767,7 +766,8 @@ struct engine_ctx {
       if (rows.size() == 1 && model->drafting() && sl.fed >= sl.prompt.size()) {
         // A lone writing slot's own tokens may give better drafts than the draft layer
         // (docs/adr/0041-drafts-from-the-slots-own-tokens.md).
-        std::vector<int32_t> look = sl.lookup.drafts(sl.tokens, rows[0].token, STEP_MAX_ROWS - 1, media);
+        std::vector<int32_t> look =
+            sl.lookup.drafts(sl.tokens, rows[0].token, STEP_MAX_ROWS - 1, [this](int32_t t) { return media(t); });
         const uint32_t take = engine::choose_drafts(sl.odds, (uint32_t)sl.drafts.size(), draft_max,
                                                     (uint32_t)look.size(), STEP_MAX_ROWS, window_times);
         sl.lookup_round = take > 0;
@@ -801,7 +801,7 @@ struct engine_ctx {
     {
       std::lock_guard<std::mutex> lk(mu);
       const uint64_t t1 = now_ns();
-      const engine::qwen4exp::StepStats &ss = model->last_stats();
+      const engine::StepStats &ss = model->last_stats();
       record({ENGINE_TIMING_DECODE, plan, (uint32_t)rows.size(), ss.misses, t0, t1});
       if (rows.size() == 1) window_times.add(1, (t1 - t0) * 1e-6);
       swap_cadence.step((uint32_t)rows.size(), ss.layers_missed, (t1 - t0) * 1e-6);
@@ -933,7 +933,7 @@ struct engine_ctx {
     {
       std::lock_guard<std::mutex> lk(mu);
       const uint64_t t1 = now_ns();
-      const engine::qwen4exp::StepStats &ss = model->last_stats();
+      const engine::StepStats &ss = model->last_stats();
       record({ENGINE_TIMING_ROUND, plan, (uint32_t)rows.size(), ss.misses, t0, t1});
       window_times.add((uint32_t)rows.size(), (t1 - t0) * 1e-6);
       swap_cadence.step((uint32_t)rows.size(), ss.layers_missed, (t1 - t0) * 1e-6);
@@ -1024,7 +1024,7 @@ struct engine_ctx {
     {
       std::lock_guard<std::mutex> lk(mu);
       const uint64_t t1 = now_ns();
-      const engine::qwen4exp::StepStats &ss = model->last_stats();
+      const engine::StepStats &ss = model->last_stats();
       record({ENGINE_TIMING_ROUND, plan, n, ss.misses, t0, t1});
       window_times.add(n, (t1 - t0) * 1e-6);
       swap_cadence.step(n, ss.layers_missed, (t1 - t0) * 1e-6);
@@ -1148,7 +1148,7 @@ struct engine_ctx {
           swap_ns = now_ns() - t0;
         }
         model->kv_ahead();
-        const engine::qwen4exp::NgramStats ng = model->ngram_stats();
+        const engine::NgramStats ng = model->ngram_stats();
         std::lock_guard<std::mutex> lk(mu);
         stats.plans++;
         stats.busy_ns += now_ns() - t_plan;
@@ -1262,7 +1262,7 @@ engine_status engine_open(const engine_config *config, engine_info *info, engine
       throw std::runtime_error("this CPU lacks " + missing + ", which this library's ggml build (level " ENGINE_CPU_LEVEL
                                ") uses for the experts the cards do not hold; load libengine.so, which picks a level "
                                "the CPU has (cmake/ggml.cmake)");
-    engine::qwen4exp::Options opt;
+    engine::Options opt;
     if (config->slots) opt.slots = config->slots;
     if (config->max_ctx) opt.max_ctx = config->max_ctx;
     if (config->max_cards) opt.max_cards = config->max_cards;
@@ -1279,7 +1279,8 @@ engine_status engine_open(const engine_config *config, engine_info *info, engine
     opt.share_kv = (config->flags & ENGINE_CONFIG_SHARE_KV) != 0;
     opt.ngram_in_ram = (config->flags & ENGINE_CONFIG_NGRAM_RAM) != 0;
     auto e = std::make_unique<engine_ctx>();
-    e->model = std::make_unique<engine::qwen4exp::Model>(config->model_path, opt);
+    e->model = engine::open_model(config->model_path, opt);
+    e->image_shape = e->model->image_shape();
     const auto &li = e->model->info();
     e->info.api_version = ENGINE_API_VERSION;
     e->info.cards = li.cards;
@@ -1307,8 +1308,9 @@ engine_status engine_open(const engine_config *config, engine_info *info, engine
     e->info.image_tokens_max = e->model->image_tokens_max();
     e->info.kv_pages = e->model->kv_pages();
     e->info.pages_per_slot = e->model->pages_per_slot();
-    if (config->draft_max) e->draft_max = std::min<uint32_t>(config->draft_max, ENGINE_MAX_STEP_SLOTS - 1);
-    else if (e->model->dflash()) e->draft_max = STEP_MAX_ROWS - 1;  // one pass drafts a whole window
+    e->draft_max = config->draft_max ? std::min({config->draft_max, (uint32_t)ENGINE_MAX_STEP_SLOTS - 1,
+                                                 e->model->draft_max_cap()})
+                                     : e->model->draft_max_default();
     if (config->draft_min_p > 0) e->draft_min_p = config->draft_min_p;
     e->swaps = opt.adapt_swaps;
     e->t_open = now_ns();
@@ -1374,17 +1376,18 @@ engine_status engine_admit_images(engine_ctx *e, uint32_t slot, const engine_ima
     return ENGINE_BAD_ARGUMENT;
   }
   std::vector<SlotImage> ims;
-  std::vector<engine::qwen4exp::Image> mi;
+  std::vector<engine::Image> mi;
+  const engine::ImageShape &sh = e->image_shape;
   uint32_t end = 0;
   for (uint32_t i = 0; i < n; i++) {
     const engine_image &im = images[i];
-    const uint64_t tokens = (uint64_t)(im.grid_h / 2) * (im.grid_w / 2);
-    if (!im.pixels || !tokens || im.grid_h % 2 || im.grid_w % 2 || (im.frames != 1 && im.frames != 2) ||
-        tokens > e->info.image_tokens_max || im.first < end || im.first + tokens > sl.prompt.size()) {
+    const uint64_t tokens = engine::image_block_tokens(sh, im.frames, im.grid_h, im.grid_w);
+    if (!im.pixels || !tokens || tokens > e->info.image_tokens_max || im.first < end ||
+        im.first + tokens > sl.prompt.size()) {
       e->error = "image " + std::to_string(i) + ": out of range, out of order, too large or not 1 or 2 frames";
       return ENGINE_BAD_ARGUMENT;
     }
-    const int32_t pad = im.frames == 1 ? kImageToken : kVideoToken;
+    const int32_t pad = im.frames == 1 ? sh.image_token : sh.video_token;
     for (uint64_t t = im.first; t < im.first + tokens; t++)
       if (sl.prompt[t] != pad) {
         e->error = "image " + std::to_string(i) + ": the prompt's block is not " +
@@ -1392,7 +1395,8 @@ engine_status engine_admit_images(engine_ctx *e, uint32_t slot, const engine_ima
         return ENGINE_BAD_ARGUMENT;
       }
     end = (uint32_t)(im.first + tokens);
-    auto px = std::make_shared<const std::vector<uint8_t>>(im.pixels, im.pixels + tokens * 4 * 768 * im.frames);
+    auto px = std::make_shared<const std::vector<uint8_t>>(im.pixels,
+                                                           im.pixels + engine::image_bytes(sh, tokens, im.frames));
     ims.push_back({im.first, im.grid_h, im.grid_w, im.frames, px});
     mi.push_back({im.first, im.frames, im.grid_h, im.grid_w, px->data()});
   }

@@ -11,7 +11,7 @@
 #include <stdexcept>
 #include <thread>
 
-#include "model_impl.h"
+#include "models/qwen4exp/model_impl.h"
 
 namespace engine::qwen4exp {
 

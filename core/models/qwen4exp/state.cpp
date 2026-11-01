@@ -6,7 +6,7 @@
 #include <stdexcept>
 #include <string>
 
-#include "model_impl.h"
+#include "models/qwen4exp/model_impl.h"
 
 namespace engine::qwen4exp {
 

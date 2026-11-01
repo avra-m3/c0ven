@@ -11,26 +11,20 @@ add_library(engine_core STATIC
   load/direct.cpp
   load/gguf.cpp
   load/runs.cpp
-  models/qwen4exp/dflash.cpp
-  models/qwen4exp/kv_share.cpp
-  models/qwen4exp/model.cpp
-  models/qwen4exp/ngram.cpp
-  models/qwen4exp/mtp.cpp
-  models/qwen4exp/prompt.cpp
-  models/qwen4exp/state.cpp
-  models/qwen4exp/swap.cpp
-  models/qwen4exp/vision.cpp
+  models/open.cpp
   util/parallel.cpp
   ze/ze.cpp)
 target_include_directories(engine_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/shared
-                           ${CMAKE_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/models/qwen4exp)
+                           ${CMAKE_SOURCE_DIR}/include)
 target_include_directories(engine_core SYSTEM PUBLIC ${ENGINE_GGML_INCLUDE_DIR})
 target_include_directories(engine_core PRIVATE ${ENGINE_GGML_SRC_DIR})
 # The core links no ggml: each library below links one level's (cmake/ggml.cmake), and the tests the first level's.
 target_link_libraries(engine_core PUBLIC PkgConfig::LEVEL_ZERO Threads::Threads PRIVATE engine_warnings)
 target_compile_definitions(engine_core PUBLIC ENGINE_KERNEL_DIR="${ENGINE_KERNEL_DIR}"
-                           ENGINE_KERNEL_SPIRV_DIR="${ENGINE_KERNEL_SPIRV_DIR}"
-                           ENGINE_ROUTING_PROFILE="${CMAKE_CURRENT_SOURCE_DIR}/models/qwen4exp/routing_profile.tsv")
+                           ENGINE_KERNEL_SPIRV_DIR="${ENGINE_KERNEL_SPIRV_DIR}")
+
+# Each architecture adds its own sources (ADR-0061); models/open.cpp picks one by the file's general.architecture.
+add_subdirectory(models/qwen4exp)
 
 # The multi-row dots copy ggml's AVX2 paths; multirow.cpp checks the CPU before using them.
 set_source_files_properties(cpu/multirow.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c")

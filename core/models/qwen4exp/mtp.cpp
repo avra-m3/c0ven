@@ -16,7 +16,7 @@
 
 #include "ggml-cpu.h"
 #include "load/runs.h"
-#include "model_impl.h"
+#include "models/qwen4exp/model_impl.h"
 #include "util/cache_dir.h"
 
 namespace engine::qwen4exp {

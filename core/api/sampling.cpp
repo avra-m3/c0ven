@@ -5,9 +5,6 @@
 
 namespace engine {
 
-using qwen4exp::Candidate;
-using qwen4exp::kNoToken;
-
 bool penalised(const engine_settings &s) {
   return s.penalty_last_n > 0 && (s.penalty_repeat != 1.0f || s.penalty_freq != 0.0f || s.penalty_present != 0.0f);
 }

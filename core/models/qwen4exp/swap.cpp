@@ -9,7 +9,7 @@
 #include <utility>
 
 #include "load/runs.h"
-#include "model_impl.h"
+#include "models/qwen4exp/model_impl.h"
 
 namespace engine::qwen4exp {
 

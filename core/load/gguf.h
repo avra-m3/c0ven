@@ -69,6 +69,10 @@ class GgufModel {
   std::map<std::string, GgufTensor> tensors_;
 };
 
+// general.architecture from the header of the file at path (a split file's first shard holds it), read without
+// opening the other shards or the tensor table.
+std::string gguf_architecture(const std::string &path);
+
 // Bytes a tensor of this type and element count takes; throws for a type the engine does not read.
 uint64_t ggml_type_bytes(uint32_t type, uint64_t elements);
 const char *ggml_type_label(uint32_t type);

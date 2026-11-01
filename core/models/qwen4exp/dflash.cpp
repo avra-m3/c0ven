@@ -11,7 +11,7 @@
 #include <string>
 
 #include "ggml-cpu.h"
-#include "model_impl.h"
+#include "models/qwen4exp/model_impl.h"
 
 namespace engine::qwen4exp {
 

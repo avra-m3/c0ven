@@ -6,8 +6,8 @@
 #include <utility>
 #include <vector>
 
+#include "api/model.h"
 #include "engine_api.h"
-#include "models/qwen4exp/model.h"
 
 namespace engine {
 
@@ -22,7 +22,7 @@ double uniform(uint64_t seed, uint32_t pos);
 // top-p, min-p, temperature. The penalties count the last penalty_last_n tokens of hist, the tokens before pos, oldest
 // first. Returns the token and its probability under that distribution (greedy: the top candidate's under the plain
 // softmax of the penalised logits).
-std::pair<int32_t, double> sample_p(const std::vector<qwen4exp::Candidate> &cand, const engine_settings &s, uint32_t pos,
+std::pair<int32_t, double> sample_p(const std::vector<Candidate> &cand, const engine_settings &s, uint32_t pos,
                                     const std::vector<int32_t> &hist);
 
 }  // namespace engine

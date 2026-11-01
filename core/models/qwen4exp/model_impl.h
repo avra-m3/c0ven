@@ -6,8 +6,8 @@
 #include <string>
 
 #include "ggml.h"
-#include "layout.h"
-#include "model.h"
+#include "models/qwen4exp/layout.h"
+#include "models/qwen4exp/model.h"
 #include "moe_tile.h"
 #include "quant.h"
 

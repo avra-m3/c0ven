@@ -83,6 +83,30 @@ struct Cursor {
   }
 };
 
+// Opens path and maps it read-only. fd is set once the file is open, base and size once it is mapped.
+void map_file(const std::string &path, int &fd, void *&base, uint64_t &size) {
+  fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+  if (fd < 0) throw std::runtime_error(path + ": cannot open: " + std::strerror(errno));
+  struct stat st;
+  if (fstat(fd, &st) != 0) throw std::runtime_error(path + ": cannot stat");
+  void *p = mmap(nullptr, st.st_size, PROT_READ, MAP_SHARED, fd, 0);
+  if (p == MAP_FAILED) throw std::runtime_error(path + ": cannot map: " + std::strerror(errno));
+  base = p;
+  size = st.st_size;
+}
+
+// Checks a mapped file's magic and version and reads its tensor and key counts. The cursor is left on the first key.
+Cursor read_header(const std::string &path, const void *map, uint64_t size, uint64_t &tensors, uint64_t &keys) {
+  const uint8_t *base = static_cast<const uint8_t *>(map);
+  Cursor c{base, base + size, path};
+  if (c.get<uint32_t>() != 0x46554747u) throw std::runtime_error(path + ": not a GGUF file");
+  uint32_t version = c.get<uint32_t>();
+  if (version != 3) throw std::runtime_error(path + ": GGUF version " + std::to_string(version) + ", expected 3");
+  tensors = c.get<uint64_t>();
+  keys = c.get<uint64_t>();
+  return c;
+}
+
 }  // namespace
 
 uint64_t GgufTensor::elements() const {
@@ -123,6 +147,28 @@ const char *ggml_type_label(uint32_t type) {
   return "?";
 }
 
+std::string gguf_architecture(const std::string &path) {
+  struct File {
+    int fd = -1;
+    void *base = nullptr;
+    uint64_t size = 0;
+    ~File() {
+      if (base) munmap(base, size);
+      if (fd >= 0) close(fd);
+    }
+  } f;
+  map_file(path, f.fd, f.base, f.size);
+  uint64_t n_tensors, n_kv;
+  Cursor c = read_header(path, f.base, f.size, n_tensors, n_kv);
+  for (uint64_t i = 0; i < n_kv; i++) {
+    std::string key = c.str();
+    uint32_t t = c.get<uint32_t>();
+    if (key == "general.architecture" && t == T_STRING) return c.str();
+    c.value(t);
+  }
+  throw std::runtime_error(path + ": no general.architecture");
+}
+
 GgufModel::GgufModel(const std::string &path) {
   // Shards: "<stem>-00001-of-00002.gguf".
   static const std::regex split(R"((.*)-(\d{5})-of-(\d{5})\.gguf$)");
@@ -148,23 +194,11 @@ GgufModel::~GgufModel() {
 }
 
 void GgufModel::open_shard(const std::string &path, uint32_t shard) {
-  Map map;
-  map.fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
-  if (map.fd < 0) throw std::runtime_error(path + ": cannot open: " + std::strerror(errno));
-  struct stat st;
-  if (fstat(map.fd, &st) != 0) throw std::runtime_error(path + ": cannot stat");
-  map.size = st.st_size;
-  map.base = mmap(nullptr, map.size, PROT_READ, MAP_SHARED, map.fd, 0);
-  if (map.base == MAP_FAILED) throw std::runtime_error(path + ": cannot map: " + std::strerror(errno));
-  maps_.push_back(map);
-
+  Map &map = maps_.emplace_back();
+  map_file(path, map.fd, map.base, map.size);
   const uint8_t *base = static_cast<const uint8_t *>(map.base);
-  Cursor c{base, base + map.size, path};
-  if (c.get<uint32_t>() != 0x46554747u) throw std::runtime_error(path + ": not a GGUF file");
-  uint32_t version = c.get<uint32_t>();
-  if (version != 3) throw std::runtime_error(path + ": GGUF version " + std::to_string(version) + ", expected 3");
-  uint64_t n_tensors = c.get<uint64_t>();
-  uint64_t n_kv = c.get<uint64_t>();
+  uint64_t n_tensors, n_kv;
+  Cursor c = read_header(path, map.base, map.size, n_tensors, n_kv);
   for (uint64_t i = 0; i < n_kv; i++) {
     std::string key = c.str();
     uint32_t t = c.get<uint32_t>();
