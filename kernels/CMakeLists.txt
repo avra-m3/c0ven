@@ -58,3 +58,14 @@ foreach(type IQ2_S IQ3_XXS IQ3_S IQ4_XS IQ4_NL Q2_0 Q8_0 IQ2_XXS IQ2_XS IQ1_M)
                              OPTIONS -DQTYPE=QT_${type} -DGROUP=${a} -I${CMAKE_SOURCE_DIR}/kernels/quant)
   endforeach()
 endforeach()
+
+# The SwiGLU limit (kernels/include/swiglu.h) at 10, for core/tests/swiglu_limit_test.cpp: one variant of each module
+# that computes it, for IQ4_XS gate and up.
+engine_add_kernel_module(common_limit10 SOURCE kernels/common.cl OPTIONS -DSWIGLU_LIMIT=10.0f)
+engine_add_kernel_module(matvec_iq4_xs_l16_limit10 SOURCE kernels/quant/matvec.cl
+                         OPTIONS -DQTYPE=QT_IQ4_XS -DLANES=16 -DSWIGLU_LIMIT=10.0f -I${CMAKE_SOURCE_DIR}/kernels/quant)
+engine_add_kernel_module(moe_iq4_xs_g2_limit10 SOURCE kernels/quant/moe.cl
+                         OPTIONS -DQTYPE=QT_IQ4_XS -DGROUP=2 -DSWIGLU_LIMIT=10.0f -I${CMAKE_SOURCE_DIR}/kernels/quant)
+engine_add_kernel_module(qgemm_iq4_xs_file_limit10 SOURCE kernels/quant/qgemm.cl
+                         OPTIONS -DQTYPE=QT_IQ4_XS -DLAYOUT_FILE -DSWIGLU_LIMIT=10.0f -cl-intel-256-GRF-per-thread
+                         -I${CMAKE_SOURCE_DIR}/kernels/quant)

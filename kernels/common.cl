@@ -1,6 +1,7 @@
 // Small kernels every model uses.
 #include "a8.h"
 #include "builtins.h"
+#include "swiglu.h"
 
 // a8 activations (a8.h): x[t * x_stride + i] for i < K, t < ntok, into rows at out + t * (K + K / 8). One sub-group
 // per 32 values, two per lane: groups ceil(K / 32 ntok / 4), 64.
@@ -153,10 +154,10 @@ REQD_SG __kernel void topk_rows(__global const float *v, uint v_stride, uint n, 
   if (get_local_id(0) == 0) count[r] = got;
 }
 
-// out[i] = silu(g[i]) * u[i].
+// out[i] = silu(g[i]) * u[i], with the SwiGLU limit when built with one (swiglu.h).
 __kernel void swiglu(__global const float *g, __global const float *u, __global float *out, uint n) {
   uint i = get_global_id(0);
-  if (i < n) out[i] = silu(g[i]) * u[i];
+  if (i < n) out[i] = SWIGLU(g[i], u[i]);
 }
 
 // The k largest of v[0..n) into idx and val (indices increasing), and their count into *count. One work-group of

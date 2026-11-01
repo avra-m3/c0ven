@@ -20,13 +20,15 @@ llama.cpp, Strata or transformers is copied: the maths is in formulas and tables
 | The tensor census | [tensors-IQ3_S.tsv](../model/tensors-IQ3_S.tsv), [MODEL_FILES.md](../MODEL_FILES.md) | shapes and types per tensor, GGUF metadata |
 | Hugging Face transformers | [`536ecc007387a50e77603bb5d92100e9b07514cc`](https://github.com/huggingface/transformers/tree/536ecc007387a50e77603bb5d92100e9b07514cc) (`main` on 2026-10-11) | a cross-check only: `src/transformers/models/qwen4_exp/modeling_qwen4_exp.py` (cited as `modeling:N`) and `configuration_qwen4_exp.py` |
 | The model's `config.json` | [`Qwen/Qwen3.8-Flash-Next`](https://huggingface.co/Qwen/Qwen3.8-Flash-Next), read on 2026-10-11 (`main`) | the hyper-parameters. The values this page uses equal the GGUF metadata. The revision Strata's MTP fetcher pins (`de4b8e4`, [MODEL_FILES.md](../MODEL_FILES.md#the-mtp-layer)) was not checked |
+| DeepSeek's reference code | [`deepseek-ai/DeepSeek-V4.1-Flash-1017`](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017), read on 2026-11-01 (`main`, last updated 2026-10-17) | the SwiGLU limit only: `inference/model.py` (cited as `model.py:N`) |
 
 This page and the [reference outputs](../measurements/REFERENCE_OUTPUTS.md) follow the pinned commit.
 
 ## Conventions
 
 - **Citations:** `file:line` is in the pinned llama.cpp tree. A bare `:line` is in the file named last before it, in
-  the same section or heading. `modeling:line` is transformers' `modeling_qwen4_exp.py`.
+  the same section or heading. `modeling:line` is transformers' `modeling_qwen4_exp.py`. `model.py:line` is DeepSeek's
+  `inference/model.py`.
 - **Shapes** are in ggml order, `ne0 x ne1 x ne2`, as in [tensors-IQ3_S.tsv](../model/tensors-IQ3_S.tsv). `ne0` is the
   contiguous axis. A weight `W` of shape `IN x OUT` computes `y = W x` with `y[j] = sum_i W[i, j] x[i]`: row `j` of
   the matrix is the `IN` contiguous values `W[0..IN-1, j]`.
@@ -430,6 +432,14 @@ For each selected expert `e_k` (`src/llama-graph.cpp:2185-2317`):
 `src/llama-model.cpp:1324`, and the file has no `swiglu_clamp_exp` key), then `y_k = w_k * (D_e h)` (2,560 values, `:2317`).
 
 `moe = y_1 + y_2 + ... + y_10`, summed in rank order (`:2334-2343`).
+
+A file whose `swiglu_clamp_exp` (or `swiglu_clamp_shexp`, for the shared expert) gives a layer a limit `L` above 0
+clamps both inputs first: `h = silu(min(G_e x, L)) * clamp(U_e x, -L, L)`. That is `ggml_swiglu_clamp`
+(`ggml/src/ggml-cpu/ops.cpp:3450-3452`), which the pinned builder uses for DeepSeek-V4 (`src/llama-graph.cpp:2225-2229`,
+`:1831-1835` for the shared expert). DeepSeek's own reference does the same (`model.py:847-850`). The builder's other
+branch, for other architectures, caps `silu(G_e x)` at `L` instead. The engine takes `L` as `ExpertShape::swiglu_limit`
+on the CPU and as `-DSWIGLU_LIMIT` in the kernels ([swiglu.h](../../kernels/include/swiglu.h)); for this file it is
+off.
 
 ### 4.4 The shared expert and how it is combined (`src/models/qwen4exp.cpp:1009-1030`)
 

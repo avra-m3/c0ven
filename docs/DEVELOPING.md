@@ -26,7 +26,7 @@ The build makes:
 
 | Output | What it is |
 | --- | --- |
-| `build/kernels/<ip>/*.bin`, `*.spv`, `build/kernels/*.options` | the kernel modules, compiled ahead of time by `ocloc` for each chip in `ENGINE_AOT_DEVICES` (`bmg-g21` and `bmg-g31` by default), in a directory named for the chip's IP version (`20.1.0`, `20.2.0`), with each module's SPIR-V and the build options a card without its own binaries compiles it with at load ([ADR-0003](adr/0003-kernel-language.md), [ADR-0057](adr/0057-the-engine-reads-the-host-it-runs-on.md)); one per `engine_add_kernel_module` in [`kernels/CMakeLists.txt`](../kernels/CMakeLists.txt): the decode step's `matvec_<type>_l<lanes>` and `moe_<type>_g<group>`, the prompt path's `gemm_*`, `qgemm_<type>[_file]` and `qwen4exp_prompt`/`_attn`/`_gdn`, the image encoder's `qwen4exp_vision*`, the model's own `qwen4exp`, and `common` and `smoke` |
+| `build/kernels/<ip>/*.bin`, `*.spv`, `build/kernels/*.options` | the kernel modules, compiled ahead of time by `ocloc` for each chip in `ENGINE_AOT_DEVICES` (`bmg-g21` and `bmg-g31` by default), in a directory named for the chip's IP version (`20.1.0`, `20.2.0`), with each module's SPIR-V and the build options a card without its own binaries compiles it with at load ([ADR-0003](adr/0003-kernel-language.md), [ADR-0057](adr/0057-the-engine-reads-the-host-it-runs-on.md)); one per `engine_add_kernel_module` in [`kernels/CMakeLists.txt`](../kernels/CMakeLists.txt): the decode step's `matvec_<type>_l<lanes>` and `moe_<type>_g<group>`, the prompt path's `gemm_*`, `qgemm_<type>[_file]` and `qwen4exp_prompt`/`_attn`/`_gdn`, the image encoder's `qwen4exp_vision*`, the model's own `qwen4exp`, `common` and `smoke`, and the `*_limit10` variants `swiglu_limit_test` uses |
 | `build/core/libengine-<level>.so`, `build/core/libengine.so`, `build/core/cpu_levels.tsv` | the C ABI of [`include/engine_api.h`](../include/engine_api.h), one library for each CPU level, each with ggml built for that level. They export only the `engine_` symbols. `libengine.so` links to the first level's; given it, the control plane loads the first level in `cpu_levels.tsv` whose features the CPU has ([ADR-0059](adr/0059-a-library-for-each-cpu-level.md)). `ENGINE_LIBRARY` set to a `libengine-<level>.so` loads that level |
 | `build/core/libengine_core.a` | the core itself, which the tests link |
 | `build/core/tests/*` | the core's tests |
@@ -49,11 +49,13 @@ docker exec engine-dev bash -c 'cd /src/build && ENGINE_EXPECT_GPUS=2 ctest -L g
 | --- | --- | --- |
 | `gguf_test` | 1 | the GGUF reader against the census of the IQ3_S file |
 | `mrope_test` | 1 | the M-RoPE positions an image gives a prompt's cells, against transformers' rule; no card |
+| `experts_test` | 1 | the CPU's expert products with and without the SwiGLU limit, against the formula on ggml's dot products, 1e-5; no card |
 | `ze_smoke_test` | 2 | a kernel runs on every card, and one card waits on another's event |
 | `matvec_test` | 3 | the weight products of all ten quantised types against ggml's dequantisation, 1e-5 |
 | `moe_test` | 3 | the decode step's grouped expert products of `moe.cl` equal `matvec.cl`'s bit for bit, for every expert type the file holds and every group size |
 | `topk_test` | 2 | `topk_rows` against the host: the k largest of rows of up to 248,320 values, ties to the lower indices, both of its paths |
 | `gemm_test` | 2, 3 | the prompt path's fp16 and bf16 products on the XMX units, and the DPAS register layout, 2e-3 |
+| `swiglu_limit_test` | 3 | the experts' gate and up kernels built with and without `-DSWIGLU_LIMIT`, against double precision on random IQ4_XS weights: 1e-5 for the decode kernels, which also agree bit for bit, 2e-3 for the prompt path's; no model needed |
 | `qgemm_test` | 3 | the prompt path's quantised products: dense weights dequantised to fp16, the experts decoded on the fly in both layouts, 2e-3 |
 | `kl_test` | 5 | the engine's distribution against the BF16 checkpoint's on the KL set, teacher-forced one token a step: mean KL at most 0.170, top-1 agreement at least 83.5%. Needs `$FLASH_REF_DIR/kl-base-bf16.bin` |
 | `attn_test` | 3 | the prompt path's attention kernel against double precision: dense and sparse rows, rows past 12,288 positions, keys that grow along the positions, both cards' head layouts; 2e-3 |

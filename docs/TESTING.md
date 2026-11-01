@@ -34,9 +34,9 @@ The tests that exist ([DEVELOPING.md](DEVELOPING.md#tests) describes each):
 
 | Level | Tests | Missing |
 | --- | --- | --- |
-| 1 | `tests/host/`, `gguf_test`, `mrope_test` | ring buffers, the free list |
+| 1 | `tests/host/`, `gguf_test`, `mrope_test`, `experts_test` | ring buffers, the free list |
 | 2 | `ze_smoke_test`, `topk_test`, `gemm_test`'s DPAS layout check | some builtins |
-| 3 | `matvec_test`, `moe_test`, `gemm_test`, `qgemm_test`, `attn_test`, `vision_test` | |
+| 3 | `matvec_test`, `moe_test`, `gemm_test`, `qgemm_test`, `swiglu_limit_test`, `attn_test`, `vision_test` | |
 | 4 | `encoder_test` | a text layer |
 | 5 | `kl_test`, `api_test`, the tokenizer check in `tests/end_to_end/` | free-running |
 | 6 | `batch_test`, `pack_test`, `api_test`'s drafting and swap cases | two runs, worker counts |
