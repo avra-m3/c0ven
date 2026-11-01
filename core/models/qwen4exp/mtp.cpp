@@ -17,6 +17,7 @@
 #include "ggml-cpu.h"
 #include "load/runs.h"
 #include "model_impl.h"
+#include "util/cache_dir.h"
 
 namespace engine::qwen4exp {
 
@@ -44,7 +45,7 @@ uint64_t fnv(const void *p, size_t n, uint64_t h = 1469598103934665603ull) {
   return h;
 }
 
-// The cache of a card's quantised draft experts (ENGINE_MTP_CACHE_DIR): a header, then the card's slots exactly as
+// The cache of a card's quantised draft experts (ENGINE_CACHE_DIR): a header, then the card's slots exactly as
 // uploaded. Bump the version when the quantisation, the runs layout or ggml's quantiser changes what is written.
 struct CacheHeader {
   char magic[8];
@@ -208,8 +209,8 @@ void Model::load_mtp(Card &card) {
     std::vector<uint8_t> buf((size_t)batch * M.slot_bytes);
 
     // Quantising is slow (docs/measurements/MEASUREMENTS.md#2026-10-16-load-phases), so the result can be kept in
-    // ENGINE_MTP_CACHE_DIR, one file per card. A file that does not match is ignored and written again.
-    const char *cache_env = std::getenv("ENGINE_MTP_CACHE_DIR");
+    // ENGINE_CACHE_DIR, one file per card. A file that does not match is ignored and written again.
+    const char *cache_env = engine::cache_dir();
     std::string cache_path;
     uint64_t key = 0;
     bool cached = false;

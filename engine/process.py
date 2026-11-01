@@ -438,7 +438,7 @@ def main(argv: list[str] | None = None) -> int:
     # The core's working memory from an earlier load with the same options, in place of the estimate. It is kept
     # beside the draft layer's cache.
     working: Path | None = None
-    if native and (cache := os.environ.get("ENGINE_MTP_CACHE_DIR")) and args.model is not None:
+    if native and (cache := cache_dir()) and args.model is not None:
         working = working_file(
             Path(cache), args.model, options, f"draft={draft} vision={vision} deterministic={args.deterministic}"
         )
@@ -480,6 +480,16 @@ def main(argv: list[str] | None = None) -> int:
         if the_host is not None
         else None,
     )
+
+
+def cache_dir() -> str | None:
+    """`ENGINE_CACHE_DIR`, or `ENGINE_MTP_CACHE_DIR` (its old name) while that is unset, as the core reads them."""
+    if d := os.environ.get("ENGINE_CACHE_DIR"):
+        return d
+    if d := os.environ.get("ENGINE_MTP_CACHE_DIR"):
+        log.warning("ENGINE_MTP_CACHE_DIR is the old name of ENGINE_CACHE_DIR")
+        return d
+    return None
 
 
 def report(

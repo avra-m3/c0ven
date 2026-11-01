@@ -20,6 +20,7 @@
 #include "layout.h"
 #include "load/runs.h"
 #include "quant.h"
+#include "util/cache_dir.h"
 
 namespace engine::qwen4exp {
 
@@ -425,7 +426,7 @@ void Model::settle_arena() {
                std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(), lock.c_str());
 }
 
-// The loader's thread count: probed on the first shard, and kept in ENGINE_MTP_CACHE_DIR beside the draft layer's
+// The loader's thread count: probed on the first shard, and kept in ENGINE_CACHE_DIR beside the draft layer's
 // cache, keyed by the file's device, inode, size and time, so a later start does not probe again. ENGINE_LOADER_THREADS
 // sets it.
 unsigned Model::loader_threads() {
@@ -433,7 +434,7 @@ unsigned Model::loader_threads() {
   const std::string &shard = gguf_.files().at(0);
   struct stat st;
   std::string cache;
-  if (const char *dir = std::getenv("ENGINE_MTP_CACHE_DIR"); dir && ::stat(shard.c_str(), &st) == 0) {
+  if (const char *dir = engine::cache_dir(); dir && ::stat(shard.c_str(), &st) == 0) {
     char name[96];
     std::snprintf(name, sizeof name, "/loader-%llx-%llx-%llx-%llx.txt", (unsigned long long)st.st_dev,
                   (unsigned long long)st.st_ino, (unsigned long long)st.st_size, (unsigned long long)st.st_mtime);

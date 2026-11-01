@@ -346,7 +346,7 @@ the plan's figures and the core's, and sends it in INFO as `fit_*` facts. The co
 layer on each card as its memory allows, after leaving `reserve_bytes` (512 MiB) free
 ([ADR-0027](adr/0027-the-c-abi-as-the-core-was-optimised.md), item 3). It reports the memory it had left for them
 (`engine_info.expert_budget`). The plan's working memory per card, everything outside the weights, the draft layer,
-the sequences' reserve and the experts, is an estimate until a load shows the core's: with `ENGINE_MTP_CACHE_DIR` set, the core's
+the sequences' reserve and the experts, is an estimate until a load shows the core's: with `ENGINE_CACHE_DIR` set, the core's
 figure is kept for each model file, version and set of options, and the next start plans with it.
 
 With swaps on, the KV pool and the expert cache share that memory ([ADR-0045](adr/0045-the-kv-pool-and-the-expert-cache-share-each-cards-memory.md)). The pool's buffers and

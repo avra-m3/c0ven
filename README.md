@@ -72,7 +72,7 @@ stat -c %g /dev/dri/renderD128
 Start the server. Replace `993` with your group ID and `/path/to/models` with your model directory:
 
 ```bash
-docker run --rm --device /dev/dri --group-add 993 --ulimit memlock=-1:-1 --read-only -p 127.0.0.1:8080:8080 -v /path/to/models:/models:ro -v c0ven-mtp:/cache -e ENGINE_MTP_CACHE_DIR=/cache/mtp ghcr.io/avra-m3/c0ven/serve:main --model /models/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf --slots 4 --context 262144 --host 0.0.0.0 --port 8080
+docker run --rm --device /dev/dri --group-add 993 --ulimit memlock=-1:-1 --read-only -p 127.0.0.1:8080:8080 -v /path/to/models:/models:ro -v c0ven-cache:/cache -e ENGINE_CACHE_DIR=/cache ghcr.io/avra-m3/c0ven/serve:main --model /models/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf --slots 4 --context 262144 --host 0.0.0.0 --port 8080
 ```
 
 What the `docker run` flags do:
@@ -84,12 +84,12 @@ What the `docker run` flags do:
 | `--read-only` | the image writes nothing to its root filesystem; it may be left out |
 | `-p 127.0.0.1:8080:8080` | the API, on the host's loopback only. The server inside listens on `--host 0.0.0.0 --port 8080` |
 | `-v /path/to/models:/models:ro` | the model files, read-only. `--model` names the GGUF's first shard inside the container |
-| `-v c0ven-mtp:/cache`, `-e ENGINE_MTP_CACHE_DIR=/cache/mtp` | a named volume for the quantised draft layer |
+| `-v c0ven-cache:/cache`, `-e ENGINE_CACHE_DIR=/cache` | a named volume for what a load works out and the next reuses: the quantised draft layer, the loader's thread count, each card's working memory |
 
 The arguments after the image name are the server's [options](#options). To run it in the background, replace
 `--rm` with `-d --name c0ven`; `docker logs -f c0ven` follows it, and `docker stop c0ven` stops it.
 
-The `c0ven-mtp` volume keeps the quantised draft layer between runs. Without it, each start spends about 43 s
+The `c0ven-cache` volume keeps the quantised draft layer between runs. Without it, each start spends about 43 s
 quantising it again ([record](docs/measurements/MEASUREMENTS.md#2026-10-16-load-phases); [DEVELOPING.md](docs/DEVELOPING.md)).
 
 Send a request:
@@ -294,7 +294,7 @@ docker build --target serve -t c0ven/serve .
 Run it as in the [Quick start](#quick-start), with `c0ven/serve` in place of `ghcr.io/avra-m3/c0ven/serve:main`:
 
 ```bash
-docker run --rm --device /dev/dri --group-add 993 --ulimit memlock=-1:-1 --read-only -p 127.0.0.1:8080:8080 -v /path/to/models:/models:ro -v c0ven-mtp:/cache -e ENGINE_MTP_CACHE_DIR=/cache/mtp c0ven/serve --model /models/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf --slots 4 --context 262144 --host 0.0.0.0 --port 8080
+docker run --rm --device /dev/dri --group-add 993 --ulimit memlock=-1:-1 --read-only -p 127.0.0.1:8080:8080 -v /path/to/models:/models:ro -v c0ven-cache:/cache -e ENGINE_CACHE_DIR=/cache c0ven/serve --model /models/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf --slots 4 --context 262144 --host 0.0.0.0 --port 8080
 ```
 
 CI publishes only the serving image from `main`, as `ghcr.io/avra-m3/c0ven/serve:main` and under the version in

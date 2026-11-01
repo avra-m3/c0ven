@@ -111,7 +111,7 @@ def card_notes(plan: MemoryPlan, experts_core: int, working_core: int | None = N
     if working_core is not None and abs(working_core - plan.working_per_card) > WORKING_TOLERANCE:
         out.append(
             f"the core's working memory per card is {gib(working_core)} and the plan's {gib(plan.working_per_card)}: "
-            "with ENGINE_MTP_CACHE_DIR set, the next start with these options plans with the core's"
+            "with ENGINE_CACHE_DIR set, the next start with these options plans with the core's"
         )
     return out
 
