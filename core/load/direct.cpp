@@ -1,6 +1,7 @@
 #include "direct.h"
 
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -14,6 +15,12 @@
 namespace engine {
 
 namespace {
+
+uint64_t file_size(const std::string &path) {
+  struct stat st;
+  if (::stat(path.c_str(), &st) != 0) throw std::runtime_error("cannot stat " + path + ": " + std::strerror(errno));
+  return (uint64_t)st.st_size;
+}
 
 // pread until the range is in or the file ends; returns the bytes read.
 uint64_t pread_all(int fd, uint8_t *dst, uint64_t bytes, uint64_t offset, const std::string &path) {
@@ -58,10 +65,12 @@ DirectReader::~DirectReader() {
 }
 
 unsigned DirectReader::probe_threads(const std::string &path, double *rate) {
-  constexpr uint64_t kProbe = 256ull << 20;
+  constexpr uint64_t kProbe = kProbeSpan / 4;  // each count reads [(1 + i) * kProbe, (2 + i) * kProbe)
   const unsigned counts[] = {4, 8, 16};
+  if (rate) *rate = 0;
+  if (file_size(path) < kProbeSpan) return kThreads;
   auto buf = aligned_buffer(kProbe);
-  unsigned best = 8;
+  unsigned best = kThreads;
   double best_rate = 0;
   for (unsigned i = 0; i < 3; i++) {
     DirectReader r({path}, counts[i]);
@@ -72,6 +81,15 @@ unsigned DirectReader::probe_threads(const std::string &path, double *rate) {
   }
   if (rate) *rate = best_rate;
   return best;
+}
+
+std::string DirectReader::largest(const std::vector<std::string> &paths) {
+  if (paths.empty()) throw std::runtime_error("no model files");
+  size_t best = 0;
+  uint64_t best_size = file_size(paths[0]);
+  for (size_t i = 1; i < paths.size(); i++)
+    if (const uint64_t n = file_size(paths[i]); n > best_size) best = i, best_size = n;
+  return paths[best];
 }
 
 uint64_t DirectReader::span(uint64_t offset, uint64_t bytes) {

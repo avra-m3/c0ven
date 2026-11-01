@@ -48,6 +48,7 @@ docker exec engine-dev bash -c 'cd /src/build && ENGINE_EXPECT_GPUS=2 ctest -L g
 | Test | Level ([TESTING.md](TESTING.md)) | What it checks |
 | --- | --- | --- |
 | `gguf_test` | 1 | the GGUF reader against the census of the IQ3_S file |
+| `direct_test` | 1 | the loader's thread probe reads the largest shard, and gives 8 threads without reading a file under 1 GiB; no card, no model |
 | `mrope_test` | 1 | the M-RoPE positions an image gives a prompt's cells, against transformers' rule; no card |
 | `experts_test` | 1 | the CPU's expert products with and without the SwiGLU limit, against the formula on ggml's dot products, 1e-5; no card |
 | `ze_smoke_test` | 2 | a kernel runs on every card, and one card waits on another's event |
