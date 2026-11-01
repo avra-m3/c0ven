@@ -32,6 +32,9 @@
 #define D41_TOPK 512                   // compressed rows a query attends to at most
 #define D41_CAND_BLOCK 8               // the candidate filter's block of rows (layer 20)
 #define D41_CAND_BLOCKS 2048           // blocks it keeps
+#define D41_CTX_CAP 16384              // positions a slot, until the candidate filter exists; rows of a score
+#define D41_IDX_WG_ROWS 64             // ds_idx_score's rows a work-group, 16 a sub-group
+#define D41_IDX_WGS (D41_CTX_CAP / D41_IDX_WG_ROWS)  // ds_idx_score's work-groups a row of the step
 
 #define D41_EXPERTS 384
 #define D41_USED 6
