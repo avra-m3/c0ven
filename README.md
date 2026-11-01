@@ -17,7 +17,7 @@ APIs.
 
 Use C0ven if you have:
 
-- one or two Intel Battlemage cards with at least 10 GB of VRAM each, in one Linux machine, with the `xe` kernel
+- one (or more) Intel Battlemage cards with at least 10 GB of VRAM between them, in one Linux machine, with the `xe` kernel
   driver. The engine is tested on Arc Pro B60 cards (24 GB each); other Battlemage cards likely work but are untested
   ([help test them](https://github.com/avra-m3/c0ven/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22)),
 - a CPU with AVX-512 (VNNI, VBMI and BF16 among it), which computes the experts the cards do not hold; the engine
