@@ -33,7 +33,7 @@ import gguf
 
 import protocol
 from engine import fit, host
-from engine.api.interface import IMAGE_PATCH_BYTES, Engine, EngineError, EngineFacts, Image, OpenConfig
+from engine.api.interface import CORE_RESERVE, IMAGE_PATCH_BYTES, Engine, EngineError, EngineFacts, Image, OpenConfig
 from engine.memory_plan import (
     GIB,
     MemoryPlan,
@@ -159,6 +159,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="auto",
         help="the n-gram table in RAM; auto: when the host has room for it beside the plan, with"
         " a quarter of its memory, at least 8 GiB, left free",
+    )
+    p.add_argument(
+        "--card-memory",
+        type=float,
+        help="GiB of each card the engine may use at most, for a card that also drives a display or that another"
+        " program uses; the core leaves the rest free. Default: all of the smallest used card",
     )
     p.add_argument("--table-cache", type=Path, help="a directory that keeps the model's tensor table between starts")
     p.add_argument(
@@ -432,6 +438,23 @@ def serve(
     return status
 
 
+def card_memory(reported: list[int], limit_gib: float | None) -> int | None:
+    """The memory the plan gives each card: the smallest card's, or `--card-memory` when that is less (the core keeps
+    to it through card_reserve). None: the model's reference card (no cards were read and no limit is set)."""
+    limit = round(limit_gib * GIB) if limit_gib is not None else None
+    sizes = [*reported, *([limit] if limit is not None else [])]
+    return min(sizes) if sizes else None
+
+
+def card_reserve(reported: list[int], limit_gib: float | None) -> int:
+    """The device memory the core leaves free on each card so that it takes at most `--card-memory`: its own reserve
+    and what the largest card has beyond the limit. 0: the core's default."""
+    if limit_gib is None or not reported:
+        return 0
+    over = max(reported) - round(limit_gib * GIB)
+    return CORE_RESERVE + over if over > 0 else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     logging.basicConfig(level=args.log_level, stream=sys.stderr, format="%(asctime)s %(name)s %(message)s")
@@ -453,7 +476,7 @@ def main(argv: list[str] | None = None) -> int:
     used = cards[:2]
     options = PlanOptions(
         cards=len(used) if used else 2,
-        usable_vram=min(c.memory for c in used) if used else None,
+        usable_vram=card_memory([c.memory for c in used], args.card_memory),
         slots=args.slots,
         context=args.context,
         checkpoints=args.checkpoints,
@@ -499,6 +522,8 @@ def main(argv: list[str] | None = None) -> int:
     except PlanError as exc:
         print(protocol.Error(None, f"memory plan: {exc}").encode(), flush=True)
         return 1
+    if reserve := card_reserve([c.memory for c in used], args.card_memory):
+        config = dataclasses.replace(config, reserve_bytes=reserve)
     if vision is not None:
         config = dataclasses.replace(config, vision_path=str(vision))
     sched = SchedulerOptions(
