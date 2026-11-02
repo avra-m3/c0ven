@@ -1,7 +1,7 @@
 # Server options
 
-The arguments after the image name in `docker run` are the server's options. [Getting started](GETTING_STARTED.md#3-start-the-server)
-shows them in use.
+The arguments after the image name in `docker run` are the server's options. The
+[quick start](../README.md#quick-start) shows them in use.
 
 | Flag | Default | What it does |
 | --- | --- | --- |

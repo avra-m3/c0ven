@@ -23,7 +23,7 @@ Use C0ven if you have:
 - an x86-64 CPU, which computes the experts the cards do not hold; the engine loads the build of its CPU code that
   uses the most of the CPU's features (AVX-512 down to plain x86-64),
 - enough RAM that RAM and VRAM together come to 68 GiB with the default model file, or 45 GiB with the smallest
-  ([model options](docs/GETTING_STARTED.md#1-pick-a-model)),
+  ([Choosing a model](docs/CHOOSING_A_MODEL.md)),
 - one person, or a few requests at once, using the model.
 
 C0ven is the wrong tool if you want to run other models, use other GPUs, or serve many users. Use llama.cpp or vLLM
@@ -56,8 +56,88 @@ if you have one, try Strata.
 
 ## Quick start
 
-You need Docker, the `xe` kernel driver and a model. [Getting started](docs/GETTING_STARTED.md) helps you pick a
-model, download it and start the server.
+You need a Linux machine with Docker, the `xe` kernel driver and a model. Run each command below in a terminal.
+
+### 1. Check your machine
+
+Check that Docker works. This prints `Hello from Docker!`:
+
+```bash
+docker run --rm hello-world
+```
+
+If the command is not found, [install Docker](https://docs.docker.com/engine/install/). If it says permission denied,
+[let your user run Docker](https://docs.docker.com/engine/install/linux-postinstall/), then log out and back in.
+
+Check the kernel driver. One of the lines this prints should end in `/xe`:
+
+```bash
+ls -l /sys/class/drm/renderD*/device/driver
+```
+
+If none does, see [Intel's GPU setup guides](https://dgpu-docs.intel.com/).
+
+### 2. Pick a model
+
+[Choosing a model](docs/CHOOSING_A_MODEL.md) compares the files, with the RAM each needs and its speed on a B60. If you are not
+sure, use IQ3_S, an 83.6 GB download.
+
+### 3. Download it
+
+Make a folder for the model:
+
+```bash
+mkdir -p ~/c0ven-models
+```
+
+Download the model into it. If you picked another file, replace `IQ3_S` at the end with its name:
+
+```bash
+docker run --rm --user "$(id -u):$(id -g)" -v ~/c0ven-models:/models --entrypoint python ghcr.io/avra-m3/c0ven/serve:main -m tools.model_fetch IQ3_S
+```
+
+The download is large, so expect it to take a while. It checks each file when it finishes. If it stops, run the same
+command again and it carries on from where it was. At the end it prints the command to start the server.
+
+### 4. Start the server
+
+Run the command the download printed. For IQ3_S it is this one:
+
+```bash
+docker run --rm --device /dev/dri --group-add "$(stat -c %g /dev/dri/renderD128)" --ulimit memlock=-1:-1 --read-only -p 127.0.0.1:8080:8080 -v ~/c0ven-models:/models:ro -v c0ven-cache:/cache -e ENGINE_CACHE_DIR=/cache ghcr.io/avra-m3/c0ven/serve:main --model /models/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf --slots 1 --context 262144 --host 0.0.0.0 --port 8080
+```
+
+Leave this terminal open: the server runs until you press Ctrl+C. If your machine cannot fit the model, the server
+says so and stops, and suggests options that fit.
+
+Open a second terminal and check whether the model has loaded. This prints `200` when it is ready, and anything else
+means it is still loading:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/health
+```
+
+### 5. Send a request
+
+```bash
+curl http://127.0.0.1:8080/v1/chat/completions -H 'Content-Type: application/json' -d '{"messages":[{"role":"user","content":"Hello"}],"stream":true}'
+```
+
+Your tools can now use the server through its [OpenAI and Anthropic APIs](docs/API.md), at `http://127.0.0.1:8080`.
+
+### What the start command does
+
+| Flag | Why |
+| --- | --- |
+| `--device /dev/dri`, `--group-add "$(stat ...)"` | the cards, and the render group that may open them |
+| `--ulimit memlock=-1:-1` | lets the engine lock its experts in RAM; a load stops without it |
+| `--read-only` | the image writes nothing to its root filesystem; it may be left out |
+| `-p 127.0.0.1:8080:8080` | the API, on this machine only. The server inside listens on `--host 0.0.0.0 --port 8080` |
+| `-v ~/c0ven-models:/models:ro` | the model files, read-only |
+| `-v c0ven-cache:/cache`, `-e ENGINE_CACHE_DIR=/cache` | keeps what a load works out, so the next start can reuse it |
+
+The arguments after the image name are the server's [options](docs/OPTIONS.md). To run it in the background, replace
+`--rm` with `-d --name c0ven`. `docker logs -f c0ven` follows it, and `docker stop c0ven` stops it.
 
 ## Sharing the cards with other models
 
@@ -70,7 +150,7 @@ Asleep, the engine gives back the cards' memory and keeps its RAM, so a wake loa
 ## Known limits
 
 The RAM that holds the experts counts towards a container's memory limit. If you set `docker run --memory`, allow
-at least the [RAM your model needs](docs/GETTING_STARTED.md#1-pick-a-model).
+at least the [RAM your model needs](docs/CHOOSING_A_MODEL.md).
 
 ## How it works
 
@@ -156,7 +236,7 @@ each step, and the C++ core runs it on both cards. The kernels are written for B
 docker build --target serve -t c0ven/serve .
 ```
 
-Run it as in [Getting started](docs/GETTING_STARTED.md#3-start-the-server), with `c0ven/serve` in place of
+Run it as in the [Quick start](#quick-start), with `c0ven/serve` in place of
 `ghcr.io/avra-m3/c0ven/serve:main`.
 
 CI publishes only the serving image from `main`, as `ghcr.io/avra-m3/c0ven/serve:main` and under the version in
@@ -173,13 +253,12 @@ Each page is the one source of truth for its subject. Plans and work in progress
 
 For users:
 
-- [GETTING_STARTED.md](docs/GETTING_STARTED.md): picking a model, downloading it and starting the server.
 - [OPTIONS.md](docs/OPTIONS.md): the server's options.
 - [API.md](docs/API.md): the server's endpoints, and how requests carry images and video.
 - [Guides](docs/guides/index.md): how to do one thing, step by step.
 - [Showcase](docs/showcase/index.md): things coding agents have made, and how to make them.
 - [MODEL_FILES.md](docs/MODEL_FILES.md): the model files: where to get them and how to lay them out for the engine.
-- [CHOOSING_A_MODEL.md](docs/CHOOSING_A_MODEL.md): what sets the model files apart, for help choosing between them.
+- [CHOOSING_A_MODEL.md](docs/CHOOSING_A_MODEL.md): the model files you can run, what each needs and how fast it is.
 - [CACHING.md](docs/CACHING.md): how the server reuses the start of a prompt, and what load does to that.
 - [BENCHMARKS.md](docs/BENCHMARKS.md): how the benchmarks above were measured.
 

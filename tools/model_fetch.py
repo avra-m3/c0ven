@@ -1,4 +1,4 @@
-"""Download a model file and the parts that go with it into one directory (docs/GETTING_STARTED.md).
+"""Download a model file and the parts that go with it into one directory (README.md, Quick start).
 
 Fetches the file's shards, the image encoder and the DFlash 2 drafter at pinned revisions, and checks each shard's
 size and sha256. A stopped download resumes when run again, and files already there are kept.
@@ -27,6 +27,14 @@ TRIES = 5
 TIMEOUT = 60
 """Seconds without data before a read gives up and the download resumes."""
 DRAFTER_SIZE = dflash_fetch.SIZE
+DEFAULT_DIR = Path("/models")
+START = (
+    'docker run --rm --device /dev/dri --group-add "$(stat -c %g /dev/dri/renderD128)" --ulimit memlock=-1:-1 '
+    "--read-only -p 127.0.0.1:8080:8080 -v ~/c0ven-models:/models:ro -v c0ven-cache:/cache "
+    "-e ENGINE_CACHE_DIR=/cache ghcr.io/avra-m3/c0ven/serve:main --model /models/{shard} "
+    "--slots 1 --context 262144 --host 0.0.0.0 --port 8080"
+)
+"""The README's start command, printed when the download ends."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,10 +169,17 @@ def missing_bytes(files: list[RemoteFile], directory: Path) -> int:
     return total
 
 
+def finished(directory: Path, first_shard: str) -> str:
+    """What to do next. Inside the image the host's folder is unknown, so the command assumes the README's."""
+    if directory != DEFAULT_DIR:
+        return f"Done. Start the server with --model {directory / first_shard}"
+    return f"Done. Start the server with this command:\n\n{START.format(shard=first_shard)}"
+
+
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(prog="python -m tools.model_fetch", description=(__doc__ or "").splitlines()[0])
-    p.add_argument("model", choices=sorted(MODELS), help="the model file; docs/GETTING_STARTED.md compares them")
-    p.add_argument("--dir", type=Path, default=Path("/models"), help="where the files go (default: /models)")
+    p.add_argument("model", choices=sorted(MODELS), help="the model file; docs/CHOOSING_A_MODEL.md compares them")
+    p.add_argument("--dir", type=Path, default=DEFAULT_DIR, help=f"where the files go (default: {DEFAULT_DIR})")
     a = p.parse_args(argv)
     directory: Path = a.dir
     directory.mkdir(parents=True, exist_ok=True)
@@ -185,7 +200,7 @@ def main(argv: list[str] | None = None) -> None:
     if needs_drafter:
         print("DFlash 2 drafter: downloading", flush=True)
         dflash_fetch.fetch(drafter)
-    print(f"Done. Start the server with --model {directory / model[0].name}", flush=True)
+    print(finished(directory, model[0].name), flush=True)
 
 
 if __name__ == "__main__":

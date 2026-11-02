@@ -79,6 +79,16 @@ def test_a_different_file_of_the_same_size_is_not_linked(tmp_path: Path) -> None
     assert not (tmp_path / "m.gguf").exists()
 
 
+def test_the_start_command_printed_is_the_readmes() -> None:
+    shard = "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf"
+    printed = model_fetch.finished(model_fetch.DEFAULT_DIR, shard).splitlines()[-1]
+    assert printed in Path("README.md").read_text()
+
+
+def test_another_directory_gets_only_the_model_path(tmp_path: Path) -> None:
+    assert model_fetch.finished(tmp_path, "m.gguf") == f"Done. Start the server with --model {tmp_path / 'm.gguf'}"
+
+
 def test_missing_bytes_counts_what_is_left(tmp_path: Path) -> None:
     (tmp_path / "a.gguf").write_bytes(b"x")
     (tmp_path / "b.gguf.part").write_bytes(b"xxx")
