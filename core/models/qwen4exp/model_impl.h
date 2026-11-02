@@ -221,8 +221,8 @@ struct Model::Card {
   uint8_t *grids = nullptr;
   // Scratch.
   float *R, *n, *lr, *a, *inj[2], *x, *m, *z, *ab, *gb, *u, *o, *Q, *Kt, *Vt, *idxq, *scores, *bscores, *att;
-  uint16_t *xb16 = nullptr;  // up to 8 rows of Q_HC_DIM bf16 activations, for mv_xmx_bf16
-  uint16_t *lrb16 = nullptr;  // up to 8 rows of Q_HC_LR bf16, for hc_up_mix_xmx
+  uint16_t *xb16 = nullptr;  // up to 8 rows of Shape::hc_dim() bf16 activations, for mv_xmx_bf16
+  uint16_t *lrb16 = nullptr;  // up to 8 rows of Shape::hc_lr bf16, for hc_up_mix_xmx
   uint16_t *xbf16 = nullptr;  // up to 8 rows of x as bf16 (hc_up_mix_xmx writes them), for the BF16 products
   uint16_t *ngb16 = nullptr;  // up to 8 n-gram rows as bf16, for the PLE module's products
   uint32_t *blocks, *cells, *ncells;

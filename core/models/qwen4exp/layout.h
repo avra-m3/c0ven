@@ -13,9 +13,7 @@
 #endif
 
 #define Q_EMBD 2560
-#define Q_HC 4                      // residual streams
 #define Q_HC_DIM (Q_HC * Q_EMBD)    // 10,240
-#define Q_HC_LR 320
 #define Q_EPS 1e-6f
 
 #define Q_GDN_D 128                 // head size
