@@ -37,7 +37,7 @@ if you have one, try Strata.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/bench-dark.png">
-  <img src="docs/images/bench.png" alt="Median of 6 runs, tokens per second. Prompt reading at 4k, 32k and 255k tokens: C0ven on two B60s 2,072, 2,069 and 1,700; on one B60 1,076, 1,174 and 913; llama.cpp on two B60s 357, 354 and not measured. Decode: two B60s 102, 111 and 69; one B60 48, 45 and 30; llama.cpp 17, 14 and not measured" width="800">
+  <img src="docs/images/bench.png" alt="Tokens per second, median of 6 runs, at 4k, 32k and 255k tokens. Two cards, one request, prompt reading: C0ven 2,379, 2,634 and 2,135; Strata 823, 1,561 and 1,114; llama.cpp 358, 357 and about 199. Decode: C0ven 102, 99 and 76; Strata 56, 64 and 42; llama.cpp 17, 14 and about 5.9. One card, prompt reading: C0ven 1,446, 1,496 and 1,102; Strata 1,063, 1,261 and 752; llama.cpp 255, 282 and about 169. Decode: C0ven 49, 53 and 37; Strata 34, 33 and 30; llama.cpp 15, 13 and about 5.8. Two cards, four requests at once, prompt reading: C0ven 1,712, Strata 772, llama.cpp 299. Aggregate rate: C0ven 41, Strata 15, llama.cpp 6.5. vLLM was not run because it does not fit on two cards. llama.cpp at 255k is from two runs" width="800">
 </picture>
 
 [How these were measured](docs/BENCHMARKS.md).
