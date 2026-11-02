@@ -18,14 +18,14 @@ static inline float silu(float x) { return x / (1.0f + exp(-x)); }
 
 #ifndef HAS_UNIT_RAW
 // The 32 values of a unit as 16 pairs of fp16 in their own order: b0 for values 0-15, b1 for 16-31.
-static inline void unit_to_f16(const uint w[8], float lo, float hi, float mn, int8 *b0, int8 *b1) {
+static inline void unit_to_f16(const uint w[8], float lo, float hi, float mn, float mh, int8 *b0, int8 *b1) {
   uint p[16];
   for (uint i = 0; i < 16; i++) {
-    float sc = i < 8 ? lo : hi;
+    float sc = i < 8 ? lo : hi, m = i < 8 ? mn : mh;
     uint word = w[i / 2];
     uint sh = 16 * (i & 1);
-    float v0 = sc * (float)(char)((word >> sh) & 0xff) - mn;
-    float v1 = sc * (float)(char)((word >> (sh + 8)) & 0xff) - mn;
+    float v0 = sc * (float)(char)((word >> sh) & 0xff) - m;
+    float v1 = sc * (float)(char)((word >> (sh + 8)) & 0xff) - m;
     p[i] = (uint)as_ushort(convert_half(v0)) | ((uint)as_ushort(convert_half(v1)) << 16);
   }
   *b0 = as_int8((uint8)(p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7]));
@@ -34,9 +34,9 @@ static inline void unit_to_f16(const uint w[8], float lo, float hi, float mn, in
 
 static inline void decode_pairs_own(__global const uchar *W, ulong n, ulong k, uint s, int8 b[2] GRID_PARAM) {
   uint w[8];
-  float lo, hi, mn;
-  decode_unit(W, n, k, s, w, &lo, &hi, &mn GRID_ARG);
-  unit_to_f16(w, lo, hi, mn, &b[0], &b[1]);
+  float lo, hi, mn, mh;
+  decode_unit(W, n, k, s, w, &lo, &hi, &mn, &mh GRID_ARG);
+  unit_to_f16(w, lo, hi, mn, mh, &b[0], &b[1]);
 }
 #endif
 
@@ -53,14 +53,14 @@ REQD_SG __kernel void dequant_f16(__global const uchar *W, uint rows, uint bpr, 
   const uint gc = min(g, total - 1), r = gc / units, u = gc % units;
   ulong n = (ulong)rows * bpr;
   uint w[8];
-  float lo, hi, mn;
-  decode_unit(W, n, (ulong)r * bpr + b0 + u / UNITS_PER_BLOCK, u % UNITS_PER_BLOCK, w, &lo, &hi, &mn GRID_ARG);
+  float lo, hi, mn, mh;
+  decode_unit(W, n, (ulong)r * bpr + b0 + u / UNITS_PER_BLOCK, u % UNITS_PER_BLOCK, w, &lo, &hi, &mn, &mh GRID_ARG);
   // The unit's 32 values as 16 words of two fp16.
   uint p[16];
   for (uint j = 0; j < 16; j++) {
-    float sc = j < 8 ? lo : hi;
-    float v0 = sc * (float)(char)((w[j / 2] >> (16 * (j & 1))) & 0xff) - mn;
-    float v1 = sc * (float)(char)((w[j / 2] >> (16 * (j & 1) + 8)) & 0xff) - mn;
+    float sc = j < 8 ? lo : hi, m = j < 8 ? mn : mh;
+    float v0 = sc * (float)(char)((w[j / 2] >> (16 * (j & 1))) & 0xff) - m;
+    float v1 = sc * (float)(char)((w[j / 2] >> (16 * (j & 1) + 8)) & 0xff) - m;
     p[j] = (uint)as_ushort(convert_half(v0)) | ((uint)as_ushort(convert_half(v1)) << 16);
   }
   if (whole) {
@@ -194,9 +194,9 @@ static inline void down_tile(MoeTile t, __global const uchar *D, uint rows, uint
     b[1] = as_int8(vload8(1, pr));
 #else
     uint w[8];
-    float lo, hi, mn;
-    raw_words(rd, w, &lo, &hi, &mn GRID_ARG);
-    unit_to_f16(w, lo, hi, mn, &b[0], &b[1]);
+    float lo, hi, mn, mh;
+    raw_words(rd, w, &lo, &hi, &mn, &mh GRID_ARG);
+    unit_to_f16(w, lo, hi, mn, mh, &b[0], &b[1]);
 #endif
     rd = rd_next;
 #else

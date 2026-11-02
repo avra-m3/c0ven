@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cmath>
 #include <immintrin.h>
+#include <numeric>
 #include <stdexcept>
 
 #include "ggml-cpu.h"
@@ -24,8 +25,9 @@ inline float swiglu_one(float g, float u, float limit) {
   return g / (1.0f + std::exp(-g)) * u;
 }
 // compute_many's tasks: kRowsGU rows of gate or of up, and kRowsDown rows of down, small enough that one expert
-// spreads evenly over 16 workers. h is made kRowsH rows at a time.
-constexpr uint32_t kRowsGU = 16, kRowsH = 32, kRowsDown = 32;
+// spreads evenly over 16 workers. h is made kRowsH rows at a time, or a whole block of the down's dot-product type
+// when that is longer (h_rows), up to kMaxRowsH: QK_K, q8_K's 256.
+constexpr uint32_t kRowsGU = 16, kRowsH = 32, kRowsDown = 32, kMaxRowsH = 256;
 static_assert(kRowsH % kRowsGU == 0);
 
 // Row r of an expert's down against h (quantised to the down's dot-product type), F values: in one dot, or with the
@@ -69,6 +71,12 @@ void down_rows(DotRows dr, const ggml_type_traits_cpu *dt, const ExpertWeights &
 }
 
 CpuExperts::CpuExperts(Pool &pool) : pool_(pool) { ggml_cpu_init(); }
+
+uint32_t CpuExperts::h_rows(const ExpertShape &s) {
+  const auto *dt = ggml_get_type_traits_cpu((ggml_type)s.down_type);
+  const uint32_t rows = std::lcm(kRowsH, (uint32_t)ggml_blck_size(dt->vec_dot_type));
+  return rows <= kMaxRowsH && s.n_ff % rows == 0 ? rows : 0;
+}
 
 void CpuExperts::compute(const ExpertShape &s, const std::vector<ExpertWeights> &experts, const std::vector<float> &w,
                          const float *x, float *y) {
@@ -144,13 +152,14 @@ void CpuExperts::compute_many(const ExpertShape &s, const std::vector<Job> &jobs
   u_.resize((size_t)n * F);
   hq_.resize((size_t)n * hq_bytes);
   // h = silu(gate) * up for rows [r0, r1) of every job of expert d, quantised to the down's dot-product type in
-  // place: blocks of that type never straddle kRowsH rows (a multiple of its block size), so h's blocks come out as
+  // place: blocks of that type never straddle hr rows (a multiple of its block size), so h's blocks come out as
   // quantising the whole row would make them.
   const int64_t hblk = ggml_blck_size(dt->vec_dot_type);
   const size_t hblk_bytes = ggml_type_size(dt->vec_dot_type);
-  const bool fused = kRowsH % hblk == 0 && F % kRowsH == 0;
+  const uint32_t hr = h_rows(s);
+  const bool fused = hr != 0;
   auto swiglu = [&](uint32_t d, uint32_t r0, uint32_t r1) {
-    float h[kRowsH];
+    float h[kMaxRowsH];
     for (uint32_t j : of[d]) {
       for (uint32_t r = r0; r < r1; r++)
         h[r - r0] = swiglu_one(g_[(size_t)j * F + r], u_[(size_t)j * F + r], s.swiglu_limit);
@@ -158,8 +167,8 @@ void CpuExperts::compute_many(const ExpertShape &s, const std::vector<Job> &jobs
     }
   };
   // Gate and up: tasks of kRowsGU rows of one matrix of one expert, for all its jobs, gate and up alternating. The
-  // last of the tasks over kRowsH rows to finish computes their h.
-  const uint32_t ft = (F + kRowsGU - 1) / kRowsGU, ht = F / kRowsH, per_h = 2 * kRowsH / kRowsGU;
+  // last of the tasks over hr rows to finish computes their h.
+  const uint32_t ft = (F + kRowsGU - 1) / kRowsGU, ht = fused ? F / hr : 0, per_h = 2 * hr / kRowsGU;
   const uint64_t ngu = (uint64_t)nd * 2 * ft;
   std::vector<std::atomic<uint32_t>> pending(fused ? (size_t)nd * ht : 0);
   // An expert that several jobs share decodes each weight row once for all of them, where the type allows.
@@ -186,9 +195,9 @@ void CpuExperts::compute_many(const ExpertShape &s, const std::vector<Job> &jobs
         for (uint32_t j : of[d]) gt->vec_dot((int)E, outs + (size_t)j * F + r, 0, m + r * grow, 0, xqm_.data() + jobs[j].tok * xq_bytes, 0, 1);
     }
     if (!fused) return;
-    const uint32_t b = r0 / kRowsH;
+    const uint32_t b = r0 / hr;
     if (pending[(size_t)d * ht + b].fetch_add(1, std::memory_order_acq_rel) == per_h - 1)
-      swiglu(d, b * kRowsH, (b + 1) * kRowsH);
+      swiglu(d, b * hr, (b + 1) * hr);
   };
   // Down: tasks of kRowsDown rows of every expert, each summing its rows of y over the jobs in order.
   out_.resize((size_t)n * E);

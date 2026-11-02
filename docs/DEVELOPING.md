@@ -51,13 +51,15 @@ docker exec engine-dev bash -c 'cd /src/build && ENGINE_EXPECT_GPUS=2 ctest -L g
 | `direct_test` | 1 | the loader's thread probe reads the largest shard, and gives 8 threads without reading a file under 1 GiB; no card, no model |
 | `mrope_test` | 1 | the M-RoPE positions an image gives a prompt's cells, against transformers' rule; no card |
 | `experts_test` | 1 | the CPU's expert products with and without the SwiGLU limit, against the formula on ggml's dot products, 1e-5; no card |
+| `quant_test` | 1 | every quantised type's block size and fields against ggml's, the runs layout on random blocks, those blocks' values within the size of the files' weights, and ggml's CPU dot product against its dequantisation; no card |
+| `cpu_experts_test` | 1 | the CPU's expert path keeps its one pool job for every down type of the deepseek41 and Flash-Next files, and its results for several tokens at once equal one token's bit for bit, on random blocks; no card |
 | `ze_smoke_test` | 2 | a kernel runs on every card, and one card waits on another's event |
-| `matvec_test` | 3 | the weight products of all ten quantised types against ggml's dequantisation, 1e-5 |
-| `moe_test` | 3 | the decode step's grouped expert products of `moe.cl` equal `matvec.cl`'s bit for bit, for every expert type the file holds and every group size |
+| `matvec_test` | 3 | the weight products of every quantised type on random blocks, and of every type the file holds on its rows, against ggml's dequantisation, 1e-5 |
+| `moe_test` | 3 | the decode step's grouped expert products of `moe.cl` equal `matvec.cl`'s bit for bit, for every type `moe.cl` takes on random blocks and every one the file holds on its experts, and every group size |
 | `topk_test` | 2 | `topk_rows` against the host: the k largest of rows of up to 248,320 values, ties to the lower indices, both of its paths |
 | `gemm_test` | 2, 3 | the prompt path's fp16 and bf16 products on the XMX units, and the DPAS register layout, 2e-3 |
 | `swiglu_limit_test` | 3 | the experts' gate and up kernels built with and without `-DSWIGLU_LIMIT`, against double precision on random IQ4_XS weights: 1e-5 for the decode kernels, which also agree bit for bit, 2e-3 for the prompt path's; no model needed |
-| `qgemm_test` | 3 | the prompt path's quantised products: dense weights dequantised to fp16, the experts decoded on the fly in both layouts, 2e-3 |
+| `qgemm_test` | 3 | the prompt path's quantised products, on random blocks of every type and on the file's weights: dense weights dequantised to fp16, the experts decoded on the fly in both layouts, 2e-3 |
 | `kl_test` | 5 | the engine's distribution against the BF16 checkpoint's on the KL set, teacher-forced one token a step: mean KL at most 0.170, top-1 agreement at least 83.5%. Needs `$FLASH_REF_DIR/kl-base-bf16.bin` |
 | `attn_test` | 3 | the prompt path's attention kernel against double precision: dense and sparse rows, rows past 12,288 positions, keys that grow along the positions, both cards' head layouts; 2e-3 |
 | `vision_test` | 3 | the image encoder's kernels against double precision: 1e-5 for f32 outputs, 2e-3 for fp16, 1e-2 for bf16 |
@@ -66,11 +68,13 @@ docker exec engine-dev bash -c 'cd /src/build && ENGINE_EXPECT_GPUS=2 ctest -L g
 | `pack_test` | 6 | a prompt chunk of several sequences' runs, one of them from the middle of its prompt, gives each sequence exactly the candidates and the greedy tokens of its prompt read alone; so do runs after a chunk's first that hold an image's block or start past the indexer's 2,051 cells and past 12,288 positions |
 | `api_test` | 5 | the C ABI from C: 32 greedy tokens, the first 19 equal to llama.cpp's (token 19 is a near tie), release and admit again, a stop token, short prompt pieces read as decode windows, a 108-token prompt by the prompt path, two requests in one step, a checkpoint restored into another slot that shares the first slot's pages and copies the page the checkpoint ends inside, one token read after a restore, the timing records; with the draft layer's tensors (`FLASH_MTP_DIR`, by default `/models/mtp`), drafting gives the same tokens alone and with two slots drafting in one window; with adaptive swaps, three requests keep their first 16 tokens |
 
-A test whose model is missing skips (exit code 77). Tests find the model at `FLASH_MODEL_DIR`, by default
-`/models`; ctest gives `api_test` the path `/models/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf`.
-`FLASH_MODEL` names another file's first shard instead: `matvec_test`, `qgemm_test` and `moe_test` then check the
-kernels of every quantised type that file has (`gguf_test` and `kl_test` hold the IQ3_S file's own numbers). The
-Q8_0 down experts' kernels need a file with such experts, such as UD-IQ4_XS: IQ3_S has none.
+A test whose model is missing skips (exit code 77), except `matvec_test`, `qgemm_test` and `moe_test`, which then
+check random blocks only. Tests find the model at `FLASH_MODEL_DIR`, by default `/models`; ctest gives `api_test` the
+path `/models/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf`. `FLASH_MODEL` names another file's first shard
+instead: `matvec_test`, `qgemm_test` and `moe_test` then also check the kernels of every quantised type that file has
+on its weights (`gguf_test` and `kl_test` hold the IQ3_S file's own numbers). A type the IQ3_S file lacks needs a file
+that has it, such as UD-IQ4_XS for the Q8_0 down experts ([MODEL_FILES.md](MODEL_FILES.md#unsloths-other-files) lists
+the expert types of Unsloth's files).
 A GPU test also skips when Level Zero lists no GPU, unless `ENGINE_EXPECT_GPUS` is set; then it fails. `api_test`
 checks only for the model, since the C ABI does not say why `engine_open` failed.
 

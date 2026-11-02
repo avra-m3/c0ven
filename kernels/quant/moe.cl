@@ -29,12 +29,13 @@ static inline float act_unit(__global const uchar *a, uint K, uint u, uint q[8])
 // Gate and up: 256 values a block, 8 units. Lane l takes unit l & 7 of blocks (l >> 3), (l >> 3) + 2, ...
 
 #if QTYPE == QT_IQ2_S || QTYPE == QT_IQ3_XXS || QTYPE == QT_IQ3_S || QTYPE == QT_IQ4_XS || QTYPE == QT_IQ2_XXS || \
-    QTYPE == QT_IQ2_XS || QTYPE == QT_IQ1_M
+    QTYPE == QT_IQ2_XS || QTYPE == QT_IQ1_S || QTYPE == QT_IQ1_M || QTYPE == QT_Q2_K
 
-// Unit s of block k as 8 magnitude words g and 8 nibbles of sign bits (bit j: byte j negative), or for IQ4_XS and
-// IQ1_M as 8 signed words and no signs; lo and hi as decode_unit gives them.
+// Unit s of block k as 8 magnitude words g and 8 nibbles of sign bits (bit j: byte j negative), or for IQ4_XS, IQ1_S,
+// IQ1_M and Q2_K as 8 signed words and no signs; lo, hi, mn and mh as decode_unit gives them.
 static inline void gu_decode(__global const uchar *W, uint n, uint k, uint s, uint g[8], uint sg[8], float *lo,
-                             float *hi GRID_PARAM) {
+                             float *hi, float *mn, float *mh GRID_PARAM) {
+  *mn = *mh = 0.0f;
 #if QTYPE == QT_IQ3_XXS
   uint2 qs = vload2(0, (__global const uint *)(W + RUN(0) + k * 64 + 8 * s));
   uint aux = ld_u32x(W + RUN(1) + k * 32 + 4 * s);
@@ -105,6 +106,31 @@ static inline void gu_decode(__global const uchar *W, uint n, uint k, uint s, ui
   *lo = d * (0.5f + (float)(sc & 15));
   *hi = d * (0.5f + (float)(sc >> 4));
 #endif
+#elif QTYPE == QT_IQ1_S
+  uint qs4 = ld_u32x(W + RUN(0) + k * 32 + 4 * s);
+  uint qh = *(__global const ushort *)(W + RUN(1) + k * 16 + 2 * s);
+  for (uint l = 0; l < 4; l++) {
+    uint2 e = *(__local const uint2 *)(grid + 8 * (((qs4 >> (8 * l)) & 255u) | (((qh >> (3 * l)) & 7u) << 8)));
+    g[2 * l] = iq1_word(e.s0, qh & 0x8000u);
+    g[2 * l + 1] = iq1_word(e.s1, qh & 0x8000u);
+    sg[2 * l] = sg[2 * l + 1] = 0;
+  }
+  *lo = *hi = vload_half(0, (__global const half *)(W + RUN(2) + k * 2)) * (float)(2 * ((qh >> 12) & 7u) + 1) * 0.125f;
+#elif QTYPE == QT_Q2_K
+  uint8 qv = vload8(0, (__global const uint *)(W + RUN(0) + k * 64 + 32 * (s / 4)));
+  uint qw[8] = {qv.s0, qv.s1, qv.s2, qv.s3, qv.s4, qv.s5, qv.s6, qv.s7};
+  uint shift = 2 * (s % 4);
+  for (uint j = 0; j < 8; j++) {
+    g[j] = (qw[j] >> shift) & 0x03030303u;
+    sg[j] = 0;
+  }
+  uint sc = *(__global const ushort *)(W + RUN(1) + k * 16 + 2 * s);
+  float d = vload_half(0, (__global const half *)(W + RUN(2) + k * 4));
+  float dmin = vload_half(1, (__global const half *)(W + RUN(2) + k * 4));
+  *lo = d * (float)(sc & 15u);
+  *hi = d * (float)((sc >> 8) & 15u);
+  *mn = dmin * (float)((sc >> 4) & 15u);
+  *mh = dmin * (float)(sc >> 12);
 #elif QTYPE == QT_IQ1_M
   uint qs4 = ld_u32x(W + RUN(0) + k * 32 + 4 * s);
   uint qh2 = *(__global const ushort *)(W + RUN(1) + k * 16 + 2 * s);
@@ -141,14 +167,23 @@ static inline void gu_decode(__global const uchar *W, uint n, uint k, uint s, ui
 #endif
 }
 
-#if QTYPE == QT_IQ4_XS || QTYPE == QT_IQ1_M
+#if QTYPE == QT_IQ4_XS || QTYPE == QT_IQ1_S || QTYPE == QT_IQ1_M || QTYPE == QT_Q2_K
 #define SIGNED_GRID 0
 #else
 #define SIGNED_GRID 1
 #endif
 
+// Q2_K's mins' term, as unit_dot forms it.
+static inline float gu_mins(const uint q[8], float mn, float mh) {
+  int sa0 = 0, sa1 = 0;
+  for (uint j = 0; j < 4; j++) sa0 += dot4(q[j], 0x01010101u);
+  for (uint j = 4; j < 8; j++) sa1 += dot4(q[j], 0x01010101u);
+  return mins_term(mn, mh, sa0, sa1);
+}
+
 // sum over the unit of w * x, as unit_dot gives it, with the words still split from their signs.
-static inline float gu_dot1(const uint g[8], const uint sg[8], const uint q[8], float lo, float hi) {
+static inline float gu_dot1(const uint g[8], const uint sg[8], const uint q[8], float lo, float hi, float mn,
+                            float mh) {
   int s0 = 0, s1 = 0;
   for (uint j = 0; j < 8; j++) {
 #if SIGNED_GRID
@@ -159,7 +194,11 @@ static inline float gu_dot1(const uint g[8], const uint sg[8], const uint q[8], 
 #endif
     if (j < 4) s0 += v; else s1 += v;
   }
-  return lo * (float)s0 + hi * (float)s1;
+  float r = lo * (float)s0 + hi * (float)s1;
+#if QTYPE == QT_Q2_K
+  r -= gu_mins(q, mn, mh);
+#endif
+  return r;
 }
 
 // The words with their signs applied, for several activations. No grid byte is 0, so (g ^ m) + (m & 1) has no carry
@@ -173,11 +212,15 @@ static inline void gu_signed(uint g[8], const uint sg[8]) {
 #endif
 }
 
-static inline float gu_dotw(const uint w[8], const uint q[8], float lo, float hi) {
+static inline float gu_dotw(const uint w[8], const uint q[8], float lo, float hi, float mn, float mh) {
   int s0 = 0, s1 = 0;
   for (uint j = 0; j < 4; j++) s0 += dot4(w[j], q[j]);
   for (uint j = 4; j < 8; j++) s1 += dot4(w[j], q[j]);
-  return lo * (float)s0 + hi * (float)s1;
+  float r = lo * (float)s0 + hi * (float)s1;
+#if QTYPE == QT_Q2_K
+  r -= gu_mins(q, mn, mh);
+#endif
+  return r;
 }
 
 // h[a * rows + r] = silu(gate_r . x_a) * (up_r . x_a) for the group's assignments a, x_a at act + (a / per_tok) *
@@ -213,28 +256,28 @@ REQD_SG __kernel void moe_gate_up_g(__global const uchar *cache, ulong slot_byte
     float da = act_unit(act + (asg[0] / per_tok) * act_stride, K, u, q);
     for (uint i = 0; i < R; i++) {
       uint g[8], sg[8];
-      float lo, hi;
-      gu_decode(G, n, kb[i], s, g, sg, &lo, &hi GRID_ARG);
-      ag[i] += da * gu_dot1(g, sg, q, lo, hi);
-      gu_decode(U, n, kb[i], s, g, sg, &lo, &hi GRID_ARG);
-      au[i] += da * gu_dot1(g, sg, q, lo, hi);
+      float lo, hi, mn, mh;
+      gu_decode(G, n, kb[i], s, g, sg, &lo, &hi, &mn, &mh GRID_ARG);
+      ag[i] += da * gu_dot1(g, sg, q, lo, hi, mn, mh);
+      gu_decode(U, n, kb[i], s, g, sg, &lo, &hi, &mn, &mh GRID_ARG);
+      au[i] += da * gu_dot1(g, sg, q, lo, hi, mn, mh);
       kb[i] += 2;
     }
 #else
     // The weights decoded once, for every assignment.
     for (uint i = 0; i < R; i++) {
       uint wg[8], wu[8], sg[8];
-      float glo, ghi, ulo, uhi;
-      gu_decode(G, n, kb[i], s, wg, sg, &glo, &ghi GRID_ARG);
+      float glo, ghi, gmn, gmh, ulo, uhi, umn, umh;
+      gu_decode(G, n, kb[i], s, wg, sg, &glo, &ghi, &gmn, &gmh GRID_ARG);
       gu_signed(wg, sg);
-      gu_decode(U, n, kb[i], s, wu, sg, &ulo, &uhi GRID_ARG);
+      gu_decode(U, n, kb[i], s, wu, sg, &ulo, &uhi, &umn, &umh GRID_ARG);
       gu_signed(wu, sg);
       for (uint t = 0; t < A; t++) {
         if (t < na) {
           uint q[8];
           float da = act_unit(act + (asg[t] / per_tok) * act_stride, K, u, q);
-          ag[i * A + t] += da * gu_dotw(wg, q, glo, ghi);
-          au[i * A + t] += da * gu_dotw(wu, q, ulo, uhi);
+          ag[i * A + t] += da * gu_dotw(wg, q, glo, ghi, gmn, gmh);
+          au[i * A + t] += da * gu_dotw(wu, q, ulo, uhi, umn, umh);
         }
       }
       kb[i] += 2;
@@ -266,7 +309,7 @@ REQD_SG __kernel void moe_gate_up_g(__global const uchar *cache, ulong slot_byte
 // Down: short rows (the card's ff values). 4 lanes a row, lane l taking units l, l + 4, ...; a sub-group pass covers
 // 4 rows, and a sub-group makes MOE_DOWN_ROWS / 4 passes, rows base, base + 4, ...
 
-#if QTYPE == QT_IQ4_NL || QTYPE == QT_Q2_0 || QTYPE == QT_Q8_0
+#if QTYPE == QT_IQ4_NL || QTYPE == QT_Q2_0 || QTYPE == QT_Q8_0 || QTYPE == QT_Q2_K || QTYPE == QT_Q5_1
 
 #define DL 4
 
@@ -275,8 +318,8 @@ static inline float lanes4_sum(float x) {
   return x + sg_xor(x, 2);
 }
 
-// Unit u of a row whose blocks start at block kr, as 8 signed words and its scale.
-static inline float down_decode(__global const uchar *W, uint n, uint kr, uint u, uint w[8] GRID_PARAM) {
+// Unit u of a row whose blocks start at block kr, as 8 signed words and decode_unit's lo, hi, mn and mh.
+static inline float4 down_decode(__global const uchar *W, uint n, uint kr, uint u, uint w[8] GRID_PARAM) {
 #if QTYPE == QT_IQ4_NL
   const uint k = kr + u;
   uint4 qv = vload4(0, (__global const uint *)(W + RUN(0) + k * 16));
@@ -291,14 +334,40 @@ static inline float down_decode(__global const uchar *W, uint n, uint kr, uint u
     w[j] = lo4;
     w[4 + j] = hi4;
   }
-  return vload_half(0, (__global const half *)(W + RUN(1) + k * 2));
+  float d = vload_half(0, (__global const half *)(W + RUN(1) + k * 2));
+  return (float4)(d, d, 0.0f, 0.0f);
 #elif QTYPE == QT_Q8_0
   // Q8_0: the 32 signed bytes as they are, no codebook.
   const uint k = kr + u;
   uint8 qv = vload8(0, (__global const uint *)(W + RUN(0) + k * 32));
   w[0] = qv.s0; w[1] = qv.s1; w[2] = qv.s2; w[3] = qv.s3;
   w[4] = qv.s4; w[5] = qv.s5; w[6] = qv.s6; w[7] = qv.s7;
-  return vload_half(0, (__global const half *)(W + RUN(1) + k * 2));
+  float d = vload_half(0, (__global const half *)(W + RUN(1) + k * 2));
+  return (float4)(d, d, 0.0f, 0.0f);
+#elif QTYPE == QT_Q2_K
+  // Q2_K: the codes 0-3, with two scales and two mins.
+  const uint k = kr + u / 8, s = u % 8;
+  uint8 qv = vload8(0, (__global const uint *)(W + RUN(0) + k * 64 + 32 * (s / 4)));
+  uint qw[8] = {qv.s0, qv.s1, qv.s2, qv.s3, qv.s4, qv.s5, qv.s6, qv.s7};
+  for (uint j = 0; j < 8; j++) w[j] = (qw[j] >> (2 * (s % 4))) & 0x03030303u;
+  uint sc = *(__global const ushort *)(W + RUN(1) + k * 16 + 2 * s);
+  float d = vload_half(0, (__global const half *)(W + RUN(2) + k * 4));
+  float dmin = vload_half(1, (__global const half *)(W + RUN(2) + k * 4));
+  return (float4)(d * (float)(sc & 15u), d * (float)((sc >> 8) & 15u), dmin * (float)((sc >> 4) & 15u),
+                  dmin * (float)(sc >> 12));
+#elif QTYPE == QT_Q5_1
+  // Q5_1: the codes 0-31, 4 bits in qs and the fifth in qh, with a minimum.
+  const uint k = kr + u;
+  uint4 qv = vload4(0, (__global const uint *)(W + RUN(0) + k * 16));
+  uint xw[4] = {qv.s0, qv.s1, qv.s2, qv.s3};
+  uint qh = ld_u32x(W + RUN(1) + k * 4);
+  for (uint j = 0; j < 4; j++) {
+    w[j] = (xw[j] & 0x0f0f0f0fu) | (spread4(qh >> (4 * j)) << 4);
+    w[4 + j] = ((xw[j] >> 4) & 0x0f0f0f0fu) | (spread4(qh >> (16 + 4 * j)) << 4);
+  }
+  float d = vload_half(0, (__global const half *)(W + RUN(2) + k * 4));
+  float m = vload_half(1, (__global const half *)(W + RUN(2) + k * 4));
+  return (float4)(d, d, -m, -m);
 #else
   // Q2_0: the codes 0-3 unsigned here; the caller subtracts the activation's sum for the -1.
   const uint k = kr + u / 2;
@@ -307,26 +376,35 @@ static inline float down_decode(__global const uchar *W, uint n, uint kr, uint u
     uint x = ((j < 4 ? qv.s0 : qv.s1) >> (8 * (j & 3))) & 255u;
     w[j] = (x & 0x03u) | ((x & 0x0cu) << 6) | ((x & 0x30u) << 12) | ((x & 0xc0u) << 18);
   }
-  return vload_half(0, (__global const half *)(W + RUN(1) + k * 2));
+  float d = vload_half(0, (__global const half *)(W + RUN(1) + k * 2));
+  return (float4)(d, d, 0.0f, 0.0f);
 #endif
 }
 
-// The unit's sum, as unit_dot gives it. qs0 and qs1: for Q2_0, the sums of q[0..3] and q[4..7]. The dot products
-// are summed in two loops apart: one loop that picks s0 or s1 by index gave wrong sums for Q2_0 (IGC 2.20).
-static inline float down_dot(const uint w[8], const uint q[8], float d, int qs0, int qs1) {
+// The unit's sum, as unit_dot gives it, for down_decode's scales sc. qs0 and qs1: for Q2_0, Q2_K and Q5_1, the sums of
+// q[0..3] and q[4..7]. The dot products are summed in two loops apart: one loop that picks s0 or s1 by index gave
+// wrong sums for Q2_0 (IGC 2.20).
+static inline float down_dot(const uint w[8], const uint q[8], float4 sc, int qs0, int qs1) {
   int s0 = 0, s1 = 0;
   for (uint j = 0; j < 4; j++) s0 += dot4(w[j], q[j]);
   for (uint j = 4; j < 8; j++) s1 += dot4(w[j], q[j]);
+#if QTYPE == QT_Q2_K || QTYPE == QT_Q5_1
+  float r = sc.s0 * (float)s0 + sc.s1 * (float)s1;
+  r -= mins_term(sc.s2, sc.s3, qs0, qs1);
+  return r;
+#else
 #if QTYPE == QT_Q2_0
   s0 -= qs0;
   s1 -= qs1;
 #endif
+  const float d = sc.s0;
   return d * (float)s0 + d * (float)s1;
+#endif
 }
 
 static inline void q_sums(const uint q[8], int *qs0, int *qs1) {
   *qs0 = *qs1 = 0;
-#if QTYPE == QT_Q2_0
+#if QTYPE == QT_Q2_0 || QTYPE == QT_Q2_K || QTYPE == QT_Q5_1
   for (uint j = 0; j < 4; j++) *qs0 += dot4(q[j], 0x01010101u);
   for (uint j = 4; j < 8; j++) *qs1 += dot4(q[j], 0x01010101u);
 #endif
@@ -364,20 +442,20 @@ REQD_SG __kernel void moe_down_g(__global const uchar *cache, ulong slot_bytes, 
     q_sums(q, &qs0, &qs1);
     for (uint i = 0; i < P; i++) {
       uint w[8];
-      float d = down_decode(W, n, kr[i], u, w GRID_ARG);
-      acc[i] += da * down_dot(w, q, d, qs0, qs1);
+      float4 sc = down_decode(W, n, kr[i], u, w GRID_ARG);
+      acc[i] += da * down_dot(w, q, sc, qs0, qs1);
     }
 #else
     for (uint i = 0; i < P; i++) {
       uint w[8];
-      float d = down_decode(W, n, kr[i], u, w GRID_ARG);
+      float4 sc = down_decode(W, n, kr[i], u, w GRID_ARG);
       for (uint t = 0; t < A; t++) {
         if (t < na) {
           uint q[8];
           int qs0, qs1;
           float da = act_unit(act + asg[t] * act_stride, K, u, q);
           q_sums(q, &qs0, &qs1);
-          acc[i * A + t] += da * down_dot(w, q, d, qs0, qs1);
+          acc[i * A + t] += da * down_dot(w, q, sc, qs0, qs1);
         }
       }
     }
