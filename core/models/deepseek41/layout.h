@@ -46,7 +46,8 @@
 #define D41_ENG_NGRAM 4                // a token and the three before it
 #define D41_ENG_HEADS 8                // heads an n-gram size
 #define D41_ENG_COLS ((D41_ENG_NGRAM - 1) * D41_ENG_HEADS)  // 24 rows a token and Engram layer
-#define D41_ENG_ROW 256                // values a row: one Q5_K block, 176 B
+#define D41_ENG_ROW 256                // values a row: 8 IQ4_NL blocks of 32
+#define D41_ENG_ROW_BYTES 144          // a row's bytes in the file
 #define D41_ENG_G (D41_ENG_COLS * D41_ENG_ROW)  // 6,144: a token's gathered rows
 #define D41_ENG_KV ((D41_HC + 1) * D41_EMBD)    // 25,600: a key per stream, then the shared value
 #define D41_ENG_CLAMP 1e-6f
