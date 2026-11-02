@@ -23,7 +23,7 @@ Use C0ven if you have:
 - an x86-64 CPU, which computes the experts the cards do not hold; the engine loads the build of its CPU code that
   uses the most of the CPU's features (AVX-512 down to plain x86-64),
 - enough RAM that RAM and VRAM together come to 68 GiB with the default model file, or 45 GiB with the smallest
-  ([below](#which-model-file-to-pick)),
+  ([Choosing a model](docs/CHOOSING_A_MODEL.md)),
 - one person, or a few requests at once, using the model.
 
 C0ven is the wrong tool if you want to run other models, use other GPUs, or serve many users. Use llama.cpp or vLLM
@@ -56,151 +56,101 @@ if you have one, try Strata.
 
 ## Quick start
 
-You need Docker, the `xe` kernel driver, and the model files (see [Model files](#model-files)).
+You need a Linux machine with Docker, the `xe` kernel driver and a model. Run each command below in a terminal.
 
-Find the render group's ID on your machine:
+### 1. Check your machine
 
-```bash
-stat -c %g /dev/dri/renderD128
-```
-
-Start the server. Replace `993` with your group ID and `/path/to/models` with your model directory:
+Check that Docker works. This prints `Hello from Docker!`:
 
 ```bash
-docker run --rm --device /dev/dri --group-add 993 --ulimit memlock=-1:-1 --read-only -p 127.0.0.1:8080:8080 -v /path/to/models:/models:ro -v c0ven-cache:/cache -e ENGINE_CACHE_DIR=/cache ghcr.io/avra-m3/c0ven/serve:main --model /models/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf --slots 4 --context 262144 --host 0.0.0.0 --port 8080
+docker run --rm hello-world
 ```
 
-What the `docker run` flags do:
+If the command is not found, [install Docker](https://docs.docker.com/engine/install/). If it says permission denied,
+[let your user run Docker](https://docs.docker.com/engine/install/linux-postinstall/), then log out and back in.
 
-| Flag | Why |
-| --- | --- |
-| `--device /dev/dri`, `--group-add 993` | the cards, and the render group that may open them |
-| `--ulimit memlock=-1:-1` | lets the engine lock its expert arena in RAM; a load stops without it |
-| `--read-only` | the image writes nothing to its root filesystem; it may be left out |
-| `-p 127.0.0.1:8080:8080` | the API, on the host's loopback only. The server inside listens on `--host 0.0.0.0 --port 8080` |
-| `-v /path/to/models:/models:ro` | the model files, read-only. `--model` names the GGUF's first shard inside the container |
-| `-v c0ven-cache:/cache`, `-e ENGINE_CACHE_DIR=/cache` | a named volume for what a load works out and the next reuses: the quantised draft layer, the loader's thread count, each card's working memory, the scheduler's timings |
+Check the kernel driver. One of the lines this prints should end in `/xe`:
 
-The arguments after the image name are the server's [options](#options). To run it in the background, replace
-`--rm` with `-d --name c0ven`; `docker logs -f c0ven` follows it, and `docker stop c0ven` stops it.
+```bash
+ls -l /sys/class/drm/renderD*/device/driver
+```
 
-The `c0ven-cache` volume keeps the quantised draft layer between runs. Without it, each start spends about 43 s
-quantising it again ([record](docs/measurements/MEASUREMENTS.md#2026-10-16-load-phases); [DEVELOPING.md](docs/DEVELOPING.md)).
+If none does, see [Intel's GPU setup guides](https://dgpu-docs.intel.com/).
 
-Send a request:
+### 2. Pick a model
+
+[Choosing a model](docs/CHOOSING_A_MODEL.md) compares the files, with the RAM each needs on a B60. If you are not
+sure, use IQ3_S, an 83.6 GB download.
+
+### 3. Download it
+
+Make a folder for the model:
+
+```bash
+mkdir -p ~/c0ven-models
+```
+
+Download the model into it. If you picked another file, replace `IQ3_S` at the end with its name:
+
+```bash
+docker run --rm --user "$(id -u):$(id -g)" -v ~/c0ven-models:/models --entrypoint python ghcr.io/avra-m3/c0ven/serve:main -m tools.model_fetch IQ3_S
+```
+
+The download is large, so expect it to take a while. It checks each file when it finishes. If it stops, run the same
+command again and it carries on from where it was. At the end it prints the command to start the server.
+
+### 4. Start the server
+
+Run the command the download printed. For IQ3_S it is this one:
+
+```bash
+docker run --rm --device /dev/dri --group-add "$(stat -c %g /dev/dri/renderD128)" --ulimit memlock=-1:-1 --read-only -p 127.0.0.1:8080:8080 -v ~/c0ven-models:/models:ro -v c0ven-cache:/cache -e ENGINE_CACHE_DIR=/cache ghcr.io/avra-m3/c0ven/serve:main --model /models/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf --slots 1 --context 262144 --host 0.0.0.0 --port 8080
+```
+
+Leave this terminal open: the server runs until you press Ctrl+C. If your machine cannot fit the model, the server
+says so and stops, and suggests options that fit.
+
+Open a second terminal and check whether the model has loaded. This prints `200` when it is ready, and anything else
+means it is still loading:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/health
+```
+
+### 5. Send a request
 
 ```bash
 curl http://127.0.0.1:8080/v1/chat/completions -H 'Content-Type: application/json' -d '{"messages":[{"role":"user","content":"Hello"}],"stream":true}'
 ```
 
-<!-- IMAGE: screenshot or GIF of a client streaming from C0ven, docs/images/demo.gif -->
+Your tools can now use the server through its [OpenAI and Anthropic APIs](docs/API.md), at `http://127.0.0.1:8080`.
 
-## Model files
+### What the start command does
 
-C0ven reads one model:
-
-| File | Where from |
+| Flag | Why |
 | --- | --- |
-| The IQ3_S GGUF, 2 shards, 83.6 GB, or a smaller size ([below](#which-model-file-to-pick)) | [`ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF`](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF), folder `IQ3_S/` or the size's own |
-| The MTP draft layer, in `mtp/` beside the GGUF | the 31 `mtp.*` tensors from [`Qwen/Qwen3.8-Flash-Next`](https://huggingface.co/Qwen/Qwen3.8-Flash-Next) |
-| The image encoder, beside the GGUF (for images) | `mmproj-Qwen3.8-Flash-Next-BF16.gguf`, in the same ISTA-DASLab repository |
+| `--device /dev/dri`, `--group-add "$(stat ...)"` | the cards, and the render group that may open them |
+| `--ulimit memlock=-1:-1` | lets the engine lock its experts in RAM; a load stops without it |
+| `--read-only` | the image writes nothing to its root filesystem; it may be left out |
+| `-p 127.0.0.1:8080:8080` | the API, on this machine only. The server inside listens on `--host 0.0.0.0 --port 8080` |
+| `-v ~/c0ven-models:/models:ro` | the model files, read-only |
+| `-v c0ven-cache:/cache`, `-e ENGINE_CACHE_DIR=/cache` | keeps what a load works out, so the next start can reuse it |
 
-[MODEL_FILES.md](docs/MODEL_FILES.md) gives the pinned revisions and checksums, how to fetch the MTP tensors, how to
-lay the files out and how to point the engine at them.
-
-## Which model file to pick
-
-The same repository has the model in four sizes. IQ3_S is the default; the smaller files are faster and need less
-RAM, and give up some accuracy:
-
-| File | Download | RAM the engine takes | Decode, 4k prompt (tokens/s) | Benchmarks, share of the original's |
-| --- | ---: | ---: | ---: | ---: |
-| IQ3_S | 83.6 GB | [22.6 GiB](docs/measurements/MEASUREMENTS.md#2026-10-19-other-quants) | [85.6](docs/measurements/MEASUREMENTS.md#2026-10-18-against-llama-cpp) | 100.2% |
-| IQ3_XXS | 75.8 GB | [14.6 GiB](docs/measurements/MEASUREMENTS.md#2026-10-19-other-quants) | [98.3](docs/measurements/MEASUREMENTS.md#2026-10-19-other-quants) | 99.4% |
-| IQ2_XS | 68.0 GB | [7.1 GiB](docs/measurements/MEASUREMENTS.md#2026-10-19-other-quants) | [100.8](docs/measurements/MEASUREMENTS.md#2026-10-19-other-quants) | 95.7% |
-| Q2_0 | 66.4 GB | about 5.6 GiB (*estimate*) | [104.4](docs/measurements/MEASUREMENTS.md#2026-10-19-other-quants) | 95.7% |
-
-On two cards, one slot, a 262,144-token context. The benchmark column is ISTA-DASLab's, from
-[the files' model card](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF): the mean of AIME25,
-GPQA-Diamond and LiveCodeBench v6 against the original 16-bit model. [CHOOSING_A_MODEL.md](docs/CHOOSING_A_MODEL.md)
-explains each column and helps you choose.
-
-## Options
-
-The server's flags:
-
-| Flag | Default | What it does |
-| --- | --- | --- |
-| `--model` | | The GGUF file (any shard). |
-| `--slots` | `1` | How many requests can run at once. |
-| `--context` | `262144` | Context length in tokens. |
-| `--default-max-tokens` | the rest of the context | What a request without `max_tokens` may write, in tokens (`32k` is 32,768). |
-| `--kv-tokens` | slots x context | The KV cache the slots share, in tokens (`512k` is 524,288), at least `--context`. The tokens the requests do not hold lend their VRAM to the expert cache; with `--deterministic`, each token of it takes VRAM that would otherwise cache experts. See below. |
-| `--host` | `127.0.0.1` | Address to listen on. |
-| `--port` | `8080` | Port to listen on. |
-| `--name` | | The model's name in the APIs. |
-| `--engine-arg` | | Passed to the engine as is. Repeatable. |
-| `--start` | `awake` | `asleep` waits for the first wake to load the model. |
-| `--sleep-mode` | `keep` | `exit` has the engine exit on sleep: the RAM comes back too, and each wake is a full load. |
-| `--admin-host` | `127.0.0.1` | Address for the admin routes. |
-| `--admin-port` | | Serve `/admin/wake`, `/admin/sleep` and `/admin/lease` on this port. Without it there are none. |
-| `--drain-timeout` | `30` | Seconds a sleep lets running requests go on before it cancels them. |
-| `--log-level` | `INFO` | Log level. |
-| `--metrics-log` | `0` | Seconds between log lines of the `/metrics` counters. Each request's record is logged too. `0`: none. |
-| `--version` | | Print the version and exit. |
-
-`--kv-tokens` sets the KV cache's size apart from `--slots`. With `--slots 4 --kv-tokens 512k`, four requests run
-at once, and their prompts and answers together may hold up to 524,288 tokens. A request reserves its prompt plus
-`max_tokens`, cut to the rest of the context, when it starts, and waits while the cache cannot hold that. A request without `max_tokens` reserves the
-rest of the context, so with a shared cache set `--default-max-tokens` too: with `--kv-tokens 512k
---default-max-tokens 32k`, short requests without `max_tokens` run four at once. One that reaches the limit ends with
-the finish reason `length`.
-
-The KV cache streams: each request keeps up to 32,768 tokens of K and V in VRAM, the cells its steps read, and the
-whole of it in host memory, and the VRAM the rest would take caches experts. The host copy is
-pinned at load: 13,056 bytes a token of the KV cache, 13.7 GB for four 262,144-token slots.
-
-`ZE_AFFINITY_MASK` limits which cards the engine sees. Useful engine flags through `--engine-arg`: `--no-draft`,
-`--no-vision`, `--deterministic`, `--checkpoints N`, `--ram-max GiB`, which refuses a configuration that would take
-more host memory, `--ngram-ram on|off`, which holds the n-gram table (28.8 GB) in RAM or leaves it in the file; by
-default it is in RAM when the host has room for it, and `--card-memory GiB`, which limits the memory the engine takes on
-each card, for a card that also drives a desktop (`python -m engine --help` lists them all).
-
-## API
-
-| Endpoint | What it is |
-| --- | --- |
-| `POST /v1/chat/completions` | OpenAI Chat Completions |
-| `POST /v1/messages`, `/v1/messages/count_tokens` | Anthropic Messages |
-| `GET /v1/models` | The loaded model |
-| `GET /health` | 200 and the engine's context when it is ready; 503 while it loads or sleeps |
-| `GET /props` | Chat template, context, generation defaults |
-| `GET /slots` | Slots and how many are busy |
-| `GET /metrics` | Engine and front end counters, as JSON: requests, the core's steps, misses, drafts and swaps, and the ratios read from them |
-| `POST /admin/wake`, `/admin/sleep`, `/admin/lease` | On `--admin-port` only: load the model, give the cards back, and hold it awake ([Sharing the cards](#sharing-the-cards-with-other-models)) |
+The arguments after the image name are the server's [options](docs/OPTIONS.md). To run it in the background, replace
+`--rm` with `-d --name c0ven`. `docker logs -f c0ven` follows it, and `docker stop c0ven` stops it.
 
 ## Sharing the cards with other models
 
 C0ven can run as a service of its own that [llama-swap](https://github.com/mostlygeek/llama-swap) wakes and puts to
-sleep, so that other models can have the cards in between ([ADR-0032](docs/adr/0032-sleep-the-front-end-stays-the-engine-keeps-the-arena.md)).
+sleep, so that other models can have the cards in between.
 Asleep, the engine gives back the cards' memory and keeps its RAM, so a wake loads only the cards. A sleep took
 0.38-0.72 s and a wake 14.2-20.7 s ([the record](docs/measurements/MEASUREMENTS.md#2026-10-17-sleep-and-wake)).
 [The guide](docs/guides/share-the-cards.md) gives the steps.
 
 ## Known limits
 
-- The expert arena, 10.85-20.5 GiB, counts against the engine's container memory limit: it is the engine's own
-  memory, so that xe cannot move it under the host's reclaim and stall decode
-  ([ADR-0035](docs/adr/0035-the-arena-in-the-engines-own-memory.md)).
-- Asleep, the engine still holds its expert arena in RAM, about 20 GiB, the image encoder's 0.90 GB when it has
-  one, and 0.32 GiB of VRAM a card
-  ([Sharing the cards](#sharing-the-cards-with-other-models)).
-  `--sleep-mode exit` gives the RAM back, and each wake is then a full load. Sleeping beside another model is not
-  measured yet.
-- Images and videos are read from `data:` URLs or base64 only, never fetched from a URL: `image_url` and
-  `video_url` parts in the OpenAI API, `image` and `video` blocks in the Anthropic API. The designs,
-  [ADR-0031](docs/adr/0031-images-through-the-prompt-path.md) for images and
-  [ADR-0034](docs/adr/0034-video-as-pairs-of-frames.md) for video, are drafts, not yet accepted.
+The RAM that holds the experts counts towards a container's memory limit. If you set `docker run --memory`, allow
+at least the [RAM your model needs](docs/CHOOSING_A_MODEL.md).
 
 ## How it works
 
@@ -270,8 +220,7 @@ flowchart TB
 ```
 
 The two cards share no link. A one-row decode step exchanges its partial sums through pinned host RAM; decode windows
-and the prompt path write theirs straight into the other card's memory
-([ADR-0030](docs/adr/0030-exchanges-into-the-other-card.md)). The CPU's expert misses go through flags in host RAM
+and the prompt path write theirs straight into the other card's memory. The CPU's expert misses go through flags in host RAM
 that a kernel on the card spins on. The command lists are recorded in advance.
 
 The front end handles text and starts the engine as its child process. Inside the engine, Python decides what to run
@@ -281,21 +230,17 @@ each step, and the C++ core runs it on both cards. The kernels are written for B
 ## Building from source
 
 <a id="the-image"></a>The engine is built, tested and run in one Docker image, defined by the
-[`Dockerfile`](Dockerfile), with pinned versions ([ADR-0002](docs/adr/0002-pin-the-toolchain.md)).
+[`Dockerfile`](Dockerfile), with pinned versions.
 
 ```bash
 docker build --target serve -t c0ven/serve .
 ```
 
-Run it as in the [Quick start](#quick-start), with `c0ven/serve` in place of `ghcr.io/avra-m3/c0ven/serve:main`:
-
-```bash
-docker run --rm --device /dev/dri --group-add 993 --ulimit memlock=-1:-1 --read-only -p 127.0.0.1:8080:8080 -v /path/to/models:/models:ro -v c0ven-cache:/cache -e ENGINE_CACHE_DIR=/cache c0ven/serve --model /models/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf --slots 4 --context 262144 --host 0.0.0.0 --port 8080
-```
+Run it as in the [Quick start](#quick-start), with `c0ven/serve` in place of
+`ghcr.io/avra-m3/c0ven/serve:main`.
 
 CI publishes only the serving image from `main`, as `ghcr.io/avra-m3/c0ven/serve:main` and under the version in
-[`VERSION`](VERSION), such as `ghcr.io/avra-m3/c0ven/serve:0.0.1` ([ADR-0042](docs/adr/0042-version-numbers.md),
-[ADR-0043](docs/adr/0043-publish-only-the-serving-image.md)). The development image, `--target engine`, is built
+[`VERSION`](VERSION), such as `ghcr.io/avra-m3/c0ven/serve:0.0.1`. The development image, `--target engine`, is built
 locally.
 
 [DEVELOPING.md](docs/DEVELOPING.md) covers the development image, the build and the tests.
@@ -304,16 +249,16 @@ locally.
 
 Each page is the one source of truth for its subject. Plans and work in progress are
 [GitHub issues](https://github.com/avra-m3/c0ven/issues). The pages are also published as a site, with search:
-<https://avra-m3.github.io/c0ven/> ([ADR-0047](docs/adr/0047-the-docs-site-built-by-zensical.md)).
+<https://avra-m3.github.io/c0ven/>.
 
 For users:
 
-- This README: running the server, its options, its API and its limits.
+- [OPTIONS.md](docs/OPTIONS.md): the server's options.
+- [API.md](docs/API.md): the server's endpoints, and how requests carry images and video.
 - [Guides](docs/guides/index.md): how to do one thing, step by step.
 - [Showcase](docs/showcase/index.md): things coding agents have made, and how to make them.
 - [MODEL_FILES.md](docs/MODEL_FILES.md): the model files: where to get them and how to lay them out for the engine.
-- [CHOOSING_A_MODEL.md](docs/CHOOSING_A_MODEL.md): which of the four model files to pick, for your hardware and the
-  speed and accuracy you want.
+- [CHOOSING_A_MODEL.md](docs/CHOOSING_A_MODEL.md): the model files you can run and what each needs.
 - [CACHING.md](docs/CACHING.md): how the server reuses the start of a prompt, and what load does to that.
 - [BENCHMARKS.md](docs/BENCHMARKS.md): how the benchmarks above were measured.
 

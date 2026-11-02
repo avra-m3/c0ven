@@ -56,8 +56,8 @@ At each load the engine quantises the draft layer's experts from BF16, which tak
 `mtp-manifest.json`, the expert type and the card split, and a file that does not match is written again
 ([DEVELOPING.md](DEVELOPING.md)).
 
-With Docker, mount the model directory at `/models` and give a volume for the cache, as in the README's
-[quick start](../README.md#quick-start):
+With Docker, mount the model directory at `/models` and give a volume for the cache, as in
+the [quick start](../README.md#quick-start):
 
 ```bash
 docker run ... -v <model dir>:/models:ro -v c0ven-cache:/cache -e ENGINE_CACHE_DIR=/cache \
@@ -68,6 +68,9 @@ The tests find the same directory through `FLASH_MODEL_DIR`, by default `/models
 ([TESTING.md](TESTING.md)).
 
 ## Getting the files
+
+`python -m tools.model_fetch` downloads a model file, the image encoder and the DFlash 2 drafter for you
+([quick start](../README.md#3-download-it)). The sections below say what it fetches, and how to do it by hand.
 
 ### The model
 
