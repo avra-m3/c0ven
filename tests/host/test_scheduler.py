@@ -192,7 +192,7 @@ def test_prompt_steps_are_sized_by_time_while_others_write():
     steps = [(at, p) for at, p in zip(run.engine.submitted_at, run.engine.plans, strict=True) if p.prompt][1:]
     spans = [s.count for _, p in steps for s in p.prompt]
     assert sum(spans) == 3000
-    assert max(spans) <= 100.0 / 0.46 + 1, "the mock reports 0.46 ms per row"
+    assert max(spans) <= 1.6 * 100.0 / 0.46 + 1, "1.6 x the budget, and the mock reports 0.46 ms per row"
     gaps = [b - a for (a, _), (b, _) in itertools.pairwise(steps)]
     assert min(gaps) >= 4, f"decode is owed half of each ~100 ms prompt step, ~5 steps of 11 ms: {gaps}"
 
@@ -261,6 +261,21 @@ def test_short_prompts_beside_a_writer_share_a_chunk():
     assert run.errors() == []
     steps = [sorted(span.count for span in p.prompt) for p in run.engine.plans[1:] if p.prompt]
     assert steps == [[100, 120]], "the second adds no fixed part to the step"
+
+
+@pytest.mark.parametrize(("rows", "joined"), [(500, True), (700, False)])
+def test_a_prompt_joins_only_while_the_chunk_keeps_to_the_fetch_path(rows: int, joined: bool):
+    options = SchedulerOptions(prompt_budget_ms=500.0)
+    run = make(open_config(slots=4, context=8192), options=options, prompt_chunk_ms=100.0, fetch_rows=1024)
+    run.add(1, prompt(300), 400)
+    run.tick(3)
+    assert run.scheduler.by_rid[1].phase is Phase.DECODE
+    run.add(2, prompt(400, start=7), 2)
+    run.add(3, prompt(rows, start=11), 2)
+    run.until_idle()
+    assert run.errors() == []
+    steps = [sorted(span.count for span in p.prompt) for p in run.engine.plans[1:] if p.prompt]
+    assert steps == ([[400, rows]] if joined else [[400], [rows]])
 
 
 def test_a_long_prompt_alone_takes_whole_chunks():

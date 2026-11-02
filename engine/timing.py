@@ -28,11 +28,11 @@ class Ewma:
 
 
 STRETCH = 1.6
-"""Beside writers, a plan's prompt pieces may be priced at up to this multiple of the budget before a piece is cut or
-another prompt stops joining, since each cut pays the fixed part again. It sets the writers' longest wait: the longest
-plans are prompts joined past the fetch path's rows (`whole_rows`), which take longer than they are priced, and a
-larger stretch makes them longer for no more tokens a second
-(docs/measurements/MEASUREMENTS.md#2026-11-01-whole-rows-and-stretch)."""
+"""Beside writers, a long prompt's piece is sized to this multiple of the budget, and a plan's prompt pieces may be
+priced at up to it before a piece is cut or another prompt stops joining, since each cut pays the fixed part again. A
+piece that fills `whole_rows` reads the most tokens a second and costs the writers no tokens a second
+(docs/measurements/MEASUREMENTS.md#2026-11-01-full-prompt-pieces). A larger stretch joined more prompts for no more
+tokens a second (docs/measurements/MEASUREMENTS.md#2026-11-01-whole-rows-and-stretch)."""
 WHOLE_ROWS = 1024
 """Beside writers, the most rows a prompt piece holds when the core has no fetch path (`whole_rows`): a prompt of up
 to this many rows may be read whole, a longer one is cut, since the fixed part is most of a chunk only up to about
@@ -139,14 +139,14 @@ class CostModel:
         holds (`whole_rows`). All of them when they are at most `whole` and their chunk costs at most STRETCH x the
         budget or its fixed part is at least its rows' part, since each cut would pay the fixed part again and a short
         prompt's chunk is mostly that part, the staging (docs/measurements/MEASUREMENTS.md#2026-10-17-prefill-timings).
-        Otherwise the rows that fit the budget, but no fewer than make the rows' part equal the fixed one or half of
-        `whole`, whichever is fewer, and no more than `whole`; all of them when fewer than window_rows() would be
-        left."""
+        Otherwise the rows that fit STRETCH x the budget, but no fewer than make the rows' part equal the fixed one or
+        half of `whole`, whichever is fewer, and no more than `whole`; all of them when fewer than window_rows() would
+        be left."""
         row_ms = max(self.row_ms, 1e-6)
         even = self.chunk_ms / row_ms  # the rows whose part equals the fixed part
         if wanted <= whole and (wanted <= even or self.prompt_ms(wanted) <= STRETCH * budget_ms):
             return wanted
-        fit = int((budget_ms - self.chunk_ms) / row_ms)
+        fit = int((STRETCH * budget_ms - self.chunk_ms) / row_ms)
         rows = min(whole, max(1, fit, min(math.ceil(even), whole // 2)))
         return wanted if wanted - rows < self.window_rows() else rows
 
