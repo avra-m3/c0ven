@@ -63,22 +63,25 @@ def split(src: Path, out: Path) -> list[dict[str, object]]:
     return tensors
 
 
-def main() -> None:
-    p = argparse.ArgumentParser(description="Fetch the DFlash 2 drafter into dflash/ beside the model files.")
-    p.add_argument("--out", type=Path, required=True, help="the directory to write, normally dflash/ beside the model")
-    a = p.parse_args()
-    a.out.mkdir(parents=True, exist_ok=True)
-    manifest = a.out / "dflash-manifest.json"
+def fetch(out: Path) -> None:
+    out.mkdir(parents=True, exist_ok=True)
+    manifest = out / "dflash-manifest.json"
     manifest.unlink(missing_ok=True)
-    tmp = a.out / f".{FILE}.{os.getpid()}"
+    tmp = out / f".{FILE}.{os.getpid()}"
     try:
         download(tmp)
-        tensors = split(tmp, a.out)
+        tensors = split(tmp, out)
     finally:
         tmp.unlink(missing_ok=True)
     body = {"repo": REPO, "revision": REVISION, "file": FILE, "sha256": SHA256, "tensors": tensors}
     manifest.write_text(json.dumps(body, indent=1) + "\n")
-    print(f"{len(tensors)} tensors in {a.out}")
+    print(f"{len(tensors)} tensors in {out}")
+
+
+def main() -> None:
+    p = argparse.ArgumentParser(description="Fetch the DFlash 2 drafter into dflash/ beside the model files.")
+    p.add_argument("--out", type=Path, required=True, help="the directory to write, normally dflash/ beside the model")
+    fetch(p.parse_args().out)
 
 
 if __name__ == "__main__":
