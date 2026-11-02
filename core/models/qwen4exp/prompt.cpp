@@ -32,7 +32,7 @@ uint32_t bucket(uint32_t n, uint32_t tmax) {
 constexpr uint32_t kKv16Groups = 4096;
 
 // The most tiles the experts' assignments can take: every expert's last tile may be partial.
-uint32_t max_tiles(uint32_t T) { return (T * Q_USED + MOE_TILE - 1) / MOE_TILE + Q_EXPERTS; }
+uint32_t max_tiles(uint32_t T, uint32_t experts) { return (T * Q_USED + MOE_TILE - 1) / MOE_TILE + experts; }
 
 // The hyper-connections' down and inject products in one: 324 values per row, stored 336 apart (64-byte rows).
 constexpr uint32_t kLriW = 336;
@@ -124,17 +124,17 @@ void Model::load_prompt(Card &card) {
   P.iql = u16(T * Q_IDX_D * Q_IDX_H);
   if (kv_res_) P.kvst = dev((uint64_t)2 * T * card.nkv * KV_HEAD_BYTES);  // p_attn_prep's staging, K then V
   card.up->fill(P.qt, &zero16, 2, T * Q_ATT_D * P.hp * 2);
-  P.rl = f32(T * (Q_EXPERTS + 1));
+  P.rl = f32(T * (shape_.experts + 1));
   P.ids = reinterpret_cast<int32_t *>(u32(T * Q_USED));
   P.w = f32(T * Q_USED);
-  P.cnt = u32(Q_EXPERTS);
-  P.base = u32(Q_EXPERTS);
-  P.cursor = u32(Q_EXPERTS);
+  P.cnt = u32(shape_.experts);
+  P.base = u32(shape_.experts);
+  P.cursor = u32(shape_.experts);
   P.inv = u32(T * Q_USED);
   P.ntiles_c = u32(1);
   P.ntiles_s = u32(1);
-  P.tiles_c = reinterpret_cast<MoeTile *>(dev(max_tiles((uint32_t)T) * sizeof(MoeTile)));
-  P.tiles_s = reinterpret_cast<MoeTile *>(dev(max_tiles((uint32_t)T) * sizeof(MoeTile)));
+  P.tiles_c = reinterpret_cast<MoeTile *>(dev(max_tiles((uint32_t)T, shape_.experts) * sizeof(MoeTile)));
+  P.tiles_s = reinterpret_cast<MoeTile *>(dev(max_tiles((uint32_t)T, shape_.experts) * sizeof(MoeTile)));
   P.shg = f32(T * card.ff);
   P.shu = f32(T * card.ff);
   P.shh = u16(T * card.ff);
@@ -152,12 +152,12 @@ void Model::load_prompt(Card &card) {
   P.w16 = u16(w16);
   if ((opt_.profile_routing || opt_.adapt_swaps) && card.c == 0) {
     const uint32_t z = 0;
-    P.prof = u32(shape_.layers * Q_EXPERTS);
-    card.up->fill(P.prof, &z, 4, shape_.layers * Q_EXPERTS * 4);
+    P.prof = u32(shape_.layers * shape_.experts);
+    card.up->fill(P.prof, &z, 4, shape_.layers * shape_.experts * 4);
     card.up->synchronize();
   }
   const uint32_t zero = 0;
-  card.up->fill(P.cnt, &zero, 4, Q_EXPERTS * 4);
+  card.up->fill(P.cnt, &zero, 4, shape_.experts * 4);
   card.up->synchronize();
 }
 
@@ -171,11 +171,11 @@ void Model::record_prompt_copy(Card &card) {
   for (auto &hl : host_layers_) P.stage_slot = std::max<uint64_t>(P.stage_slot, hl->pieces.size() * hl->stg_bytes);
   if (P.stage_slot) P.stage = static_cast<uint8_t *>(rt_->alloc_device(card.c, 2 * P.stage_slot));
   for (uint32_t l = 0; l < shape_.layers; l++)
-    P.stage_map.push_back(upload<int32_t>(card, host_layers_[l]->stage_of.data(), Q_EXPERTS * 4));
+    P.stage_map.push_back(upload<int32_t>(card, host_layers_[l]->stage_of.data(), shape_.experts * 4));
   P.copy = prompt_copies(card, staging_now(), copy_count_);
   if (P.stage_slot) {
     P.fetch = std::make_unique<ze::List>(*rt_, card.c, ze::List::immediate, true);
-    P.routed = static_cast<uint32_t *>(rt_->alloc_host((size_t)shape_.layers * Q_EXPERTS * 4));
+    P.routed = static_cast<uint32_t *>(rt_->alloc_host((size_t)shape_.layers * shape_.experts * 4));
     // The staging buffer written once through the fetch list, in copies of the size it makes: the runtime's first
     // CPU copy into a page of a card's memory takes several times as long as the next ones.
     const HostLayer &hl = *host_layers_[0];
@@ -218,7 +218,7 @@ void Model::fetch_experts(uint32_t c, const std::vector<std::vector<uint32_t>> &
     if (r == ZE_RESULT_NOT_READY) throw std::runtime_error("fetch_experts: the chunk's list stopped signalling");
     ZE_CHECK(r);
   };
-  std::vector<uint8_t> done(Q_EXPERTS);
+  std::vector<uint8_t> done(shape_.experts);
   for (uint32_t l = 0; l < shape_.layers; l++) {
     const HostLayer &hl = *host_layers_[l];
     uint8_t *slot = P.stage + (l % 2) * P.stage_slot;
@@ -231,7 +231,7 @@ void Model::fetch_experts(uint32_t c, const std::vector<std::vector<uint32_t>> &
       done[e] = 1;
     }
     wait(routed);
-    const uint32_t *cnt = P.routed + (size_t)l * Q_EXPERTS;
+    const uint32_t *cnt = P.routed + (size_t)l * shape_.experts;
     for (uint32_t e : hl.uncached)
       if (cnt[e] && !done[e]) one(hl, slot, e);
     F.synchronize();
@@ -313,7 +313,7 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
   const uint32_t pstride = ppos_run();
   const float one = 1.0f;
   const uint32_t zero = 0;
-  const uint32_t nb_max = opt_.max_ctx / Q_IDX_BLOCK, mt = max_tiles(T);
+  const uint32_t nb_max = opt_.max_ctx / Q_IDX_BLOCK, mt = max_tiles(T, shape_.experts);
   // tm tiles of 8 tokens and tn tiles of 16 rows a sub-group, sg sub-groups a work-group (kernels/gemm.cl): 8, 2
   // and 4, or for bf16 4, 2 or 1 and 4 (modules gemm_bf16_t4n<tn>), or 4, 2 and 11 (gemm_bf16_t4n2s11). y2: a second
   // fp16 output, or null. nt and rows, for x and y from a row other than 0: where the count of tokens is, and the most.
@@ -491,13 +491,15 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
 
     // The MoE block.
     hc_mix(Ly, 1, true, 2 * l + 1);
-    gemm(true, Ly.router, Q_EXPERTS + 1, Q_EMBD, P.xb, Q_EMBD, P.rl, Q_EXPERTS + 1, false, 0, one);
+    gemm(true, Ly.router, shape_.experts + 1, Q_EMBD, P.xb, Q_EMBD, P.rl, shape_.experts + 1, false, 0, one);
     L.launch(q4("p_router"), {P.rl, pp, P.ids, P.w}, (T + 3) / 4, 1, 1, 128);
     const uint32_t nasg = T * Q_USED;
     L.launch(q4("p_moe_count"), {P.ids, pp, P.cnt}, (nasg + 63) / 64, 1, 1, 64);
-    if (fetch) L.copy(P.routed + (size_t)l * Q_EXPERTS, P.cnt, Q_EXPERTS * 4, (*pevents_)[pev(kRouted, l, c)]);
+    if (fetch)
+      L.copy(P.routed + (size_t)l * shape_.experts, P.cnt, shape_.experts * 4, (*pevents_)[pev(kRouted, l, c)]);
     L.launch(q4("p_moe_scan"), {P.cnt, Ly.slot_map, P.stage_map[l], P.base, P.cursor, P.tiles_c, P.ntiles_c,
-                                P.tiles_s, P.ntiles_s, P.prof ? P.prof + l * Q_EXPERTS : nullptr}, 1, 1, 1, Q_EXPERTS);
+                                P.tiles_s, P.ntiles_s, P.prof ? P.prof + l * shape_.experts : nullptr},
+             1, 1, 1, shape_.experts);
     L.launch(q4("p_moe_fill"), {P.ids, pp, P.base, P.cursor, P.inv}, (nasg + 63) / 64, 1, 1, 64);
     const uint32_t xsig = quant_pairs_sigma(Ly.gu_type), hsig = quant_pairs_sigma(Ly.down_type);
     L.launch(q4("p_moe_scatter"), {P.x16, P.inv, pp, xsig, P.xg}, 1, T, 1, Q_EMBD / 8);
@@ -646,7 +648,7 @@ std::vector<std::vector<Candidate>> Model::prompt_runs(const PromptRun *runs, ui
   if (fetch) {
     order.resize(shape_.layers);
     for (uint32_t l = 0; l < shape_.layers; l++) {
-      const float *u = &use_[(size_t)l * Q_EXPERTS];
+      const float *u = &use_[(size_t)l * shape_.experts];
       order[l] = host_layers_[l]->uncached;
       std::sort(order[l].begin(), order[l].end(),
                 [&](uint32_t a, uint32_t b) { return u[a] != u[b] ? u[a] > u[b] : a < b; });
@@ -734,7 +736,7 @@ std::vector<std::vector<Candidate>> Model::prompt_runs(const PromptRun *runs, ui
 }
 
 std::vector<uint32_t> Model::routing_counts() const {
-  std::vector<uint32_t> v(shape_.layers * Q_EXPERTS, 0);
+  std::vector<uint32_t> v(shape_.layers * shape_.experts, 0);
   const PromptCard *P = cards_[0]->pc.get();
   if (!P || !P->prof) return v;
   cards_[0]->up->copy(v.data(), P->prof, v.size() * 4);

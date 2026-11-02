@@ -29,8 +29,8 @@ using namespace detail;
 namespace {
 
 // A routing profile (tools/route_profile.cpp): lines "layer expert count", '#' starting a comment line.
-std::vector<uint64_t> read_routing_profile(const std::string &path, uint32_t layers) {
-  std::vector<uint64_t> v((size_t)layers * Q_EXPERTS, 0);
+std::vector<uint64_t> read_routing_profile(const std::string &path, uint32_t layers, uint32_t experts) {
+  std::vector<uint64_t> v((size_t)layers * experts, 0);
   FILE *f = std::fopen(path.c_str(), "r");
   if (!f) throw std::runtime_error("cannot read the routing profile " + path);
   char line[256];
@@ -38,7 +38,7 @@ std::vector<uint64_t> read_routing_profile(const std::string &path, uint32_t lay
     if (line[0] == '#') continue;
     unsigned l, e;
     unsigned long long c;
-    if (std::sscanf(line, "%u %u %llu", &l, &e, &c) == 3 && l < layers && e < Q_EXPERTS) v[(size_t)l * Q_EXPERTS + e] = c;
+    if (std::sscanf(line, "%u %u %llu", &l, &e, &c) == 3 && l < layers && e < experts) v[(size_t)l * experts + e] = c;
   }
   std::fclose(f);
   return v;
@@ -221,7 +221,7 @@ Model::Model(const std::string &path, const Options &opt) : opt_(opt), gguf_(pat
     mtop_n_ = static_cast<uint32_t *>(rt_->alloc_host(ncards_ * STEP_MAX_ROWS * 4));
     mevents_ = std::make_unique<ze::EventPool>(*rt_, 2 * ncards_);
   }
-  use_.assign((size_t)shape_.layers * Q_EXPERTS, 0.0f);
+  use_.assign((size_t)shape_.layers * shape_.experts, 0.0f);
   load_cards(true);
   info_.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
 }
@@ -310,7 +310,7 @@ void Model::load_cards(bool first) {
   info_.experts_per_layer = nslots_cached_;
   if (share_) {
     uint32_t sum = 0;
-    for (auto &hl : host_layers_) sum += Q_EXPERTS - (uint32_t)hl->uncached.size();
+    for (auto &hl : host_layers_) sum += shape_.experts - (uint32_t)hl->uncached.size();
     info_.experts_per_layer = sum / shape_.layers;
     log_share("loaded");
   }
@@ -813,7 +813,7 @@ void Model::load_card(Card &card) {
   card.blocks = upload<uint32_t>(card, nullptr, W * (Q_IDX_BLOCKS + 1) * 4);
   card.cells = upload<uint32_t>(card, nullptr, W * Q_IDX_CELLS * 4);
   card.ncells = upload<uint32_t>(card, nullptr, W * 4);
-  card.rl = fbuf(Q_EXPERTS + 1);
+  card.rl = fbuf(std::max(shape_.experts, kMtpExperts) + 1);  // the main layers' routers and the draft layer's
   card.w = fbuf(Q_USED);
   card.ids = upload<int32_t>(card, nullptr, W * Q_USED * 4);
   card.merged = fbuf(2 * (Q_IDX_BLOCKS + 1));
@@ -871,18 +871,18 @@ void Model::load_experts(bool first) {
   for (uint32_t l = 0; l < shape_.layers; l++) {
     const GgufTensor &g = gguf_.tensor(blk(l, "ffn_gate_exps.weight")), &d = gguf_.tensor(blk(l, "ffn_down_exps.weight"));
     uint64_t gh = align256((uint64_t)cards_[0]->ff * g.row_bytes());
-    stg_bytes[l] = 2 * gh + align256(d.bytes / Q_EXPERTS / ncards_);
+    stg_bytes[l] = 2 * gh + align256(d.bytes / shape_.experts / ncards_);
   }
   auto staging = [&](uint64_t n) {
     if (tmax_ == 0) return (uint64_t)0;
     uint64_t mx = 0;
-    for (uint32_t l = 0; l < shape_.layers; l++) mx = std::max(mx, (Q_EXPERTS - n) * stg_bytes[l]);
+    for (uint32_t l = 0; l < shape_.layers; l++) mx = std::max(mx, (shape_.experts - n) * stg_bytes[l]);
     return 2 * mx;
   };
   uint64_t budget = UINT64_MAX;
   for (auto &card : cards_) {
     uint64_t total = rt_->cards()[card->c].memory,
-             used = rt_->device_bytes(card->c) + 2 * shape_.layers * Q_EXPERTS * 4;
+             used = rt_->device_bytes(card->c) + 2 * shape_.layers * shape_.experts * 4;
     uint64_t free = total > used + opt_.reserve_bytes ? total - used - opt_.reserve_bytes : 0;
     info_.expert_budget[card->c] = free;
     budget = std::min(budget, free);
@@ -895,7 +895,7 @@ void Model::load_experts(bool first) {
     for (uint32_t l = 0; !first && l < shape_.layers; l++) {
       HostLayer &hl = *host_layers_[l];
       std::vector<std::pair<int32_t, uint32_t>> by;
-      for (uint32_t e = 0; e < Q_EXPERTS; e++)
+      for (uint32_t e = 0; e < shape_.experts; e++)
         if (hl.slot_of[e] >= 0) by.push_back({hl.slot_of[e], e});
       std::sort(by.begin(), by.end());
       for (uint32_t i = 0; i < by.size(); i++) hl.slot_of[by[i].second] = (int32_t)i;
@@ -903,13 +903,15 @@ void Model::load_experts(bool first) {
     }
     share_cards(first, budget, stg_bytes, count);
     n = nslots_cached_;
-    if (first && !opt_.routing_profile->empty()) profile = read_routing_profile(*opt_.routing_profile, shape_.layers);
+    if (first && !opt_.routing_profile->empty())
+      profile = read_routing_profile(*opt_.routing_profile, shape_.layers, shape_.experts);
   } else if (first) {
-    n = std::min<uint64_t>(Q_EXPERTS, budget / per_set);
+    n = std::min<uint64_t>(shape_.experts, budget / per_set);
     while (n > 0 && n * per_set + staging(n) > budget) n--;
     if (opt_.experts_per_layer >= 0) n = std::min<uint64_t>(n, (uint64_t)opt_.experts_per_layer);
     nslots_cached_ = (uint32_t)n;
-    if (!opt_.routing_profile->empty()) profile = read_routing_profile(*opt_.routing_profile, shape_.layers);
+    if (!opt_.routing_profile->empty())
+      profile = read_routing_profile(*opt_.routing_profile, shape_.layers, shape_.experts);
   } else if (n * per_set + staging(n) > budget) {
     throw std::runtime_error("the cards no longer have room for the experts they cached before the sleep");
   }
@@ -930,21 +932,22 @@ void Model::load_experts(bool first) {
   for (uint32_t l = 0; l < shape_.layers; l++) {
     if (!share_) count[l] = (uint32_t)n;
     if (first)
-      host_layers_.push_back(host_layer(l, count[l], profile, stg_bytes[l], share_ ? Q_EXPERTS - cache_slots(l, 0) : 0));
+      host_layers_.push_back(
+          host_layer(l, count[l], profile, stg_bytes[l], share_ ? shape_.experts - cache_slots(l, 0) : 0));
     const HostLayer &hl = *host_layers_[l];
     std::vector<uint32_t> &o = order[l];
     o.resize(count[l]);
-    for (uint32_t e = 0; e < Q_EXPERTS; e++)
+    for (uint32_t e = 0; e < shape_.experts; e++)
       if (hl.slot_of[e] >= 0) o[hl.slot_of[e]] = e;
     if (first)
-      for (uint32_t e = 0; e < Q_EXPERTS; e++)
+      for (uint32_t e = 0; e < shape_.experts; e++)
         if (hl.slot_of[e] < 0) o.push_back(e);
     for (uint32_t i = 0; i < o.size(); i += kBatch)
       batches.push_back({l, i, std::min<uint32_t>(kBatch, (uint32_t)o.size() - i)});
     per_expert = std::max(per_expert, 2 * cap(hl.gate_bytes) + cap(hl.down_bytes));
     for (auto &card : cards_) {
       Layer &L = card->layers[l];
-      L.slot_map = upload<int32_t>(*card, hl.slot_of.data(), Q_EXPERTS * 4);
+      L.slot_map = upload<int32_t>(*card, hl.slot_of.data(), shape_.experts * 4);
       if (n && !share_) L.cache = upload<uint8_t>(*card, nullptr, n * L.slot_bytes);
     }
   }
@@ -1031,20 +1034,20 @@ std::unique_ptr<Model::HostLayer> Model::host_layer(uint32_t l, uint64_t n, cons
   auto hl = std::make_unique<HostLayer>();
   const GgufTensor &g = gguf_.tensor(blk(l, "ffn_gate_exps.weight")), &d = gguf_.tensor(blk(l, "ffn_down_exps.weight"));
   hl->shape = {g.type, d.type, Q_EMBD, shape_.ff};
-  hl->slot_of.assign(Q_EXPERTS, -1);
-  hl->stage_of.assign(Q_EXPERTS, -1);
+  hl->slot_of.assign(shape_.experts, -1);
+  hl->stage_of.assign(shape_.experts, -1);
   // The n experts the profile routes to most (ties to the lower id), or the first n without one.
   {
-    std::vector<uint32_t> order(Q_EXPERTS);
-    for (uint32_t e = 0; e < Q_EXPERTS; e++) order[e] = e;
+    std::vector<uint32_t> order(shape_.experts);
+    for (uint32_t e = 0; e < shape_.experts; e++) order[e] = e;
     if (!profile.empty())
       std::stable_sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) {
-        return profile[l * Q_EXPERTS + a] > profile[l * Q_EXPERTS + b];
+        return profile[l * shape_.experts + a] > profile[l * shape_.experts + b];
       });
     std::sort(order.begin(), order.begin() + n);  // slots in id order
     for (uint32_t i = 0; i < n; i++) hl->slot_of[order[i]] = (int32_t)i;
   }
-  const uint64_t eg = g.bytes / Q_EXPERTS, ed = d.bytes / Q_EXPERTS;  // one expert's matrix
+  const uint64_t eg = g.bytes / shape_.experts, ed = d.bytes / shape_.experts;  // one expert's matrix
   hl->gate_bytes = eg;
   hl->down_bytes = ed;
   hl->gate_row_bytes = g.row_bytes();
@@ -1052,9 +1055,9 @@ std::unique_ptr<Model::HostLayer> Model::host_layer(uint32_t l, uint64_t n, cons
   hl->stg_up_off = align256((uint64_t)cards_[0]->ff * g.row_bytes());
   hl->stg_down_off = 2 * hl->stg_up_off;
   hl->stg_bytes = stg_bytes;
-  hl->weights.resize(Q_EXPERTS);
-  hl->arena.assign(Q_EXPERTS, nullptr);
-  for (uint32_t e = 0; e < Q_EXPERTS; e++) {
+  hl->weights.resize(shape_.experts);
+  hl->arena.assign(shape_.experts, nullptr);
+  for (uint32_t e = 0; e < shape_.experts; e++) {
     if (hl->slot_of[e] >= 0) continue;
     auto *p = arena_piece(align256(2 * eg + ed));  // filled by load_experts' pipeline
     hl->arena[e] = p;
@@ -1259,7 +1262,7 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
     MissJob *jobs = c == 0 ? jobs_ + (size_t)l * STEP_MAX_ROWS : nullptr;
     uint32_t *nmiss = card.nmiss + l * STEP_MAX_ROWS;
     L.together(true);
-    bf16mv(Ly.router, Q_EXPERTS + 1, Q_EMBD, card.xbf16, card.rl);
+    bf16mv(Ly.router, shape_.experts + 1, Q_EMBD, card.xbf16, card.rl);
     matvec(L, card, Ly.sh_gate, card.xa8, card.shg, W);
     matvec(L, card, Ly.sh_up, card.xa8, card.shu, W);
     L.together(false);

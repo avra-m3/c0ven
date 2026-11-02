@@ -16,16 +16,16 @@ namespace engine::qwen4exp {
 using namespace detail;
 
 void Model::note_routing(uint32_t layer, const int32_t *ids, uint32_t n, float weight) {
-  float *u = &use_[(size_t)layer * Q_EXPERTS];
+  float *u = &use_[(size_t)layer * shape_.experts];
   for (uint32_t k = 0; k < n; k++)
-    if (ids[k] >= 0 && ids[k] < (int32_t)Q_EXPERTS) u[ids[k]] += weight;
+    if (ids[k] >= 0 && ids[k] < (int32_t)shape_.experts) u[ids[k]] += weight;
 }
 
 // The prompt path's counts of the last chunk (P.prof, kept when swaps are on) into the decayed counts, then zeroed.
 void Model::note_prompt_routing() {
   const PromptCard *P = cards_[0]->pc.get();
   if (!P || !P->prof) return;
-  std::vector<uint32_t> v(shape_.layers * Q_EXPERTS);
+  std::vector<uint32_t> v(shape_.layers * shape_.experts);
   cards_[0]->up->copy(v.data(), P->prof, v.size() * 4);
   const uint32_t z = 0;
   cards_[0]->up->fill(P->prof, &z, 4, v.size() * 4);
@@ -40,7 +40,7 @@ void Model::note_prompt_routing() {
 // With Options::share_kv the round first moves memory between the KV pool and the cache (kv_share.cpp): while the KV
 // needs memory or the cache can refill, that is the round's choice instead of swaps, made on the engine thread.
 uint32_t Model::swap_round(uint32_t max_swaps, bool decay) {
-  if (!share_ && (nslots_cached_ == 0 || nslots_cached_ >= Q_EXPERTS)) return 0;
+  if (!share_ && (nslots_cached_ == 0 || nslots_cached_ >= shape_.experts)) return 0;
   if (swap_bg_.joinable()) swap_bg_.join();
   const uint32_t applied = apply_round();
   bool chosen = false;
@@ -81,9 +81,9 @@ void Model::choose_swaps(const std::vector<float> &use, uint32_t max_swaps) {
   std::vector<std::pair<float, SwapPlan>> all;
   for (uint32_t l = 0; l < shape_.layers; l++) {
     HostLayer &hl = *host_layers_[l];
-    const float *u = &use[(size_t)l * Q_EXPERTS];
+    const float *u = &use[(size_t)l * shape_.experts];
     std::vector<uint32_t> in, out;
-    for (uint32_t e = 0; e < Q_EXPERTS; e++) (hl.slot_of[e] < 0 ? in : out).push_back(e);
+    for (uint32_t e = 0; e < shape_.experts; e++) (hl.slot_of[e] < 0 ? in : out).push_back(e);
     std::sort(in.begin(), in.end(), [&](uint32_t a, uint32_t b) { return u[a] != u[b] ? u[a] > u[b] : a < b; });
     std::sort(out.begin(), out.end(), [&](uint32_t a, uint32_t b) { return u[a] != u[b] ? u[a] < u[b] : a < b; });
     for (uint32_t n = 0; n < in.size() && n < out.size() && n < max_swaps; n++) {
@@ -159,9 +159,9 @@ uint32_t Model::apply_round() {
       if (!changed[l]) continue;
       HostLayer &hl = *host_layers_[l];
       for (auto &card : cards_) {
-        card->up->copy(card->layers[l].slot_map, hl.slot_of.data(), Q_EXPERTS * 4);
+        card->up->copy(card->layers[l].slot_map, hl.slot_of.data(), shape_.experts * 4);
         if (card->pc && !card->pc->stage_map.empty())
-          card->up->copy(card->pc->stage_map[l], hl.stage_of.data(), Q_EXPERTS * 4);
+          card->up->copy(card->pc->stage_map[l], hl.stage_of.data(), shape_.experts * 4);
       }
     }
     for (auto &card : cards_) card->up->synchronize();
@@ -228,7 +228,7 @@ void Model::start_round(std::vector<float> use, uint32_t max_swaps) {
       // The incoming expert's half from its matrices in host memory, the arena's layout: gate and up as the file
       // has them, and down as one region per card (write_down), so card c's blocks are region c's whole rows.
       const GgufTensor &g = gguf_.tensor(blk(w.l, "ffn_gate_exps.weight")), &d = gguf_.tensor(blk(w.l, "ffn_down_exps.weight"));
-      const uint64_t ed = d.bytes / Q_EXPERTS;
+      const uint64_t ed = d.bytes / shape_.experts;
       Card &card = *cards_[k];
       Layer &L = card.layers[w.l];
       const ExpertWeights &x = host_layers_[w.l]->weights[w.in];
@@ -259,7 +259,7 @@ void Model::start_round(std::vector<float> use, uint32_t max_swaps) {
 void Model::fill_piece(uint32_t l, uint32_t e, uint8_t *piece) {
   const GgufTensor &g = gguf_.tensor(blk(l, "ffn_gate_exps.weight")), &u = gguf_.tensor(blk(l, "ffn_up_exps.weight")),
                    &d = gguf_.tensor(blk(l, "ffn_down_exps.weight"));
-  const uint64_t eg = g.bytes / Q_EXPERTS, ed = d.bytes / Q_EXPERTS;
+  const uint64_t eg = g.bytes / shape_.experts, ed = d.bytes / shape_.experts;
   std::memcpy(piece, g.data + e * eg, eg);
   std::memcpy(piece + eg, u.data + e * eg, eg);
   write_down(piece + 2 * eg, d.data + e * ed, Q_EMBD, d.row_bytes(), host_layers_[l]->down_parts);
@@ -268,7 +268,7 @@ void Model::fill_piece(uint32_t l, uint32_t e, uint8_t *piece) {
 void Model::release_expert(uint32_t l, uint32_t e) {
   const GgufTensor &g = gguf_.tensor(blk(l, "ffn_gate_exps.weight")), &u = gguf_.tensor(blk(l, "ffn_up_exps.weight")),
                    &d = gguf_.tensor(blk(l, "ffn_down_exps.weight"));
-  const uint64_t eg = g.bytes / Q_EXPERTS, ed = d.bytes / Q_EXPERTS;
+  const uint64_t eg = g.bytes / shape_.experts, ed = d.bytes / shape_.experts;
   gguf_.release(g, e * eg, eg);
   gguf_.release(u, e * eg, eg);
   gguf_.release(d, e * ed, ed);
