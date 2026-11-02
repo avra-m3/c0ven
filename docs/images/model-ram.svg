@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 780 518" width="780" height="518" role="img" aria-labelledby="t d" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13">
+  <title id="t">RAM each model file needs, grouped by publisher</title>
+  <desc id="d">IQ3_S: 22.6 GiB on two B60s, 43 GiB on one; IQ3_XXS: 14.6 GiB on two B60s, 36 GiB on one; IQ2_XS: 7.1 GiB on two B60s, 29 GiB on one; Q2_0: 5.6 GiB on two B60s, 27 GiB on one; UD-IQ4_XS: 32 GiB on two B60s, 53 GiB on one; UD-IQ1_S: 12 GiB on two B60s, 33 GiB on one; UD-IQ1_M: 14 GiB on two B60s, 35 GiB on one; UD-Q2_K_XL: 18 GiB on two B60s, 39 GiB on one; UD-IQ3_XXS: 21 GiB on two B60s, 42 GiB on one; UD-Q3_K_XL: 28 GiB on two B60s, 49 GiB on one; UD-Q4_K_XL: 48 GiB on two B60s, 69 GiB on one; UD-Q5_K_XL: 68 GiB on two B60s, 89 GiB on one; UD-Q6_K_XL: 78 GiB on two B60s, 99 GiB on one; Q8_0: 96 GiB on two B60s, 117 GiB on one.</desc>
+  <style>
+    .bg { fill: #ffffff; }
+    .ink { fill: #1f2328; }
+    .muted { fill: #59636e; }
+    .head { font-weight: 600; }
+    .grid { stroke: #d8dee4; stroke-width: 1; }
+    .t1 { fill: #2f786a; }
+    .t2 { fill: #8fc7b5; }
+    .u1 { fill: #6b7280; }
+    .u2 { fill: #c4c8cf; }
+    @media (prefers-color-scheme: dark) {
+      .bg { fill: #0d1117; }
+      .ink { fill: #e6edf3; }
+      .muted { fill: #9198a1; }
+      .grid { stroke: #30363d; }
+      .t1 { fill: #44ae8e; }
+      .t2 { fill: #1f5a4c; }
+      .u1 { fill: #9aa1ab; }
+      .u2 { fill: #4b5158; }
+    }
+  </style>
+  <rect class="bg" width="780" height="518"/>
+  <text class="ink head" x="24" y="26" font-size="15">RAM each file needs</text>
+  <rect class="t1" x="24" y="38" width="14" height="12" rx="2"/>
+  <text class="muted" x="44" y="49">RAM with two B60s</text>
+  <rect class="t2" x="170" y="38" width="14" height="12" rx="2"/>
+  <text class="muted" x="190" y="49">Added with one B60</text>
+  <line class="grid" x1="120.0" x2="120.0" y1="62" y2="488"/>
+  <text class="muted" x="120.0" y="504" text-anchor="middle">0</text>
+  <line class="grid" x1="251.2" x2="251.2" y1="62" y2="488"/>
+  <text class="muted" x="251.2" y="504" text-anchor="middle">25</text>
+  <line class="grid" x1="382.5" x2="382.5" y1="62" y2="488"/>
+  <text class="muted" x="382.5" y="504" text-anchor="middle">50</text>
+  <line class="grid" x1="513.8" x2="513.8" y1="62" y2="488"/>
+  <text class="muted" x="513.8" y="504" text-anchor="middle">75</text>
+  <line class="grid" x1="645.0" x2="645.0" y1="62" y2="488"/>
+  <text class="muted" x="645.0" y="504" text-anchor="middle">100</text>
+  <text class="muted" x="750" y="504" text-anchor="end">GiB of RAM</text>
+  <text class="ink head" x="24" y="78">ISTA-DASLab: tested</text>
+  <text class="ink" x="110" y="99" text-anchor="end">IQ3_S</text>
+  <rect class="t1" x="120" y="88" width="118.7" height="14" rx="3"/>
+  <rect class="t2" x="240.7" y="88" width="105.1" height="14" rx="3"/>
+  <text class="muted" x="353.8" y="99">start here</text>
+  <text class="ink" x="110" y="123" text-anchor="end">IQ3_XXS</text>
+  <rect class="t1" x="120" y="112" width="76.7" height="14" rx="3"/>
+  <rect class="t2" x="198.7" y="112" width="110.3" height="14" rx="3"/>
+  <text class="ink" x="110" y="147" text-anchor="end">IQ2_XS</text>
+  <rect class="t1" x="120" y="136" width="37.3" height="14" rx="3"/>
+  <rect class="t2" x="159.3" y="136" width="113.0" height="14" rx="3"/>
+  <text class="ink" x="110" y="171" text-anchor="end">Q2_0</text>
+  <rect class="t1" x="120" y="160" width="29.4" height="14" rx="3"/>
+  <rect class="t2" x="151.4" y="160" width="110.3" height="14" rx="3"/>
+  <text class="ink head" x="24" y="206">Unsloth: tested</text>
+  <text class="ink" x="110" y="227" text-anchor="end">UD-IQ4_XS</text>
+  <rect class="t1" x="120" y="216" width="168.0" height="14" rx="3"/>
+  <rect class="t2" x="290.0" y="216" width="108.2" height="14" rx="3"/>
+  <text class="ink head" x="24" y="262">Unsloth: not tested yet</text>
+  <text class="ink" x="110" y="283" text-anchor="end">UD-IQ1_S</text>
+  <rect class="u1" x="120" y="272" width="63.0" height="14" rx="3"/>
+  <rect class="u2" x="185.0" y="272" width="108.2" height="14" rx="3"/>
+  <text class="ink" x="110" y="307" text-anchor="end">UD-IQ1_M</text>
+  <rect class="u1" x="120" y="296" width="73.5" height="14" rx="3"/>
+  <rect class="u2" x="195.5" y="296" width="108.2" height="14" rx="3"/>
+  <text class="ink" x="110" y="331" text-anchor="end">UD-Q2_K_XL</text>
+  <rect class="u1" x="120" y="320" width="94.5" height="14" rx="3"/>
+  <rect class="u2" x="216.5" y="320" width="108.2" height="14" rx="3"/>
+  <text class="ink" x="110" y="355" text-anchor="end">UD-IQ3_XXS</text>
+  <rect class="u1" x="120" y="344" width="110.2" height="14" rx="3"/>
+  <rect class="u2" x="232.2" y="344" width="108.2" height="14" rx="3"/>
+  <text class="ink" x="110" y="379" text-anchor="end">UD-Q3_K_XL</text>
+  <rect class="u1" x="120" y="368" width="147.0" height="14" rx="3"/>
+  <rect class="u2" x="269.0" y="368" width="108.2" height="14" rx="3"/>
+  <text class="ink" x="110" y="403" text-anchor="end">UD-Q4_K_XL</text>
+  <rect class="u1" x="120" y="392" width="252.0" height="14" rx="3"/>
+  <rect class="u2" x="374.0" y="392" width="108.2" height="14" rx="3"/>
+  <text class="ink" x="110" y="427" text-anchor="end">UD-Q5_K_XL</text>
+  <rect class="u1" x="120" y="416" width="357.0" height="14" rx="3"/>
+  <rect class="u2" x="479.0" y="416" width="108.2" height="14" rx="3"/>
+  <text class="ink" x="110" y="451" text-anchor="end">UD-Q6_K_XL</text>
+  <rect class="u1" x="120" y="440" width="409.5" height="14" rx="3"/>
+  <rect class="u2" x="531.5" y="440" width="108.2" height="14" rx="3"/>
+  <text class="ink" x="110" y="475" text-anchor="end">Q8_0</text>
+  <rect class="u1" x="120" y="464" width="504.0" height="14" rx="3"/>
+  <rect class="u2" x="626.0" y="464" width="108.2" height="14" rx="3"/>
+</svg>
