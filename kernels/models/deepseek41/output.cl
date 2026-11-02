@@ -1,10 +1,13 @@
 // deepseek41's attention output product, attn_output_a in groups: one launch for a card's groups, with a8 as its output
-// since attn_output_b reads that. Each weight type and lanes a row is a module, deepseek41_og_<type>_l<lanes> (-DQTYPE,
-// -DLANES: 16, 8 or 4), and the dot products are those of kernels/quant/matvec.cl.
+// since attn_output_b reads that. The module deepseek41_og sets -DQTYPE=QT_Q5_K and -DLANES (16, 8 or 4 compile). The
+// dot products are those of kernels/quant/matvec.cl.
 #include "decode.h"
 #include "layout.h"
 #include "ops.h"
 
+#if LANES != D41_OG_LANES
+#error "the module's lanes are layout.h's"
+#endif
 #define RPS (SG_SIZE / LANES)  // rows a sub-group
 #define MAXT STEP_MAX_ROWS
 

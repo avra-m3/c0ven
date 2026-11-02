@@ -1,7 +1,7 @@
 // Level 3 (docs/TESTING.md): deepseek41's ds_attn_split, ds_attn_merge and ds_output_groups on random data at the model's
 // shapes, against ref_ops and ggml's soft_max with sinks: head ranges 0-31, 32-63 and 0-63, the ring filling and wrapping,
-// n_vis 0, ratios 0, 1 and 2, shuffled and absent pages, large sinks, padded rows; output groups 0-3, 4-7 and 0-7 in Q8_0
-// and Q6_K, then attn_output_b's columns through matvec; each kernel's time at 1, 2, 4 and 8 rows with every card visible.
+// n_vis 0, ratios 0, 1 and 2, shuffled and absent pages, large sinks, padded rows; output groups 0-3, 4-7 and 0-7 in Q5_K,
+// then attn_output_b's columns through matvec; each kernel's time at 1, 2, 4 and 8 rows with every card visible.
 // Limits: 2e-3 of the largest |reference| for attention, 1e-5 for the products; a8 exact from the kernel's own f32.
 #include <cmath>
 #include <numeric>
@@ -338,10 +338,9 @@ struct Bench {
     return d;
   }
 
-  void launch_groups(ze::List &L, uint32_t type, uint32_t lanes, const uint8_t *dW, uint32_t bpr, uint32_t ntok,
-                     uint32_t ng, const void *paf) {
-    L.launch(lib.get(io.card, module("deepseek41_og_", type, lanes), "ds_output_groups"), {dW, bpr, oa, ntok, aa, paf},
-             D41_OLR / D41_OG_WG_ROWS, ng, 1, D41_OG_WG_ROWS / (16 / lanes) * 16);
+  void launch_groups(ze::List &L, const uint8_t *dW, uint32_t bpr, uint32_t ntok, uint32_t ng, const void *paf) {
+    L.launch(lib.get(io.card, "deepseek41_og", "ds_output_groups"), {dW, bpr, oa, ntok, aa, paf},
+             D41_OLR / D41_OG_WG_ROWS, ng, 1, D41_OG_WG_ROWS / (16 / D41_OG_LANES) * 16);
   }
 
   // attn_output_a's groups [g0, g0 + ng) on tokens of random o, then attn_output_b's columns of those groups.
@@ -360,20 +359,19 @@ struct Bench {
       }
     io.put(oa, act);
     const size_t arow = (size_t)K + K / 8;
-    launch_groups(io.L, o.type, lanes, dA, o.bpr_a, W, ng, none);
+    launch_groups(io.L, dA, o.bpr_a, W, ng, none);
     io.L.synchronize();
     const auto gb0 = io.get(aa, (size_t)W * arow);
-    launch_groups(io.L, o.type, lanes, dA, o.bpr_a, W, ng, af);
+    launch_groups(io.L, dA, o.bpr_a, W, ng, af);
     io.L.synchronize();
     const auto ga = io.get(af, (size_t)W * K);
     const auto gb = io.get(aa, (size_t)W * arow);
     ck.exact("no optional output: a a8", gb0.data(), gb.data(), gb.size());
-    const bool q8 = o.type == QT_Q8_0;
     for (uint32_t t = 0; t < W; t++) {
       // ref_ops takes all 8 groups; the others are zero here.
       std::vector<float> a((size_t)D41_OG * D41_OLR), out(D41_EMBD);
       ref::grouped_output(&dec[(size_t)t * Q_ALL], o.wa.data(), o.wb.data(), a.data(), out.data());
-      ck.rel(q8 ? "a f32 against ref_ops, Q8_0" : "a f32 against ref_ops, Q6_K", &ga[(size_t)t * K],
+      ck.rel("a f32 against ref_ops", &ga[(size_t)t * K],
              &a[(size_t)g0 * D41_OLR], K, MV_LIMIT);
       const auto wa8 = a8_row(&ga[(size_t)t * K], K);
       ck.exact("a a8, from its own f32", &gb[(size_t)t * arow], wa8.data(), arow);
@@ -397,13 +395,14 @@ struct Bench {
           for (uint32_t c = 0; c < K; c++) s += (double)wr[c] * av[c];
           wy[i] = s;
         }
-        ck.rel(q8 ? "attn_output_b's columns, Q8_0" : "attn_output_b's columns, Q6_K", &gy[(size_t)t * rows_b], wy.data(), rows_b, MV_LIMIT);
+        ck.rel("attn_output_b's columns", &gy[(size_t)t * rows_b], wy.data(), rows_b, MV_LIMIT);
       }
     }
   }
 
   void test_and_time_output() {
-    for (uint32_t type : {(uint32_t)QT_Q8_0, (uint32_t)QT_Q6_K}) {
+    {
+      const uint32_t type = QT_Q5_K;
       const auto o = make_out(type);
       struct Part {
         uint32_t g0, ng;
@@ -417,33 +416,29 @@ struct Bench {
                          upload_slice(type, o.qb.data(), o.rowb, 0, D41_EMBD, (uint64_t)g0 * D41_OLR / vb, (uint64_t)ng * D41_OLR / vb)});
       }
       for (const Part &p : parts)
-        for (uint32_t lanes : {16u, 8u, 4u})
+        for (uint32_t lanes : {16u, 8u, 4u})  // of attn_output_b's product
           for (uint32_t W : {1u, 2u, 3u, 8u}) check_out(o, p.g0, p.ng, W, lanes, p.dA, p.dB);
       // The card's 4 groups, timed.
       const Part &p = parts[0];
-      time_launch(rt, 0, [&](ze::List &L) { launch_groups(L, type, 16, p.dA, o.bpr_a, 1, p.ng, none); });
+      time_launch(rt, 0, [&](ze::List &L) { launch_groups(L, p.dA, o.bpr_a, 1, p.ng, none); });
       log_clocks("before timing the output products");
-      for (uint32_t lanes : {16u, 8u, 4u})
-        for (uint32_t W : TIMED_WIDTHS) {
-          std::vector<uint8_t> act((size_t)p.ng * W * A8_ROW);
-          for (uint32_t i = 0; i < p.ng * W; i++) {
-            const auto x = randn(rng, D41_OG_K);
-            const auto a8 = a8_row(x.data(), D41_OG_K);
-            std::copy(a8.begin(), a8.end(), &act[(size_t)i * A8_ROW]);
-          }
-          io.put(oa, act);
-          std::printf("time ds_output_groups %s lanes %u, 4 groups, W=%u: %.2f us\n", ggml_type_label(type), lanes, W,
-                      time_launch(rt, 0, [&](ze::List &L) { launch_groups(L, type, lanes, p.dA, o.bpr_a, W, p.ng, none); }));
+      for (uint32_t W : TIMED_WIDTHS) {
+        std::vector<uint8_t> act((size_t)p.ng * W * A8_ROW);
+        for (uint32_t i = 0; i < p.ng * W; i++) {
+          const auto x = randn(rng, D41_OG_K);
+          const auto a8 = a8_row(x.data(), D41_OG_K);
+          std::copy(a8.begin(), a8.end(), &act[(size_t)i * A8_ROW]);
         }
-      // Two slices in turn, as a step reads weights: 38 MB of attn_output_a in Q8_0, 28 MB in Q6_K, and more of
-      // attn_output_b, against the card's 18 MiB cache.
+        io.put(oa, act);
+        std::printf("time ds_output_groups 4 groups, W=%u: %.2f us\n", W,
+                    time_launch(rt, 0, [&](ze::List &L) { launch_groups(L, p.dA, o.bpr_a, W, p.ng, none); }));
+      }
+      // Two slices in turn, as a step reads weights: 23 MB of attn_output_a and 29 MB of attn_output_b, against the
+      // card's 18 MiB cache.
       uint32_t at = 0;
-      for (uint32_t lanes : {16u, 8u, 4u})
-        for (uint32_t W : TIMED_WIDTHS)
-          std::printf("time ds_output_groups %s lanes %u, 4 groups, weights cold, W=%u: %.2f us\n", ggml_type_label(type), lanes, W,
-                      time_launch(rt, 0, [&](ze::List &L) {
-                        launch_groups(L, type, lanes, parts[at++ % 2].dA, o.bpr_a, W, 4, none);
-                      }));
+      for (uint32_t W : TIMED_WIDTHS)
+        std::printf("time ds_output_groups 4 groups, weights cold, W=%u: %.2f us\n", W,
+                    time_launch(rt, 0, [&](ze::List &L) { launch_groups(L, parts[at++ % 2].dA, o.bpr_a, W, 4, none); }));
       const uint32_t K = p.ng * D41_OLR, rows_b = D41_EMBD, bprb = K / quant_block_values(type);
       const uint32_t stride = K + K / 8, ytok = rows_b;
       const auto launch_b = [&](ze::List &L, uint32_t lanes, const uint8_t *dB, uint32_t W) {
@@ -508,14 +503,14 @@ struct Bench {
                   time_launch(rt, 0, [&](ze::List &L) { launch_split(L, W, 64, 1, pt); }));
     }
     log_clocks("after timing attention");
-    // A launch from cold keys: both slices of weights, 27.5 MB, read before each launch, against the card's 18 MiB cache.
+    // A launch from cold keys: both slices of weights, 23 MB, read before each launch, against the card's 18 MiB cache.
     // The weights' own time is timed apart and taken off.
-    const auto w = make_out(QT_Q6_K);
+    const auto w = make_out(QT_Q5_K);
     uint8_t *slices[2];
     for (uint32_t g = 0; g < 2; g++)
-      slices[g] = upload_slice(QT_Q6_K, w.qa.data(), w.rowa, (uint64_t)g * 4 * D41_OLR, (uint64_t)4 * D41_OLR, 0, w.bpr_a);
+      slices[g] = upload_slice(QT_Q5_K, w.qa.data(), w.rowa, (uint64_t)g * 4 * D41_OLR, (uint64_t)4 * D41_OLR, 0, w.bpr_a);
     const auto evict = [&](ze::List &L) {
-      for (const uint8_t *slice : slices) launch_groups(L, QT_Q6_K, 8, slice, w.bpr_a, 1, 4, none);
+      for (const uint8_t *slice : slices) launch_groups(L, slice, w.bpr_a, 1, 4, none);
     };
     log_clocks("before timing attention from cold keys");
     for (const Case &c : {cases[0], cases[1]})
