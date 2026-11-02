@@ -122,6 +122,13 @@ Model::Mat Model::mat(Card &card, const GgufTensor &t, const Ranges &rows, const
 Model::Model(const std::string &path, const Options &opt) : opt_(opt), gguf_(path) {
   auto t0 = std::chrono::steady_clock::now();
   if (gguf_.get_string("general.architecture") != "qwen4exp") throw std::runtime_error("not a qwen4exp model");
+  shape_ = read_shape(gguf_.metadata(), gguf_.tensors());
+  if (const auto bad = shape_mismatches(shape_, gguf_.tensors()); !bad.empty()) {
+    std::string why = bad[0];
+    for (size_t i = 1; i < std::min<size_t>(bad.size(), 5); i++) why += "; " + bad[i];
+    if (bad.size() > 5) why += "; and " + std::to_string(bad.size() - 5) + " more";
+    throw std::runtime_error(path + ": this build cannot run a file of this shape: " + why);
+  }
   if (!opt_.routing_profile) opt_.routing_profile = ENGINE_QWEN4EXP_ROUTING_PROFILE;
   if (opt_.max_ctx % Q_IDX_BLOCK) throw std::runtime_error("max_ctx must be a multiple of 4");
   rt_ = std::make_unique<ze::Runtime>(1);

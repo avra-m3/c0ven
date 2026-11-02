@@ -12,6 +12,10 @@ check them, how to lay them out, and how to point the engine at them.
 | The draft (MTP) layer | 31 tensors from Qwen's BF16 checkpoint, in `mtp/` | 5.2 GB | drafting without `dflash/`; with neither, the engine decodes one token a step |
 | The image encoder | `mmproj-Qwen3.8-Flash-Next-BF16.gguf` | 0.9 GB | images and video in requests |
 
+At load the engine reads the model's sizes from the file and stops, naming each difference, if they differ from the
+sizes it was built with ([ADR-0062](adr/0062-a-models-shape-comes-from-its-file.md)). ISTA-DASLab's Coder file, with 256
+experts a layer, is refused this way.
+
 ## The model directory
 
 Put every file in one directory:
