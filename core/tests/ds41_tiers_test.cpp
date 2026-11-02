@@ -187,7 +187,7 @@ void check_arena(const Generated &g, DirectReader &reader) {
 
 void check_memlock() {
   // A memory lock too small refuses the arena, and the switch opens it. A process allowed to lock any amount is not
-  // limited, so it has nothing to refuse.
+  // limited, so the refusal cannot run there, and the output says so.
   rlimit old;
   EXPECT(getrlimit(RLIMIT_MEMLOCK, &old) == 0, "getrlimit");
   rlimit low = old;
@@ -195,18 +195,18 @@ void check_memlock() {
   EXPECT(setrlimit(RLIMIT_MEMLOCK, &low) == 0, "setrlimit");
   const std::string unlocked_before = std::getenv("ENGINE_UNLOCKED_ARENA") ? "1" : "";
   unsetenv("ENGINE_UNLOCKED_ARENA");
-  bool privileged = false;
+  bool refused = false;
   try {
     AnonMemory m(kHugeBytes);
-    privileged = m.lock_errno() == 0;
-    EXPECT(privileged, "an unlocked piece without ENGINE_UNLOCKED_ARENA must be refused");
   } catch (const std::runtime_error &e) {
+    refused = true;
     EXPECT(std::string(e.what()).find("mlock2") != std::string::npos, "the refusal names mlock2: %s", e.what());
   }
+  std::printf("memory lock: %s\n", refused ? "the refusal ran" : "this process may lock any amount, the refusal did not run");
   setenv("ENGINE_UNLOCKED_ARENA", "1", 1);
   {
     AnonMemory m(kHugeBytes);
-    EXPECT(privileged == (m.lock_errno() == 0), "the switch keeps the reason");
+    EXPECT(refused == (m.lock_errno() != 0), "the switch keeps the reason");
     std::memset(m.data(), 1, m.bytes());
   }
   if (unlocked_before.empty()) unsetenv("ENGINE_UNLOCKED_ARENA");
