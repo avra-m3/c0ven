@@ -34,6 +34,8 @@ engine_test(ds41_engram_test SOURCES ds41_engram_test.cpp ARGS ${CMAKE_SOURCE_DI
 engine_test(ds41_rope_test SOURCES ds41_rope_test.cpp)
 engine_test(ds41_ref_ops_test SOURCES ds41_ref_ops_test.cpp)
 engine_test(ds41_ref_model_test SOURCES ds41_ref_model_test.cpp)
+engine_test(ds41_tiers_test SOURCES ds41_tiers_test.cpp ARGS ${CMAKE_SOURCE_DIR}/engine/models/deepseek41/tensors.tsv)
+set_tests_properties(ds41_tiers_test PROPERTIES LABELS CPU)
 engine_test(ze_smoke_test GPU SOURCES ze_smoke_test.cpp)
 engine_test(matvec_test GPU SOURCES matvec_test.cpp)
 engine_test(moe_test GPU SOURCES moe_test.cpp)
