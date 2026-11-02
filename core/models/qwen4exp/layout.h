@@ -1,5 +1,5 @@
-// qwen4exp's sizes, and the layout of its per-sequence state and KV cache: the one definition, read by the core and
-// by the kernels (C++20 and OpenCL C). The model is docs/spec/MODEL_LAYER.md and MODEL_IO.md; how a layer is split
+// The layout of qwen4exp's per-sequence state and KV cache, and the records the core and the kernels share (C++20 and
+// OpenCL C). The model is docs/spec/MODEL_LAYER.md and MODEL_IO.md; how a layer is split
 // between the cards is docs/DESIGN.md, section 5.
 #ifndef QWEN4EXP_LAYOUT_H
 #define QWEN4EXP_LAYOUT_H
