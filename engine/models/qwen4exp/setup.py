@@ -90,7 +90,7 @@ def open_config(
         ngram_cache_rows=NGRAM_CACHE_ROWS,
         timing_records=TIMING_RECORDS,
         eos_ids=numbers.EOS_IDS,
-        vocab_size=numbers.VOCAB,
+        vocab_size=table.vocab,
         deterministic=deterministic,
         draft_dir=str(draft) if draft is not None else "",
         ngram_in_ram=options.ngram_in_ram,

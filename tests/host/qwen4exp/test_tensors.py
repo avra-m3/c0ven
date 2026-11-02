@@ -35,6 +35,24 @@ def test_layer_kinds():
     assert kinds.count(LayerKind.DELTANET) == 36
 
 
+def test_sizes_from_the_shapes():
+    assert (TABLE.layers, TABLE.vocab, TABLE.experts_per_layer) == (48, 248_320, 512)
+
+
+def test_a_table_of_fewer_layers():
+    """Half the layers: its own count, its own attention layers."""
+    half = tensors.TensorTable(tuple(t for t in TABLE.tensors if t.layer < 24))
+    assert half.layers == 24
+    kinds = half.layer_kinds()
+    assert [i for i, k in enumerate(kinds) if k is LayerKind.ATTENTION] == list(range(3, 24, 4))
+
+
+def test_a_size_with_no_tensor_says_which():
+    table = tensors.TensorTable(tuple(t for t in TABLE.tensors if t.name != "output.weight"))
+    with pytest.raises(ValueError, match=r"output\.weight"):
+        _ = table.vocab
+
+
 def test_expert_sizes():
     assert TABLE.expert_bytes(3) == 1_971_200
     assert TABLE.expert_bytes(1) == 1_510_400
