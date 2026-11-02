@@ -18,7 +18,7 @@ from engine import fit
 from engine.api.interface import StepPlan
 from engine.api.mock import MockEngine
 from engine.api.reference import ReferenceEngine
-from engine.process import architecture, cache_dir, make_engine, model_module, read_cost, serve
+from engine.process import SwapWatch, architecture, cache_dir, make_engine, model_module, read_cost, serve
 from engine.scheduler import SchedulerOptions, every_16k
 from engine.timing import CostModel
 from tests.helpers import open_config, write_gguf
@@ -292,6 +292,95 @@ def test_requests_sent_together_read_their_prompts_in_one_plan():
     assert status == 0
     first = next(p for p in engine.plans if p.prompt)
     assert sorted(span.slot for span in first.prompt) == [0, 1, 2, 3]
+
+
+def test_the_swap_watch_counts_from_its_first_read(tmp_path: Path):
+    file = tmp_path / "vmstat"
+    file.write_text("nr_free_pages 9\npswpout 10\ncompact_stall 2\n")
+    watch = SwapWatch(file)
+    assert watch.pages is None
+    assert watch.poll()
+    assert watch.pages == 0
+    file.write_text("nr_free_pages 9\npswpout 13\ncompact_stall 2\n")
+    assert watch.poll()
+    assert watch.pages == 3
+
+
+def test_the_swap_watch_ends_on_a_host_without_the_file(tmp_path: Path):
+    watch = SwapWatch(tmp_path / "none", interval_s=3600)
+    assert not watch.poll()
+    watch.start()
+    watch.stop()
+    assert watch.pages is None
+
+
+def wait_for_pages(watch: SwapWatch, pages: int) -> None:
+    deadline = time.monotonic() + 5
+    while watch.pages != pages:
+        assert time.monotonic() < deadline, f"the watch stopped at {watch.pages} pages"
+        time.sleep(0.001)
+
+
+def test_the_swap_watch_outlasts_a_read_that_finds_nothing(tmp_path: Path):
+    """Once the host has shown a count, a failed read is not a host without one: the next read goes on from it."""
+    file = tmp_path / "vmstat"
+    file.write_text("pswpout 10\n")
+    watch = SwapWatch(file, interval_s=0.001)
+    watch.start()
+    try:
+        wait_for_pages(watch, 0)
+        file.unlink()
+        time.sleep(0.05)
+        assert watch.pages == 0
+        file.write_text("pswpout 17\n")
+        wait_for_pages(watch, 7)
+    finally:
+        watch.stop()
+
+
+def stats_after(file: Path | None) -> Iterator[str]:
+    """A front end that sees the host swap, asks for STATS once the watch can have read it, then quits."""
+    time.sleep(0.2)
+    if file is not None:
+        file.write_text("pswpout 15\n")
+    time.sleep(0.2)
+    yield protocol.Stats().encode() + "\n"
+    time.sleep(0.2)
+    yield protocol.Quit().encode() + "\n"
+
+
+def test_swap_out_is_in_the_counters(tmp_path: Path):
+    file = tmp_path / "vmstat"
+    file.write_text("pswpout 10\n")
+    out = io.StringIO()
+    status = serve(
+        MockEngine(),
+        open_config(),
+        rule=every_16k,
+        options=SchedulerOptions(),
+        stdin=cast("TextIO", stats_after(file)),
+        stdout=out,
+        swap_watch=SwapWatch(file, interval_s=0.01),
+    )
+    assert status == 0
+    report = next(line for line in out.getvalue().splitlines() if line.startswith("STATS"))
+    assert "swapped_out_pages=5" in report.split()
+
+
+def test_no_swap_counter_without_the_file(tmp_path: Path):
+    out = io.StringIO()
+    status = serve(
+        MockEngine(),
+        open_config(),
+        rule=every_16k,
+        options=SchedulerOptions(),
+        stdin=cast("TextIO", stats_after(None)),
+        stdout=out,
+        swap_watch=SwapWatch(tmp_path / "none", interval_s=0.01),
+    )
+    assert status == 0
+    report = next(line for line in out.getvalue().splitlines() if line.startswith("STATS"))
+    assert "swapped_out_pages" not in report
 
 
 def test_the_fit_report_is_in_the_info_line():

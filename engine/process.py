@@ -90,6 +90,44 @@ class Load:
         return out
 
 
+class SwapWatch:
+    """The pages the host has swapped out since the first load ended. Its own thread reads `pswpout`, so the engine's
+    loop only takes an int. If the first read finds no `pswpout` the thread ends and `pages` stays None. A later read
+    that finds none keeps `pages` at its last value, and the next read goes on.
+
+    path: the file in `/proc/vmstat`'s format. interval_s: seconds between reads. pages: the count, None before a read
+    has found one. `stop` ends the thread."""
+
+    def __init__(self, path: Path = Path("/proc/vmstat"), interval_s: float = 1.0) -> None:
+        self.path = path
+        self.interval_s = interval_s
+        self.pages: int | None = None
+        self._first: int | None = None
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="swap-watch", daemon=True)
+
+    def poll(self) -> bool:
+        """One read; False if neither this read nor any before it found `pswpout`, so this host has none."""
+        now = vmstat(self.path).get("pswpout")
+        if now is None:
+            return self._first is not None
+        if self._first is None:
+            self._first = now
+        self.pages = now - self._first
+        return True
+
+    def _run(self) -> None:
+        while self.poll() and not self._stop.wait(self.interval_s):
+            pass
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._thread.join()
+
+
 class State(Enum):
     AWAKE = "awake"
     DRAINING = "draining"
@@ -281,7 +319,9 @@ def serve(
     swapout_limit_mib: float | None = None,
     fit_report: Callable[[EngineFacts], tuple[list[fit.Row], list[str]]] | None = None,
     cost_file: Path | None = None,
+    swap_watch: SwapWatch | None = None,
 ) -> int:
+    swap_watch = swap_watch or SwapWatch()
     events: queue.Queue[protocol.Event | None] = queue.Queue()
     commands: queue.Queue[protocol.Command] = queue.Queue()
     writer = threading.Thread(target=_writer, args=(stdout, events), name="protocol-writer", daemon=True)
@@ -341,6 +381,7 @@ def serve(
     cancelled = False
     wake_after = False
     status = 0
+    swap_watch.start()
     try:
         while True:
             try:
@@ -376,6 +417,8 @@ def serve(
                         report = scheduler.report()
                         # Major faults: pages read back from swap or from a file, an unlocked arena's among them.
                         report["major_faults"] = str(resource.getrusage(resource.RUSAGE_SELF).ru_majflt)
+                        if swap_watch.pages is not None:
+                            report["swapped_out_pages"] = str(swap_watch.pages)
                         events.put(protocol.StatsReport(report))
                     case protocol.Sleep(drain_ms=drain_ms) if state is State.AWAKE:
                         state, sleep_t0, cancelled, wake_after = State.DRAINING, time.monotonic(), False, False
@@ -429,6 +472,7 @@ def serve(
         events.put(protocol.Error(None, str(exc)))
         status = 1
     finally:
+        swap_watch.stop()
         if state is not State.ASLEEP:  # asleep, it was written at the sleep
             write_cost(cost_file, scheduler.cost)
         try:
@@ -575,6 +619,7 @@ def report(
         + fit.host_rows(the_host, plan, facts.host_pinned, fit.rss())
         + fit.cpu_rows(the_host, workers, facts.host_read_bytes_per_s)
         + fit.storage_rows(plan, facts)
+        + fit.tier_rows(plan, facts.experts_cached, fit.anon_huge_pages() if plan.tiers is not None else None)
     )
     notes = (
         fit.card_notes(plan, facts.experts_cached, working_core)

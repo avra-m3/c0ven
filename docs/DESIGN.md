@@ -349,6 +349,10 @@ layer on each card as its memory allows, after leaving `reserve_bytes` (512 MiB)
 the sequences' reserve and the experts, is an estimate until a load shows the core's: with `ENGINE_CACHE_DIR` set, the core's
 figure is kept for each model file, version and set of options, and the next start plans with it.
 
+A model with an SSD tier holds its experts in VRAM, the arena and the SSD: its arena takes what the host can spare, and
+an arena that does not fit is a normal plan
+([MEMORY_BUDGET.md](measurements/MEMORY_BUDGET.md#experts-in-three-tiers)).
+
 With swaps on, the KV pool and the expert cache share that memory ([ADR-0045](adr/0045-the-kv-pool-and-the-expert-cache-share-each-cards-memory.md)). The pool's buffers and
 each layer's cache are ranges of addresses that never move, backed by 2 MB blocks of device memory that do. Python
 takes the lowest free page first, and each plan tells the core how many pages at the top of the pool hold nothing.
@@ -399,9 +403,11 @@ that a measurement could see. `engine_read_stats` copies them out, awake or asle
 admitted slot's: its steps, rounds, drafts and the accepted ones, and the part from its own tokens
 ([ADR-0049](adr/0049-counters-in-the-core-read-by-a-snapshot-call.md)).
 
-The engine process answers `STATS` with the core's counters and the scheduler's (the requests waiting, reading and
-writing, and the cost model's parts), and each request's `DONE` line carries its wait for a slot, its steps and its
-drafts. `/metrics` reports both, and the ratios read from the counters (`frontend/metrics.py`): a step's and a
+The engine process answers `STATS` with the core's counters, the scheduler's (the requests waiting, reading and
+writing, and the cost model's parts) and `swapped_out_pages`, the pages the host has swapped out since the first load
+ended. A thread of its own reads that from `pswpout` in `/proc/vmstat` once a second, and the engine's loop only takes
+the value; a host without the file reports no such counter. Each request's `DONE` line carries its wait for a slot,
+its steps and its drafts. `/metrics` reports both, and the ratios read from the counters (`frontend/metrics.py`): a step's and a
 round's time, misses per decode row, tokens per second of card time in plain steps and in rounds by draft source,
 drafts accepted per run, the engine thread's busy share and the swap rounds' part of it. With `--metrics-log`, the
 `frontend.metrics` logger writes each request's record as it ends, and the counters and ratios at that interval and at
