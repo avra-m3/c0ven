@@ -52,6 +52,7 @@ GAP_S = 60.0  # no token for this long while a request is open fails the run
 # Each quick-round scenario's run-to-run spread on main, as a share of its time (TESTING.md). Four's time depends on
 # how many tokens its tool calls take, which varies from run to run.
 SPREAD = {"short": 0.015, "four": 0.10, "mixed": 0.04}
+SHORT_TOKENS = 2048  # the first tokens run slower; 512 would be mostly those, and short judges the settled rate
 LONG_SLOWER = 0.01  # long's first token repeats within 0.1 s of about 120 s; later than A's by more fails B
 # Host state that moves a run's time, and how far it may move before main's stored runs no longer stand for main.
 DRIFT = {"mem_avail_gib": 6.0, "swap_used_gib": 2.0, "card0_free_gib": 1.0, "card1_free_gib": 1.0}
@@ -355,11 +356,11 @@ class Client:
 
 
 def run_scenario(name: str, client: Client, messages: dict[str, Rec], ref_dir: Path) -> None:
-    def ref(pid: str, tag: str = name) -> tuple[str, Body]:
-        return pid, reference_body(messages, pid, tag, 512)
+    def ref(pid: str, tag: str = name, max_tokens: int = 512) -> tuple[str, Body]:
+        return pid, reference_body(messages, pid, tag, max_tokens)
 
     if name == "short":
-        client.send(name, "alone", *ref("gpqa-1"))
+        client.send(name, "alone", *ref("gpqa-1", max_tokens=SHORT_TOKENS))
     elif name == "four":
         client.together(name, "at once", [ref(f"agent-turn{i}") for i in range(1, 5)])
     elif name == "mixed":
