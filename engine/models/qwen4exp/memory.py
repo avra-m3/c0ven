@@ -7,7 +7,7 @@ from engine.memory_plan import ModelMemory
 from engine.models.qwen4exp import numbers
 from engine.models.qwen4exp.draft import draft_per_card, read_shapes
 from engine.models.qwen4exp.split import bytes_per_card, split_of
-from engine.models.qwen4exp.tensors import Category, TensorTable
+from engine.models.qwen4exp.tensors import Category, LayerKind, TensorTable
 
 
 def model_memory(
@@ -18,23 +18,28 @@ def model_memory(
     if cards not in (1, 2):
         raise ValueError(f"the engine runs on one or two cards, not {cards}")
     expert_total = table.bytes_of(Category.EXPERTS)
-    experts = numbers.LAYERS * numbers.EXPERTS_PER_LAYER
+    experts = table.layers * table.experts_per_layer
+    kinds = table.layer_kinds()
+    attention = kinds.count(LayerKind.ATTENTION)
+    kv_cell = attention * numbers.KV_CELL_BYTES_PER_LAYER
+    indexer_cell = attention * numbers.INDEXER_CELL_BYTES_PER_LAYER
+    state = kinds.count(LayerKind.DELTANET) * numbers.DELTANET_STATE_BYTES + numbers.PLE_HISTORY_BYTES
     return ModelMemory(
         cards=cards,
         weights_per_card=sum(bytes_per_card(t, cards) for t in table.tensors),
         draft_per_card=draft_per_card(draft_shapes if draft_shapes is not None else read_shapes(), cards),
         working_per_card=numbers.WORKING_PER_CARD,
-        layers=numbers.LAYERS,
+        layers=table.layers,
         experts=experts,
         expert_bytes=expert_total // experts,
-        kv_cell_per_card=numbers.KV_CELL_BYTES // cards,
-        indexer_cell_per_card=numbers.INDEXER_CELL_BYTES // cards,
-        state_per_card=numbers.STATE_BYTES // cards,
+        kv_cell_per_card=kv_cell // cards,
+        indexer_cell_per_card=indexer_cell // cards,
+        state_per_card=state // cards,
         draft_kv_per_card=numbers.DRAFT_KV_BYTES // cards,
         resident_cells=numbers.RESIDENT_CELLS,
-        kv_cell_host=numbers.KV_CELL_BYTES,
+        kv_cell_host=kv_cell,
         draft_kv_host=numbers.DRAFT_KV_BYTES,
-        checkpoint_bytes=numbers.STATE_BYTES,
+        checkpoint_bytes=state,
         max_context=numbers.CONTEXT,
         ngram_bytes=sum(t.nbytes for t in table.tensors if split_of(t.name) is SplitKind.FILE),
         reference_vram=numbers.USABLE_VRAM,

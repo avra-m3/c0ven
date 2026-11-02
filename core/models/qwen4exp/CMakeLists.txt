@@ -7,6 +7,7 @@ target_sources(engine_core PRIVATE
   mtp.cpp
   ngram.cpp
   prompt.cpp
+  shape.cpp
   state.cpp
   swap.cpp
   vision.cpp)
