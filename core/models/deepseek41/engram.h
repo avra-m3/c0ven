@@ -1,6 +1,6 @@
 // deepseek41's Engram rows (spec section 2; DeepSeek's inference/engram.py, NgramHashState): the hash of a token and
 // the three before it, which names 24 rows of per_layer_token_embd for each of the two Engram layers, and the rows
-// dequantised from Q5_K. The table stays in the file, read with O_DIRECT past the page cache (ADR-0015, ADR-0062
+// dequantised from IQ4_NL. The table stays in the file, read with O_DIRECT past the page cache (ADR-0015, ADR-0062
 // item 7).
 #pragma once
 
@@ -48,11 +48,12 @@ class EngramHash {
   int32_t pad_;
 };
 
-// One row of the table, D41_ENG_ROW values from its 176-byte Q5_K block, by ggml's dequantisation.
+// One row of the table, D41_ENG_ROW values from its D41_ENG_ROW_BYTES of IQ4_NL blocks, by ggml's dequantisation.
 void engram_dequant(const uint8_t *row, float *out);
 
-// The table's rows read with O_DIRECT 4 KiB reads by a pool of reader threads, and a direct-mapped cache of the rows
-// already read (ADR-0015). Refuses a file on a filesystem without O_DIRECT.
+// The table's rows read with O_DIRECT by a pool of reader threads, and a direct-mapped cache of the rows already read
+// (ADR-0015). A read is the 4 KiB page holding the row, or the two pages when it crosses one: 144 does not divide
+// 4,096. Refuses a file on a filesystem without O_DIRECT, and a table that is not IQ4_NL rows of D41_ENG_ROW values.
 class EngramReader {
  public:
   EngramReader(const GgufModel &model, uint32_t cache_rows = 1u << 20, unsigned readers = 128);
@@ -61,6 +62,7 @@ class EngramReader {
   EngramReader &operator=(const EngramReader &) = delete;
 
   // The n rows ids, dequantised: row k's D41_ENG_ROW values at out + D41_ENG_ROW k. Each distinct row is read once.
+  // Throws on a row past the table's end or a short read. One thread at a time.
   void gather(const uint64_t *ids, uint32_t n, float *out);
 
   const NgramStats &stats() const { return stats_; }
@@ -68,6 +70,8 @@ class EngramReader {
   double read_latency_us();
 
  private:
+  void read_rows(const std::vector<uint64_t> &ids, uint8_t *out);
+
   int fd_ = -1;
   uint64_t data_offset_ = 0, rows_ = 0;
   uint32_t slots_ = 0;

@@ -1,14 +1,26 @@
 #include "models/deepseek41/engram.h"
 
+#include <fcntl.h>
+#include <unistd.h>
+
+#include <atomic>
+#include <chrono>
+#include <cstring>
+#include <random>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <utility>
 
 #include "ggml.h"
+#include "quant.h"
 
 namespace engine::deepseek41 {
 
 namespace {
+
+constexpr uint64_t kPage = 4096;
+constexpr uint64_t kEmpty = ~0ull;
 
 std::vector<uint64_t> u64s(const GgufModel &model, const std::string &key, size_t n) {
   const auto v = model.get_ints(key);
@@ -72,7 +84,94 @@ std::array<uint64_t, D41_ENG_COLS> EngramHash::rows(int32_t t, int32_t p1, int32
 }
 
 void engram_dequant(const uint8_t *row, float *out) {
-  ggml_get_type_traits(GGML_TYPE_Q5_K)->to_float(row, out, D41_ENG_ROW);
+  ggml_get_type_traits(GGML_TYPE_IQ4_NL)->to_float(row, out, D41_ENG_ROW);
+}
+
+EngramReader::EngramReader(const GgufModel &model, uint32_t cache_rows, unsigned readers) {
+  const GgufTensor &t = model.tensor("per_layer_token_embd.weight");
+  if (t.type != QT_IQ4_NL || t.shape.at(0) != D41_ENG_ROW)
+    throw std::runtime_error("the Engram table is not IQ4_NL rows of 256 values");
+  data_offset_ = t.offset;
+  rows_ = t.rows();
+  fd_ = ::open(model.files().at(t.shard).c_str(), O_RDONLY | O_CLOEXEC | O_DIRECT);
+  if (fd_ < 0) throw std::runtime_error("cannot open the Engram table's shard with O_DIRECT (ADR-0015)");
+  slots_ = cache_rows;
+  tag_.assign(slots_, kEmpty);
+  data_.resize((size_t)slots_ * D41_ENG_ROW_BYTES);
+  readers_ = std::make_unique<Pool>(readers > 1 ? readers - 1 : 0);
+}
+
+EngramReader::~EngramReader() {
+  if (fd_ >= 0) ::close(fd_);
+}
+
+double EngramReader::read_latency_us() {
+  alignas(kPage) static uint8_t buf[kPage];
+  std::mt19937_64 rng(7);
+  constexpr int kReads = 256;
+  const auto t0 = std::chrono::steady_clock::now();
+  for (int i = 0; i < kReads; i++) {
+    const uint64_t off = data_offset_ + (rng() % rows_) * D41_ENG_ROW_BYTES;
+    if (pread(fd_, buf, kPage, (off_t)(off & ~(kPage - 1))) < 0) return 0;
+  }
+  return std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count() / kReads;
+}
+
+void EngramReader::read_rows(const std::vector<uint64_t> &ids, uint8_t *out) {
+  std::atomic<bool> short_read{false};
+  readers_->run(ids.size(), [&](uint64_t i) {
+    alignas(kPage) static thread_local uint8_t buf[2 * kPage];
+    const uint64_t off = data_offset_ + ids[i] * D41_ENG_ROW_BYTES, page = off & ~(kPage - 1);
+    const uint64_t in_page = off - page, len = in_page + D41_ENG_ROW_BYTES > kPage ? 2 * kPage : kPage;
+    // At the file's end the read comes back short of len; the row is what it must hold.
+    const ssize_t got = pread(fd_, buf, len, (off_t)page);
+    if (got < (ssize_t)(in_page + D41_ENG_ROW_BYTES)) {
+      short_read = true;
+      return;
+    }
+    std::memcpy(out + i * D41_ENG_ROW_BYTES, buf + in_page, D41_ENG_ROW_BYTES);
+  });
+  if (short_read) throw std::runtime_error("short read from the Engram table");
+}
+
+void EngramReader::gather(const uint64_t *ids, uint32_t n, float *out) {
+  for (uint32_t k = 0; k < n; k++)
+    if (ids[k] >= rows_) throw std::runtime_error("Engram row " + std::to_string(ids[k]) + " past the table's end");
+  stats_.rows += n;
+  std::vector<const uint8_t *> where(n, nullptr);
+  std::unordered_map<uint64_t, uint32_t> want;  // row id -> index in miss
+  std::vector<uint64_t> miss;
+  std::vector<uint32_t> miss_of(n, UINT32_MAX);
+  for (uint32_t k = 0; k < n; k++) {
+    const uint32_t slot = (uint32_t)(ids[k] % slots_);
+    if (tag_[slot] == ids[k]) {
+      where[k] = &data_[(size_t)slot * D41_ENG_ROW_BYTES];
+      stats_.hits++;
+      continue;
+    }
+    auto [it, fresh] = want.try_emplace(ids[k], (uint32_t)miss.size());
+    if (fresh) miss.push_back(ids[k]);
+    miss_of[k] = it->second;
+  }
+  std::vector<uint8_t> got(miss.size() * D41_ENG_ROW_BYTES);
+  if (!miss.empty()) read_rows(miss, got.data());
+  stats_.reads += miss.size();
+  for (uint32_t k = 0; k < n; k++)
+    if (miss_of[k] != UINT32_MAX) where[k] = &got[(size_t)miss_of[k] * D41_ENG_ROW_BYTES];
+  // A decode step's rows are dequantised here, since waking the readers would take longer, as for Flash-Next's rows
+  // (docs/measurements/MEASUREMENTS.md#2026-10-16-host-glue).
+  const auto dequant = [&](uint64_t k) { engram_dequant(where[k], out + k * D41_ENG_ROW); };
+  if (n <= kEngramTables * D41_ENG_COLS * STEP_MAX_ROWS) {
+    for (uint32_t k = 0; k < n; k++) dequant(k);
+  } else {
+    readers_->run(n, dequant);
+  }
+  // A later row in the same slot replaces an earlier one. Only now: where[] may point into a slot.
+  for (size_t j = 0; j < miss.size(); j++) {
+    const uint32_t slot = (uint32_t)(miss[j] % slots_);
+    tag_[slot] = miss[j];
+    std::memcpy(&data_[(size_t)slot * D41_ENG_ROW_BYTES], &got[j * D41_ENG_ROW_BYTES], D41_ENG_ROW_BYTES);
+  }
 }
 
 }  // namespace engine::deepseek41
