@@ -6,6 +6,7 @@
 #include "a8.h"
 #include "builtins.h"
 #include "layout.h"
+#include "combine.h"
 #include "ops.h"
 #include "topk.h"
 
@@ -13,12 +14,6 @@
 #include "route.h"
 
 static inline float sigmoid(float x) { return 1.0f / (1.0f + exp(-x)); }
-
-// Comes before reading what another agent wrote to host memory, as the card caches host-memory lines (ADR-0011). It
-// invalidates the card's cache, so a launch that reads only card memory leaves it out.
-static inline void host_read_fence(void) {
-  atomic_work_item_fence(CLK_GLOBAL_MEM_FENCE, memory_order_acquire, memory_scope_all_svm_devices);
-}
 
 // One chunk of a sublayer's input, values i .. i + 63, into each form its consumers read; a null pointer has none.
 // job's x lies in host memory: 256-byte stores.
@@ -320,14 +315,6 @@ REQD_SG __kernel void ds_engram_apply(__global float *X, __global const float *k
 // s = sqrt(softplus(logit)); softplus is the logit itself above 20, as torch and ggml take it.
 static inline float rt_score(float x) { return sqrt(x > 20.0f ? x : log1p(exp(x))); }
 
-// A MissJob header's three stores of 64 bytes a sub-group: first and second, then third over first's bytes, behind a
-// release fence when fence is set. ds_job_store_rate times these same stores.
-static inline void rt_job_stores(__global uint *h, uint first, uint second, uint third, bool fence) {
-  intel_sub_group_block_write2(h, (uint2)(first, second));
-  if (fence) atomic_work_item_fence(CLK_GLOBAL_MEM_FENCE, memory_order_release, memory_scope_all_svm_devices);
-  intel_sub_group_block_write(h, third);
-}
-
 // A row's MissJob header, by its sub-group (lane k < D41_USED holds rank k's id and weight, with miss set when it is
 // not cached), in two 64-byte stores across PCIe, then the step behind a release fence in a third store of the same
 // first 64 bytes, whose other words do not change. Unused entries hold -1 and 0. A padded row has id -1 and no miss.
@@ -471,53 +458,6 @@ REQD_SG __kernel void ds_swiglu_clamp_a8(__global const float *g, __global const
   }
 }
 
-// A card's partial sum: its cached experts in rank order (y: [W][D41_USED][D41_EMBD], w and slots the router's), then
-// shared, then cpu, the CPU's answer in host memory or null, for a row with misses: an acquire fence, then the 16-byte
-// loads that read host memory well, together in flight. Into out and, when not null, peer (the other card's memory or
-// pinned host memory), 256 bytes a sub-group. Groups W, sub-groups * 16; sub-groups divide D41_EMBD / 64 / CMB_BATCH.
-#define CMB_BATCH 5
-static inline void moe_combine(__global const float *y, __global const float *w, __global const int *slots,
-                               __global const float *shared, __global const float *cpu, __global const uint *nmiss,
-                               __global float *out, __global float *peer, bool fence) {
-  const uint r = get_group_id(0), sgs = get_num_sub_groups(), lane = sg_lane();
-  const uint a = r * D41_USED;
-  const float3 w0 = vload3(0, w + a), w1 = vload3(1, w + a);
-  const int3 s0 = vload3(0, slots + a), s1 = vload3(1, slots + a);
-  const float wk[D41_USED] = {sub_group_broadcast(w0.s0, 0), sub_group_broadcast(w0.s1, 0),
-                              sub_group_broadcast(w0.s2, 0), sub_group_broadcast(w1.s0, 0),
-                              sub_group_broadcast(w1.s1, 0), sub_group_broadcast(w1.s2, 0)};
-  const int on[D41_USED] = {sub_group_broadcast(s0.s0, 0), sub_group_broadcast(s0.s1, 0),
-                            sub_group_broadcast(s0.s2, 0), sub_group_broadcast(s1.s0, 0),
-                            sub_group_broadcast(s1.s1, 0), sub_group_broadcast(s1.s2, 0)};
-  const uint host = cpu != 0 && sub_group_broadcast(nmiss[r], 0) != 0;
-  if (host) {
-    // One fence a row: it waits on the card's whole cache, so one a sub-group outlasts the loads
-    // (docs/measurements/MEASUREMENTS.md#2026-11-02-deepseek41-router).
-    if (fence && sg_id() == 0) host_read_fence();
-    barrier(CLK_LOCAL_MEM_FENCE);
-  }
-  __global const float *yr = y + (ulong)a * D41_EMBD;
-  __global const float *sr = shared + (ulong)r * D41_EMBD;
-  __global const float *cr = cpu ? cpu + (ulong)r * D41_EMBD : 0;
-  __global float *ot = out + (ulong)r * D41_EMBD;
-  __global float *pr = peer ? peer + (ulong)r * D41_EMBD : 0;
-  for (uint c = sg_id(); c < D41_EMBD / 64; c += CMB_BATCH * sgs) {
-    // A host load takes a PCIe round trip, so a sub-group's loads go out before any sum needs one.
-    float4 from_cpu[CMB_BATCH];
-    if (host)
-      for (uint b = 0; b < CMB_BATCH; b++) from_cpu[b] = vload4((c + b * sgs) * 16 + lane, cr);
-    for (uint b = 0; b < CMB_BATCH; b++) {
-      const uint q = (c + b * sgs) * 16 + lane;  // the chunk's 16-byte unit for this lane
-      float4 acc = (float4)0.0f;
-      for (uint k = 0; k < D41_USED; k++)
-        if (on[k] >= 0) acc += wk[k] * vload4(q, yr + k * D41_EMBD);
-      acc += vload4(q, sr);
-      if (host) acc += from_cpu[b];
-      vstore4(acc, q, ot);
-      if (peer) vstore4(acc, q, pr);
-    }
-  }
-}
 REQD_SG __kernel void ds_moe_combine(__global const float *y, __global const float *w, __global const int *slots,
                                      __global const float *shared, __global const float *cpu,
                                      __global const uint *nmiss, __global float *out, __global float *peer) {
@@ -573,68 +513,4 @@ REQD_SG __kernel void ds_wait(__global uint *raise, __global const uint *flush, 
     if (!seen) *stuck = 1;
   }
   if (stamp) stamp[1] = clock_read_device();
-}
-
-// The kernels below are ds41_router_test's controls, which no model list runs.
-
-// n headers 128 bytes apart into h, sub-groups taking them in turn, by rt_job's stores (kind 0), one word a lane (1) or
-// two bytes a lane (2). No fence, so that the time is the stores'. Groups 1, sub-groups * 16.
-REQD_SG __kernel void ds_job_store_rate(__global uint *h, uint n, uint kind) {
-  const uint lane = sg_lane(), sgs = get_num_sub_groups();
-  for (uint i = sg_id(); i < n; i += sgs) {
-    __global uint *p = h + (ulong)i * 32;
-    if (kind == 2) {
-      __global ushort *b = (__global ushort *)p;
-      b[lane] = (ushort)lane;
-      b[32 + lane] = (ushort)lane;
-      b[16 + lane] = (ushort)lane;
-      b[48 + lane] = (ushort)lane;
-      b[lane] = (ushort)(lane + 1);
-    } else if (kind == 1) {
-      p[lane] = lane;
-      p[16 + lane] = lane;
-      p[lane] = lane + 1;
-    } else {
-      rt_job_stores(p, lane, lane, lane + 1, false);
-    }
-  }
-}
-
-// ds_moe_combine without its fence, to show what the fence does.
-REQD_SG __kernel void ds_moe_combine_no_fence(__global const float *y, __global const float *w,
-                                              __global const int *slots, __global const float *shared,
-                                              __global const float *cpu, __global const uint *nmiss,
-                                              __global float *out, __global float *peer) {
-  moe_combine(y, w, slots, shared, cpu, nmiss, out, peer, false);
-}
-
-// ds_moe_combine's reads of the CPU's answer, then each row holds for ticks of the device clock with no fence, then the
-// combine, in one launch, with no kernel's end between the reads. stamp[0] gets the clock when row 0 starts to hold.
-REQD_SG __kernel void ds_moe_combine_read_twice(__global const float *y, __global const float *w,
-                                                __global const int *slots, __global const float *shared,
-                                                __global const float *cpu, __global const uint *nmiss,
-                                                __global float *out, uint ticks, __global ulong *stamp, uint fence) {
-  const uint r = get_group_id(0), sgs = get_num_sub_groups(), lane = sg_lane();
-  __global const float *cr = cpu + (ulong)r * D41_EMBD;
-  __global float *ot = out + (ulong)r * D41_EMBD;
-  // The store keeps the reads.
-  for (uint c = sg_id(); c < D41_EMBD / 64; c += sgs) vstore4(vload4(c * 16 + lane, cr), c * 16 + lane, ot);
-  barrier(CLK_LOCAL_MEM_FENCE);
-  if (sg_id() == 0 && lane == 0) {
-    const ulong t0 = clock_read_device();
-    if (r == 0) stamp[0] = t0;
-    while (clock_read_device() - t0 < ticks) {
-    }
-  }
-  barrier(CLK_LOCAL_MEM_FENCE);
-  moe_combine(y, w, slots, shared, cpu, nmiss, out, 0, fence != 0);
-}
-
-// Holds a list for ticks of the device clock. Unlike ds_wait it runs no fence. stamp[0] gets the clock at entry. Group
-// 1.
-REQD_SG __kernel void ds_hold(uint ticks, __global ulong *stamp) {
-  const ulong t0 = clock_read_device();
-  stamp[0] = t0;
-  while (clock_read_device() - t0 < ticks) {
-  }
 }
