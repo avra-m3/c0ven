@@ -53,6 +53,9 @@ std::vector<uint16_t> df_tensor(const std::string &dir, const std::string &name,
 
 bool Model::init_dflash() {
   if (::access((opt_.mtp_dir + "/dflash-manifest.json").c_str(), R_OK) != 0) return false;
+  if (kDfTargetLayers[DF_LAYERS - 1] >= shape_.layers)
+    throw std::runtime_error("DFlash 2 reads layer " + std::to_string(kDfTargetLayers[DF_LAYERS - 1]) + "; the model has " +
+                             std::to_string(shape_.layers));
   df_on_ = true;
   dfcplan_ = static_cast<DraftPlan *>(rt_->alloc_host(sizeof(DraftPlan)));
   dfbplan_ = static_cast<DraftPlan *>(rt_->alloc_host(sizeof(DraftPlan)));

@@ -42,14 +42,14 @@ constexpr uint32_t kLriW = 336;
 // kind kEx and kMix: (layer, exchange or block 0 or 1 as layer * 2 + which, card); kStaged, kFree and kRouted:
 // (layer, card); kNgram: the one event the host signals when the chunk's n-gram rows are in; kLast: (0, card).
 uint32_t Model::pev(uint32_t kind, uint32_t layer, uint32_t c) const {
-  const uint32_t C = ncards_, mix = 4 * Q_LAYERS * C + 1 + kAttn * C;
+  const uint32_t C = ncards_, mix = 4 * shape_.layers * C + 1 + shape_.attn_layers() * C;
   if (kind == kEx) return layer * C + c;  // layer here is 2 l + which
-  if (kind == kNgram) return 4 * Q_LAYERS * C;
-  if (kind == kIdx) return 4 * Q_LAYERS * C + 1 + layer * C + c;  // layer here is the attention layer's index
+  if (kind == kNgram) return 4 * shape_.layers * C;
+  if (kind == kIdx) return 4 * shape_.layers * C + 1 + layer * C + c;  // layer here is the attention layer's index
   if (kind == kMix) return mix + layer * C + c;
-  if (kind == kLast) return mix + 2 * Q_LAYERS * C + c;
-  if (kind == kRouted) return mix + 2 * Q_LAYERS * C + C + layer * C + c;
-  return 2 * Q_LAYERS * C + (kind - 1) * Q_LAYERS * C + layer * C + c;
+  if (kind == kLast) return mix + 2 * shape_.layers * C + c;
+  if (kind == kRouted) return mix + 2 * shape_.layers * C + C + layer * C + c;
+  return 2 * shape_.layers * C + (kind - 1) * shape_.layers * C + layer * C + c;
 }
 
 void Model::load_prompt(Card &card) {
@@ -152,8 +152,8 @@ void Model::load_prompt(Card &card) {
   P.w16 = u16(w16);
   if ((opt_.profile_routing || opt_.adapt_swaps) && card.c == 0) {
     const uint32_t z = 0;
-    P.prof = u32(Q_LAYERS * Q_EXPERTS);
-    card.up->fill(P.prof, &z, 4, Q_LAYERS * Q_EXPERTS * 4);
+    P.prof = u32(shape_.layers * Q_EXPERTS);
+    card.up->fill(P.prof, &z, 4, shape_.layers * Q_EXPERTS * 4);
     card.up->synchronize();
   }
   const uint32_t zero = 0;
@@ -170,12 +170,12 @@ void Model::record_prompt_copy(Card &card) {
   PromptCard &P = *card.pc;
   for (auto &hl : host_layers_) P.stage_slot = std::max<uint64_t>(P.stage_slot, hl->pieces.size() * hl->stg_bytes);
   if (P.stage_slot) P.stage = static_cast<uint8_t *>(rt_->alloc_device(card.c, 2 * P.stage_slot));
-  for (uint32_t l = 0; l < Q_LAYERS; l++)
+  for (uint32_t l = 0; l < shape_.layers; l++)
     P.stage_map.push_back(upload<int32_t>(card, host_layers_[l]->stage_of.data(), Q_EXPERTS * 4));
   P.copy = prompt_copies(card, staging_now(), copy_count_);
   if (P.stage_slot) {
     P.fetch = std::make_unique<ze::List>(*rt_, card.c, ze::List::immediate, true);
-    P.routed = static_cast<uint32_t *>(rt_->alloc_host((size_t)Q_LAYERS * Q_EXPERTS * 4));
+    P.routed = static_cast<uint32_t *>(rt_->alloc_host((size_t)shape_.layers * Q_EXPERTS * 4));
     // The staging buffer written once through the fetch list, in copies of the size it makes: the runtime's first
     // CPU copy into a page of a card's memory takes several times as long as the next ones.
     const HostLayer &hl = *host_layers_[0];
@@ -219,7 +219,7 @@ void Model::fetch_experts(uint32_t c, const std::vector<std::vector<uint32_t>> &
     ZE_CHECK(r);
   };
   std::vector<uint8_t> done(Q_EXPERTS);
-  for (uint32_t l = 0; l < Q_LAYERS; l++) {
+  for (uint32_t l = 0; l < shape_.layers; l++) {
     const HostLayer &hl = *host_layers_[l];
     uint8_t *slot = P.stage + (l % 2) * P.stage_slot;
     const ze_event_handle_t routed = (*pevents_)[pev(kRouted, l, c)];
@@ -240,8 +240,8 @@ void Model::fetch_experts(uint32_t c, const std::vector<std::vector<uint32_t>> &
 }
 
 Model::Staging Model::staging_now() const {
-  Staging st(Q_LAYERS);
-  for (uint32_t l = 0; l < Q_LAYERS; l++)
+  Staging st(shape_.layers);
+  for (uint32_t l = 0; l < shape_.layers; l++)
     for (uint32_t e : host_layers_[l]->uncached) {
       // From the arena piece, not the weights: a swap's outgoing expert reads from the piece the swap thread filled
       // until its move into this one is settled (settle_moves).
@@ -261,7 +261,7 @@ std::unique_ptr<ze::List> Model::prompt_copies(Card &card, const Staging &st, ui
   ze::List &L = *list;
   const uint64_t f0 = (uint64_t)card.c * card.ff;
   copies = 0;
-  for (uint32_t l = 0; l < Q_LAYERS; l++) {
+  for (uint32_t l = 0; l < shape_.layers; l++) {
     const HostLayer &hl = *host_layers_[l];
     const std::vector<ExpertWeights> &sw = st[l];
     if (l >= 2) L.wait({(*pevents_)[pev(kFree, l - 2, card.c)]});
@@ -398,7 +398,7 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
   };
 
   L.launch(q4("p_hc_init"), {pembed_, pp, P.R}, Q_HC_DIM / 64, T, 1, 64);
-  for (uint32_t l = 0; l < Q_LAYERS; l++) {
+  for (uint32_t l = 0; l < shape_.layers; l++) {
     Layer &Ly = card.layers[l];
     HostLayer &hl = *host_layers_[l];
     if (l == 1) {  // the PLE module
@@ -528,14 +528,14 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
     if (!hl.pieces.empty()) {
       // The staged down holds this card's blocks of each row only, unless the arena keeps it whole.
       const bool part = hl.down_parts > 1;
-      uint32_t dbpr = (part ? ff : Q_FF) / dqk, b0 = part ? 0 : c * ff / dqk;
+      uint32_t dbpr = (part ? ff : shape_.ff) / dqk, b0 = part ? 0 : c * ff / dqk;
       L.launch(kernel(c, dm + "_file", "moe_down_t"), {stage, hl.stg_bytes, hl.stg_down_off, P.tiles_s, P.ntiles_s, E,
                                                        dbpr, b0, P.hg, ff, P.yg, card.grids}, E / 64, mt, 1, 64);
     }
     L.signal((*pevents_)[pev(kFree, l, c)]);
     L.launch(q4("p_moe_combine"), {P.yg, P.inv, P.w, P.s, P.rl, pp, P.part, peer_part(1)}, Q_EMBD / 128, T, 1, 64, 1,
              1, sent(1));
-    exchange(l, 1, P.inj[1], l >= 1 && l + 1 < Q_LAYERS ? card.layers[l + 1].hc_norm[0] : nullptr);
+    exchange(l, 1, P.inj[1], l >= 1 && l + 1 < shape_.layers ? card.layers[l + 1].hc_norm[0] : nullptr);
     // DFlash 2 reads each run's last rows of the layer's output (dflash.cpp), from the card that holds them.
     for (uint32_t k = 0; df_on_ && k < DF_LAYERS; k++) {
       if (l != kDfTargetLayers[k]) continue;
@@ -644,8 +644,8 @@ std::vector<std::vector<Candidate>> Model::prompt_runs(const PromptRun *runs, ui
     }
   } join_fetchers{fetchers};
   if (fetch) {
-    order.resize(Q_LAYERS);
-    for (uint32_t l = 0; l < Q_LAYERS; l++) {
+    order.resize(shape_.layers);
+    for (uint32_t l = 0; l < shape_.layers; l++) {
       const float *u = &use_[(size_t)l * Q_EXPERTS];
       order[l] = host_layers_[l]->uncached;
       std::sort(order[l].begin(), order[l].end(),
@@ -657,7 +657,7 @@ std::vector<std::vector<Candidate>> Model::prompt_runs(const PromptRun *runs, ui
           fetch_experts(c, order);
         } catch (...) {
           fetch_err[c] = std::current_exception();
-          for (uint32_t l = 0; l < Q_LAYERS; l++) zeEventHostSignal((*pevents_)[pev(kStaged, l, c)]);
+          for (uint32_t l = 0; l < shape_.layers; l++) zeEventHostSignal((*pevents_)[pev(kStaged, l, c)]);
         }
       });
   }
@@ -734,7 +734,7 @@ std::vector<std::vector<Candidate>> Model::prompt_runs(const PromptRun *runs, ui
 }
 
 std::vector<uint32_t> Model::routing_counts() const {
-  std::vector<uint32_t> v(Q_LAYERS * Q_EXPERTS, 0);
+  std::vector<uint32_t> v(shape_.layers * Q_EXPERTS, 0);
   const PromptCard *P = cards_[0]->pc.get();
   if (!P || !P->prof) return v;
   cards_[0]->up->copy(v.data(), P->prof, v.size() * 4);

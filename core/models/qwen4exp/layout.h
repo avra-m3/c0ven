@@ -8,14 +8,11 @@
 #include "types.h"
 
 #define Q_EMBD 2560
-#define Q_LAYERS 48
 #define Q_HC 4                      // residual streams
 #define Q_HC_DIM (Q_HC * Q_EMBD)    // 10,240
 #define Q_HC_LR 320
 #define Q_EPS 1e-6f
 
-#define Q_GDN_KH 16                 // key heads
-#define Q_GDN_VH 48                 // value heads; value head h reads key head h mod 16
 #define Q_GDN_D 128                 // head size
 #define Q_GDN_CONV 4
 
@@ -35,11 +32,7 @@
 
 #define Q_EXPERTS 512
 #define Q_USED 10
-#define Q_FF 640                    // expert and shared-expert width
 
-#define Q_VOCAB 248320
-#define Q_PLE_HEADS 16
-#define Q_PLE_ROW 160
 #define Q_PLE_DIL 3                 // the PLE conv's dilation (the n-gram size)
 #define Q_PLE_HIST (Q_PLE_DIL * (Q_GDN_CONV - 1))  // 9 positions of history
 
@@ -86,9 +79,6 @@ SHARED_ASSERT(sizeof(SlotRope) == 32, "SlotRope layout");
 
 // A prompt chunk's positions are (t, h, w, 0) per cell in host memory, from the first cell of the chunk's first block
 // (pos0 rounded down to a multiple of 4) to its last row.
-
-// Layer kinds: layer l is attention when (l + 1) % 4 == 0.
-#define Q_IS_ATTN(l) ((((l) + 1) & 3) == 0)
 
 // The 8-bit KV cache: Q8_0 blocks of 32 values, 34 bytes (docs/spec/QUANT_FORMATS.md, Q8_0). One head of 256 values
 // is 8 blocks, 272 bytes; one indexer key of 128 values is 4 blocks, 136 bytes.
