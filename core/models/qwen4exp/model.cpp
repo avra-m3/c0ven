@@ -816,16 +816,16 @@ void Model::load_card(Card &card) {
   card.cells = upload<uint32_t>(card, nullptr, W * Q_IDX_CELLS * 4);
   card.ncells = upload<uint32_t>(card, nullptr, W * 4);
   card.rl = fbuf(std::max(shape_.experts, kMtpExperts) + 1);  // the main layers' routers and the draft layer's
-  card.w = fbuf(Q_USED);
-  card.ids = upload<int32_t>(card, nullptr, W * Q_USED * 4);
+  card.w = fbuf(shape_.used);
+  card.ids = upload<int32_t>(card, nullptr, W * shape_.used * 4);
   card.merged = fbuf(2 * (Q_IDX_BLOCKS + 1));
   card.icand = upload<uint32_t>(card, nullptr, W * kIdxCand * 4);
-  card.slots = upload<int32_t>(card, nullptr, W * Q_USED * 4);
+  card.slots = upload<int32_t>(card, nullptr, W * shape_.used * 4);
   card.nmiss = upload<uint32_t>(card, nullptr, shape_.layers * W * 4);
-  card.groups = reinterpret_cast<MoeGroup *>(upload<uint8_t>(card, nullptr, W * Q_USED * sizeof(MoeGroup)));
+  card.groups = reinterpret_cast<MoeGroup *>(upload<uint8_t>(card, nullptr, W * shape_.used * sizeof(MoeGroup)));
   card.ngroups = upload<uint32_t>(card, nullptr, 4);
-  card.h = fbuf((size_t)Q_USED * card.ff);
-  card.y = fbuf((size_t)Q_USED * Q_EMBD);
+  card.h = fbuf((size_t)shape_.used * card.ff);
+  card.y = fbuf((size_t)shape_.used * Q_EMBD);
   card.shg = fbuf(card.ff);
   card.shu = fbuf(card.ff);
   card.shh = fbuf(card.ff);
@@ -837,7 +837,7 @@ void Model::load_card(Card &card) {
   card.logits = fbuf(card.vocab_n);
   card.xa8 = upload<uint8_t>(card, nullptr, W * a8_bytes(Q_EMBD));
   card.oa8 = upload<uint8_t>(card, nullptr, W * a8_bytes(std::max(card.nvh * Q_GDN_D, card.nq * Q_ATT_D)));
-  card.ha8 = upload<uint8_t>(card, nullptr, W * Q_USED * a8_bytes(card.ff));
+  card.ha8 = upload<uint8_t>(card, nullptr, W * shape_.used * a8_bytes(card.ff));
   card.sha8 = upload<uint8_t>(card, nullptr, W * a8_bytes(card.ff));
   card.yo = fbuf(Q_EMBD);
   if (ncards_ > 1) card.xp = upload<float>(card, nullptr, (size_t)2 * ncards_ * STEP_MAX_ROWS * Q_EMBD * 4);
@@ -1285,22 +1285,22 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
       std::string gm = moe_module(Ly.gu_type, W, false), dm = moe_module(Ly.down_type, W, true);
       uint32_t rpw = gm.empty() ? 4 : MOE_WG_ROWS, lx = gm.empty() ? 64 : kSgSize * MOE_WG_ROWS / MOE_GU_ROWS(W);
       uint32_t gbpr = Q_EMBD / quant_block_values(Ly.gu_type);
-      uint32_t K = Q_EMBD, xs = (uint32_t)a8_bytes(Q_EMBD), per = Q_USED;
+      uint32_t K = Q_EMBD, xs = (uint32_t)a8_bytes(Q_EMBD), per = shape_.used;
       L.together(true);
       // moe.cl's also writes h as a8.
       if (gm.empty())
         L.launch(kernel(c, mv_module(Ly.gu_type, 16), "moe_gate_up_g"),
                  {Ly.cache, Ly.slot_bytes, card.groups, card.ngroups, card.ff, gbpr, Ly.up_off, card.xa8, K, xs, per,
                   card.h, card.grids},
-                 (card.ff + rpw - 1) / rpw, W * Q_USED, 1, lx);
+                 (card.ff + rpw - 1) / rpw, W * shape_.used, 1, lx);
       else
         L.launch(kernel(c, gm, "moe_gate_up_g"),
                  {Ly.cache, Ly.slot_bytes, card.groups, card.ngroups, card.ff, gbpr, Ly.up_off, card.xa8, K, xs, per,
                   card.h, card.grids, card.ha8},
-                 (card.ff + rpw - 1) / rpw, W * Q_USED, 1, lx);
+                 (card.ff + rpw - 1) / rpw, W * shape_.used, 1, lx);
       matvec(L, card, Ly.sh_down, card.sha8, card.s, W);
       L.together(false);
-      if (gm.empty()) quant(card.h, card.ff, W * Q_USED, card.ha8);
+      if (gm.empty()) quant(card.h, card.ff, W * shape_.used, card.ha8);
       uint32_t drpw = dm.empty() ? 16 : MOE_WG_ROWS;
       uint32_t dlx = dm.empty() ? 64 : kSgSize * MOE_WG_ROWS / MOE_DOWN_ROWS(Ly.down_type, W);
       uint32_t dbpr = card.ff / quant_block_values(Ly.down_type);
@@ -1308,7 +1308,7 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
       L.launch(kernel(c, dm.empty() ? mv_module(Ly.down_type, 4) : dm, "moe_down_g"),
                {Ly.cache, Ly.slot_bytes, card.groups, card.ngroups, (uint32_t)Q_EMBD, dbpr, Ly.down_off, card.ha8, card.ff,
                 stride, card.y, card.grids},
-               (Q_EMBD + drpw - 1) / drpw, W * Q_USED, 1, dlx);
+               (Q_EMBD + drpw - 1) / drpw, W * shape_.used, 1, dlx);
     } else {
       matvec(L, card, Ly.sh_down, card.sha8, card.s, W);
     }
@@ -1499,7 +1499,7 @@ std::vector<std::vector<Candidate>> Model::step(const StepIn *rows, uint32_t n, 
           throw std::runtime_error("card 0 did not publish layer " + std::to_string(l) + "'s experts");
       }
       const uint32_t nm = J.nmiss;
-      if (opt_.adapt_swaps) note_routing(l, J.all, Q_USED, prompt ? kPromptRouting : 1.0f);
+      if (opt_.adapt_swaps) note_routing(l, J.all, shape_.used, prompt ? kPromptRouting : 1.0f);
       if (nm == 0) continue;  // the skip
       std::memcpy(xs.data() + (size_t)r * Q_EMBD, J.x, Q_EMBD * 4);
       for (uint32_t k = 0; k < nm; k++) jobs.push_back({hl.weights[J.ids[k]], r, J.w[k]});

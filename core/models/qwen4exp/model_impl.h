@@ -18,7 +18,6 @@ namespace detail {
 using Ranges = std::vector<std::pair<uint64_t, uint64_t>>;  // [start, start + count)
 
 inline constexpr uint32_t kMtpExperts = 512;  // the draft layer's checkpoint has its own count (docs/MODEL_FILES.md)
-inline constexpr uint32_t kRecFloats = 2 * Q_USED + Q_EMBD;  // the router's record: ids, weights, x
 inline constexpr uint32_t kSgSize = 16;  // the kernels' SG_SIZE
 inline constexpr uint32_t kAttXmxSubGroups = 16;  // p_attn_xmx's sub-groups a work-group (prompt_attn.cl)
 inline constexpr uint32_t kIdxScoreRows = 8;  // prompt.cl's IDX_SCORE_ROWS
