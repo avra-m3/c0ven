@@ -78,8 +78,8 @@ int main() {
   auto run = [&](bool prompt, float fs) {
     std::memcpy(iq, in.data(), in.size() * 4);
     if (prompt)
-      L.launch(lib.get(card, "qwen4exp", "p_idx_prep"), {iq, qn, raw, pt, npp, runs, ppos, pstride, zero, one, fs},
-               Q_IDX_H, kRows, 1, Q_IDX_D);
+      L.launch(lib.get(card, "qwen4exp_prompt", "p_idx_prep"),
+               {iq, qn, raw, pt, npp, runs, ppos, pstride, zero, one, fs}, Q_IDX_H, kRows, 1, Q_IDX_D);
     else
       L.launch(lib.get(card, "qwen4exp", "idx_prep"), {iq, qn, raw, pt, npp, plan, sr, zero, one, fs}, Q_IDX_H, kRows,
                1, Q_IDX_D);
