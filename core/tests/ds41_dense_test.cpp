@@ -1,10 +1,8 @@
-// Level 3 (docs/TESTING.md): deepseek41's dense products at the file's types and the shapes one card holds, on random
-// weights: attn_kv and attn_q_a whole in Q8_0, on both cards with the same bits; attn_q_b, engram_kv, the head and the
-// shared experts in Q5_K, the shared experts cut 1,280/1,024. Each against the dequantised weights' product at 1, 2, 3
-// and 8 rows, by lanes a row and K split in the work-group, with each one's time at 1, 2, 4 and 8 rows and its time with
-// the weights cold, every card visible. Then the router's product, ffn_gate_inp in BF16 on the stream's bf16 form, by K
-// split, against ggml's MUL_MAT. Limits: 1e-5 of the largest |reference|, the router's 1e-4 as for the other BF16
-// products. No model is needed.
+// Level 3 (docs/TESTING.md): deepseek41's dense products on random weights at the file's types and one card's shapes:
+// attn_kv and attn_q_a in Q8_0, whole on both cards with the same bits; attn_q_b, engram_kv, the head and the shared
+// experts in Q5_K, the shared experts cut 1,280/1,024; the router's ffn_gate_inp in BF16 against ggml's MUL_MAT. At 1,
+// 2, 3 and 8 rows by lanes a row and K split, with times at 1, 2, 4 and 8 rows, weights hot and cold, every card
+// visible. Limits: 1e-5 of the largest |reference|, the router's 1e-4 as for the other BF16 products.
 #include <cmath>
 #include <deque>
 #include <string>
