@@ -545,8 +545,8 @@ void Model::load_card(Card &card) {
   card.nkh = shape_.gdn_kh / C;
   card.nvh = shape_.gdn_vh / C;
   card.nch = 2 * card.nkh * shape_.gdn_d + card.nvh * shape_.gdn_d;
-  card.nq = Q_ATT_H / C;
-  card.nkv = Q_ATT_KV / C;
+  card.nq = shape_.att_h / C;
+  card.nkv = shape_.att_kv / C;
   card.ff = shape_.ff / C;
   card.vocab_n = shape_.vocab / C;
   card.vocab0 = c * card.vocab_n;
@@ -690,10 +690,11 @@ void Model::load_card(Card &card) {
       L.wm = upload<float>(card, nullptr, (size_t)STEP_MAX_ROWS * card.nch * 4);
       L.S = upload<float>(card, nullptr, S * L.S_stride * 4);
     } else {
-      L.q = mat(card, src(blk(l, "attn_q.weight")), {{2 * Q_ATT_D * q0, 2 * Q_ATT_D * card.nq}});
-      L.k = mat(card, src(blk(l, "attn_k.weight")), {{Q_ATT_D * kv0, Q_ATT_D * card.nkv}});
-      L.v = mat(card, src(blk(l, "attn_v.weight")), {{Q_ATT_D * kv0, Q_ATT_D * card.nkv}});
-      L.o = mat(card, src(blk(l, "attn_output.weight")), {{0, Q_EMBD}}, {{Q_ATT_D * q0, Q_ATT_D * card.nq}});
+      L.q = mat(card, src(blk(l, "attn_q.weight")), {{2 * shape_.att_key * q0, 2 * shape_.att_key * card.nq}});
+      L.k = mat(card, src(blk(l, "attn_k.weight")), {{shape_.att_key * kv0, shape_.att_key * card.nkv}});
+      L.v = mat(card, src(blk(l, "attn_v.weight")), {{shape_.att_key * kv0, shape_.att_key * card.nkv}});
+      L.o = mat(card, src(blk(l, "attn_output.weight")), {{0, Q_EMBD}},
+                {{shape_.att_key * q0, shape_.att_key * card.nq}});
       L.qn = f32(blk(l, "attn_q_norm.weight"));
       L.kn = f32(blk(l, "attn_k_norm.weight"));
       L.iqn = f32(blk(l, "indexer.q_norm.weight"));
@@ -702,7 +703,7 @@ void Model::load_card(Card &card) {
       // The pool of pages (layout.h); the indexer's keys of this card's pages only (split by position: DESIGN.md,
       // section 4).
       const uint64_t cells = (uint64_t)kv_pages_ * KV_PAGE_CELLS, own = (uint64_t)kv_pages_ / C;
-      const uint64_t page_bytes = (uint64_t)KV_PAGE_CELLS * card.nkv * KV_HEAD_BYTES;
+      const uint64_t page_bytes = (uint64_t)KV_PAGE_CELLS * card.nkv * shape_.kv_head_bytes();
       if (kv_res_) {
         // Streamed (ADR-0008 item 3): kc and vc hold a ring of up to kv_res_ pages, backed as the ring grows where the
         // pool shares the cards' memory (kv_share.cpp), from a part that holds a step's claims at least; the host
@@ -747,8 +748,8 @@ void Model::load_card(Card &card) {
         L.pooled = reinterpret_cast<float *>(kv_region(card, x + 3, Q_IDX_D * 4, C));
       } else {
         if (!kv_res_) {
-          L.kc = upload<uint8_t>(card, nullptr, cells * card.nkv * KV_HEAD_BYTES);
-          L.vc = upload<uint8_t>(card, nullptr, cells * card.nkv * KV_HEAD_BYTES);
+          L.kc = upload<uint8_t>(card, nullptr, cells * card.nkv * shape_.kv_head_bytes());
+          L.vc = upload<uint8_t>(card, nullptr, cells * card.nkv * shape_.kv_head_bytes());
         }
         L.raw = upload<uint8_t>(card, nullptr, own * KV_PAGE_CELLS * IDX_KEY_BYTES);
         L.pooled = upload<float>(card, nullptr, own * Q_IDX_D * 4);
@@ -807,14 +808,14 @@ void Model::load_card(Card &card) {
   card.gb = fbuf(2 * card.nvh);
   card.u = fbuf(card.nch);
   card.Sw = upload<float>(card, nullptr, (size_t)card.nvh * shape_.gdn_d * shape_.gdn_d * 4);
-  card.o = fbuf(std::max(card.nvh * shape_.gdn_d, card.nq * Q_ATT_D));
-  card.Q = fbuf(card.nq * 2 * Q_ATT_D);
-  card.Kt = fbuf(card.nkv * Q_ATT_D);
-  card.Vt = fbuf(card.nkv * Q_ATT_D);
+  card.o = fbuf(std::max(card.nvh * shape_.gdn_d, card.nq * shape_.att_key));
+  card.Q = fbuf(card.nq * 2 * shape_.att_key);
+  card.Kt = fbuf(card.nkv * shape_.att_key);
+  card.Vt = fbuf(card.nkv * shape_.att_key);
   card.idxq = fbuf(Q_IDX_H * Q_IDX_D + Q_IDX_D);
   card.scores = fbuf(nb_max);
   card.bscores = fbuf(Q_IDX_BLOCKS + 1);
-  card.att = fbuf((size_t)STEP_MAX_ROWS * card.nq * kAttSplits * (Q_ATT_D + 2));
+  card.att = fbuf((size_t)STEP_MAX_ROWS * card.nq * kAttSplits * (shape_.att_key + 2));
   card.blocks = upload<uint32_t>(card, nullptr, W * (Q_IDX_BLOCKS + 1) * 4);
   card.cells = upload<uint32_t>(card, nullptr, W * Q_IDX_CELLS * 4);
   card.ncells = upload<uint32_t>(card, nullptr, W * 4);
@@ -839,7 +840,7 @@ void Model::load_card(Card &card) {
   card.N = fbuf(shape_.hc_dim());
   card.logits = fbuf(card.vocab_n);
   card.xa8 = upload<uint8_t>(card, nullptr, W * a8_bytes(Q_EMBD));
-  card.oa8 = upload<uint8_t>(card, nullptr, W * a8_bytes(std::max(card.nvh * shape_.gdn_d, card.nq * Q_ATT_D)));
+  card.oa8 = upload<uint8_t>(card, nullptr, W * a8_bytes(std::max(card.nvh * shape_.gdn_d, card.nq * shape_.att_key)));
   card.ha8 = upload<uint8_t>(card, nullptr, W * shape_.used * a8_bytes(card.ff));
   card.sha8 = upload<uint8_t>(card, nullptr, W * a8_bytes(card.ff));
   card.yo = fbuf(Q_EMBD);
@@ -1229,7 +1230,8 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
       L.together(false);
       L.together(true);
       L.launch(q4("attn_prep"), {card.Q, card.Kt, card.Vt, Ly.qn, Ly.kn, card.nq, card.nkv, Ly.kc, Ly.vc, card.ptab,
-                                 npp_, plan, rope_, Ly.khost, Ly.vhost, Ly.where}, card.nq + card.nkv, W, 1, Q_ATT_D);
+                                 npp_, plan, rope_, Ly.khost, Ly.vhost, Ly.where}, card.nq + card.nkv, W, 1,
+               shape_.att_key);
       // The indexer, split by position: each card scores its own blocks and sends its best; both merge the same.
       L.launch(q4("idx_prep"), {card.idxq, Ly.iqn, Ly.raw, card.ptab, npp_, plan, rope_, c, C}, Q_IDX_H + 1, W, 1,
                Q_IDX_D);
@@ -1255,9 +1257,9 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
                  1, 1, 64);
       }
       L.launch(q4("attn_split"), {card.Q, Ly.kc, Ly.vc, card.ptab, npp_, card.nq, card.nkv, card.cells, card.ncells,
-                                  plan, card.att, Ly.where}, card.nkv, W, kAttSplits, Q_ATT_D);
+                                  plan, card.att, Ly.where}, card.nkv, W, kAttSplits, shape_.att_key);
       L.launch(q4("attn_merge"), {card.Q, card.nq, card.ncells, plan, card.att, card.o, card.oa8}, card.nq, W, 1,
-               Q_ATT_D);
+               shape_.att_key);
       out_product(Ly.o, p1, l);
     }
     exchange(peer ? card.xp : ex1_ + l * ex_layer, l, 0, card.inj[0] + shape_.hc_lr, Ly.hc_norm[1]);

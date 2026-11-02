@@ -79,7 +79,7 @@ void Model::copy_cells(uint32_t from, uint32_t to, uint32_t cells) {
   const uint32_t none = KV_NO_PAGE;
   for (auto &card : cards_) {
     const uint32_t C = card->C;
-    const uint64_t kvb = (uint64_t)card->nkv * KV_HEAD_BYTES;
+    const uint64_t kvb = (uint64_t)card->nkv * shape_.kv_head_bytes();
     for (auto &L : card->layers) {
       if (!L.attn) continue;
       if (kv_res_) {  // streamed: the host copies; the resident copy of `to`, if any, is stale from here
