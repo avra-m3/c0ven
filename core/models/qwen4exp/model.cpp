@@ -544,7 +544,7 @@ void Model::load_card(Card &card) {
   const uint32_t C = ncards_, c = card.c;
   card.nkh = shape_.gdn_kh / C;
   card.nvh = shape_.gdn_vh / C;
-  card.nch = 2 * card.nkh * Q_GDN_D + card.nvh * Q_GDN_D;
+  card.nch = 2 * card.nkh * shape_.gdn_d + card.nvh * shape_.gdn_d;
   card.nq = Q_ATT_H / C;
   card.nkv = Q_ATT_KV / C;
   card.ff = shape_.ff / C;
@@ -640,11 +640,12 @@ void Model::load_card(Card &card) {
   // The GDN heads of this card: key heads [kh0, kh0 + nkh), value heads kh + gdn_kh j, j-major.
   Ranges vh, qkv_rows, z_rows, out_cols;
   for (uint32_t j = 0; j < shape_.gdn_vh / shape_.gdn_kh; j++) vh.push_back({shape_.gdn_kh * j + kh0, card.nkh});
-  qkv_rows.push_back({Q_GDN_D * kh0, Q_GDN_D * card.nkh});
-  qkv_rows.push_back({shape_.gdn_kh * Q_GDN_D + Q_GDN_D * kh0, Q_GDN_D * card.nkh});
-  for (auto &r : vh) qkv_rows.push_back({2 * shape_.gdn_kh * Q_GDN_D + Q_GDN_D * r.first, Q_GDN_D * r.second});
-  for (auto &r : vh) z_rows.push_back({Q_GDN_D * r.first, Q_GDN_D * r.second});
-  for (auto &r : vh) out_cols.push_back({Q_GDN_D * r.first, Q_GDN_D * r.second});
+  qkv_rows.push_back({shape_.gdn_d * kh0, shape_.gdn_d * card.nkh});
+  qkv_rows.push_back({shape_.gdn_kh * shape_.gdn_d + shape_.gdn_d * kh0, shape_.gdn_d * card.nkh});
+  for (auto &r : vh)
+    qkv_rows.push_back({2 * shape_.gdn_kh * shape_.gdn_d + shape_.gdn_d * r.first, shape_.gdn_d * r.second});
+  for (auto &r : vh) z_rows.push_back({shape_.gdn_d * r.first, shape_.gdn_d * r.second});
+  for (auto &r : vh) out_cols.push_back({shape_.gdn_d * r.first, shape_.gdn_d * r.second});
 
   uint32_t gi = 0, ai = 0;
   card.layers.resize(shape_.layers);
@@ -677,12 +678,12 @@ void Model::load_card(Card &card) {
       }
       std::vector<std::pair<uint64_t, uint64_t>> ch;  // conv channels follow qkv's rows
       for (auto &r : qkv_rows) ch.push_back(r);
-      L.conv = gather_f32(blk(l, "ssm_conv1d.weight"), ch, Q_GDN_CONV);
+      L.conv = gather_f32(blk(l, "ssm_conv1d.weight"), ch, shape_.gdn_conv);
       L.A = gather_f32(blk(l, "ssm_a"), vh, 1);
       L.dt = gather_f32(blk(l, "ssm_dt.bias"), vh, 1);
       L.ssm_norm = f32(blk(l, "ssm_norm.weight"));
       L.conv_stride = 3ull * card.nch;
-      L.S_stride = (uint64_t)card.nvh * Q_GDN_D * Q_GDN_D;
+      L.S_stride = (uint64_t)card.nvh * shape_.gdn_d * shape_.gdn_d;
       L.conv_state = upload<float>(card, nullptr, S * L.conv_stride * 4);
       L.wu = upload<float>(card, nullptr, (size_t)STEP_MAX_ROWS * card.nch * 4);
       L.wgb = upload<float>(card, nullptr, (size_t)STEP_MAX_ROWS * 2 * card.nvh * 4);
@@ -779,7 +780,7 @@ void Model::load_card(Card &card) {
     for (size_t i = 0; i < t.size(); i++) t[i] = i < kv_pages_ ? (uint32_t)i : 0;
     card.ptab = upload<uint32_t>(card, t.data(), t.size() * 4);
   }
-  card.ple_stride = (uint64_t)Q_PLE_HIST * shape_.hc_dim();
+  card.ple_stride = (uint64_t)shape_.ple_hist() * shape_.hc_dim();
   card.ple_hist = upload<float>(card, nullptr, S * card.ple_stride * 4);
   unstage();
 
@@ -801,12 +802,12 @@ void Model::load_card(Card &card) {
   card.inj[1] = fbuf(shape_.hc_lr + shape_.hc);
   card.x = fbuf(Q_EMBD);
   card.m = fbuf(card.nch);
-  card.z = fbuf(card.nvh * Q_GDN_D);
+  card.z = fbuf(card.nvh * shape_.gdn_d);
   card.ab = fbuf(2 * card.nvh);
   card.gb = fbuf(2 * card.nvh);
   card.u = fbuf(card.nch);
-  card.Sw = upload<float>(card, nullptr, (size_t)card.nvh * Q_GDN_D * Q_GDN_D * 4);
-  card.o = fbuf(std::max(card.nvh * Q_GDN_D, card.nq * Q_ATT_D));
+  card.Sw = upload<float>(card, nullptr, (size_t)card.nvh * shape_.gdn_d * shape_.gdn_d * 4);
+  card.o = fbuf(std::max(card.nvh * shape_.gdn_d, card.nq * Q_ATT_D));
   card.Q = fbuf(card.nq * 2 * Q_ATT_D);
   card.Kt = fbuf(card.nkv * Q_ATT_D);
   card.Vt = fbuf(card.nkv * Q_ATT_D);
@@ -838,7 +839,7 @@ void Model::load_card(Card &card) {
   card.N = fbuf(shape_.hc_dim());
   card.logits = fbuf(card.vocab_n);
   card.xa8 = upload<uint8_t>(card, nullptr, W * a8_bytes(Q_EMBD));
-  card.oa8 = upload<uint8_t>(card, nullptr, W * a8_bytes(std::max(card.nvh * Q_GDN_D, card.nq * Q_ATT_D)));
+  card.oa8 = upload<uint8_t>(card, nullptr, W * a8_bytes(std::max(card.nvh * shape_.gdn_d, card.nq * Q_ATT_D)));
   card.ha8 = upload<uint8_t>(card, nullptr, W * shape_.used * a8_bytes(card.ff));
   card.sha8 = upload<uint8_t>(card, nullptr, W * a8_bytes(card.ff));
   card.yo = fbuf(Q_EMBD);
@@ -1214,9 +1215,10 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
       L.together(false);
       // u, the gates and m stay in the layer's own buffers, for a window's commit.
       L.launch(q4("gdn_conv"), {card.m, Ly.conv, Ly.conv_state, Ly.conv_stride, card.nch, 2 * card.nkh, plan, Ly.wu,
-                                Ly.wm}, card.nch / Q_GDN_D, 1, 1, Q_GDN_D);
+                                Ly.wm}, card.nch / shape_.gdn_d, 1, 1, shape_.gdn_d);
       L.launch(q4("gdn_recur"), {Ly.wu, card.nch, card.ab, Ly.A, Ly.dt, Ly.wgb, card.z, Ly.S, Ly.S_stride, Ly.ssm_norm,
-                                 card.nkh, card.nvh, plan, card.o, card.Sw, card.oa8}, card.nvh, W, 1, 4 * Q_GDN_D);
+                                 card.nkh, card.nvh, plan, card.o, card.Sw, card.oa8}, card.nvh, W, 1,
+               4 * shape_.gdn_d);
       out_product(Ly.out, p1, l);
     } else {
       L.together(true);
@@ -1350,7 +1352,7 @@ void Model::record_commit(Card &card) {
     L.launch(q4("gdn_conv_commit"), {Ly.wm, Ly.conv_state, Ly.conv_stride, card.nch, cplan_}, (card.nch + 63) / 64, 1, 1,
              64);
     L.launch(q4("gdn_commit"), {Ly.wu, card.nch, Ly.wgb, Ly.S, Ly.S_stride, card.nkh, card.nvh, cplan_}, card.nvh, 1, 1,
-             4 * Q_GDN_D);
+             4 * shape_.gdn_d);
   }
   L.launch(q4("ple_commit"), {card.N, card.ple_hist, card.ple_stride, cplan_}, shape_.hc_dim() / 64, 1, 1, 64);
   L.close();
