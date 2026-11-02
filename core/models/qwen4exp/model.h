@@ -122,6 +122,10 @@ class Model final : public engine::Model {
                                                   uint32_t next_n = 0) override;
   uint32_t prompt_chunk() const override { return tmax_; }
   uint32_t fetch_rows() const override;
+  // About a decode token's time over a prompt row's on this model's kernels. A constant for now; it should one day be
+  // derived from the GGUF, since the time ratio follows the file's layout and quantization
+  // (docs/measurements/MEASUREMENTS.md#2026-11-01-piece-rule-with-a-slow-split).
+  uint32_t decode_weight() const override { return 30; }
   // With Options::trace: the last prompt chunk's (or decode step's) time on a card per kernel, largest first.
   std::vector<TraceRow> prompt_trace(uint32_t card) const;
   std::vector<TraceRow> step_trace(uint32_t card) const;

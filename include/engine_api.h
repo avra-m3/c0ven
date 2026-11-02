@@ -20,7 +20,7 @@ extern "C" {
 #define ENGINE_API
 #endif
 
-#define ENGINE_API_VERSION 17
+#define ENGINE_API_VERSION 18
 
 typedef enum {
   ENGINE_OK = 0,
@@ -100,6 +100,8 @@ typedef struct {
   uint32_t fetch_rows;         /* the most rows a prompt chunk may have and still fetch only the uncached experts its
                                   router picks; a longer one copies every uncached expert; 0: every chunk is staged
                                   one way (all experts cached, or a model with one path) */
+  uint32_t decode_weight;      /* what a decode token is worth in prompt rows when the scheduler sizes a prompt piece
+                                  beside writers; 0: decode does not count */
 } engine_info;
 
 /* A request's sampling and stopping, copied once by admit. The core samples in llama.cpp's order: penalties, top-k,

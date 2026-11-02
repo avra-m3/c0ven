@@ -25,7 +25,7 @@ import ctypes
 from dataclasses import dataclass
 from enum import IntEnum
 
-ABI_VERSION = 17
+ABI_VERSION = 18
 
 MAX_STOP = 8
 MAX_STEP_SLOTS = 8
@@ -129,6 +129,7 @@ class CInfo(ctypes.Structure):
         ("copy_bytes_per_s", ctypes.c_double * 2),
         ("expert_budget", ctypes.c_uint64 * 2),
         ("fetch_rows", ctypes.c_uint32),
+        ("decode_weight", ctypes.c_uint32),
     )
 
 

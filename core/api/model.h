@@ -229,6 +229,8 @@ class Model {
   // The most rows a chunk may have and fetch only the uncached experts its router picks; a longer one copies every
   // uncached expert. 0 when the cards cache every expert, and every chunk is staged one way.
   virtual uint32_t fetch_rows() const = 0;
+  // What a decode token is worth in prompt rows when the scheduler sizes a prompt piece beside writers.
+  virtual uint32_t decode_weight() const = 0;
 
   // A slot's fixed state as one block: what the KV pages do not hold. Its size, and copies to and from host memory
   // (the block must be host memory every card reaches: alloc_pinned).

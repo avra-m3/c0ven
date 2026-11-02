@@ -75,10 +75,11 @@ def make(
     prompt_chunk_ms: float = 0.0,
     *,
     fetch_rows: int = 0,
+    decode_weight: int = 0,
 ) -> Run:
     config = config or open_config()
     engine = SpyEngine(script, prompt_chunk_ms=prompt_chunk_ms)
-    facts = replace(engine.open(config), fetch_rows=fetch_rows)
+    facts = replace(engine.open(config), fetch_rows=fetch_rows, decode_weight=decode_weight)
     assert facts_of(config).slots == facts.slots
     return Run(engine, Scheduler(engine, facts, options, rule))
 
@@ -276,6 +277,21 @@ def test_a_prompt_joins_only_while_the_chunk_keeps_to_the_fetch_path(rows: int, 
     assert run.errors() == []
     steps = [sorted(span.count for span in p.prompt) for p in run.engine.plans[1:] if p.prompt]
     assert steps == ([[400, rows]] if joined else [[400], [rows]])
+
+
+def test_a_long_prompt_beside_a_writer_is_cut_by_what_decode_is_worth():
+    options = SchedulerOptions(prompt_budget_ms=100.0)
+    pieces: dict[int, int] = {}
+    for weight in (0, 60):
+        run = make(open_config(slots=2, context=8192), options=options, prompt_chunk_ms=30.0, decode_weight=weight)
+        run.add(1, prompt(4), 400)
+        run.tick(3)
+        assert run.scheduler.by_rid[1].phase is Phase.DECODE
+        run.add(2, prompt(3000, start=7), 2)
+        run.until_idle()
+        assert run.errors() == []
+        pieces[weight] = max(s.count for p in run.engine.plans[1:] for s in p.prompt)
+    assert pieces[60] < pieces[0], "worth more, decode gets its turn sooner"
 
 
 def test_a_long_prompt_alone_takes_whole_chunks():

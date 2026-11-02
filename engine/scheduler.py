@@ -5,9 +5,10 @@ protocol lines. The rules, from ADR-0017:
 
 - Prompt work is scheduled by time. While a request is writing, a prompt step aims at `prompt_budget_ms`, sized by
   the cost model; after it, decode is owed `decode_share` of its time before the next prompt step. A prompt chunk's
-  time is mostly a fixed part that each piece pays, so a short prompt is read whole and a long one in pieces sized to
-  `STRETCH` x the budget, at most `whole_rows` of the core's `fetch_rows` (`CostModel.rows_within`). With nobody
-  writing, a prompt takes whole chunks.
+  time is mostly a fixed part that each piece pays, so a short prompt is read whole and a long one in pieces sized
+  from the fixed part and what decode is worth (`CostModel.piece_ms`), between the budget and `STRETCH` x the budget,
+  at most `whole_rows` of the core's `fetch_rows` (`CostModel.rows_within`). With nobody writing, a prompt takes whole
+  chunks.
 - Short prompts are packed into one step, shortest first, and the engine reads up to PROMPT_RUNS of them as one
   chunk. A prompt passed over `max_passes` times goes first.
 - One producer per shared prefix: a request whose prompt starts with a prefix another request will checkpoint waits
@@ -148,6 +149,7 @@ class Scheduler:
         self.state = SeqState(facts.slots, facts.pages, facts.checkpoints, classes=max(1, facts.cards))
         self.cost = cost or CostModel.initial()
         self.whole_rows = whole_rows(facts.fetch_rows)
+        self.decode_weight = facts.decode_weight
         self.waiting: list[Request] = []
         self.by_rid: dict[int, Request] = {}
         self.by_slot: dict[int, Request] = {}
@@ -381,7 +383,9 @@ class Scheduler:
                 # A longer piece shares the chunk of those before it in its PROMPT_RUNS, and so its fixed part, but
                 # not past `whole_rows`: that chunk would leave the fetch path and hold the writers for longest.
                 if not plan.prompt:
-                    rows = self.cost.rows_within(o.prompt_budget_ms, rows, self.whole_rows)
+                    writers = sum(q.phase is Phase.DECODE for q in self.by_slot.values())
+                    aim = self.cost.piece_ms(o.prompt_budget_ms, o.decode_share, self.decode_weight, writers)
+                    rows = self.cost.rows_within(o.prompt_budget_ms, rows, self.whole_rows, aim)
                     ms = self.cost.prompt_ms(rows)
                 else:
                     group = plan.prompt[len(plan.prompt) // PROMPT_RUNS * PROMPT_RUNS :]

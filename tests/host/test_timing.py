@@ -68,6 +68,30 @@ def test_a_piece_and_the_writers_beside_it_keep_to_the_fetch_path():
     assert dear.rows_within(500.0, 2048, whole_rows(1024)) == 510, "nothing fits the budget: half of the cap"
 
 
+def test_a_piece_aims_by_the_fixed_part_and_what_decode_is_worth():
+    full = CostModel.initial(decode_ms=21.0, row_ms=0.4, chunk_ms=200.0)
+    assert full.piece_ms(500.0, 0.5, 30, 2) == 800.0, "a large fixed part: the most the stretch allows"
+    assert full.rows_within(500.0, 2048, 1021, 800.0) == 1021
+    small = CostModel.initial(decode_ms=21.0, row_ms=2.0, chunk_ms=50.0)
+    assert small.piece_ms(500.0, 0.5, 30, 2) == 500.0, "a small fixed part: more time returns little, so the budget"
+    middle = CostModel.initial(decode_ms=21.0, row_ms=1.0, chunk_ms=160.0)
+    aim = middle.piece_ms(500.0, 0.5, 30, 2)
+    assert 500.0 < aim < 800.0
+    assert middle.piece_ms(500.0, 0.5, 0, 2) == 800.0, "with decode not counted, longer pieces return more"
+    assert middle.piece_ms(500.0, 0.5, 60, 2) < aim, "worth more, decode stops a piece sooner"
+
+
+def test_chunks_of_one_size_keep_the_split_from_earlier_sizes():
+    cost = CostModel.initial(decode_ms=10.0, row_ms=0.46)
+    for rows in (300, 1000, 300, 1000, 500, 1000):
+        cost.observe(decoded=0, rows=rows, ms=250.0 + 0.3 * rows)
+    assert cost.row_ms == pytest.approx(0.3, rel=1e-6)
+    for _ in range(40):
+        cost.observe(decoded=0, rows=1021, ms=270.0 + 0.3 * 1021)
+    assert cost.row_ms == pytest.approx(0.3, abs=0.05), "one size says little new about the time per row"
+    assert cost.prompt_ms(1021) == pytest.approx(270.0 + 0.3 * 1021, rel=0.01), "the chunk's time follows recent chunks"
+
+
 def test_window_rows_is_where_a_chunk_costs_less_than_windows():
     cost = CostModel.initial(decode_ms=10.0, row_ms=0.46, chunk_ms=466.0)
     assert cost.window_rows() == WINDOW_ROWS, "no window plan seen yet"

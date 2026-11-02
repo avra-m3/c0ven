@@ -38,6 +38,14 @@ WHOLE_ROWS = 1024
 to this many rows may be read whole, a longer one is cut, since the fixed part is most of a chunk only up to about
 this many rows and a longer chunk holds the writers for longer
 (docs/measurements/MEASUREMENTS.md#2026-10-17-prefill-timings)."""
+PIECE_RETURN = 0.15
+"""Beside writers, a piece stops growing past the budget when 1% more time returns this many percent more score, the
+score being prompt rows plus `decode_weight` x decode tokens a second. It is set so that a piece on the fetch path still
+fills `whole_rows` when the cost model's fixed part reads low
+(docs/measurements/MEASUREMENTS.md#2026-11-01-piece-rule-with-a-slow-split)."""
+SPLIT_DECAY = 0.98
+"""How slowly the time per row forgets a chunk. Full pieces are all of one size and cannot tell the fixed part from the
+part per row, so the split needs a longer memory than the chunk's level, which follows the position in the prompt."""
 WINDOW_ROWS_RANGE = (8, 256)
 """The fewest and most rows CostModel.window_rows returns."""
 
@@ -67,6 +75,8 @@ class CostModel:
     _s: list[float] = field(default_factory=lambda: [0.0] * 5)
     """The decayed sums: chunks², chunks x rows, rows², chunks x ms, rows x ms."""
     window_row_ms: Ewma = field(default_factory=lambda: Ewma(0.0))
+    _slow: list[float] = field(default_factory=lambda: [0.0] * 5)
+    """The same sums, decayed by SPLIT_DECAY: what `row_ms` is fitted from."""
 
     @classmethod
     def initial(cls, decode_ms: float = 11.0, row_ms: float = 0.46, chunk_ms: float = 0.0) -> CostModel:
@@ -79,6 +89,7 @@ class CostModel:
             "chunk_ms": self.chunk_ms,
             "row_ms": self.row_ms,
             "s": list(self._s),
+            "s_slow": list(self._slow),
             "window_row_ms": self.window_row_ms.value,
             "window_samples": self.window_row_ms.samples,
         }
@@ -89,9 +100,17 @@ class CostModel:
         time is a start value: the first step replaces it."""
         model = cls.initial(float(data["decode_ms"]), float(data["row_ms"]), float(data["chunk_ms"]))
         model._s = [float(x) for x in data["s"]]
+        model._slow = [float(x) for x in data["s_slow"]]
         model.window_row_ms = Ewma(float(data["window_row_ms"]), samples=int(data["window_samples"]))
-        values = [model.decode_ms.value, model.chunk_ms, model.row_ms, model.window_row_ms.value, *model._s]
-        sizes_ok = len(model._s) == 5 and model.window_row_ms.samples >= 0
+        values = [
+            model.decode_ms.value,
+            model.chunk_ms,
+            model.row_ms,
+            model.window_row_ms.value,
+            *model._s,
+            *model._slow,
+        ]
+        sizes_ok = len(model._s) == len(model._slow) == 5 and model.window_row_ms.samples >= 0
         if not sizes_ok or not all(math.isfinite(v) and v >= 0 for v in values):
             raise ValueError("the cost model has a wrong size or a value that is not a finite, non-negative number")
         return model
@@ -107,17 +126,16 @@ class CostModel:
         if chunks == 0:
             self.window_row_ms.add(y / rows)
             return
-        s, d = self._s, self.decay
+        s, d, slow = self._s, self.decay, self._slow
         for i, v in enumerate((chunks * chunks, chunks * rows, rows * rows, chunks * y, rows * y)):
             s[i] = d * s[i] + v
-        det = s[0] * s[2] - s[1] * s[1]
-        if det > 0.05 * s[0] * s[2]:  # pieces whose rows differ enough to tell the parts apart
-            a = (s[3] * s[2] - s[4] * s[1]) / det
-            b = (s[0] * s[4] - s[1] * s[3]) / det
-            if a >= 0 and b >= 0:
-                self.chunk_ms, self.row_ms = a, b
-                return
-        # Chunks of about one size: the fixed part takes what the row part does not explain.
+            slow[i] = SPLIT_DECAY * slow[i] + v
+        det = slow[0] * slow[2] - slow[1] * slow[1]
+        if det > 0.05 * slow[0] * slow[2]:  # pieces whose rows differ enough to tell the parts apart
+            b = (slow[0] * slow[4] - slow[1] * slow[3]) / det
+            if b >= 0:
+                self.row_ms = b
+        # The fixed part takes what the row part does not explain, in the recent chunks.
         self.chunk_ms = max(0.0, (s[3] - self.row_ms * s[1]) / s[0])
 
     def window_rows(self) -> int:
@@ -134,19 +152,29 @@ class CostModel:
         """A piece of `rows` rows: one chunk when it has more than window_rows() rows."""
         return (self.chunk_ms if rows > self.window_rows() else 0.0) + self.row_ms * rows
 
-    def rows_within(self, budget_ms: float, wanted: int, whole: int = WHOLE_ROWS) -> int:
+    def piece_ms(self, budget_ms: float, decode_share: float, decode_weight: int, writers: int) -> float:
+        """What a long prompt's piece beside `writers` writers aims at: between the budget and STRETCH x the budget, up
+        to where 1% more time returns PIECE_RETURN percent more score. A piece's rows give (time - fixed part) / row_ms
+        and the decode it is owed decode_share x time / a token's time, so in units of time the score of a piece is
+        time x (1 + decode_share x w) - fixed part, with w = decode_weight x row_ms / a token's time."""
+        token_ms = max(self.decode_ms.value / max(writers, 1), 1e-6)
+        w = decode_weight * self.row_ms / token_ms
+        aim = (1 + 1 / PIECE_RETURN) * self.chunk_ms / (1 + decode_share * w)
+        return min(STRETCH * budget_ms, max(budget_ms, aim))
+
+    def rows_within(self, budget_ms: float, wanted: int, whole: int = WHOLE_ROWS, aim_ms: float | None = None) -> int:
         """The rows of a piece that aims at `budget_ms`, of the `wanted` rows left, with `whole` the most a piece
         holds (`whole_rows`). All of them when they are at most `whole` and their chunk costs at most STRETCH x the
         budget or its fixed part is at least its rows' part, since each cut would pay the fixed part again and a short
         prompt's chunk is mostly that part, the staging (docs/measurements/MEASUREMENTS.md#2026-10-17-prefill-timings).
-        Otherwise the rows that fit STRETCH x the budget, but no fewer than make the rows' part equal the fixed one or
-        half of `whole`, whichever is fewer, and no more than `whole`; all of them when fewer than window_rows() would
-        be left."""
+        Otherwise the rows that fit `aim_ms` (STRETCH x the budget if not given), but no fewer than make the rows' part
+        equal the fixed one or half of `whole`, whichever is fewer, and no more than `whole`; all of them when fewer
+        than window_rows() would be left."""
         row_ms = max(self.row_ms, 1e-6)
         even = self.chunk_ms / row_ms  # the rows whose part equals the fixed part
         if wanted <= whole and (wanted <= even or self.prompt_ms(wanted) <= STRETCH * budget_ms):
             return wanted
-        fit = int((STRETCH * budget_ms - self.chunk_ms) / row_ms)
+        fit = int(((STRETCH * budget_ms if aim_ms is None else aim_ms) - self.chunk_ms) / row_ms)
         rows = min(whole, max(1, fit, min(math.ceil(even), whole // 2)))
         return wanted if wanted - rows < self.window_rows() else rows
 
