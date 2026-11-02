@@ -129,6 +129,17 @@ SHARED_ASSERT(sizeof(D41Row) == 16, "D41Row layout");
 // (docs/measurements/MEASUREMENTS.md#2026-11-02-deepseek41-output-q5k).
 #define D41_OG_LANES 4
 #define D41_OB_LANES 8
+// The other dense products' lanes a row and K split in the work-group (0: matvec, else matvec_ks), the shortest time with
+// cold weights of ds41_dense_test's sweep at W rows (docs/measurements/MEASUREMENTS.md#2026-11-02-deepseek41-dense).
+#define D41_KV_LANES 8                         // attn_kv
+#define D41_KV_KS 4
+#define D41_QA_LANES(W) ((W) <= 2 ? 4 : 16)    // attn_q_a
+#define D41_QA_KS(W) ((W) <= 2 ? 4 : 0)
+#define D41_QB_LANES(W) ((W) <= 2 ? 4 : 8)     // attn_q_b
+#define D41_EKV_LANES 8                        // engram_kv
+#define D41_HEAD_LANES(W) ((W) <= 2 ? 4 : 8)   // output
+#define D41_SGU_LANES 8                        // shared gate and up, as one matrix
+#define D41_SD_LANES 4                         // shared down
 
 // A ratio-2 source's compressor ring: [slot][D41_CRING] cells of kv' then sc (D41_HD f32 each).
 #define D41_CRING_CELL (2 * D41_HD)
