@@ -1,9 +1,8 @@
 // Level 1 (docs/TESTING.md): deepseek41's Engram hash (core/models/deepseek41/engram.h) against the rows of
 // reference/deepseek41/engram_rows.json, which tests/host/deepseek41/test_engram_hash.py writes with its port of
-// DeepSeek's engram.py: 1,000 windows, among them positions 0-2, pad tokens and image tokens. Every row must be
-// equal. Then an IQ4_NL row of known values through engram_dequant, and EngramReader on a small file made here, in the
-// working directory (ctest's is the build tree, which takes O_DIRECT), with rows across 4 KiB boundaries. No card, no
-// model file.
+// DeepSeek's engram.py: 1,000 windows, among them positions 0-2, pad tokens and image tokens. Every row must be equal.
+// Then an IQ4_NL row of known values through engram_dequant, and EngramReader on a small file in the working directory
+// (ctest's is the build tree, which takes O_DIRECT), with rows across 4 KiB boundaries. No card, no model file.
 #include <unistd.h>
 
 #include <cstdio>
