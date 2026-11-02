@@ -65,6 +65,18 @@ std::vector<float> ggml_rope(const std::vector<float> &x, bool yarn, bool back) 
 }  // namespace
 
 int main() {
+  // ggml here is built for the reference CPU, so a CPU without these instructions cannot run it.
+#define NEEDS(f) \
+  if (!__builtin_cpu_supports(f)) return test::skip("the CPU lacks " f ", which the ggml build uses")
+  NEEDS("avx2");
+  NEEDS("fma");
+  NEEDS("f16c");
+  NEEDS("bmi2");
+  NEEDS("avx512f");
+  NEEDS("avx512vbmi");
+  NEEDS("avx512vnni");
+  NEEDS("avx512bf16");
+#undef NEEDS
   // The steps are powf's, as ggml's rope takes them; the ramp's ends are ggml's.
   EXPECT(D41_ROPE_STEP == powf(D41_ROPE_BASE, -2.0f / D41_ROT), "D41_ROPE_STEP %a, powf %a", D41_ROPE_STEP,
          powf(D41_ROPE_BASE, -2.0f / D41_ROT));
