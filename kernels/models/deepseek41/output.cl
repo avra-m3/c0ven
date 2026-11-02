@@ -37,13 +37,13 @@ REQD_SG __kernel void ds_output_groups(__global const uchar *W,  // D41_OLR rows
   for (uint t = 0; t < MAXT; t++) acc[t] = 0.0f;
   for (uint u = lane % LANES; u < D41_OG_K / 32; u += LANES) {
     uint w[8];
-    float lo, hi, mn;
-    decode_unit(W, n, (ulong)r * bpr + u / UNITS_PER_BLOCK, u % UNITS_PER_BLOCK, w, &lo, &hi, &mn);
+    float lo, hi, mn, mh;
+    decode_unit(W, n, (ulong)r * bpr + u / UNITS_PER_BLOCK, u % UNITS_PER_BLOCK, w, &lo, &hi, &mn, &mh GRID_ARG);
     for (uint t = 0; t < MAXT; t++) {
       if (t < ntok) {
         uint q[8];
         float da = load_act(ag + t * D41_OG_A8_ROW, D41_OG_K, u, q);
-        acc[t] += da * unit_dot(w, q, lo, hi, mn);
+        acc[t] += da * unit_dot(w, q, lo, hi, mn, mh);
       }
     }
   }
