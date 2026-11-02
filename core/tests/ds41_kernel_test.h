@@ -10,8 +10,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <functional>
 #include <random>
+#include <set>
+#include <string>
 #include <vector>
 
 #include "test_util.h"
@@ -101,11 +104,12 @@ struct Wait {
   const uint32_t *flush = nullptr, *flag = nullptr, *want = nullptr, *nmiss = nullptr;
   uint32_t W = 0;
   uint32_t *stuck = nullptr;
+  uint64_t *start = nullptr;
   uint64_t *stamp = nullptr;
 };
 inline void launch_wait(ze::List &L, ze::Library &lib, const Wait &w) {
-  L.launch(lib.get(L.card(), "deepseek41", "ds_wait"), {w.raise, w.flush, w.flag, w.want, w.nmiss, w.W, w.stuck, w.stamp},
-           1, 1, 1, 1);
+  L.launch(lib.get(L.card(), "deepseek41", "ds_wait"),
+           {w.raise, w.flush, w.flag, w.want, w.nmiss, w.W, w.stuck, w.start, w.stamp}, 1, 1, 1, 1);
 }
 
 // A figure from /proc: pswpout from vmstat, MemAvailable in GiB from meminfo. Timed runs fail when pages were swapped
@@ -123,6 +127,30 @@ inline uint64_t proc_value(const char *path, const char *key) {
 }
 inline uint64_t pswpout() { return proc_value("/proc/vmstat", "pswpout"); }
 inline double mem_available_gib() { return (double)proc_value("/proc/meminfo", "MemAvailable") / 1048576.0; }
+
+// Card resets since construction, by /sys/class/devcoredump's devcd entries. The kernel removes an entry minutes after it
+// appears and does not reuse a name, so names are compared, and a run calls fresh() between its long parts to catch each.
+class CoreDumps {
+ public:
+  CoreDumps() : before_(names()) {}
+  size_t before() const { return before_.size(); }
+  size_t fresh() {
+    for (const std::string &n : names())
+      if (!before_.count(n)) fresh_.insert(n);
+    return fresh_.size();
+  }
+
+ private:
+  static std::set<std::string> names() {
+    std::set<std::string> v;
+    std::error_code ec;
+    for (auto it = std::filesystem::directory_iterator("/sys/class/devcoredump", ec); !ec && it != std::filesystem::end(it);
+         it.increment(ec))
+      if (const std::string n = it->path().filename().string(); n.rfind("devcd", 0) == 0) v.insert(n);
+    return v;
+  }
+  std::set<std::string> before_, fresh_;
+};
 
 // A card's buffers: device memory, written and read back through one immediate list.
 struct Io {

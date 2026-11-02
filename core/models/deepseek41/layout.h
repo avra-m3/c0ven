@@ -158,6 +158,9 @@ SHARED_ASSERT(sizeof(D41Group) == 48, "D41Group layout");
 // ds_wait's bounds, whichever comes first: device-clock ticks, which are core cycles, and polls (ADR-0062 item 5).
 #define D41_WAIT_TICKS 2400000000u
 #define D41_WAIT_POLLS (1u << 30)
+// A list's bound on its waits, from its first polling wait: the ticks of 4.5 s at 1,200 MHz, so inside xe's 5 s job
+// timeout from that clock up (ADR-0062 item 5).
+#define D41_LIST_TICKS 5400000000ul
 // ds_exch_send's sub-groups a work-group; each stores D41_EMBD / D41_EX_SGS values a row, a multiple of 64. The fewest
 // that reach the send's shortest time (docs/measurements/MEASUREMENTS.md#2026-11-02-deepseek41-exchange).
 #define D41_EX_SGS 16

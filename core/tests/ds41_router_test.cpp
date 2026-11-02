@@ -646,6 +646,7 @@ struct Bench {
       auto *read_first = io.dev<float>(WMAX * E);
       auto *want = io.dev<uint32_t>(1);
       auto *stuck = io.dev<uint32_t>(1);
+      auto *start = io.dev<uint64_t>(1);
       auto *flag = static_cast<volatile uint32_t *>(rt.alloc_host(64, 64));
       auto *stamp = static_cast<volatile uint64_t *>(rt.alloc_host(2 * sizeof(uint64_t), 64));
       *flag = 0;
@@ -668,7 +669,7 @@ struct Bench {
                    lx);
           if (how == by_wait) {
             Wait wt;
-            wt.flag = const_cast<const uint32_t *>(flag), wt.want = want, wt.stuck = stuck, wt.stamp = pstamp;
+            wt.flag = const_cast<const uint32_t *>(flag), wt.want = want, wt.stuck = stuck, wt.start = start, wt.stamp = pstamp;
             launch_wait(L, lib, wt);
           } else {
             L.launch(lib.get(c, "deepseek41", "ds_hold"), {HOLD_TICKS, pstamp}, 1, 1, 1, 1);
@@ -683,8 +684,10 @@ struct Bench {
           std::memcpy(cpu, answers[(step + 1) & 1].data(), W * E * 4);
           std::atomic_thread_fence(std::memory_order_seq_cst);
           const uint32_t no = 0;
+          const uint64_t not_yet = 0;
           io.put(want, &step, 1);
           io.put(stuck, &no, 1);
+          io.put(start, &not_yet, 1);
           stamp[0] = 0;
           L.execute();
           const auto t0 = std::chrono::steady_clock::now();
@@ -716,6 +719,7 @@ struct Bench {
       rt.free(read_first);
       rt.free(want);
       rt.free(stuck);
+      rt.free(start);
       rt.free(const_cast<uint32_t *>(flag));
       rt.free(const_cast<uint64_t *>(stamp));
     }

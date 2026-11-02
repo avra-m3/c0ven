@@ -1,8 +1,8 @@
 // Level 3 (docs/TESTING.md): deepseek41's wait wrapper, ds_wait (kernels/models/deepseek41/layer.cl). 100 of 100 rounds
-// with the write 0-1000 us late, from the CPU to each card, from each card to the CPU and between the cards, the payload
-// exact each time. Then no answer, no exchange flag and no Engram flag: each returns within 2.4e9 ticks with *stuck set,
-// and what follows it in the list still runs. Every wait stays inside that bound; the long waits run only after shorter
-// ones showed the clock counts fast enough for it to stay inside xe's 5 s job timeout. No model is needed.
+// with the write 0-1000 us late, in every direction between the CPU and the cards, the payload exact. No answer, no
+// exchange flag and no Engram flag each return within 2.4e9 ticks with *stuck set, and what follows still runs. Late waits
+// stop at the list's 5.4e9 ticks. The long waits run only once shorter ones showed the clock fast enough to stay inside
+// xe's 5 s job timeout. A new core dump fails the run. No model is needed.
 #include <chrono>
 
 #include "ds41_kernel_test.h"
@@ -31,21 +31,24 @@ void raise_flag(uint32_t *f, uint32_t v) { __atomic_store_n(f, v, __ATOMIC_RELEA
 struct CardMem {
   Io io;
   uint32_t *want, *stuck, *nmiss;
-  uint64_t *stamp;
+  uint64_t *start, *stamp;
   float *y, *in, *out;
   CardMem(ze::Runtime &rt, uint32_t c) : io(rt, c) {
     want = io.dev<uint32_t>(1);
     stuck = io.dev<uint32_t>(1);
     nmiss = io.dev<uint32_t>(STEP_MAX_ROWS);
-    stamp = io.dev<uint64_t>(4);
+    start = io.dev<uint64_t>(1);
+    stamp = io.dev<uint64_t>(8);
     y = io.dev<float>(E);
     in = io.dev<float>(E);
     out = io.dev<float>(E);
   }
   void reset(uint32_t step) {
     const uint32_t z = 0;
+    const uint64_t z64 = 0;
     io.put(want, &step, 1);
     io.put(stuck, &z, 1);
+    io.put(start, &z64, 1);
   }
   uint32_t stuck_now() { return io.get(stuck, 1)[0]; }
 };
@@ -60,12 +63,13 @@ struct Bench {
   Checker ck;
   uint32_t step = 0;
   double tick_rate = 0;  // the lowest ticks a microsecond seen so far, in a long wait
+  CoreDumps dumps;
 
   Bench(ze::Runtime &r, ze::Library &l) : rt(r), lib(l) {
     for (uint32_t c = 0; c < rt.ncards(); c++) cards.push_back(new CardMem(rt, c));
-    flags = static_cast<uint32_t *>(rt.alloc_host(4 * LINE * sizeof(uint32_t), 4096));
+    flags = static_cast<uint32_t *>(rt.alloc_host(8 * LINE * sizeof(uint32_t), 4096));
     payload = static_cast<float *>(rt.alloc_host(E * sizeof(float), 4096));
-    std::memset(flags, 0, 4 * LINE * sizeof(uint32_t));
+    std::memset(flags, 0, 8 * LINE * sizeof(uint32_t));
   }
   ze::List *list(uint32_t c) { return new ze::List(rt, c, ze::List::regular, false, false); }
 
@@ -80,7 +84,7 @@ struct Bench {
     CardMem &m = *cards[c];
     uint32_t *flag = flags;
     Wait w;
-    w.flag = flag, w.want = m.want, w.stuck = m.stuck, w.stamp = m.stamp;
+    w.flag = flag, w.want = m.want, w.stuck = m.stuck, w.start = m.start, w.stamp = m.stamp;
     ze::List *L = list(c);
     launch_wait(*L, lib, w);
     L->copy(m.out, payload, E * sizeof(float));
@@ -114,7 +118,7 @@ struct Bench {
     CardMem &m = *cards[c];
     uint32_t *flag = flags + LINE;
     Wait w;
-    w.raise = flag, w.want = m.want, w.stuck = m.stuck;
+    w.raise = flag, w.want = m.want, w.stuck = m.stuck, w.start = m.start;
     ze::List *L = list(c);
     L->copy(payload, m.y, E * sizeof(float));
     launch_wait(*L, lib, w);
@@ -151,13 +155,13 @@ struct Bench {
     CardMem &ma = *cards[a], &mb = *cards[b];
     uint32_t *flag = flags + 2 * LINE;
     Wait wb;
-    wb.flag = flag, wb.want = mb.want, wb.stuck = mb.stuck;
+    wb.flag = flag, wb.want = mb.want, wb.stuck = mb.stuck, wb.start = mb.start;
     ze::List *Lb = list(b);
     launch_wait(*Lb, lib, wb);
     Lb->copy(mb.out, mb.in, E * sizeof(float));
     Lb->close();
     Wait wa;
-    wa.raise = flag, wa.want = ma.want, wa.stuck = ma.stuck;
+    wa.raise = flag, wa.want = ma.want, wa.stuck = ma.stuck, wa.start = ma.start;
     ze::List *La = list(a);
     La->launch(lib.get(a, "deepseek41", "ds_exch_send"), {ma.y, mb.in}, 1, 1, 1, D41_EX_SGS * 16);
     launch_wait(*La, lib, wa);
@@ -183,26 +187,37 @@ struct Bench {
     delete Lb;
   }
 
-  // Waits that must not spin: the flag already holds the step, no row missed, an earlier wait stuck.
+  // Waits that must not spin: the flag already holds the step, no row missed, an earlier wait stuck. Then a list past its
+  // bound: the flag is still read once, and if it is not raised the wait gives up at once.
   void at_once() {
     CardMem &m = *cards[0];
     uint32_t *never = flags + 3 * LINE;
     const std::vector<uint32_t> none(STEP_MAX_ROWS, 0);
     m.io.put(m.nmiss, none);
-    for (int which = 0; which < 3; which++) {
+    uint64_t earlier = 0;
+    for (int which = 0; which < 5; which++) {
       step++;
       m.reset(step);
       Wait w;
-      w.flag = never, w.want = m.want, w.stuck = m.stuck, w.stamp = m.stamp;
-      if (which == 0) raise_flag(never, step);
+      w.flag = never, w.want = m.want, w.stuck = m.stuck, w.start = m.start, w.stamp = m.stamp;
+      if (which == 0 || which == 3) raise_flag(never, step);
       if (which == 1) w.nmiss = m.nmiss, w.W = STEP_MAX_ROWS;
       if (which == 2) {
         const uint32_t one = 1;
         m.io.put(m.stuck, &one, 1);
       }
+      if (which >= 3) {
+        // The clock can read under the list's bound, so no fixed start is long ago. This one's bound, in wrapping
+        // arithmetic, ends at the last case's entry.
+        const uint64_t long_ago = earlier - D41_LIST_TICKS;
+        m.io.put(m.start, &long_ago, 1);
+      }
       launch_wait(m.io.L, lib, w);
       m.io.L.synchronize();
-      const uint32_t want_stuck = which == 2;
+      const uint32_t want_stuck = which == 2 || which == 4;
+      const auto s = m.io.get(m.stamp, 2);
+      earlier = s[0];
+      std::printf("at once: case %d, %llu ticks\n", which, (unsigned long long)(s[1] - s[0]));
       ck.note("at once: stuck flag as it was", (double)(m.stuck_now() != want_stuck), 0);
       // Well under a millisecond at any clock: no poll loop ran to its bound.
       ck.note("at once: ticks under 2,000,000", (double)(ticks(m) >= 2000000), 0);
@@ -233,7 +248,7 @@ struct Bench {
     ck.note("ticks within the bound", (double)(t > D41_WAIT_TICKS * SLACK || t < D41_WAIT_TICKS), 0);
     ck.note("stuck wait's seconds under 4", (double)(secs >= MAX_SECONDS), 0);
     check();
-    return secs < MAX_SECONDS;
+    return secs < MAX_SECONDS && !dumps.fresh();
   }
 
   void stuck_cases() {
@@ -241,7 +256,7 @@ struct Bench {
       CardMem &m = *cards[c];
       uint32_t *never = flags + 3 * LINE;  // holds no step of a stuck case: each has a new one
       Wait w;
-      w.flag = never, w.want = m.want, w.stuck = m.stuck, w.stamp = m.stamp;
+      w.flag = never, w.want = m.want, w.stuck = m.stuck, w.start = m.start, w.stamp = m.stamp;
       // No answer: a row missed, the CPU never answers.
       std::vector<uint32_t> miss(STEP_MAX_ROWS, 0);
       miss[1] = 1;
@@ -284,7 +299,7 @@ struct Bench {
               }))
         return;
 
-      // Two waits in one list spend one bound: the second finds *stuck set. The stamp is the second's, so it is short.
+      // A wait after a stuck one finds *stuck set and does not poll. The stamp is the second's, so it is short.
       Wait first = w, second = w;
       first.stamp = nullptr;
       step++;
@@ -301,8 +316,54 @@ struct Bench {
       std::printf("two waits: card %u, %.3f s, second wait %llu ticks\n", c, secs, (unsigned long long)ticks(m));
       ck.note("two waits: the second does not spin", (double)(ticks(m) >= 2000000), 0);
       ck.note("stuck wait's seconds under 4", (double)(secs >= MAX_SECONDS), 0);
-      if (secs >= MAX_SECONDS) return;
+      if (secs >= MAX_SECONDS || dumps.fresh() || !list_bound(c)) return;
     }
+  }
+
+  // Late waits, none past its own bound, stop at the list's. The CPU answers two, 1.7e9 ticks apart; the third gives up
+  // when the list's bound passes, and the fourth does not poll. Returns false to end the long waits.
+  bool list_bound(uint32_t c) {
+    if (tick_rate < D41_LIST_TICKS / (MAX_SECONDS * 1e6)) {
+      std::printf("FAIL: the device clock counts %.1f ticks a us, too slow to run the list's bound inside %.0f s\n", tick_rate,
+                  MAX_SECONDS);
+      ck.note("the clock fast enough for the list's bound", 1, 0);
+      return false;
+    }
+    CardMem &m = *cards[c];
+    uint32_t *f = flags + 4 * LINE;
+    step++;
+    m.reset(step);
+    ze::List *L = list(c);
+    for (uint32_t i = 0; i < 4; i++) {
+      Wait w;
+      w.flag = f + i * LINE, w.want = m.want, w.stuck = m.stuck, w.start = m.start, w.stamp = m.stamp + 2 * i;
+      launch_wait(*L, lib, w);
+    }
+    L->close();
+    const double late = 1.7e9 / tick_rate;
+    log_clocks("before the list's bound");
+    const auto t0 = Clock::now();
+    L->execute();
+    spin_for(late);
+    raise_flag(f, step);
+    spin_for(late);
+    raise_flag(f + LINE, step);
+    L->synchronize();
+    const double secs = std::chrono::duration<double>(Clock::now() - t0).count();
+    log_clocks("after the list's bound");
+    delete L;
+    const auto s = m.io.get(m.stamp, 8);
+    const uint64_t total = s[7] - s[0];
+    std::printf("list's bound: card %u, %.3f s, %llu ticks; waits %llu %llu %llu %llu ticks; *stuck %u\n", c, secs,
+                (unsigned long long)total, (unsigned long long)(s[1] - s[0]), (unsigned long long)(s[3] - s[2]),
+                (unsigned long long)(s[5] - s[4]), (unsigned long long)(s[7] - s[6]), m.stuck_now());
+    ck.note("list's bound: stuck flag set", (double)(m.stuck_now() != 1), 0);
+    ck.note("list's bound: ticks within it", (double)(total > D41_LIST_TICKS * SLACK || total < D41_LIST_TICKS), 0);
+    for (uint32_t i = 0; i < 3; i++)
+      ck.note("list's bound: no wait past its own", (double)(s[2 * i + 1] - s[2 * i] >= D41_WAIT_TICKS), 0);
+    ck.note("list's bound: the last wait does not spin", (double)(s[7] - s[6] >= 2000000), 0);
+    ck.note("list's bound: seconds under 4", (double)(secs >= MAX_SECONDS), 0);
+    return secs < MAX_SECONDS && !dumps.fresh();
   }
 
   void bench() {
@@ -314,7 +375,7 @@ struct Bench {
     const std::vector<uint32_t> none(STEP_MAX_ROWS, 0);
     m.io.put(m.nmiss, none);
     Wait read;
-    read.flag = set, read.want = m.want, read.stuck = m.stuck;
+    read.flag = set, read.want = m.want, read.stuck = m.stuck, read.start = m.start;
     time_launch(rt, 0, [&](ze::List &L) { launch_wait(L, lib, read); });  // warms the card
     log_clocks("before timing");
     for (uint32_t w : TIMED_WIDTHS) {
@@ -339,6 +400,7 @@ int main() {
   ze::Library lib(rt);
   Bench b(rt, lib);
   const uint64_t swapped = pswpout();
+  std::printf("core dumps already there: %zu\n", b.dumps.before());
 
   std::vector<double> delays;
   for (uint32_t i = 0; i < ROUNDS; i++) delays.push_back(i * 1000.0 / (ROUNDS - 1));
@@ -372,5 +434,7 @@ int main() {
   const uint64_t swapped_now = pswpout();
   std::printf("pages swapped out in this run: %llu\n", (unsigned long long)(swapped_now - swapped));
   b.ck.note("pages swapped out", (double)(swapped_now - swapped), 0);
+  std::printf("new core dumps: %zu\n", b.dumps.fresh());
+  b.ck.note("new core dumps", (double)b.dumps.fresh(), 0);
   return b.ck.report();
 }
