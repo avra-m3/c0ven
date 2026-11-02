@@ -66,7 +66,7 @@ size_t Model::kv_blocks_for(uint32_t x, uint32_t pages) const {
 
 // The slots layer l's cache holds with its fixed part and `blocks` blocks.
 uint32_t Model::cache_slots(uint32_t l, size_t blocks) const {
-  return (uint32_t)std::min<uint64_t>(Q_EXPERTS,
+  return (uint32_t)std::min<uint64_t>(shape_.experts,
                                       (cards_[0]->cache[l].fixed + blocks * blk_) / cards_[0]->layers[l].slot_bytes);
 }
 
@@ -80,7 +80,7 @@ void Model::share_cards(bool first, uint64_t budget, const std::vector<uint64_t>
   for (uint32_t l = 0; l < shape_.layers; l++) sb[l] = cards_[0]->layers[l].slot_bytes;
   auto staging = [&](uint64_t n) {
     uint64_t mx = 0;
-    for (uint32_t l = 0; tmax_ && l < shape_.layers; l++) mx = std::max(mx, (Q_EXPERTS - n) * stg_bytes[l]);
+    for (uint32_t l = 0; tmax_ && l < shape_.layers; l++) mx = std::max(mx, (shape_.experts - n) * stg_bytes[l]);
     return 2 * mx;
   };
   size_t kv_all = 0;
@@ -97,7 +97,7 @@ void Model::share_cards(bool first, uint64_t budget, const std::vector<uint64_t>
   };
   uint64_t n_min = nslots_cached_;
   if (first)
-    while (n_min < Q_EXPERTS && fits(n_min + 1)) n_min++;
+    while (n_min < shape_.experts && fits(n_min + 1)) n_min++;
   if (n_min == 0 || !fits(n_min))
     throw std::runtime_error(first ? "the cards have no room for the KV pool and an expert cache"
                                    : "the cards no longer have room for the KV pool and the cache they held before the sleep");
@@ -128,7 +128,7 @@ void Model::share_cards(bool first, uint64_t budget, const std::vector<uint64_t>
       return b;
     };
     uint64_t n = n_min;
-    while (n < Q_EXPERTS && (int64_t)need(n + 1) <= free) n++;
+    while (n < shape_.experts && (int64_t)need(n + 1) <= free) n++;
     for (uint32_t l = 0; l < shape_.layers; l++) dyn[l] = blocks_for(l, n);
   } else {
     for (uint32_t l = 0; l < shape_.layers; l++) dyn[l] = blocks_for(l, count[l]);
@@ -141,7 +141,7 @@ void Model::share_cards(bool first, uint64_t budget, const std::vector<uint64_t>
     card->cache.resize(shape_.layers);
     for (uint32_t l = 0; l < shape_.layers; l++) {
       Region &r = card->cache[l];
-      r.va = static_cast<uint8_t *>(rt_->vm_reserve(card->c, cdiv(Q_EXPERTS * sb[l], blk_) * blk_));
+      r.va = static_cast<uint8_t *>(rt_->vm_reserve(card->c, cdiv(shape_.experts * sb[l], blk_) * blk_));
       r.fixed = fixed[l];
       rt_->vm_map(r.va, r.fixed, rt_->vm_create(card->c, r.fixed));
       card->layers[l].cache = r.va;
@@ -259,8 +259,8 @@ void Model::plan_evict(uint32_t pages, uint32_t ring, bool beside) {
   std::vector<Side> side(shape_.layers);
   for (uint32_t l = 0; l < shape_.layers; l++) {
     const HostLayer &hl = *host_layers_[l];
-    const float *u = &use_[(size_t)l * Q_EXPERTS];
-    for (uint32_t e = 0; e < Q_EXPERTS; e++)
+    const float *u = &use_[(size_t)l * shape_.experts];
+    for (uint32_t e = 0; e < shape_.experts; e++)
       if (hl.slot_of[e] >= 0) side[l].cold.push_back(e);
     std::sort(side[l].cold.begin(), side[l].cold.end(),
               [&](uint32_t a, uint32_t b) { return u[a] != u[b] ? u[a] < u[b] : a > b; });
@@ -278,7 +278,8 @@ void Model::plan_evict(uint32_t pages, uint32_t ring, bool beside) {
       Side &sd = side[l];
       if (sd.take == sd.blocks) continue;
       float cost = 0;
-      for (size_t i = out(l, sd.take); i < out(l, sd.take + 1); i++) cost += use_[(size_t)l * Q_EXPERTS + sd.cold[i]];
+      for (size_t i = out(l, sd.take); i < out(l, sd.take + 1); i++)
+        cost += use_[(size_t)l * shape_.experts + sd.cold[i]];
       // The cheapest; between equals, the layer with the most experts on the cards.
       if (best < 0 || cost < best_cost ||
           (cost == best_cost && sd.cold.size() - out(l, sd.take) > side[best].cold.size() - out(best, side[best].take)))
@@ -322,9 +323,9 @@ void Model::apply_evict(std::chrono::steady_clock::time_point t0, bool beside) {
     keep.push_back(blocks - ev.take);
     const uint32_t old = cache_slots(ev.l, blocks), now = cache_slots(ev.l, blocks - ev.take);
     std::vector<int32_t> at(old, -1);
-    for (uint32_t e = 0; e < Q_EXPERTS; e++)
+    for (uint32_t e = 0; e < shape_.experts; e++)
       if (hl.slot_of[e] >= 0) at[hl.slot_of[e]] = (int32_t)e;
-    std::vector<bool> victim(Q_EXPERTS, false);
+    std::vector<bool> victim(shape_.experts, false);
     for (uint32_t e : ev.victims) victim[e] = true;
     std::vector<uint32_t> holes;
     for (uint32_t s = 0; s < now; s++)
@@ -350,9 +351,9 @@ void Model::apply_evict(std::chrono::steady_clock::time_point t0, bool beside) {
       hl.weights[e] = {p, p + hl.gate_bytes, p + 2 * hl.gate_bytes, hl.down_parts};
     }
     for (auto &card : cards_) {
-      card->up->copy(card->layers[ev.l].slot_map, hl.slot_of.data(), Q_EXPERTS * 4);
+      card->up->copy(card->layers[ev.l].slot_map, hl.slot_of.data(), shape_.experts * 4);
       if (card->pc && !card->pc->stage_map.empty())
-        card->up->copy(card->pc->stage_map[ev.l], hl.stage_of.data(), Q_EXPERTS * 4);
+        card->up->copy(card->pc->stage_map[ev.l], hl.stage_of.data(), shape_.experts * 4);
     }
   }
   for (auto &card : cards_) card->up->synchronize();
@@ -377,14 +378,14 @@ void Model::plan_refills(uint32_t max) {
   std::vector<Side> side(shape_.layers);
   for (uint32_t l = 0; l < shape_.layers; l++) {
     const HostLayer &hl = *host_layers_[l];
-    const float *u = &use_[(size_t)l * Q_EXPERTS];
+    const float *u = &use_[(size_t)l * shape_.experts];
     Side &sd = side[l];
     sd.hot = hl.uncached;
     std::sort(sd.hot.begin(), sd.hot.end(), [&](uint32_t a, uint32_t b) { return u[a] != u[b] ? u[a] > u[b] : a < b; });
     sd.blocks = cards_[0]->cache[l].blocks.size();
     const uint32_t n = cache_slots(l, sd.blocks);
     std::vector<bool> used(n, false);
-    for (uint32_t e = 0; e < Q_EXPERTS; e++)
+    for (uint32_t e = 0; e < shape_.experts; e++)
       if (hl.slot_of[e] >= 0) used[hl.slot_of[e]] = true;
     for (uint32_t s = n; s-- > 0;)
       if (!used[s]) sd.empty.push_back((int32_t)s);
@@ -395,8 +396,8 @@ void Model::plan_refills(uint32_t max) {
       const Side &sd = side[l];
       if (sd.next == sd.hot.size()) continue;
       if (sd.empty.empty() && (spare == 0 || cache_slots(l, sd.blocks + 1) == cache_slots(l, sd.blocks))) continue;
-      if (best < 0 || use_[(size_t)l * Q_EXPERTS + sd.hot[sd.next]] >
-                          use_[(size_t)best * Q_EXPERTS + side[best].hot[side[best].next]])
+      if (best < 0 || use_[(size_t)l * shape_.experts + sd.hot[sd.next]] >
+                          use_[(size_t)best * shape_.experts + side[best].hot[side[best].next]])
         best = (int)l;
     }
     if (best < 0) break;
@@ -539,7 +540,7 @@ void Model::kvs_drop(uint32_t slot, uint32_t pages) {
 
 uint32_t Model::experts_cached() const {
   uint64_t sum = 0;
-  for (auto &hl : host_layers_) sum += Q_EXPERTS - (uint32_t)hl->uncached.size();
+  for (auto &hl : host_layers_) sum += shape_.experts - (uint32_t)hl->uncached.size();
   return (uint32_t)(sum / shape_.layers);
 }
 
@@ -601,10 +602,10 @@ void Model::reap_remap() {
 
 // A change of the split, on stderr: t0, when given, the time it took from.
 void Model::log_share(const char *why, std::chrono::steady_clock::time_point t0) {
-  uint32_t lo = Q_EXPERTS, hi = 0;
+  uint32_t lo = shape_.experts, hi = 0;
   uint64_t sum = 0;
   for (auto &hl : host_layers_) {
-    const uint32_t n = Q_EXPERTS - (uint32_t)hl->uncached.size();
+    const uint32_t n = shape_.experts - (uint32_t)hl->uncached.size();
     lo = std::min(lo, n), hi = std::max(hi, n), sum += n;
   }
   char took[32] = "";

@@ -117,7 +117,7 @@ static std::vector<uint16_t> mtp_tensor(const std::string &dir, const std::strin
 uint64_t Model::mtp_bytes() const {
   // Per card: each expert's half, IQ4_NL (18 bytes per 32 values), gate, up and down.
   const uint64_t ff = shape_.ff / ncards_;
-  return (uint64_t)Q_EXPERTS * (2 * align256(ff * (Q_EMBD / 32) * 18) + align256(Q_EMBD * (ff / 32) * 18));
+  return (uint64_t)kMtpExperts * (2 * align256(ff * (Q_EMBD / 32) * 18) + align256(Q_EMBD * (ff / 32) * 18));
 }
 
 void Model::load_mtp(Card &card) {
@@ -180,7 +180,7 @@ void Model::load_mtp(Card &card) {
   M.qn = norm("mtp.layers.0.self_attn.q_norm.weight", Q_ATT_D, 1.0f);
   M.kn = norm("mtp.layers.0.self_attn.k_norm.weight", Q_ATT_D, 1.0f);
   {
-    auto r = tensor("mtp.layers.0.mlp.gate.weight", (size_t)Q_EXPERTS * E);
+    auto r = tensor("mtp.layers.0.mlp.gate.weight", (size_t)kMtpExperts * E);
     auto g = tensor("mtp.layers.0.mlp.shared_expert_gate.weight", E);
     r.insert(r.end(), g.begin(), g.end());
     M.router = dev16(r);
@@ -200,12 +200,12 @@ void Model::load_mtp(Card &card) {
     M.up_off = align256(gb);
     M.down_off = 2 * M.up_off;
     M.slot_bytes = M.down_off + align256(db);
-    M.cache = upload<uint8_t>(card, nullptr, (uint64_t)Q_EXPERTS * M.slot_bytes);
-    std::vector<int32_t> map(Q_EXPERTS);
-    for (uint32_t e = 0; e < Q_EXPERTS; e++) map[e] = (int32_t)e;
-    M.slot_map = upload<int32_t>(card, map.data(), Q_EXPERTS * 4);
+    M.cache = upload<uint8_t>(card, nullptr, (uint64_t)kMtpExperts * M.slot_bytes);
+    std::vector<int32_t> map(kMtpExperts);
+    for (uint32_t e = 0; e < kMtpExperts; e++) map[e] = (int32_t)e;
+    M.slot_map = upload<int32_t>(card, map.data(), kMtpExperts * 4);
     const uint32_t batch = 32;
-    const uint64_t payload = (uint64_t)Q_EXPERTS * M.slot_bytes;
+    const uint64_t payload = (uint64_t)kMtpExperts * M.slot_bytes;
     std::vector<uint8_t> buf((size_t)batch * M.slot_bytes);
 
     // Quantising is slow (docs/measurements/MEASUREMENTS.md#2026-10-16-load-phases), so the result can be kept in
@@ -218,7 +218,7 @@ void Model::load_mtp(Card &card) {
       const std::string what = "mtp-experts qt=" + std::to_string(qt) + " cards=" + std::to_string(C) +
                                " card=" + std::to_string(c) + " ff=" + std::to_string(ff) + " slot=" +
                                std::to_string(M.slot_bytes) + " up=" + std::to_string(M.up_off) +
-                               " down=" + std::to_string(M.down_off) + " experts=" + std::to_string(Q_EXPERTS);
+                               " down=" + std::to_string(M.down_off) + " experts=" + std::to_string(kMtpExperts);
       key = cache_key(dir, what);
       char name[64];
       std::snprintf(name, sizeof name, "/mtp-experts-%016llx-card%u.bin", (unsigned long long)key, c);
@@ -232,7 +232,7 @@ void Model::load_mtp(Card &card) {
         bool ok = read_all(fd, &h, sizeof h) && std::memcmp(h.magic, CACHE_MAGIC, 8) == 0 && h.key == key &&
                   h.payload_bytes == payload;
         uint64_t hash = fnv(nullptr, 0);
-        for (uint32_t e0 = 0; ok && e0 < Q_EXPERTS; e0 += batch) {
+        for (uint32_t e0 = 0; ok && e0 < kMtpExperts; e0 += batch) {
           ok = read_all(fd, buf.data(), buf.size());
           if (!ok) break;
           hash = fnv(buf.data(), buf.size(), hash);
@@ -248,8 +248,8 @@ void Model::load_mtp(Card &card) {
       }
     }
     if (!cached) {
-      auto gu = tensor("mtp.layers.0.mlp.experts.gate_up_proj", (size_t)Q_EXPERTS * 2 * shape_.ff * E);
-      auto dn = tensor("mtp.layers.0.mlp.experts.down_proj", (size_t)Q_EXPERTS * E * shape_.ff);
+      auto gu = tensor("mtp.layers.0.mlp.experts.gate_up_proj", (size_t)kMtpExperts * 2 * shape_.ff * E);
+      auto dn = tensor("mtp.layers.0.mlp.experts.down_proj", (size_t)kMtpExperts * E * shape_.ff);
       const size_t grow = ggml_row_size((ggml_type)qt, E), drow = ggml_row_size((ggml_type)qt, ff);
       // Written to a temporary file and renamed into place once complete, so a reader never sees half a file.
       std::string tmp = cache_path.empty() ? "" : cache_path + ".tmp." + std::to_string(::getpid());
@@ -260,7 +260,7 @@ void Model::load_mtp(Card &card) {
       head.payload_bytes = payload;
       head.payload_hash = fnv(nullptr, 0);
       bool writing = out >= 0 && write_all(out, &head, sizeof head);
-      for (uint32_t e0 = 0; e0 < Q_EXPERTS; e0 += batch) {
+      for (uint32_t e0 = 0; e0 < kMtpExperts; e0 += batch) {
         pool_->run(batch, [&](uint64_t i) {
           const uint32_t e = e0 + (uint32_t)i;
           std::vector<float> f((size_t)std::max(ff, E) * E);
@@ -397,7 +397,7 @@ void Model::record_mtp(Card &card, uint32_t W, uint32_t Wr, bool chain) {
     exchange(0, mex1_, card.inj[0] + Q_HC_LR);
     // The MoE block: every expert on the cards.
     hc_mix(M.hc_norm[1], M.hc_down[1], M.hc_up[1], card.inj[1], lw, pr, Wr);
-    bf16mv(M.router, Q_EXPERTS + 1, E, card.xbf16, nrest, card.rl);
+    bf16mv(M.router, kMtpExperts + 1, E, card.xbf16, nrest, card.rl);
     uint32_t *nmiss = card.nmiss;  // scratch: the MTP has no misses
     MissJob *nojobs = nullptr;
     L.launch(q4("router"), {card.rl, M.slot_map, card.x, card.ids, card.w, card.slots, nmiss, nojobs, pr}, Wr, 1, 1,
