@@ -1,15 +1,14 @@
 // Level 3 (docs/TESTING.md): deepseek41's exchange, ds_exch_send then ds_wait on both cards, through host memory and the
 // other card's. X' equal on both cards bit for bit in every exchange; the stores' rate; times alone and under
 // compute_many on random IQ3_S weights and 16 threads reading Flash-Next's IQ3_S file with O_DIRECT; a soak under that
-// load. Host memory stays above a timed run's floor. Needs two cards; without the file, no loaded part. Its times are
-// docs/measurements/MEASUREMENTS.md#2026-11-02-deepseek41-exchange.
+// load. Host memory stays above a timed run's floor. Needs two cards; without the file or the memory it runs the
+// unloaded part and skips. Its times are docs/measurements/MEASUREMENTS.md#2026-11-02-deepseek41-exchange.
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <unistd.h>
 
 #include <atomic>
 #include <chrono>
-#include <filesystem>
 #include <map>
 #include <memory>
 #include <thread>
@@ -30,7 +29,7 @@ using Clock = std::chrono::steady_clock;
 constexpr size_t E = D41_EMBD, D = D41_HC_DIM;
 constexpr uint32_t WMAX = STEP_MAX_ROWS;
 constexpr uint32_t KS = 16;       // patterns a card sends, each exchange in a list another
-constexpr uint32_t NX = 82;       // exchanges a timed list: a token's
+constexpr uint32_t NX = 82;       // exchanges a timed list or a soak's: a token's
 constexpr uint32_t RUNS = 100;    // runs a timed case
 constexpr uint32_t LINE = 16;     // a line of host memory in words
 constexpr double SOAK_SECONDS = 30;  // a soak case
@@ -38,26 +37,17 @@ constexpr double FLOOR_GIB = 24;  // the load stops here, above a timed run's me
 const void *const none = nullptr;
 
 enum Path { host, peer, peer_read };
+enum Mode { send_only, sublayer, soak_run };  // sublayer: each exchange read by the sublayer's end; soak_run: and compared
 const char *const PATH_NAME[] = {"host memory", "the other card's memory", "the other card's memory, read back"};
-
-// A device's or the driver's record of a card reset; a timed run fails when one appears.
-size_t coredumps() {
-  size_t n = 0;
-  std::error_code ec;
-  for (auto it = std::filesystem::directory_iterator("/sys/class/devcoredump", ec); !ec && it != std::filesystem::end(it);
-       it.increment(ec))
-    n++;
-  return n;
-}
 
 // The CPU's misses and the SSD's reads, as many as they can.
 class Load {
  public:
   static constexpr uint32_t ROWS = 16, EXPERTS = 256, TOK = 4;
-  // Returns false, having started nothing, when there is no file or the arena would pass the floor.
+  // Returns false, having started nothing, when there is no file or the arena would pass the floor; why_not() says which.
   bool start(const std::string &path) {
     if (path.empty()) {
-      std::printf("SKIP: the IQ3_S file is not in FLASH_MODEL_DIR; no loaded cases\n");
+      why_not_ = "the IQ3_S file is not in FLASH_MODEL_DIR; no loaded cases";
       return false;
     }
     const size_t grow = ggml_row_size(GGML_TYPE_IQ3_S, E), drow = ggml_row_size(GGML_TYPE_IQ3_S, D41_FF);
@@ -67,8 +57,10 @@ class Load {
     const size_t bytes = EXPERTS * S_;
     const double avail = mem_available_gib();
     if (avail - (double)bytes / (1ull << 30) < FLOOR_GIB + 2) {
-      std::printf("SKIP: MemAvailable %.1f GiB leaves too little for a %.1f GiB arena; no loaded cases\n", avail,
-                  (double)bytes / (1ull << 30));
+      char why[128];
+      std::snprintf(why, sizeof why, "MemAvailable %.1f GiB leaves too little for a %.1f GiB arena; no loaded cases", avail,
+                    (double)bytes / (1ull << 30));
+      why_not_ = why;
       return false;
     }
     arena_ = static_cast<uint8_t *>(std::aligned_alloc(1 << 21, (bytes + (1 << 21) - 1) >> 21 << 21));
@@ -112,6 +104,7 @@ class Load {
     arena_ = nullptr;
   }
   bool floor_hit() const { return floor_hit_; }
+  const std::string &why_not() const { return why_not_; }
   // The rates since the last call.
   void print_rates(const char *when) {
     const auto now = Clock::now();
@@ -163,6 +156,7 @@ class Load {
     std::free(buf);
     close(fd);
   }
+  std::string why_not_;
   std::unique_ptr<Pool> pool_;
   std::vector<std::thread> threads_;
   uint8_t *arena_ = nullptr;
@@ -178,11 +172,13 @@ class Load {
 
 struct Plan {
   uint32_t step, stuck;
+  uint64_t start;
+  uint32_t bad, pad;
 };
 
 struct CardMem {
   Io io;
-  float *X, *y, *in[2], *Xo, *ss;
+  float *X, *y, *in[2], *Xo, *ss, *gold;
   D41HcMix *mix;
   Plan *plan;
   uint64_t *stamp;
@@ -192,6 +188,7 @@ struct CardMem {
     for (float *&p : in) p = io.dev<float>(WMAX * E);
     Xo = io.dev<float>(KS * WMAX * D);
     ss = io.dev<float>(KS * WMAX);
+    gold = io.dev<float>(KS * WMAX * D);
     mix = io.dev<D41HcMix>(WMAX);
     plan = io.dev<Plan>(1);
     stamp = io.dev<uint64_t>(2 * (NX + 2));
@@ -201,7 +198,7 @@ struct CardMem {
 // What a run leaves in host memory for one card.
 struct HostSide {
   Plan plan;
-  uint32_t stuck;
+  uint32_t stuck, bad;
   uint64_t ts[2];
   uint64_t stamp[2 * (NX + 2)];
 };
@@ -229,8 +226,9 @@ struct Bench {
   std::vector<float> ys[2];         // the patterns, [KS][WMAX][E]
   std::vector<float> gold[2];       // [KS][WMAX][D]: X' from each pattern, the partial sums put in place by the CPU
   uint64_t wrong = 0;
+  CoreDumps dumps;
   const std::vector<float> canary = std::vector<float>(WMAX * E, -123.5f);
-  using Key = std::tuple<uint32_t, int, bool>;
+  using Key = std::tuple<uint32_t, int, int>;
   std::map<Key, std::unique_ptr<ze::List>> lists[2];
 
   Bench(ze::Runtime &r, ze::Library &l) : rt(r), lib(l) {
@@ -259,6 +257,10 @@ struct Bench {
   void launch_send(ze::List &L, uint32_t c, uint32_t W, const float *y, const float *dst, uint32_t sgs = D41_EX_SGS) {
     L.launch(lib.get(c, "deepseek41", "ds_exch_send"), {y, dst}, W, 1, 1, sgs * 16);
   }
+  void launch_check(ze::List &L, uint32_t c, uint32_t W, uint32_t s, const float *got) {
+    L.launch(lib.get(c, "deepseek41_check", "ds_check_same"), {got, cards[c]->gold + (size_t)s * WMAX * D, &cards[c]->plan->bad},
+             W, 1, 1, D41_HC_SGS * 16);
+  }
 
   // The inputs, and what each pattern must give on each card.
   void prepare() {
@@ -284,44 +286,71 @@ struct Bench {
       gold[c] = m.io.get(m.Xo, KS * WMAX * D);
     }
     ck.exact("X' on both cards, sums in place", gold[0].data(), gold[1].data(), gold[0].size() * 4);
+    for (uint32_t c = 0; c < 2; c++) {
+      cards[c]->io.put(cards[c]->gold, gold[c]);
+      check_the_check(c);
+    }
   }
 
-  // Each card's list: the plan's copy, then n exchanges. Exchange k sends pattern k % KS; with consume, the sublayer's
-  // end reads what arrived. Stamps of ds_wait with no flag on either side turn ticks into time for the run.
-  ze::List &list(uint32_t c, uint32_t W, Path p, bool consume) {
-    auto &slot = lists[c][Key(W, p, consume)];
+  // The soak's comparison counts one wrong bit in a word, and only in the rows it is given.
+  void check_the_check(uint32_t c) {
+    CardMem &m = *cards[c];
+    std::vector<float> o(gold[c].begin(), gold[c].begin() + WMAX * D);
+    for (size_t i : {(size_t)0, D - 1, (WMAX - 1) * D + 5}) {
+      uint32_t u;
+      std::memcpy(&u, &o[i], 4);
+      u ^= 1;
+      std::memcpy(&o[i], &u, 4);
+    }
+    m.io.put(Xo_at(c, 0), o);
+    for (uint32_t W : {1u, WMAX}) {
+      const uint32_t z = 0;
+      m.io.put(&m.plan->bad, &z, 1);
+      launch_check(m.io.L, c, W, 0, Xo_at(c, 0));
+      m.io.L.synchronize();
+      ck.note("the card's comparison counts each word", std::fabs((double)m.io.get(&m.plan->bad, 1)[0] - (W == 1 ? 2 : 3)), 0);
+    }
+  }
+
+  // Each card's list: the plan's copy, then n exchanges. Exchange k sends pattern k % KS. Stamps of ds_wait with no flag
+  // on either side turn ticks into time for the run.
+  ze::List &list(uint32_t c, uint32_t W, Path p, Mode mode) {
+    auto &slot = lists[c][Key(W, p, mode)];
     if (slot) return *slot;
     slot = std::make_unique<ze::List>(rt, c, ze::List::regular, false, false);
     ze::List &L = *slot;
     CardMem &m = *cards[c];
-    const uint32_t other = 1 - c, n = consume ? KS : NX;
+    const uint32_t other = 1 - c, n = mode == sublayer ? KS : NX;
     L.copy(m.plan, &side[c]->plan, sizeof(Plan));
     L.timestamp(&side[c]->ts[0]);
     Wait cal;
-    cal.want = &m.plan->step, cal.stuck = &m.plan->stuck, cal.stamp = m.stamp;
+    cal.want = &m.plan->step, cal.stuck = &m.plan->stuck, cal.start = &m.plan->start, cal.stamp = m.stamp;
     launch_wait(L, lib, cal);
     for (uint32_t k = 0; k < n; k++) {
       float *dst = received(other, p, k);
       launch_send(L, c, W, y_at(c, k % KS), dst);
       Wait w;
       w.raise = flag(c, k), w.flag = flag(other, k), w.want = &m.plan->step, w.stuck = &m.plan->stuck;
+      w.start = &m.plan->start;
       if (p == peer_read) w.flush = reinterpret_cast<const uint32_t *>(dst + (size_t)W * E - 1);
       w.stamp = m.stamp + 2 * (k + 1);
       launch_wait(L, lib, w);
-      if (consume) launch_post_norm(L, c, W, k, received(c, p, k), p == host);
+      if (mode != send_only) launch_post_norm(L, c, W, k % KS, received(c, p, k), p == host);
+      if (mode == soak_run) launch_check(L, c, W, k % KS, Xo_at(c, k % KS));
     }
     cal.stamp = m.stamp + 2 * (n + 1);
     launch_wait(L, lib, cal);
     L.timestamp(&side[c]->ts[1]);
     L.copy(side[c]->stamp, m.stamp, 2 * (n + 2) * sizeof(uint64_t));
     L.copy(&side[c]->stuck, &m.plan->stuck, sizeof(uint32_t));
+    L.copy(&side[c]->bad, &m.plan->bad, sizeof(uint32_t));
     L.close();
     return L;
   }
 
   void run_once(ze::List &a, ze::List &b) {
     step++;
-    for (uint32_t c = 0; c < 2; c++) side[c]->plan = {step, 0};
+    for (uint32_t c = 0; c < 2; c++) side[c]->plan = {step, 0, 0, 0, 0};
     a.execute();
     b.execute();
     a.synchronize();
@@ -377,7 +406,8 @@ struct Bench {
   }
 
   void timed_case(const char *load, uint32_t W, Path p, bool consume) {
-    ze::List &a = list(0, W, p, consume), &b = list(1, W, p, consume);
+    const Mode mode = consume ? sublayer : send_only;
+    ze::List &a = list(0, W, p, mode), &b = list(1, W, p, mode);
     put_canary();
     const auto t0 = Clock::now();
     do run_once(a, b);
@@ -403,11 +433,12 @@ struct Bench {
                   load, PATH_NAME[p], consume ? ", with the sublayer's end" : "", W, c, s.p50, s.p99, s.mean, s.max,
                   v[c].size(), rate[c] / RUNS);
     }
+    dumps.fresh();
   }
 
   void table(const char *load) {
     // The first case warms the cards, so the clocks read here are those of the work.
-    ze::List &a = list(0, 1, host, false), &b = list(1, 1, host, false);
+    ze::List &a = list(0, 1, host, send_only), &b = list(1, 1, host, send_only);
     const auto t0 = Clock::now();
     do run_once(a, b);
     while (Clock::now() - t0 < std::chrono::milliseconds(50));
@@ -419,6 +450,8 @@ struct Bench {
     std::fflush(stdout);
   }
 
+  // Each run is a token's exchanges, each compared with the CPU's in-place sums on the card. One run a second is also
+  // compared on the CPU, in case the card's comparison goes blind.
   void soak(Load &load) {
     struct Case {
       uint32_t W;
@@ -426,25 +459,39 @@ struct Bench {
     };
     const Case cases[] = {{1, host}, {1, peer}, {2, peer}, {3, peer}, {4, peer}, {6, peer}, {8, peer}, {4, host}};
     for (const Case &c : cases) {
-      ze::List &a = list(0, c.W, c.p, true), &b = list(1, c.W, c.p, true);
+      ze::List &a = list(0, c.W, c.p, soak_run), &b = list(1, c.W, c.p, soak_run);
+      const ze::Card &card = rt.cards()[0];
       const auto t0 = Clock::now();
-      uint64_t bad = 0, runs = 0;
-      while (std::chrono::duration<double>(Clock::now() - t0).count() < SOAK_SECONDS && !load.floor_hit()) {
+      uint64_t bad = 0, stuck = 0, cpu_runs = 0, cpu_bad = 0, runs = 0;
+      double busy = 0, seconds = 0, next_cpu = 0;
+      while (seconds < SOAK_SECONDS && !load.floor_hit()) {
         run_once(a, b);
-        bad += verify(c.W, c.p, true);
         runs++;
+        const uint32_t seen = side[0]->bad + side[1]->bad;
+        bad += seen;
+        stuck += side[0]->stuck + side[1]->stuck;
+        busy += (double)((side[0]->ts[1] - side[0]->ts[0]) & card.timestamp_mask) / (double)card.timer_hz;
+        seconds = std::chrono::duration<double>(Clock::now() - t0).count();
+        if (seen || seconds >= next_cpu) {
+          cpu_bad += verify(c.W, c.p, true);
+          cpu_runs++;
+          next_cpu = seconds + 1;
+        }
       }
-      wrong += bad;
-      std::printf("soak under load, %s W=%u: %llu exchanges a card, %llu partial-sum values checked, %llu wrong\n",
-                  PATH_NAME[c.p], c.W, (unsigned long long)(runs * KS), (unsigned long long)(runs * KS * c.W * E),
-                  (unsigned long long)bad);
+      wrong += bad + stuck + cpu_bad;
+      std::printf("soak under load, %s W=%u: %llu exchanges a card; X' values compared on both cards %llu, wrong %llu; "
+                  "stuck %llu; runs also compared on the CPU %llu, wrong %llu; lists ran for %.1f%% of %.1f s\n",
+                  PATH_NAME[c.p], c.W, (unsigned long long)(runs * NX), (unsigned long long)(2 * runs * NX * c.W * D),
+                  (unsigned long long)bad, (unsigned long long)stuck, (unsigned long long)cpu_runs,
+                  (unsigned long long)cpu_bad, busy / seconds * 100, seconds);
+      dumps.fresh();
       load.print_rates("in the soak");
       std::fflush(stdout);
     }
   }
 
-  // ds_exch_send on card 0, the other card idle. A store under 64 bytes takes host or peer memory at about 2 GB/s and
-  // gives wrong sums (docs/measurements/MEASUREMENTS.md#2026-10-15-prompt-exchange-stores), so this rate is the check.
+  // ds_exch_send on card 0, the other card idle. A store under 64 bytes across PCIe is far slower and gives wrong sums
+  // (docs/measurements/MEASUREMENTS.md#2026-10-12-card-to-card), so this rate is the check.
   void kernel_times() {
     const float *y = cards[0]->y;
     float *pdst = cards[1]->in[0], *hdst = host_in[1][0];
@@ -467,6 +514,8 @@ struct Bench {
         ck.note("stores into host memory under 8 GB/s", (double)(W * E * 4 / th / 1e3 < 8), 0);
       }
     }
+    for (uint32_t W : TIMED_WIDTHS)
+      std::printf("time ds_check_same W=%u: %.2f us\n", W, time_launch(rt, 0, [&](ze::List &L) { launch_check(L, 0, W, 0, cards[0]->gold); }));
     log_clocks("after timing");
   }
 };
@@ -483,9 +532,9 @@ int main() {
   if (rt.ncards() < 2) return test::skip("an exchange needs two cards");
   ze::Library lib(rt);
   const uint64_t swapped = pswpout();
-  const size_t dumps = coredumps();
   std::printf("MemAvailable %.1f GiB at the start\n", mem_available_gib());
   Bench b(rt, lib);
+  std::printf("core dumps already there: %zu\n", b.dumps.before());
   b.prepare();
   b.kernel_times();
   auto phase = [&](const char *name) {
@@ -496,7 +545,8 @@ int main() {
   b.table("alone");
   phase("the table alone");
   Load load;
-  if (load.start(test::model_path())) {
+  const bool loaded = load.start(test::model_path());
+  if (loaded) {
     std::this_thread::sleep_for(std::chrono::seconds(3));
     load.print_rates("while it settled");
     phase("the arena's fill");
@@ -510,9 +560,10 @@ int main() {
     b.ck.note("SSD reads failed", (double)load.read_failed_, 0);
   }
   std::printf("MemAvailable %.1f GiB at the end, %llu pages swapped out, %zu new core dumps\n", mem_available_gib(),
-              (unsigned long long)(pswpout() - swapped), coredumps() - dumps);
+              (unsigned long long)(pswpout() - swapped), b.dumps.fresh());
   b.ck.note("wrong values in any exchange", (double)b.wrong, 0);
   b.ck.note("pages swapped out", (double)(pswpout() - swapped), 0);
-  b.ck.note("new core dumps", (double)(coredumps() - dumps), 0);
-  return b.ck.report();
+  b.ck.note("new core dumps", (double)b.dumps.fresh(), 0);
+  const int failed = b.ck.report();
+  return failed || loaded ? failed : test::skip(load.why_not());
 }

@@ -6,8 +6,11 @@ set(DEEPSEEK41_KERNEL_INCLUDES -I${CMAKE_SOURCE_DIR}/core/models/deepseek41
 
 engine_add_kernel_module(deepseek41 SOURCE kernels/models/deepseek41/layer.cl OPTIONS ${DEEPSEEK41_KERNEL_INCLUDES})
 engine_add_kernel_module(deepseek41_attn SOURCE kernels/models/deepseek41/attn.cl OPTIONS ${DEEPSEEK41_KERNEL_INCLUDES})
+# deepseek41's tests only.
+engine_add_kernel_module(deepseek41_check SOURCE kernels/models/deepseek41/check.cl
+                         OPTIONS ${DEEPSEEK41_KERNEL_INCLUDES})
 # The attention output product: a module per attn_output_a's weight types (blocks 0-26 and 27-39) and lanes a row.
-set(deepseek41_modules deepseek41 deepseek41_attn)
+set(deepseek41_modules deepseek41 deepseek41_attn deepseek41_check)
 foreach(type Q8_0 Q6_K)
   string(TOLOWER ${type} lower)
   foreach(lanes 16 8 4)
