@@ -35,9 +35,13 @@ struct Shape {
 // has the wrong kind, or a size does not fit in 32 bits.
 Shape read_shape(const std::map<std::string, GgufValue> &meta, const std::map<std::string, GgufTensor> &tensors);
 
-// One line for each way the file differs from layout.h's sizes, breaks a rule, or has expert tensors that differ from
+// One line for each way the file differs from layout.h's sizes, has an expert count with no kernels, breaks a rule, or has expert tensors that differ from
 // its own sizes; empty when the build can run it. attn() and attn_layers() need this to be empty.
 std::vector<std::string> shape_mismatches(const Shape &s, const std::map<std::string, GgufTensor> &tensors);
+
+// The module of kernels built for this expert count, from its base name: expert_module("qwen4exp", 256) is
+// "qwen4exp_e256". The count must be one shape_mismatches accepts.
+std::string expert_module(const std::string &base, uint32_t experts);
 
 // The same for sharing the model between n cards: each card takes an equal share of the heads, the expert width and the
 // vocabulary, and a share of a layer's down experts is a whole number of blocks.

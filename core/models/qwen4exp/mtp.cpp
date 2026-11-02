@@ -331,7 +331,7 @@ void Model::record_mtp(Card &card, uint32_t W, uint32_t Wr, bool chain) {
   ze::List &L = *list;
   const uint32_t c = card.c, C = ncards_, E = Q_EMBD;
   auto common = [&](const char *name) { return kernel(c, "common", name); };
-  auto q4 = [&](const char *name) { return kernel(c, "qwen4exp", name); };
+  auto q4 = [&](const char *name) { return kernel(c, "qwen4exp", name); };  // built for kMtpExperts
   // The kernels read the plans from the card's copies, as the decode step's do.
   const StepPlan *pl = M.plan, *pr = Wr < W ? M.rest : M.plan;
   const uint32_t *nrows = &M.plan->nrows, *nrest = &pr->nrows;
