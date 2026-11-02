@@ -142,6 +142,13 @@ typedef struct {
 } D41MissJob;
 SHARED_ASSERT(sizeof(D41MissJob) == 128 + 4 * D41_EMBD, "D41MissJob layout");
 
+// ds_wait's bounds, whichever comes first: device-clock ticks, which are core cycles, and polls (ADR-0062 item 5).
+#define D41_WAIT_TICKS 2400000000u
+#define D41_WAIT_POLLS (1u << 30)
+// ds_exch_send's sub-groups a work-group; each stores D41_EMBD / D41_EX_SGS values a row, a multiple of 64. The fewest
+// that reach the send's shortest time (docs/measurements/MEASUREMENTS.md#2026-11-02-deepseek41-exchange).
+#define D41_EX_SGS 16
+
 // The stream kernels' work-group: one row, in D41_HC_SGS sub-groups of 16, each with D41_EMBD / D41_HC_SGS values in
 // chunks of 64. An a8 unit is 32 values, so a sub-group must hold whole units, and 64 sub-groups (1,024) would not.
 #define D41_HC_SGS 40

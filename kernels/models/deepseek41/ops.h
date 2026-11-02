@@ -4,6 +4,10 @@
 
 #include "builtins.h"
 
+// The card's clock in cycles of its core clock (cl_khr_kernel_clock). The headers do not declare it; IGC's library has
+// it. Declared here until the helpers copied for this model are lifted (ADR-0062).
+ulong __attribute__((overloadable)) clock_read_device(void);
+
 // Lane i holds p[i], or p[16 j + i] as element j. Reads need 4-byte alignment, writes 16-byte.
 static inline float rd1(__global const float *p) {
   return as_float(intel_sub_group_block_read((__global const uint *)p));

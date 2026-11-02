@@ -95,6 +95,35 @@ inline double time_launch(ze::Runtime &rt, uint32_t card, const std::function<vo
   return us;
 }
 
+// ds_wait's arguments (kernels/models/deepseek41/layer.cl); want and stuck lie on the card.
+struct Wait {
+  uint32_t *raise = nullptr;
+  const uint32_t *flush = nullptr, *flag = nullptr, *want = nullptr, *nmiss = nullptr;
+  uint32_t W = 0;
+  uint32_t *stuck = nullptr;
+  uint64_t *stamp = nullptr;
+};
+inline void launch_wait(ze::List &L, ze::Library &lib, const Wait &w) {
+  L.launch(lib.get(L.card(), "deepseek41", "ds_wait"), {w.raise, w.flush, w.flag, w.want, w.nmiss, w.W, w.stuck, w.stamp},
+           1, 1, 1, 1);
+}
+
+// A figure from /proc: pswpout from vmstat, MemAvailable in GiB from meminfo. Timed runs fail when pages were swapped
+// out, and load threads stop short of a timed run's floor.
+inline uint64_t proc_value(const char *path, const char *key) {
+  uint64_t v = 0;
+  if (FILE *f = std::fopen(path, "r")) {
+    char line[256];
+    const size_t n = std::strlen(key);
+    while (std::fgets(line, sizeof line, f))
+      if (!std::strncmp(line, key, n) && (line[n] == ':' || line[n] == ' ')) v = std::strtoull(line + n + 1, nullptr, 10);
+    std::fclose(f);
+  }
+  return v;
+}
+inline uint64_t pswpout() { return proc_value("/proc/vmstat", "pswpout"); }
+inline double mem_available_gib() { return (double)proc_value("/proc/meminfo", "MemAvailable") / 1048576.0; }
+
 // A card's buffers: device memory, written and read back through one immediate list.
 struct Io {
   ze::Runtime &rt;
