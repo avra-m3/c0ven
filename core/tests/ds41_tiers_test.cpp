@@ -472,11 +472,15 @@ void check_sums(const Generated &g) {
   }
 }
 
-// A read that fails ends the job with an error and no flag, and the ring is free for the next layer.
+// A read that fails ends the job with an error and no flag, and frees its side of the ring: the next round on that side
+// runs in a ring that holds only one round.
 void check_read_failure(const Generated &g) {
   std::vector<LayerExperts> layers = g.layers;
   layers[1].down.offset = g.shards[1].size() + (1 << 20);  // past the file's end
-  SsdReader reader(g.paths, staging_ring_bytes(g.largest(), 1));
+  layers.push_back(g.layers[0]);                           // layer 3 reads well, on layer 1's side
+  uint64_t failing = 0, next = 0;
+  for (uint32_t id = 2; id < kExperts; id++) failing += expert_span(layers[1], id), next += expert_span(layers[3], id);
+  SsdReader reader(g.paths, std::max(failing, next));
   ExpertArena none(0);
   Pool pool(3);
   MissJobs mj(layers, none, reader, pool);
@@ -487,9 +491,53 @@ void check_read_failure(const Generated &g) {
   mj.submit({1, 1, 1, 9, rec.jobs.data(), answer.data(), D41_EMBD, &flag});
   EXPECT(throws_with([&] { mj.wait(); }, "shorter"), "a failed read reaches wait");
   EXPECT(flag == 0, "a failed read raises no flag");
-  mj.submit({0, 1, 1, 9, rec.jobs.data(), answer.data(), D41_EMBD, &flag});
+  mj.submit({3, 1, 1, 9, rec.jobs.data(), answer.data(), D41_EMBD, &flag});
   mj.wait();
-  EXPECT(flag == 9, "the next layer runs");
+  EXPECT(flag == 9, "the next round on the side runs");
+}
+
+// An arena sum that fails with reads running ends the job only once they have landed, and frees their side of the ring.
+void check_arena_failure(const Generated &g) {
+  const uint32_t layer = 1;
+  const LayerExperts &l = g.layers[layer];
+  const std::vector<uint32_t> on_ssd = {3, 4, 5, 6, 7};
+  uint64_t round = 0;
+  for (uint32_t id : on_ssd) round += expert_span(l, id);
+  SsdReader reader(g.paths, round);
+  ExpertArena arena(16 * g.largest());
+  arena.fill(reader.direct(), layer, l, {0, 1, 2});
+  Pool pool(3);
+  MissJobs mj(g.layers, arena, reader, pool);
+
+  std::mutex mu;
+  std::condition_variable cv;
+  bool failed = false;
+  reader.set_read_hook([&] {
+    std::unique_lock<std::mutex> lk(mu);
+    cv.wait_for(lk, std::chrono::seconds(60), [&] { return failed; });
+  });
+  mj.set_arena_hook([&] {
+    {
+      std::lock_guard<std::mutex> lk(mu);
+      failed = true;
+      cv.notify_all();
+    }
+    throw std::runtime_error("the arena's sum failed");
+  });
+
+  Records rec(1);
+  rec.route(0, {{0, 1.0f}, {3, 1.0f}, {4, 1.0f}, {5, 1.0f}, {6, 1.0f}, {7, 1.0f}});
+  std::vector<float> answer(D41_EMBD);
+  uint32_t flag = 0;
+  const uint64_t before = reader.direct().bytes_read();
+  mj.submit({layer, 1, 1, 9, rec.jobs.data(), answer.data(), D41_EMBD, &flag});
+  EXPECT(throws_with([&] { mj.wait(); }, "the arena's sum failed"), "a failed sum reaches wait");
+  EXPECT(flag == 0, "a failed sum raises no flag");
+  EXPECT(reader.direct().bytes_read() - before == round, "the job ended before its reads landed");
+  mj.set_arena_hook({});
+  mj.submit({layer, 1, 1, 9, rec.jobs.data(), answer.data(), D41_EMBD, &flag});
+  mj.wait();
+  EXPECT(flag == 9, "the next round on the side runs");
 }
 
 // The engine thread hands a job over and goes on while its reads are held. A read has started before the arena's sum
@@ -621,6 +669,7 @@ int main(int argc, char **argv) {
     check_reads(g, staging_ring_bytes(g.largest(), STEP_MAX_ROWS));
     check_sums(g);
     check_read_failure(g);
+    check_arena_failure(g);
     check_engine_thread(g);
   }
   fs::remove_all(tmpl);
