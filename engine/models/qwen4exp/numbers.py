@@ -8,10 +8,7 @@ from __future__ import annotations
 
 ARCH = "qwen4exp"
 
-LAYERS = 48
-EXPERTS_PER_LAYER = 512
 CONTEXT = 262_144
-VOCAB = 248_320
 
 # Token ids (spec/MODEL_IO.md, section 4.1).
 ENDOFTEXT = 248_044
@@ -28,14 +25,15 @@ USER = 846
 ASSISTANT = 74_455
 NEWLINE = 198
 
-# Per sequence, the engine's 8-bit KV (Q8_0, 32 values in 34 B; ADR-0008), 12 attention layers
-# (MEMORY_BUDGET.md, "Per sequence").
-KV_CELL_BYTES = 13_056
-"""K and V, all 12 attention layers, per token."""
-INDEXER_CELL_BYTES = 1_632
-"""The indexer's keys, all 12 attention layers, per token."""
-STATE_BYTES = 118_038_528
-"""36 DeltaNet layers' state and the PLE conv history (spec/MODEL_LAYER.md, 2.7)."""
+# Per sequence, the engine's 8-bit KV (Q8_0, 32 values in 34 B; ADR-0008; MEMORY_BUDGET.md, "Per sequence").
+KV_CELL_BYTES_PER_LAYER = 1_088
+"""K and V of one attention layer, per token."""
+INDEXER_CELL_BYTES_PER_LAYER = 136
+"""The indexer's keys of one attention layer, per token."""
+DELTANET_STATE_BYTES = 3_268_608
+"""One DeltaNet layer's state (spec/MODEL_LAYER.md, 2.7)."""
+PLE_HISTORY_BYTES = 368_640
+"""The PLE conv history, which one layer holds (spec/MODEL_LAYER.md, 2.7)."""
 DRAFT_KV_BYTES = 35_651_584
 """The draft layer's ring of 32,768 cells."""
 RESIDENT_CELLS = 32_768
