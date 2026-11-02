@@ -31,8 +31,21 @@ from typing import Any
 type Body = dict[str, Any]
 type Rec = dict[str, Any]
 
-DEPLOYED = ("--slots", "4", "--context", "262144", "--kv-tokens", "524288", "--default-max-tokens", "32768")
-ONE_SLOT = ("--slots", "1", "--context", "262144")
+# The n-gram table stays in the file. Auto would choose by what the host has free at the start, without counting what
+# a long prompt then uses, so runs would not compare and the long edge could fall under the memory floor.
+NGRAM_IN_FILE = "--engine-arg=--ngram-ram=off"
+DEPLOYED = (
+    "--slots",
+    "4",
+    "--context",
+    "262144",
+    "--kv-tokens",
+    "524288",
+    "--default-max-tokens",
+    "32768",
+    NGRAM_IN_FILE,
+)
+ONE_SLOT = ("--slots", "1", "--context", "262144", NGRAM_IN_FILE)
 # name: (flags, extra environment). Same-tokens turns checkpoints off, so a prompt sent again is read again.
 CONFIGS: dict[str, tuple[tuple[str, ...], dict[str, str]]] = {
     "deployed": (DEPLOYED, {}),
@@ -49,6 +62,8 @@ QUICK = ("short", "four", "mixed")
 EDGE_TESTS = "api_test|vision_test|encoder_test"
 ERROR = re.compile(r"\berror\b|traceback|the engine failed|did not (publish|finish)", re.IGNORECASE)
 GAP_S = 60.0  # no token for this long while a request is open fails the run
+FIRST_TOKEN_S = 900.0  # no first token for this long fails the run
+STOP_S = 90.0  # how long a server has to exit once told to, before it is killed
 # Each quick-round scenario's run-to-run spread on main, as a share of its time (TESTING.md). Four's time depends on
 # how many tokens its tool calls take, which varies from run to run.
 SPREAD = {"short": 0.015, "four": 0.10, "mixed": 0.04}
@@ -246,7 +261,7 @@ class Client:
         usage: Rec = {}
         finish, status, err = None, None, None
         try:
-            c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=900)
+            c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=FIRST_TOKEN_S)
             c.request("POST", "/v1/chat/completions", json.dumps(body), {"Content-Type": "application/json"})
             r = c.getresponse()
             status = r.status
@@ -256,6 +271,10 @@ class Client:
                 for raw in r:
                     line = raw.strip()
                     if not line.startswith(b"data:"):
+                        # The server's keepalives stop the socket timing out, so a stalled stream is caught here.
+                        idle = time.perf_counter() - sent - (arrivals[-1] if arrivals else 0.0)
+                        if idle > (GAP_S if arrivals else FIRST_TOKEN_S):
+                            raise TimeoutError(f"no token for {idle:.0f} s")
                         continue
                     data = line[5:].strip()
                     if data == b"[DONE]":
@@ -443,6 +462,12 @@ def descendants(pid: int) -> list[int]:
     return out
 
 
+def logged_error(log: Path) -> str | None:
+    """The first error in a server's log, as a run's failure; None when it has none."""
+    first = next((x for x in log.read_text(errors="replace").splitlines() if ERROR.search(x)), None)
+    return f"{log.name}: {first[:160]}" if first is not None else None
+
+
 def alive(pid: int) -> bool:
     try:
         return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] != "Z"
@@ -454,7 +479,7 @@ def stop_tree(proc: subprocess.Popen[bytes]) -> None:
     tree = descendants(proc.pid)
     proc.terminate()
     try:
-        proc.wait(90)
+        proc.wait(STOP_S)
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.wait()
@@ -627,15 +652,20 @@ class Check:
             proc = subprocess.Popen(cmd, env=env, stdout=f, stderr=subprocess.STDOUT, cwd=tree)
 
         def watch() -> None:
-            # Below the floor the server is stopped and the run fails, so the check reports it and goes on.
+            # Under the floor or on a logged error the run fails and the server is stopped, which ends its open
+            # requests, so the check reports it and goes on. A failed engine can leave them open for good.
             while not done.wait(1):
                 low[0] = min(low[0], meminfo_gib())
-                if low[0] < self.args.mem_floor:
-                    run.failures.append(f"MemAvailable {low[0]:.1f} GiB, under {self.args.mem_floor} GiB")
-                    proc.terminate()
+                floor = self.args.mem_floor
+                fault = f"MemAvailable {low[0]:.1f} GiB, under {floor} GiB" if low[0] < floor else logged_error(log)
+                if fault:
+                    say(f"  stopping the server: {fault}")
+                    run.failures.append(fault)
+                    stop_tree(proc)
                     return
 
-        threading.Thread(target=watch, daemon=True).start()
+        watcher = threading.Thread(target=watch, daemon=True)
+        watcher.start()
         client = Client(self.args.port, run, self.write)
         t0 = time.monotonic()
         try:
@@ -658,17 +688,17 @@ class Check:
                     },
                 )
                 for s in scenarios:
-                    run_scenario(s, client, self.messages, self.ref_dir)
                     if run.failures:
                         break
+                    run_scenario(s, client, self.messages, self.ref_dir)
             elif proc.poll() is not None and not run.failures:
                 run.failures.append(f"server exited with {proc.returncode} while loading")
         finally:
-            stop_tree(proc)
             done.set()
-        errors = [x for x in log.read_text(errors="replace").splitlines() if ERROR.search(x)]
-        if errors:
-            run.failures.append(f"{len(errors)} error lines in {log.name}, first: {errors[0][:160]}")
+            watcher.join()
+            stop_tree(proc)
+        if (error := logged_error(log)) and error not in run.failures:
+            run.failures.append(error)
         run.swapped_pages = swapped_out() - swap0
         run.mem_low_gib = low[0]
         self.write(

@@ -111,8 +111,15 @@ python3 tools/check.py --a <main checkout> --model <first shard> --out <dir> [--
 | 5. Edges | `api_test`, `vision_test`, `encoder_test`; then same-tokens, long, long-two, one-card on B. Long also runs on main, or is compared with main's stored run. Step 4's long runs stand for step 5's | any fails; long's first token is over 1% later than main's |
 
 A run fails when its server exits or logs an error, a request ends with an error or without a finish, no token comes
-for 60 s while a request is open, a scenario takes over twice its A run's time, the host swaps out over 1 GiB more
-than the A run did, or `MemAvailable` falls under `--mem-floor` (22 GiB by default; the server is then stopped).
+for 60 s while a request is open, no first token comes for 900 s, a scenario takes over twice its A run's time, the
+host swaps out over 1 GiB more than the A run did, or `MemAvailable` falls under `--mem-floor` (22 GiB by default).
+
+The check reads `MemAvailable` and the server's log once a second. On an error in the log, or memory under the floor,
+it stops the server at once: `SIGTERM`, then `SIGKILL` after 90 s. That ends the requests still open, by the end of
+the server's 30 s `--drain-timeout` when it exits normally. A core error can leave the engine running and its requests
+open, so the check does not wait for them. The server sends an SSE keepalive every 10 s, so the socket of a stalled
+stream never times out; the check applies its 60 s and 900 s limits to tokens as the stream runs.
+
 `--skip EDGE=REASON` leaves an edge out; the verdict then says "pass, with edges not run". Long-two runs on B alone:
 its decode rate moves too much between runs for one main run to judge it.
 
@@ -131,10 +138,14 @@ larger arm's range, which suits only scenarios that repeat closely, such as a 25
 
 | Configuration | Flags |
 | --- | --- |
-| deployed | `--slots 4 --context 262144 --kv-tokens 524288 --default-max-tokens 32768` |
-| one-slot | `--slots 1 --context 262144` |
+| deployed | `--slots 4 --context 262144 --kv-tokens 524288 --default-max-tokens 32768 --engine-arg=--ngram-ram=off` |
+| one-slot | `--slots 1 --context 262144 --engine-arg=--ngram-ram=off` |
 | one-card | one-slot, with `ZE_AFFINITY_MASK=0` |
 | same-tokens | deployed, with `--engine-arg=--deterministic --engine-arg=--checkpoints=0` |
+
+Every configuration keeps the n-gram table in the file, so runs compare whatever the host has free. `--ngram-ram auto`
+chooses by the memory free at the start and does not count what a long prompt then uses. The check does not cover the
+table in RAM.
 
 | Scenario | Configuration | Requests, 512 tokens out each unless named |
 | --- | --- | --- |
