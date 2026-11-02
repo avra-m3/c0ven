@@ -79,7 +79,7 @@ If none does, see [Intel's GPU setup guides](https://dgpu-docs.intel.com/).
 
 ### 2. Pick a model
 
-[Choosing a model](docs/CHOOSING_A_MODEL.md) compares the files, with the RAM each needs and its speed on a B60. If you are not
+[Choosing a model](docs/CHOOSING_A_MODEL.md) compares the files, with the RAM each needs on a B60. If you are not
 sure, use IQ3_S, an 83.6 GB download.
 
 ### 3. Download it
@@ -258,7 +258,7 @@ For users:
 - [Guides](docs/guides/index.md): how to do one thing, step by step.
 - [Showcase](docs/showcase/index.md): things coding agents have made, and how to make them.
 - [MODEL_FILES.md](docs/MODEL_FILES.md): the model files: where to get them and how to lay them out for the engine.
-- [CHOOSING_A_MODEL.md](docs/CHOOSING_A_MODEL.md): the model files you can run, what each needs and how fast it is.
+- [CHOOSING_A_MODEL.md](docs/CHOOSING_A_MODEL.md): the model files you can run and what each needs.
 - [CACHING.md](docs/CACHING.md): how the server reuses the start of a prompt, and what load does to that.
 - [BENCHMARKS.md](docs/BENCHMARKS.md): how the benchmarks above were measured.
 

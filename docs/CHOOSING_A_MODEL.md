@@ -1,14 +1,14 @@
 # Choosing a model
 
 C0ven runs one model, Qwen3.8-Flash-Next, and you can download it at several sizes. Each size is a file you choose by
-name. A smaller file needs less RAM and replies faster, and its answers can be a little less accurate.
+name. A smaller file needs less RAM, and its answers can be a little less accurate.
 
 ## The short answer
 
 | Your situation | File |
 | --- | --- |
 | Not sure, and you have the RAM for it | IQ3_S, the file we test the most |
-| You want faster replies with almost no loss of accuracy | IQ3_XXS |
+| You want to use less RAM with almost no loss of accuracy | IQ3_XXS |
 | You are short of RAM | IQ2_XS, or Q2_0 for the least RAM |
 | You mostly write code and are short of RAM | IQ2_XS |
 | You want answers closest to the original model, and have RAM to spare | UD-IQ4_XS |
@@ -33,23 +33,20 @@ df -h ~
 
 ## Files we have tested
 
-| File | Tested on | Download | RAM, one B60 | Speed, one B60 | RAM, two B60s | Speed, two B60s |
-| --- | --- | ---: | ---: | ---: | ---: | ---: |
-| IQ3_S | one and two B60s | 83.6 GB | [43 GiB](measurements/MEASUREMENTS.md#2026-10-19-one-card) | [49](measurements/MEASUREMENTS.md#2026-11-01-against-strata-and-llama-cpp) | [22.6 GiB](measurements/MEASUREMENTS.md#2026-10-19-other-quants) | [102](measurements/MEASUREMENTS.md#2026-11-01-against-strata-and-llama-cpp) |
-| IQ3_XXS | two B60s | 75.8 GB | about 36 GiB | not measured | [14.6 GiB](measurements/MEASUREMENTS.md#2026-10-19-other-quants) | [98, against IQ3_S's 85](measurements/MEASUREMENTS.md#2026-10-19-other-quants) |
-| IQ2_XS | two B60s | 68.0 GB | about 29 GiB | not measured | [7.1 GiB](measurements/MEASUREMENTS.md#2026-10-19-other-quants) | [101, against IQ3_S's 85](measurements/MEASUREMENTS.md#2026-10-19-other-quants) |
-| Q2_0 | two B60s | 66.4 GB | about 27 GiB | not measured | about 5.6 GiB | [104, against IQ3_S's 86](measurements/MEASUREMENTS.md#2026-10-19-other-quants) |
-| UD-IQ4_XS | two B60s | 93.7 GB | about 53 GiB | not measured | [about 32 GiB](measurements/MEASUREMENTS.md#2026-10-29-ud-iq4xs-speed) | [81, against IQ3_S's 100](measurements/MEASUREMENTS.md#2026-10-29-ud-iq4xs-speed) |
+| File | Tested on | Download | RAM, one B60 | RAM, two B60s |
+| --- | --- | ---: | ---: | ---: |
+| IQ3_S | one and two B60s | 83.6 GB | [43 GiB](measurements/MEASUREMENTS.md#2026-10-19-one-card) | [22.6 GiB](measurements/MEASUREMENTS.md#2026-10-19-other-quants) |
+| IQ3_XXS | two B60s | 75.8 GB | about 36 GiB | [14.6 GiB](measurements/MEASUREMENTS.md#2026-10-19-other-quants) |
+| IQ2_XS | two B60s | 68.0 GB | about 29 GiB | [7.1 GiB](measurements/MEASUREMENTS.md#2026-10-19-other-quants) |
+| Q2_0 | two B60s | 66.4 GB | about 27 GiB | about 5.6 GiB |
+| UD-IQ4_XS | two B60s | 93.7 GB | about 53 GiB | [about 32 GiB](measurements/MEASUREMENTS.md#2026-10-29-ud-iq4xs-speed) |
 
-Speed is how fast a reply streams after a prompt of about 3,000 words, in tokens per second. A token is a piece of a
-word. Every speed here is faster than anyone reads, so the difference shows most in long answers, code and programs
-that call the model many times. Speeds marked "against" come from older test runs, so compare each with the IQ3_S
-figure beside it.
+The [benchmarks](../README.md#benchmarks) show IQ3_S's speed on one and two cards.
 
 ## Files we expect to work
 
 These are [Unsloth's other files](MODEL_FILES.md#unsloths-other-files). The engine has code for every kind of weight
-in them, but none has been run on the engine, so there are no speed figures. If you try one, please
+in them, but none has been run on the engine. If you try one, please
 [tell us how it went](https://github.com/avra-m3/c0ven/issues).
 
 | File | Download | RAM, one B60 | RAM, two B60s |
@@ -94,12 +91,6 @@ chat.
 Unsloth publishes no such scores for its files. Our own test compares each file's choice of next word with the original
 model's. UD-IQ4_XS makes [the same top choice 87.4%](measurements/MEASUREMENTS.md#2026-10-29-kl-ud-iq4xs) of the time,
 and IQ3_S [84.7%](measurements/MEASUREMENTS.md#2026-10-29-kl-bf16).
-
-## Long prompts
-
-The wait before a reply starts grows with the prompt, and is about the same for every tested file. On two B60s a prompt
-of about 3,000 words starts in about two seconds. A prompt that fills the whole context, such as a large codebase, takes
-[over two minutes](measurements/MEASUREMENTS.md#2026-10-19-other-quants).
 
 ## Disk space when you keep several files
 
