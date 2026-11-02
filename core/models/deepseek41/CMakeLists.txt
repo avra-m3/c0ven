@@ -2,4 +2,5 @@
 
 target_sources(engine_core PRIVATE
   engram.cpp
-  ref_ops.cpp)
+  ref_ops.cpp
+  reference.cpp)
