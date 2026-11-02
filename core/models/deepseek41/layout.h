@@ -162,12 +162,12 @@ SHARED_ASSERT(sizeof(D41Group) == 48, "D41Group layout");
 #define D41_PART_A 1280
 #define D41_PART_B 1024
 
-// Lanes a row and rows a sub-group of kernels/quant/moe.cl's class kernels, by type t and group size a: the shortest
-// time on cold parts, whose few rows need more sub-groups to keep a card busy
-// (docs/measurements/MEASUREMENTS.md#2026-11-02-deepseek41-routed-experts).
-#define D41_GU_LANES(t, a) ((a) <= 2 || (t) == QT_IQ1_S ? 16 : 8)
-#define D41_GU_ROWS(a) ((a) == 1 ? 1 : 2)
-#define D41_DOWN_LANES(t) ((t) == QT_IQ1_S ? 16 : 8)
+// Lanes a row and rows a sub-group of kernels/quant/moe.cl's class kernels, by type t and largest group a: the shortest
+// time on cold parts in a launch of 6 a mixed parts
+// (docs/measurements/MEASUREMENTS.md#2026-11-02-deepseek41-moe-step-sweep).
+#define D41_GU_LANES 16
+#define D41_GU_ROWS(a) ((a) == 1 ? 2 : 1)
+#define D41_DOWN_LANES(t, a) ((t) == QT_IQ1_S && (a) == 1 ? 16 : 8)
 #define D41_DOWN_ROWS 4
 
 // A slot class of a layer on a card: where its slots lie in the card's expert cache and which part they hold, read by

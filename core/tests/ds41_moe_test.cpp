@@ -1,9 +1,8 @@
 // Level 3 (docs/TESTING.md): deepseek41's routed experts on the cards (kernels/quant/moe.cl with -DMOE_CLASSES), with
-// ds_swiglu_clamp_a8 and ds_moe_combine, on random weights at the model's shapes. Each of the file's type pairs runs at
-// 1, 2, 3, 4, 6 and 8 rows, its experts cut into part A on one card and part B on the other, parts mixed in one launch,
-// and whole. Limits: 1e-5 of the largest |reference| against ggml's weights in double, a8 scales and codes within their
-// rounding and that, as matvec_test's. The CPU's answer arrives late, through ds_wait and the combine's fence. Then each
-// kernel's time and read rate, swept by lanes a row, rows a sub-group and the codebook's place.
+// ds_swiglu_clamp_a8 and ds_moe_combine, on random weights: each of the file's type pairs at 1, 2, 3, 4, 6 and 8 rows,
+// cut into parts on both cards and whole. Limits: 1e-5 of the largest |reference| against ggml's weights in double, a8
+// as matvec_test's. The CPU answers late, through ds_wait and the combine's fence. Then the kept shapes' times.
+// --sweep (ds41_moe_sweep_test, ENGINE_KERNEL_SWEEPS) times lanes a row, rows a sub-group and the codebook's place.
 #include <atomic>
 #include <cmath>
 #include <map>
@@ -278,7 +277,7 @@ struct Bench {
     for (uint32_t W : WIDTHS) {
       const std::string gmod = "deepseek41_moe_gate_up_" + lower(name(gt)) + "_g" + std::to_string(W);
       const std::string dmod = "deepseek41_moe_down_" + lower(name(dt)) + "_g" + std::to_string(W);
-      const uint32_t lxg = local_size(D41_GU_ROWS(W), D41_GU_LANES(gt, W)), lxd = local_size(D41_DOWN_ROWS, D41_DOWN_LANES(dt));
+      const uint32_t lxg = local_size(D41_GU_ROWS(W), D41_GU_LANES), lxd = local_size(D41_DOWN_ROWS, D41_DOWN_LANES(dt, W));
       Route r = make_route(W, rng);
       const uint32_t nasg = W * U;
 
@@ -608,8 +607,29 @@ struct Bench {
 
   // ---- times ----
 
-  // Gate and up of rows rows x 5,120, or down of 5,120 rows x K (rows here), group size 1, by lanes a row, the codebook's
-  // place and rows a sub-group; copies in turn when cold.
+  // A shape of the sweep's modules.
+  struct Shape {
+    uint32_t lanes, rows;
+    bool constant;
+  };
+
+  static std::vector<Shape> shapes_at(uint32_t a) {
+    std::vector<Shape> v;
+    for (const auto &[lanes, rows] : std::vector<std::pair<uint32_t, uint32_t>>{{16, 1}, {16, 2}, {16, 4}, {8, 2}, {8, 4}})
+      for (bool c : {false, true}) v.push_back({lanes, rows, c});
+    if (a == 1)
+      for (bool c : {false, true}) v.push_back({4, 4, c});
+    return v;
+  }
+
+  static std::string sweep_module(uint32_t type, bool down, uint32_t a, const Shape &s) {
+    return std::string("deepseek41_moe_sweep_") + (down ? "down_" : "gate_up_") + lower(name(type)) + "_g" +
+           std::to_string(a) + "_l" + std::to_string(s.lanes) + "_r" + std::to_string(s.rows) + "_" +
+           (s.constant ? "constant" : "local");
+  }
+
+  // Gate and up of rows rows x 5,120, or down of 5,120 rows x K (rows here), alone in a launch at group size 1, by shape;
+  // copies in turn when cold.
   void sweep(uint32_t type, bool down, uint32_t part) {
     Io io(rt, 0);
     auto *grids = io.dev<uint8_t>(QGRID_BYTES);
@@ -651,15 +671,9 @@ struct Bench {
     auto *ha = io.dev<uint8_t>(FF + FF / 8);
     auto *y = io.dev<float>(E);
     const uint32_t hs = FF + FF / 8, per = 1;
-    const struct {
-      uint32_t lanes, rs;
-      const char *suffix;
-    } shapes[] = {{16, 4, "local"}, {16, 4, "constant"}, {16, 2, "r2"},         {16, 2, "r2_constant"},
-                  {16, 1, "r1"},    {8, 4, "local"},     {8, 4, "constant"},    {8, 2, "r2"},
-                  {8, 2, "r2_constant"}, {4, 4, "local"}, {4, 4, "constant"}};
-    for (const auto &sh : shapes) {
-      const std::string mod = "deepseek41_moe_" + lower(name(type)) + "_l" + std::to_string(sh.lanes) + "_" + sh.suffix;
-      const uint32_t lx = local_size(sh.rs, sh.lanes);
+    for (const Shape &sh : shapes_at(1)) {
+      const std::string mod = sweep_module(type, down, 1, sh);
+      const uint32_t lx = local_size(sh.rows, sh.lanes);
       auto rec = [&](ze::List &L, uint32_t i) {
         const D41Group *g = dg + i;
         if (down)
@@ -672,133 +686,216 @@ struct Bench {
       const double hot = time_launch(rt, 0, [&](ze::List &L) { rec(L, 0); });
       uint32_t at = 0;
       const double cold = time_launch(rt, 0, [&](ze::List &L) { rec(L, at++ % copies); });
-      std::printf("sweep %s %s %u x %u lanes %2u %-8s: hot %.2f us %.1f GB/s, cold (%u copies) %.2f us %.1f GB/s\n",
-                  down ? "down" : "gate+up", name(type), rows, K, sh.lanes, sh.suffix, hot, (double)bytes / hot / 1e3,
-                  copies, cold, (double)bytes / cold / 1e3);
+      std::printf("sweep %s %s %u x %u lanes %2u rows %u %-8s: hot %.2f us %.1f GB/s, cold (%u copies) %.2f us %.1f GB/s\n",
+                  down ? "down" : "gate+up", name(type), rows, K, sh.lanes, sh.rows, sh.constant ? "constant" : "local", hot,
+                  (double)bytes / hot / 1e3, copies, cold, (double)bytes / cold / 1e3);
     }
     for (void *b : std::vector<void *>{grids, cache, classes, dg, dn, act, ha, y}) rt.free(b);
+  }
+
+  // A launch's buffers at a type's class pair, with SLOTS cold slots of each class.
+  struct Rig {
+    static constexpr uint32_t SLOTS = 24, HS = PA + PA / 8, WMAX = STEP_MAX_ROWS;
+    Io io;
+    uint8_t *grids, *cache, *ha, *x;
+    D41Class *classes;
+    D41Group *dg;
+    float *y;
+    uint32_t *dn;
+    uint64_t abytes, bbytes;  // a part's own matrices, by class, for one kernel
+    bool down;
+    Rig(Bench &b, uint32_t type, bool dn_) : io(b.rt, 0), down(dn_) {
+      grids = io.dev<uint8_t>(QGRID_BYTES);
+      io.put(grids, codebooks().data(), QGRID_BYTES);
+      const D41Class ca = make_class(type, type, PA, 0), cb = make_class(type, type, PB, SLOTS * ca.slot_bytes);
+      const Expert e = make_expert(type, type, b.rng);
+      cache = io.dev<uint8_t>(SLOTS * (ca.slot_bytes + cb.slot_bytes));
+      std::vector<uint8_t> sa(ca.slot_bytes), sb(cb.slot_bytes);
+      fill_slot(sa.data(), e, type, type, ca, 0);
+      fill_slot(sb.data(), e, type, type, cb, PA);
+      for (uint32_t i = 0; i < SLOTS; i++) {
+        io.put(cache + ca.base + i * ca.slot_bytes, sa.data(), sa.size());
+        io.put(cache + cb.base + i * cb.slot_bytes, sb.data(), sb.size());
+      }
+      const D41Class table[2] = {ca, cb};
+      classes = io.dev<D41Class>(2);
+      io.put(classes, table, 2);
+      ha = io.dev<uint8_t>(WMAX * U * HS);
+      y = io.dev<float>(WMAX * U * E);
+      x = io.dev<uint8_t>(WMAX * X_STRIDE);
+      for (uint32_t t = 0; t < WMAX; t++) {
+        const auto xf = randn(b.rng, E);
+        io.put(x + t * X_STRIDE, a8_row(xf.data(), E));
+      }
+      // h as a8 for down, in class A's stride: even assignments take part A's K, odd part B's.
+      for (uint32_t a = 0; a < WMAX * U; a++) {
+        const auto hf = randn(b.rng, a % 2 ? PB : PA);
+        io.put(ha + (size_t)a * HS, a8_row(hf.data(), hf.size()));
+      }
+      dn = io.dev<uint32_t>(4);
+      dg = io.dev<D41Group>(2 * SLOTS * U * WMAX);
+      abytes = (down ? 1 : 2) * runs_bytes(type, down ? (uint64_t)E * 5 : (uint64_t)PA * GU_BPR);
+      bbytes = (down ? 1 : 2) * runs_bytes(type, down ? (uint64_t)E * 4 : (uint64_t)PB * GU_BPR);
+    }
+    void free_all(ze::Runtime &rt) {
+      for (void *b : std::vector<void *>{grids, cache, classes, ha, y, x, dn, dg}) rt.free(b);
+    }
+  };
+
+  // A launch of module mod with gy in the grid, the first *dn of the groups at g being real.
+  void launch_rig(ze::List &L, Rig &r, const std::string &mod, uint32_t lx, const D41Group *g, const D41Class *cls,
+                  uint32_t gy) {
+    const uint32_t per = U, K = E, rows = E, xs = X_STRIDE, hs = Rig::HS;
+    if (r.down)
+      L.launch(lib.get(0, mod, "moe_down_c"), {r.cache, cls, g, r.dn, rows, r.ha, hs, r.y, r.grids}, E / MOE_WG_ROWS, gy, 1,
+               lx);
+    else
+      L.launch(lib.get(0, mod, "moe_gate_up_c"), {r.cache, cls, g, r.dn, r.x, K, xs, per, r.ha, hs, r.grids},
+               PA / MOE_WG_ROWS, gy, 1, lx);
+  }
+
+  // 6 W parts of one assignment each, half of each class, as W rows routed to different experts; slots in turn.
+  double time_parts(Rig &r, const std::string &mod, uint32_t lx, uint32_t W) {
+    const uint32_t ng = W * U, rounds = 2 * Rig::SLOTS;
+    std::vector<D41Group> gs(rounds * ng);
+    for (uint32_t i = 0; i < rounds * ng; i++) {
+      std::memset(&gs[i], 0, sizeof(D41Group));
+      gs[i].cls = i & 1;
+      gs[i].slot = (int32_t)((i / 2) % Rig::SLOTS);
+      gs[i].n = 1;
+      gs[i].asg[0] = i % ng;
+    }
+    r.io.put(r.dg, gs);
+    r.io.put(r.dn, &ng, 1);
+    uint32_t at = 0;
+    return time_launch(rt, 0, [&](ze::List &L) { launch_rig(L, r, mod, lx, r.dg + (at++ % rounds) * ng, r.classes, ng); });
+  }
+
+  // 6 groups of W assignments, half of each class, as W rows routed to the same experts, in a grid of 6 W; slots in turn.
+  double time_full(Rig &r, const std::string &mod, uint32_t lx, uint32_t W) {
+    const uint32_t ng = U, rounds = 2 * Rig::SLOTS;
+    std::vector<D41Group> gs(rounds * ng);
+    for (uint32_t i = 0; i < rounds * ng; i++) {
+      std::memset(&gs[i], 0, sizeof(D41Group));
+      gs[i].cls = i & 1;
+      gs[i].slot = (int32_t)((i / 2) % Rig::SLOTS);
+      gs[i].n = W;
+      for (uint32_t t = 0; t < W; t++) gs[i].asg[t] = t * U + i % U;
+    }
+    r.io.put(r.dg, gs);
+    r.io.put(r.dn, &ng, 1);
+    uint32_t at = 0;
+    return time_launch(rt, 0, [&](ze::List &L) { launch_rig(L, r, mod, lx, r.dg + (at++ % rounds) * ng, r.classes, W * U); });
+  }
+
+  // Each shape at each largest group, in launches as a step makes them, every weight cold.
+  void step_sweep(uint32_t type, bool down) {
+    Rig r(*this, type, down);
+    log_clocks("before the step sweep");
+    for (uint32_t a : WIDTHS)
+      for (const Shape &s : shapes_at(a)) {
+        const std::string mod = sweep_module(type, down, a, s);
+        const uint32_t lx = local_size(s.rows, s.lanes);
+        const double parts = time_parts(r, mod, lx, a);
+        const double full = a == 1 ? parts : time_full(r, mod, lx, a);
+        std::printf("step sweep %s %s g%u lanes %2u rows %u %-8s: %u parts %.2f us, %.2f us a part; 6 groups of %u %.2f us\n",
+                    down ? "down" : "gate+up", name(type), a, s.lanes, s.rows, s.constant ? "constant" : "local", a * U, parts,
+                    parts / (a * U), a, full);
+      }
+    log_clocks("after the step sweep");
+    r.free_all(rt);
+  }
+
+  // A launch of one down group with no K: all it does is load the codebook in each of its work-groups, and a store. The
+  // difference between a local module and its constant one is the copy.
+  void codebook_copy(uint32_t type) {
+    Rig r(*this, type, true);
+    const D41Class none_k{0, 0, 0, 0, 0, {}};
+    auto *cls = r.io.dev<D41Class>(1);
+    r.io.put(cls, &none_k, 1);
+    std::vector<D41Group> g(1);
+    std::memset(g.data(), 0, sizeof(D41Group));
+    g[0].n = 1;
+    r.io.put(r.dg, g);
+    const uint32_t one = 1;
+    r.io.put(r.dn, &one, 1);
+    for (const Shape &s : shapes_at(1)) {
+      const uint32_t lx = local_size(s.rows, s.lanes);
+      const double us = time_launch(rt, 0, [&](ze::List &L) { launch_rig(L, r, sweep_module(type, true, 1, s), lx, r.dg, cls, 1); });
+      std::printf("codebook %s down, %u work-groups, lanes %2u rows %u %-8s: %.2f us\n", name(type), E / MOE_WG_ROWS, s.lanes,
+                  s.rows, s.constant ? "constant" : "local", us);
+    }
+    rt.free(cls);
+    r.free_all(rt);
   }
 
   // Each kernel's time at W rows with the modules a model list would use: one group of each class, a group of W
   // assignments, and 6 W expert parts half of each class, every weight cold.
   void kept_times(uint32_t type, bool down) {
-    Io io(rt, 0);
-    auto *grids = io.dev<uint8_t>(QGRID_BYTES);
-    io.put(grids, codebooks().data(), QGRID_BYTES);
-    const uint32_t SLOTS = 24;
-    // Only the kernel's own matrices count.
-    const uint32_t dt = type, gt = type;
-    D41Class ca = make_class(gt, dt, PA, 0);
-    D41Class cb = make_class(gt, dt, PB, SLOTS * ca.slot_bytes);
-    const uint64_t total = SLOTS * (ca.slot_bytes + cb.slot_bytes);
-    const Expert e = make_expert(gt, dt, rng);
-    auto *cache = io.dev<uint8_t>(total);
-    {
-      std::vector<uint8_t> sa(ca.slot_bytes), sb(cb.slot_bytes);
-      fill_slot(sa.data(), e, gt, dt, ca, 0);
-      fill_slot(sb.data(), e, gt, dt, cb, PA);
-      for (uint32_t i = 0; i < SLOTS; i++) {
-        io.put(cache + ca.base + i * ca.slot_bytes, sa.data(), sa.size());
-        io.put(cache + cb.base + i * cb.slot_bytes, sb.data(), sb.size());
-      }
-    }
-    D41Class table[2] = {ca, cb};
-    auto *classes = io.dev<D41Class>(2);
-    io.put(classes, table, 2);
-    const uint32_t hs = PA + PA / 8, WMAX = STEP_MAX_ROWS;
-    auto *ha = io.dev<uint8_t>(WMAX * U * hs);
-    auto *y = io.dev<float>(WMAX * U * E);
-    auto *x = io.dev<uint8_t>(WMAX * X_STRIDE);
-    for (uint32_t t = 0; t < WMAX; t++) {
-      const auto xf = randn(rng, E);
-      io.put(x + t * X_STRIDE, a8_row(xf.data(), E));
-    }
-    // h as a8 for down, in class A's stride: even assignments take part A's K, odd part B's.
-    for (uint32_t a = 0; a < WMAX * U; a++) {
-      const auto hf = randn(rng, a % 2 ? PB : PA);
-      io.put(ha + (size_t)a * hs, a8_row(hf.data(), hf.size()));
-    }
-    auto *dn = io.dev<uint32_t>(4);
-    const uint32_t one = 1;
+    Rig r(*this, type, down);
     log_clocks("before the kept shape's times");
-    const uint32_t per = U, K = E, rows = E, xs = X_STRIDE;
     for (uint32_t W : TIMED_WIDTHS) {
       const std::string mod = std::string("deepseek41_moe_") + (down ? "down_" : "gate_up_") + lower(name(type)) + "_g" +
                               std::to_string(W);
-      const uint32_t lx = down ? local_size(D41_DOWN_ROWS, D41_DOWN_LANES(type)) : local_size(D41_GU_ROWS(W), D41_GU_LANES(type, W));
-      const uint32_t grid = down ? E / MOE_WG_ROWS : PA / MOE_WG_ROWS;
-      auto *dg = io.dev<D41Group>(2 * SLOTS * U * WMAX);
-      auto rec = [&](ze::List &L, const D41Group *g, const uint32_t *nn, uint32_t gy) {
-        if (down)
-          L.launch(lib.get(0, mod, "moe_down_c"), {cache, classes, g, nn, rows, ha, hs, y, grids}, grid, gy, 1, lx);
-        else
-          L.launch(lib.get(0, mod, "moe_gate_up_c"), {cache, classes, g, nn, x, K, xs, per, ha, hs, grids}, grid, gy, 1, lx);
-      };
-      const uint64_t abytes = (down ? 1 : 2) * runs_bytes(type, down ? (uint64_t)E * 5 : (uint64_t)PA * GU_BPR);
-      const uint64_t bbytes = (down ? 1 : 2) * runs_bytes(type, down ? (uint64_t)E * 4 : (uint64_t)PB * GU_BPR);
-      io.put(dn, &one, 1);
+      const uint32_t lx = down ? local_size(D41_DOWN_ROWS, D41_DOWN_LANES(type, W)) : local_size(D41_GU_ROWS(W), D41_GU_LANES);
+      const uint32_t one = 1;
+      r.io.put(r.dn, &one, 1);
       // One group of one assignment, of each class, slots in turn.
       for (uint32_t cls : {0u, 1u}) {
-        std::vector<D41Group> gs(SLOTS);
-        for (uint32_t i = 0; i < SLOTS; i++) {
+        std::vector<D41Group> gs(Rig::SLOTS);
+        for (uint32_t i = 0; i < Rig::SLOTS; i++) {
           std::memset(&gs[i], 0, sizeof(D41Group));
           gs[i].slot = (int32_t)i, gs[i].n = 1, gs[i].cls = cls, gs[i].asg[0] = cls;
         }
-        io.put(dg, gs);
+        r.io.put(r.dg, gs);
         uint32_t at = 0;
-        const double us = time_launch(rt, 0, [&](ze::List &L) { rec(L, dg + at++ % SLOTS, dn, W * U); });
+        const double us = time_launch(rt, 0, [&](ze::List &L) {
+          launch_rig(L, r, mod, lx, r.dg + at++ % Rig::SLOTS, r.classes, W * U);
+        });
         std::printf("time %s %s part %c, one group of 1, W=%u list: %.2f us %.1f GB/s\n", down ? "down" : "gate+up",
-                    name(type), cls ? 'B' : 'A', W, us, (double)(cls ? bbytes : abytes) / us / 1e3);
+                    name(type), cls ? 'B' : 'A', W, us, (double)(cls ? r.bbytes : r.abytes) / us / 1e3);
       }
       // One group of W assignments, part A.
       {
-        std::vector<D41Group> gs(SLOTS);
-        for (uint32_t i = 0; i < SLOTS; i++) {
+        std::vector<D41Group> gs(Rig::SLOTS);
+        for (uint32_t i = 0; i < Rig::SLOTS; i++) {
           std::memset(&gs[i], 0, sizeof(D41Group));
           gs[i].slot = (int32_t)i, gs[i].n = W;
           for (uint32_t t = 0; t < W; t++) gs[i].asg[t] = t * U;
         }
-        io.put(dg, gs);
+        r.io.put(r.dg, gs);
         uint32_t at = 0;
-        const double us = time_launch(rt, 0, [&](ze::List &L) { rec(L, dg + at++ % SLOTS, dn, W * U); });
+        const double us = time_launch(rt, 0, [&](ze::List &L) {
+          launch_rig(L, r, mod, lx, r.dg + at++ % Rig::SLOTS, r.classes, W * U);
+        });
         std::printf("time %s %s part A, one group of %u, W=%u: %.2f us\n", down ? "down" : "gate+up", name(type), W, W, us);
       }
-      // 6 W parts, half of each class, one assignment each, slots in turn.
+      // 6 W parts, and 6 groups of W.
       {
         const uint32_t ng = W * U;
-        const uint32_t rounds = 2 * SLOTS;
-        std::vector<D41Group> gs(rounds * ng);
-        for (uint32_t i = 0; i < rounds * ng; i++) {
-          std::memset(&gs[i], 0, sizeof(D41Group));
-          gs[i].cls = i & 1;
-          gs[i].slot = (int32_t)((i / 2) % SLOTS);
-          gs[i].n = 1;
-          gs[i].asg[0] = i % ng;
-        }
-        io.put(dg, gs);
-        io.put(dn, &ng, 1);
-        uint32_t at = 0;
-        const double us = time_launch(rt, 0, [&](ze::List &L) { rec(L, dg + (at++ % rounds) * ng, dn, ng); });
-        const uint64_t mixb = (uint64_t)(ng / 2) * (abytes + bbytes);
+        const double us = time_parts(r, mod, lx, W);
+        const uint64_t mixb = (uint64_t)(ng / 2) * (r.abytes + r.bbytes);
         std::printf("time %s %s %u parts mixed, W=%u: %.2f us, %.2f us a part, %.1f GB/s\n", down ? "down" : "gate+up",
                     name(type), ng, W, us, us / ng, (double)mixb / us / 1e3);
+        if (W > 1)
+          std::printf("time %s %s 6 groups of %u mixed, W=%u: %.2f us\n", down ? "down" : "gate+up", name(type), W, W,
+                      time_full(r, mod, lx, W));
         // No group at all: what a launch of empty groups costs.
         const uint32_t zero = 0;
-        io.put(dn, &zero, 1);
-        const double empty = time_launch(rt, 0, [&](ze::List &L) { rec(L, dg, dn, ng); });
+        r.io.put(r.dn, &zero, 1);
+        const double empty = time_launch(rt, 0, [&](ze::List &L) { launch_rig(L, r, mod, lx, r.dg, r.classes, ng); });
         std::printf("time %s %s no groups, %u in the grid, W=%u: %.2f us\n", down ? "down" : "gate+up", name(type), ng, W,
                     empty);
       }
-      rt.free(dg);
     }
     log_clocks("after the kept shape's times");
-    for (void *b : std::vector<void *>{grids, cache, classes, ha, y, x, dn}) rt.free(b);
+    r.free_all(rt);
   }
 };
 
 }  // namespace
 
-int main() {
+int main(int argc, char **argv) {
   init_clocks();
   if (test::gpus() == 0) return test::no_gpu();
   ze::Runtime rt;
@@ -807,18 +904,26 @@ int main() {
     EXPECT(rt.ncards() == (uint32_t)std::atoi(e), "%u cards ran, ENGINE_EXPECT_GPUS=%s", rt.ncards(), e);
   ze::Library lib(rt);
   Bench b(rt, lib);
+  const uint32_t gate_up_types[] = {QT_IQ1_S, QT_IQ2_XXS, QT_IQ1_M};
+  const uint32_t down_types[] = {QT_IQ1_S, QT_IQ1_M, QT_IQ2_XXS, QT_IQ2_S};
+  if (argc > 1 && std::strcmp(argv[1], "--sweep") == 0) {
+    log_clocks("before the sweep");
+    for (uint32_t t : gate_up_types)
+      for (uint32_t part : {FF, PA, PB}) b.sweep(t, false, part);
+    for (uint32_t t : down_types)
+      for (uint32_t part : {FF, PA, PB}) b.sweep(t, true, part);
+    for (uint32_t t : down_types) b.codebook_copy(t);
+    log_clocks("after the sweep");
+    for (uint32_t t : gate_up_types) b.step_sweep(t, false);
+    for (uint32_t t : down_types) b.step_sweep(t, true);
+    return b.ck.report();
+  }
   // The file's pairs of gate and up with down that cover each routed type (engine/models/deepseek41/tensors.tsv).
   const uint32_t pairs[][2] = {{QT_IQ1_S, QT_IQ1_S}, {QT_IQ2_XXS, QT_IQ1_M}, {QT_IQ1_M, QT_IQ1_S}, {QT_IQ1_S, QT_IQ2_S},
                                {QT_IQ1_S, QT_IQ2_XXS}};
   if (std::getenv("DS41_MOE_TIMES_ONLY") == nullptr)
     for (const auto &p : pairs) b.product_checks(p[0], p[1]);
-  log_clocks("before the sweep");
-  for (uint32_t t : {QT_IQ1_S, QT_IQ2_XXS, QT_IQ1_M})
-    for (uint32_t part : {FF, PA, PB}) b.sweep(t, false, part);
-  for (uint32_t t : {QT_IQ1_S, QT_IQ1_M, QT_IQ2_XXS, QT_IQ2_S})
-    for (uint32_t part : {FF, PA, PB}) b.sweep(t, true, part);
-  log_clocks("after the sweep");
-  for (uint32_t t : {QT_IQ1_S, QT_IQ2_XXS, QT_IQ1_M}) b.kept_times(t, false);
-  for (uint32_t t : {QT_IQ1_S, QT_IQ1_M, QT_IQ2_XXS, QT_IQ2_S}) b.kept_times(t, true);
+  for (uint32_t t : gate_up_types) b.kept_times(t, false);
+  for (uint32_t t : down_types) b.kept_times(t, true);
   return b.ck.report();
 }

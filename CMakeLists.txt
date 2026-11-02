@@ -17,6 +17,7 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 option(ENGINE_WERROR "Treat warnings as errors" OFF)
+option(ENGINE_KERNEL_SWEEPS "Build the kernel modules that only timing sweeps use, and the tests that run them" OFF)
 add_library(engine_warnings INTERFACE)
 # Level Zero descriptors are initialised as {STRUCTURE_TYPE}, so -Wmissing-field-initializers is off.
 target_compile_options(engine_warnings INTERFACE -Wall -Wextra -Wno-missing-field-initializers

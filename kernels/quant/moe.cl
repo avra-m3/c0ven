@@ -492,12 +492,12 @@ REQD_SG __kernel void moe_down_g(__global const uchar *cache, ulong slot_bytes, 
 #ifdef MOE_CLASSES
 
 #ifndef GU_LANES
-#define GU_LANES D41_GU_LANES(QTYPE, A)
+#define GU_LANES D41_GU_LANES
 #endif
 #ifndef DOWN_LANES
-#define DOWN_LANES D41_DOWN_LANES(QTYPE)
+#define DOWN_LANES D41_DOWN_LANES(QTYPE, A)
 #endif
-// ds41_moe_test's sweep may set the rows a sub-group.
+// ds41_moe_test's sweep sets the rows a sub-group.
 #ifdef CL_ROWS
 #define CL_GU_ROWS CL_ROWS
 #define CL_DOWN_ROWS CL_ROWS

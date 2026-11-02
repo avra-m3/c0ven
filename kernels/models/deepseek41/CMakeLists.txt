@@ -17,7 +17,7 @@ set(deepseek41_modules deepseek41 deepseek41_attn deepseek41_check deepseek41_og
 
 # The routed experts' products at the file's types, one module per kernel, type and largest group:
 # deepseek41_moe_gate_up_<type>_g<a> and deepseek41_moe_down_<type>_g<a>. The down modules read the codebook through
-# __constant except IQ2_XXS's, as docs/measurements/MEASUREMENTS.md#2026-11-02-deepseek41-routed-experts says.
+# __constant except IQ2_XXS's at group size 1 (docs/measurements/MEASUREMENTS.md#2026-11-02-deepseek41-moe-step-sweep).
 set(deepseek41_moe_options -DMOE_CLASSES -I${CMAKE_SOURCE_DIR}/kernels/quant ${DEEPSEEK41_KERNEL_INCLUDES})
 foreach(a 1 2 3 4 6 8)
   foreach(type IQ1_S IQ1_M IQ2_XXS)
@@ -29,7 +29,7 @@ foreach(a 1 2 3 4 6 8)
   foreach(type IQ1_S IQ1_M IQ2_XXS IQ2_S)
     string(TOLOWER ${type} lower)
     set(grid -DGRID_CONSTANT)
-    if(type STREQUAL IQ2_XXS)
+    if(type STREQUAL IQ2_XXS AND a EQUAL 1)
       set(grid "")
     endif()
     engine_add_kernel_module(deepseek41_moe_down_${lower}_g${a} SOURCE kernels/quant/moe.cl
@@ -38,26 +38,44 @@ foreach(a 1 2 3 4 6 8)
     list(APPEND deepseek41_modules deepseek41_moe_down_${lower}_g${a})
   endforeach()
 endforeach()
-# ds41_moe_test's sweep at group size 1, as lanes:rows a sub-group:name. The name ends in constant when the codebook is
-# read through __constant; "local" and "constant" alone are 4 rows a sub-group.
-foreach(type IQ1_S IQ1_M IQ2_XXS IQ2_S)
-  string(TOLOWER ${type} lower)
-  foreach(shape 16:4:local 16:4:constant 16:2:r2 16:2:r2_constant 16:1:r1 8:4:local 8:4:constant 8:2:r2 8:2:r2_constant
-                4:4:local 4:4:constant)
-    string(REPLACE ":" ";" parts ${shape})
-    list(GET parts 0 lanes)
-    list(GET parts 1 rows)
-    list(GET parts 2 place)
-    set(grid "")
-    if(place MATCHES constant)
-      set(grid -DGRID_CONSTANT)
+# ds41_moe_test --sweep: each kernel by type, largest group, lanes, rows a sub-group and the codebook's place, in
+# deepseek41_moe_sweep_<kernel>_<type>_g<a>_l<lanes>_r<rows>_<place>. 4 lanes at group size 1 only.
+if(ENGINE_KERNEL_SWEEPS)
+  foreach(kernel gate_up down)
+    if(kernel STREQUAL gate_up)
+      set(types IQ1_S IQ1_M IQ2_XXS)
+      set(only -DCL_GATE_UP_ONLY)
+    else()
+      set(types IQ1_S IQ1_M IQ2_XXS IQ2_S)
+      set(only -DCL_DOWN_ONLY)
     endif()
-    engine_add_kernel_module(deepseek41_moe_${lower}_l${lanes}_${place} SOURCE kernels/quant/moe.cl
-                             OPTIONS -DQTYPE=QT_${type} -DGROUP=1 -DGU_LANES=${lanes} -DDOWN_LANES=${lanes}
-                             -DCL_ROWS=${rows} ${grid} ${deepseek41_moe_options})
-    list(APPEND deepseek41_modules deepseek41_moe_${lower}_l${lanes}_${place})
+    foreach(type ${types})
+      string(TOLOWER ${type} lower)
+      foreach(a 1 2 3 4 6 8)
+        set(shapes 16:1 16:2 16:4 8:2 8:4)
+        if(a EQUAL 1)
+          list(APPEND shapes 4:4)
+        endif()
+        foreach(shape ${shapes})
+          string(REPLACE ":" ";" parts ${shape})
+          list(GET parts 0 lanes)
+          list(GET parts 1 rows)
+          foreach(place local constant)
+            set(grid "")
+            if(place STREQUAL constant)
+              set(grid -DGRID_CONSTANT)
+            endif()
+            set(module deepseek41_moe_sweep_${kernel}_${lower}_g${a}_l${lanes}_r${rows}_${place})
+            engine_add_kernel_module(${module} SOURCE kernels/quant/moe.cl
+                                     OPTIONS -DQTYPE=QT_${type} -DGROUP=${a} ${only} -DGU_LANES=${lanes}
+                                     -DDOWN_LANES=${lanes} -DCL_ROWS=${rows} ${grid} ${deepseek41_moe_options})
+            list(APPEND deepseek41_modules ${module})
+          endforeach()
+        endforeach()
+      endforeach()
+    endforeach()
   endforeach()
-endforeach()
+endif()
 
 # engine_add_kernel_module depends on the headers under kernels/ and shared/; these two lie outside them.
 foreach(module ${deepseek41_modules})
