@@ -186,6 +186,9 @@ SHARED_ASSERT(sizeof(D41Group) == 48, "D41Group layout");
 // threads' instructions: the fewest that reach each one's shortest time
 // (docs/measurements/MEASUREMENTS.md#2026-11-02-deepseek41-router).
 #define D41_RT_SGS(W) ((W) <= 2 ? 24 : (W) <= 4 ? 12 : 6)
+// ffn_gate_inp . x by mv_xmx_bf16 on the stream's bf16 form, whole on both cards: K split over this many sub-groups, the
+// shortest time with cold weights (docs/measurements/MEASUREMENTS.md#2026-11-02-deepseek41-router-product).
+#define D41_RT_KS 8
 #define D41_SWIGLU_SGS 20
 #define D41_CMB_SGS(W) ((W) <= 6 ? 16 : 8)
 
