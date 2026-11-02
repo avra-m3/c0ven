@@ -15,6 +15,7 @@ engine_add_kernel_module(gemm_bf16_t4n2s11 SOURCE kernels/gemm.cl
                          OPTIONS -DBF16 -DTM=4 -DTN=2 -DGEMM_SG=11 -cl-intel-256-GRF-per-thread)
 # Each architecture's own modules (ADR-0061).
 add_subdirectory(models/qwen4exp)
+add_subdirectory(models/deepseek41)
 
 # Every quantised weight type the engine reads.
 set(ENGINE_QUANT_TYPES Q8_0 Q4_0 Q5_0 Q5_1 Q2_0 IQ4_NL IQ4_XS Q2_K Q3_K Q4_K Q5_K Q6_K IQ1_S IQ1_M IQ2_XXS IQ2_XS
