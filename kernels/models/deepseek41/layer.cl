@@ -311,3 +311,52 @@ REQD_SG __kernel void ds_engram_apply(__global float *X, __global const float *k
     if (lane == 0) ss[r] = total;
   }
 }
+
+// A card's send of its partial sums: y [W][D41_EMBD] in its memory into the same rows of peer, the other card's memory
+// or pinned host memory, in 256-byte stores, as every store across PCIe is 64 bytes or wider. Even and odd exchanges use
+// different peer buffers: the other card may still be reading the last one
+// (docs/measurements/MEASUREMENTS.md#2026-11-02-deepseek41-exchange). Groups W, sub-groups * 16; sub-groups divide 80.
+REQD_SG __kernel void ds_exch_send(__global const float *y, __global float *peer) {
+  const uint n = D41_EMBD / get_num_sub_groups(), at = get_group_id(0) * D41_EMBD + sg_id() * n;
+  for (uint i = at; i < at + n; i += 64) wr4(peer + i, rd4(y + i));
+}
+
+// A list's wait (ADR-0011, ADR-0062 item 5) on the miss answer, the other card's exchange flag or the Engram flag: one
+// work-item polls flag until it holds *want; past the bounds it sets *stuck. A wait that finds *stuck set does not poll,
+// so a list spends one bound in all, inside xe's job timeout. Pointers other than want and stuck may be null. stamp gets
+// the clock at entry and exit. Group 1.
+REQD_SG __kernel void ds_wait(__global uint *raise, __global const uint *flush, __global const uint *flag,
+                              __global const uint *want, __global const uint *nmiss, uint W, __global uint *stuck,
+                              __global ulong *stamp) {
+  if (stamp) stamp[0] = clock_read_device();
+  const uint step = *want;
+  // The card's flag to the other card. flush is a word of the other card's memory: its read arrives after the stores
+  // before it on that path.
+  if (raise) {
+    if (flush) {
+      host_read_fence();
+      (void)*(volatile __global const uint *)flush;
+    }
+    atomic_work_item_fence(CLK_GLOBAL_MEM_FENCE, memory_order_release, memory_scope_all_svm_devices);
+    atomic_store_explicit((volatile __global atomic_uint *)raise, step, memory_order_release,
+                          memory_scope_all_svm_devices);
+  }
+  bool poll = flag != 0 && *stuck == 0;
+  // No row of W missed: the CPU has no answer to give.
+  if (poll && nmiss) {
+    uint any = 0;
+    for (uint r = 0; r < W; r++) any |= nmiss[r];
+    poll = any != 0;
+  }
+  if (poll) {
+    const ulong t0 = clock_read_device();
+    bool seen = false;
+    for (uint i = 0; i < D41_WAIT_POLLS && !seen; i++) {
+      host_read_fence();
+      seen = *(volatile __global const uint *)flag == step;
+      if (!seen && clock_read_device() - t0 >= D41_WAIT_TICKS) break;
+    }
+    if (!seen) *stuck = 1;
+  }
+  if (stamp) stamp[1] = clock_read_device();
+}
