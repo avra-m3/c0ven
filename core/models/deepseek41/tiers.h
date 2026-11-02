@@ -23,6 +23,7 @@ namespace engine::deepseek41 {
 constexpr uint64_t kArenaPieceBytes = 1ull << 30;
 constexpr uint64_t kHugeBytes = 2ull << 20;
 constexpr uint16_t kPartABlocks = 5, kPartBBlocks = 4;  // a down row's blocks in each card's part (ADR-0062 item 2)
+constexpr std::chrono::seconds kHostWaitLimit{10};      // the longest the host sleeps on a read or a job
 
 // Where a matrix of expert 0 starts: a shard's index and the byte in it.
 struct MatrixPlace {
@@ -135,18 +136,22 @@ class RingLayout {
 // filesystem without O_DIRECT (ADR-0015 item 5).
 class SsdReader {
  public:
-  // paths: the shards, as MatrixPlace::file numbers them. ring_bytes: from staging_ring_bytes.
-  SsdReader(const std::vector<std::string> &paths, uint64_t ring_bytes, unsigned threads = DirectReader::kThreads);
+  // paths: the shards, as MatrixPlace::file numbers them. ring_bytes: from staging_ring_bytes. wait_limit: wait's bound.
+  SsdReader(const std::vector<std::string> &paths, uint64_t ring_bytes, unsigned threads = DirectReader::kThreads,
+            std::chrono::nanoseconds wait_limit = kHostWaitLimit);
+  // Waits for a running read however long it takes, since freeing the ring under it would corrupt memory.
   ~SsdReader();
   SsdReader(const SsdReader &) = delete;
   SsdReader &operator=(const SsdReader &) = delete;
 
   // Places the experts ids (distinct) on the side and starts their reads, every expert's three matrices at once, and
   // returns without waiting. out gets each expert's weights in the ring, whole down; read them only after wait. Throws
-  // when the ring cannot hold the round, before any read.
+  // before any read when the ring cannot hold the round, or the last round is still running after wait gave up on it.
   void start(uint32_t side, const LayerExperts &l, const std::vector<uint32_t> &ids, std::vector<ExpertWeights> &out);
-  // Sleeps until the round has landed; throws if a read failed. No round running returns at once.
+  // Sleeps until the round has landed; throws if a read failed, or if it has not landed within wait_limit. The round
+  // then still runs, and wait may be called again. No round running returns at once.
   void wait();
+  // The side's round is over: its bytes are free. Safe after wait gave up, since start refuses until the reads land.
   void release(uint32_t side) { layout_.release(side); }
 
   DirectReader &direct() { return reader_; }
@@ -175,10 +180,11 @@ class SsdReader {
   std::thread thread_;
   std::mutex mu_;
   std::condition_variable cv_;
+  const std::chrono::nanoseconds wait_limit_;
   bool stop_ = false, pending_ = false;
   std::string error_;
   uint64_t rounds_ = 0;
-  std::atomic<uint64_t> pool_runs_{0}, slow_reads_{0};
+  std::atomic<uint64_t> pool_runs_{0}, slow_reads_{0}, pieces_left_{0};
 };
 
 // One layer's misses for one step. jobs: the layer's records, one a row, read in place. rows: the step's recorded width
@@ -211,16 +217,20 @@ struct MissCounts {
 class MissJobs {
  public:
   // layers: by layer number. arena and reader must outlive it. cpu: its workers run the sums, with the calling thread.
-  MissJobs(std::vector<LayerExperts> layers, const ExpertArena &arena, SsdReader &reader, Pool &cpu);
+  // wait_limit: wait's bound.
+  MissJobs(std::vector<LayerExperts> layers, const ExpertArena &arena, SsdReader &reader, Pool &cpu,
+           std::chrono::nanoseconds wait_limit = kHostWaitLimit);
   ~MissJobs();
   MissJobs(const MissJobs &) = delete;
   MissJobs &operator=(const MissJobs &) = delete;
 
-  // Throws on a bad record, a read that failed or a ring that cannot hold the round; the flag is then not raised, the
-  // card's bounded wait gives up and the step fails (ADR-0062 item 5).
+  // Throws on a bad record, a read that failed or passed the reader's wait_limit, or a ring that cannot hold the round;
+  // the flag is then not raised, the card's bounded wait gives up and the step fails (ADR-0062 item 5).
   MissCounts run_layer(const MissAsk &ask);
   void submit(const MissAsk &ask);  // takes no lock longer than a queue push, never reads
-  // Sleeps until every submitted job is done. Throws the first failure since the last wait.
+  // Sleeps until every submitted job is done. Throws the first failure since the last wait, naming its layer. Past
+  // wait_limit it drops the jobs not begun and throws, naming the layer; the job running goes on, so what its ask points
+  // to must stay valid until a later wait returns.
   void wait();
   // Called on the job's thread just before the arena sum starts, and when it ends, reads possibly still running. For
   // tests.
@@ -251,7 +261,10 @@ class MissJobs {
   std::mutex mu_;
   std::condition_variable cv_, idle_;
   std::deque<MissAsk> queue_;
+  const std::chrono::nanoseconds wait_limit_;
   bool stop_ = false, busy_ = false;
+  bool abandoned_ = false;  // wait gave up on the running job, so its failure has been reported
+  uint32_t running_layer_ = 0;
   std::string error_;
 };
 

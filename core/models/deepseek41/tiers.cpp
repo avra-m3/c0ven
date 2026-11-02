@@ -207,8 +207,9 @@ void RingLayout::release(uint32_t side) {
     high_ = align_down(capacity_, kAlign);
 }
 
-SsdReader::SsdReader(const std::vector<std::string> &paths, uint64_t ring_bytes, unsigned threads)
-    : reader_(paths, threads), ring_(align_up(ring_bytes, kHugeBytes)), layout_(ring_bytes) {
+SsdReader::SsdReader(const std::vector<std::string> &paths, uint64_t ring_bytes, unsigned threads,
+                     std::chrono::nanoseconds wait_limit)
+    : reader_(paths, threads), ring_(align_up(ring_bytes, kHugeBytes)), layout_(ring_bytes), wait_limit_(wait_limit) {
   uint64_t ranges = 0;
   collapse(ring_.data(), ring_.bytes(), &ranges);
   // A write, since reading an untouched page would map the shared zero page and the first read into it would fault.
@@ -236,24 +237,27 @@ void SsdReader::add_pieces(const MatrixPlace &first, uint64_t bytes, uint32_t id
 
 void SsdReader::start(uint32_t side, const LayerExperts &l, const std::vector<uint32_t> &ids,
                       std::vector<ExpertWeights> &out) {
-  pieces_.clear();
-  out.resize(ids.size());
-  try {
-    for (size_t i = 0; i < ids.size(); i++) {
-      const RingExpert r = layout_.place(side, l, ids[i]);
-      out[i] = ExpertWeights{};
-      add_pieces(l.gate, l.gate_bytes, ids[i], r.gate, &out[i].gate);
-      add_pieces(l.up, l.gate_bytes, ids[i], r.up, &out[i].up);
-      add_pieces(l.down, l.down_bytes, ids[i], r.down, &out[i].down);
-    }
-  } catch (...) {
-    layout_.release(side);
-    throw;
-  }
-  if (pieces_.empty()) return;
   {
     std::lock_guard<std::mutex> lk(mu_);
+    if (pending_) throw std::runtime_error("the last SSD read round is still running");
+    error_.clear();  // the failure of a round wait gave up on, already reported
+    pieces_.clear();
+    out.resize(ids.size());
+    try {
+      for (size_t i = 0; i < ids.size(); i++) {
+        const RingExpert r = layout_.place(side, l, ids[i]);
+        out[i] = ExpertWeights{};
+        add_pieces(l.gate, l.gate_bytes, ids[i], r.gate, &out[i].gate);
+        add_pieces(l.up, l.gate_bytes, ids[i], r.up, &out[i].up);
+        add_pieces(l.down, l.down_bytes, ids[i], r.down, &out[i].down);
+      }
+    } catch (...) {
+      layout_.release(side);
+      throw;
+    }
+    if (pieces_.empty()) return;
     pending_ = true;
+    pieces_left_ = pieces_.size();
     rounds_++;
   }
   cv_.notify_all();
@@ -261,7 +265,14 @@ void SsdReader::start(uint32_t side, const LayerExperts &l, const std::vector<ui
 
 void SsdReader::wait() {
   std::unique_lock<std::mutex> lk(mu_);
-  cv_.wait(lk, [&] { return !pending_; });
+  if (!cv_.wait_for(lk, wait_limit_, [&] { return !pending_; })) {
+    const Piece &first = pieces_.front();
+    throw std::runtime_error("the SSD reads did not land in " +
+                             std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(wait_limit_).count()) +
+                             " ms: " + std::to_string(pieces_left_.load()) + " of " + std::to_string(pieces_.size()) +
+                             " pieces left, from shard " + std::to_string(first.file) + " offset " +
+                             std::to_string(first.offset));
+  }
   if (!error_.empty()) throw std::runtime_error(std::exchange(error_, {}));
 }
 
@@ -288,6 +299,7 @@ void SsdReader::round_thread() {
         slow_reads_.fetch_add(1, std::memory_order_relaxed);
         std::fprintf(stderr, "engine: an SSD read of an expert took over 1 s\n");
       }
+      pieces_left_.fetch_sub(1, std::memory_order_relaxed);
     });
     pool_runs_.fetch_add(reader_.pool().runs_started() - runs0, std::memory_order_relaxed);
     lk.lock();
@@ -297,8 +309,9 @@ void SsdReader::round_thread() {
   }
 }
 
-MissJobs::MissJobs(std::vector<LayerExperts> layers, const ExpertArena &arena, SsdReader &reader, Pool &cpu)
-    : layers_(std::move(layers)), arena_(arena), reader_(reader), pool_(cpu), cpu_(cpu) {
+MissJobs::MissJobs(std::vector<LayerExperts> layers, const ExpertArena &arena, SsdReader &reader, Pool &cpu,
+                   std::chrono::nanoseconds wait_limit)
+    : layers_(std::move(layers)), arena_(arena), reader_(reader), pool_(cpu), cpu_(cpu), wait_limit_(wait_limit) {
   thread_ = std::thread([this] { job_thread(); });
 }
 
@@ -410,7 +423,16 @@ void MissJobs::submit(const MissAsk &ask) {
 
 void MissJobs::wait() {
   std::unique_lock<std::mutex> lk(mu_);
-  idle_.wait(lk, [&] { return queue_.empty() && !busy_; });
+  if (!idle_.wait_for(lk, wait_limit_, [&] { return queue_.empty() && !busy_; })) {
+    const uint32_t layer = busy_ ? running_layer_ : queue_.front().layer;
+    std::string what = "layer " + std::to_string(layer) + "'s miss job did not finish in " +
+                       std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(wait_limit_).count()) +
+                       " ms, with " + std::to_string(queue_.size()) + " more jobs waiting";
+    if (!error_.empty()) what += "; before it, " + std::exchange(error_, {});
+    queue_.clear();
+    abandoned_ = busy_;
+    throw std::runtime_error(what);
+  }
   if (!error_.empty()) throw std::runtime_error(std::exchange(error_, {}));
 }
 
@@ -422,15 +444,16 @@ void MissJobs::job_thread() {
     const MissAsk ask = queue_.front();
     queue_.pop_front();
     busy_ = true;
+    running_layer_ = ask.layer;
     lk.unlock();
     std::string err;
     try {
       run_layer(ask);
     } catch (const std::exception &e) {
-      err = e.what();
+      err = "layer " + std::to_string(ask.layer) + ": " + e.what();
     }
     lk.lock();
-    if (error_.empty()) error_ = std::move(err);
+    if (!std::exchange(abandoned_, false) && error_.empty()) error_ = std::move(err);
     busy_ = false;
     idle_.notify_all();
   }

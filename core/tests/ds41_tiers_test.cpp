@@ -1,8 +1,9 @@
 // Level 1 (docs/TESTING.md): deepseek41's experts off the cards, on small generated shards of real-shaped experts in a
 // directory under the working one (ctest's is the build tree, which takes O_DIRECT). The arena's layout, the reads, the
 // bits and pool jobs of a layer's sums, the ring at the widest step on the real file's offsets (the table given as the
-// argument), the refusal of a filesystem without O_DIRECT, reads kept off the engine thread, and the deadline thread
-// with a fake event. No card, no model. The sums skip (77) on a CPU without the tests' ggml build's features.
+// argument), the refusal of a filesystem without O_DIRECT, reads kept off the engine thread, the bounds on the host's
+// waits, and the deadline thread with a fake event. No card, no model. The sums skip (77) on a CPU without the tests'
+// ggml build's features.
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <unistd.h>
@@ -561,7 +562,8 @@ void check_engine_thread(const Generated &g) {
   });
   mj.set_arena_start_hook([&] {
     std::unique_lock<std::mutex> lk(mu);
-    read_before_sum = cv.wait_for(lk, std::chrono::seconds(10), [&] { return !readers.empty(); });
+    // Under MissJobs::wait's bound, so a job that runs the two in turn fails on the check below.
+    read_before_sum = cv.wait_for(lk, std::chrono::seconds(5), [&] { return !readers.empty(); });
   });
   mj.set_arena_hook([&] {
     std::lock_guard<std::mutex> lk(mu);
@@ -589,6 +591,94 @@ void check_engine_thread(const Generated &g) {
   EXPECT(!timed_out, "the reads were still held 60 s after they started");
   EXPECT(flag == 3, "the job finished");
   EXPECT(!readers.empty() && !readers.count(std::this_thread::get_id()), "a read ran on the engine thread");
+}
+
+// Calls a bounded wait until it stops expiring: a short limit can expire on a loaded host once the reads are let go.
+template <typename F>
+void until_it_returns(const F &wait) {
+  const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+  while (std::chrono::steady_clock::now() < end) {
+    try {
+      wait();
+      return;
+    } catch (const std::runtime_error &e) {
+      EXPECT(std::string(e.what()).find("did not") != std::string::npos || std::string(e.what()).find("still running") != std::string::npos,
+             "a bounded wait failed: %s", e.what());
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  EXPECT(false, "a bounded wait never returned");
+}
+
+// A read that does not return fails the wait on it within the bound. Nothing reuses the ring until the read lands.
+void check_wait_bounds(const Generated &g) {
+  const auto limit = std::chrono::milliseconds(100);
+  const std::vector<uint32_t> ids = {1, 2};
+  uint64_t round = 0;
+  for (uint32_t id : ids) round += expert_span(g.layers[0], id);
+  std::mutex mu;
+  std::condition_variable cv;
+  bool go = false;
+  const auto hold = [&] {
+    std::unique_lock<std::mutex> lk(mu);
+    cv.wait_for(lk, std::chrono::seconds(60), [&] { return go; });
+  };
+  const auto let_go = [&](bool to) {
+    std::lock_guard<std::mutex> lk(mu);
+    go = to;
+    cv.notify_all();
+  };
+  ExpertArena none(0);
+  Pool pool(3);
+  Records rec(1);
+  rec.route(0, {{1, 1.0f}, {2, 1.0f}});
+  std::vector<float> answer(D41_EMBD);
+
+  {
+    // SsdReader::wait, in a ring of one round, so the next round runs only on a side that was freed.
+    SsdReader reader(g.paths, round, DirectReader::kThreads, limit);
+    reader.set_read_hook(hold);
+    std::vector<ExpertWeights> w;
+    reader.start(0, g.layers[0], ids, w);
+    EXPECT(throws_with([&] { reader.wait(); }, "did not land"), "a held read must fail the wait");
+    EXPECT(throws_with([&] { reader.start(0, g.layers[0], ids, w); }, "still running"), "a running round refuses the next");
+    reader.release(0);
+    let_go(true);
+    until_it_returns([&] { reader.wait(); });
+    reader.start(0, g.layers[0], ids, w);
+    until_it_returns([&] { reader.wait(); });
+    for (size_t i = 0; i < ids.size(); i++) expect_same(w[i], g.whole(0, ids[i]), g.layers[0], "after a wait gave up");
+  }
+  let_go(false);
+  {
+    // The job's own wait on its reads: the job fails, and the next round runs once the first has landed.
+    SsdReader reader(g.paths, round, DirectReader::kThreads, limit);
+    reader.set_read_hook(hold);
+    MissJobs mj(g.layers, none, reader, pool);
+    uint32_t flag = 0;
+    const MissAsk ask{0, 1, 1, 9, rec.jobs.data(), answer.data(), D41_EMBD, &flag};
+    EXPECT(throws_with([&] { mj.run_layer(ask); }, "did not land"), "a held read must fail the job");
+    EXPECT(flag == 0, "a job past its bound raises no flag");
+    let_go(true);
+    until_it_returns([&] { mj.run_layer(ask); });
+    EXPECT(flag == 9, "the next round runs");
+  }
+  let_go(false);
+  {
+    // MissJobs::wait: it names the layer, drops the job not begun, and leaves the job running to finish.
+    SsdReader reader(g.paths, staging_ring_bytes(g.largest(), 1));
+    reader.set_read_hook(hold);
+    MissJobs mj(g.layers, none, reader, pool, limit);
+    uint32_t running = 0, dropped = 0;
+    mj.submit({0, 1, 1, 9, rec.jobs.data(), answer.data(), D41_EMBD, &running});
+    std::vector<float> other(D41_EMBD);
+    mj.submit({2, 1, 1, 9, rec.jobs.data(), other.data(), D41_EMBD, &dropped});
+    EXPECT(throws_with([&] { mj.wait(); }, "layer 0's miss job did not finish"), "a held job must fail the wait");
+    let_go(true);
+    until_it_returns([&] { mj.wait(); });
+    EXPECT(std::atomic_ref<uint32_t>(running).load() == 9, "the running job finished");
+    EXPECT(dropped == 0 && reader.rounds() == 1, "a job not begun is dropped");
+  }
 }
 
 // A fake event: the list arrives when the test says, and signal records whether the stuck flag was already set.
@@ -671,6 +761,7 @@ int main(int argc, char **argv) {
     check_read_failure(g);
     check_arena_failure(g);
     check_engine_thread(g);
+    check_wait_bounds(g);
   }
   fs::remove_all(tmpl);
   std::printf("PASS: the arena, the reads, the sums, the pool jobs, the ring, the refusal and the deadline thread\n");
