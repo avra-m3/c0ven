@@ -170,6 +170,30 @@ typedef struct {
   u32 pad;
 } D41Group;
 SHARED_ASSERT(sizeof(D41Group) == 48, "D41Group layout");
+
+// An expert's cut: part A is gate and up rows 0-1,279 and down's blocks 0-4, part B the rest (ADR-0062 item 2).
+#define D41_PART_A 1280
+#define D41_PART_B 1024
+
+// Lanes a row and rows a sub-group of kernels/quant/moe.cl's class kernels, by type t and group size a: the shortest
+// time on cold parts, whose few rows need more sub-groups to keep a card busy
+// (docs/measurements/MEASUREMENTS.md#2026-11-02-deepseek41-routed-experts).
+#define D41_GU_LANES(t, a) ((a) <= 2 || (t) == QT_IQ1_S ? 16 : 8)
+#define D41_GU_ROWS(a) ((a) == 1 ? 1 : 2)
+#define D41_DOWN_LANES(t) ((t) == QT_IQ1_S ? 16 : 8)
+#define D41_DOWN_ROWS 4
+
+// A slot class of a layer on a card: where its slots lie in the card's expert cache and which part they hold, read by
+// kernels/quant/moe.cl for each group. The layer's table has a row for each class D41Group.cls names.
+typedef struct {
+  u64 base;         // the first slot, in bytes from the cache's start
+  u64 slot_bytes;
+  u64 up_off;       // up and down, in bytes from a slot's start; gate is at the start
+  u64 down_off;
+  u32 rows;         // gate's and up's rows, and down's K
+  u32 pad[3];
+} D41Class;
+SHARED_ASSERT(sizeof(D41Class) == 48, "D41Class layout");
 #define D41_NO_STEP 0xffffffffu  // a MissJob's seq before its step is raised
 
 // ds_wait's bounds, whichever comes first: device-clock ticks, which are core cycles, and polls (ADR-0062 item 5).
