@@ -23,6 +23,7 @@
 #include "models/qwen4exp/layout.h"
 #include "models/qwen4exp/mrope.h"
 #include "models/qwen4exp/ngram.h"
+#include "models/qwen4exp/shape.h"
 #include "quant.h"
 #include "step.h"
 #include "util/parallel.h"
@@ -318,6 +319,7 @@ class Model final : public engine::Model {
 
   Options opt_;
   GgufModel gguf_;
+  Shape shape_;  // the file's sizes; equal to layout.h's once the constructor has checked them
   std::unique_ptr<ze::Runtime> rt_;
   std::unique_ptr<ze::Library> lib_;
   std::unique_ptr<ze::EventPool> events_;
