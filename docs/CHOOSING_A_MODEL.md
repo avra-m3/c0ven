@@ -1,8 +1,9 @@
 # Which model file to pick
 
 C0ven runs one model, Qwen3.8-Flash-Next, from any of four files that ISTA-DASLab publishes or from Unsloth's
-UD-IQ4_XS. This page is for choosing between them when you have not done it before. Where to download the file you pick and how to lay it out is
-in [MODEL_FILES.md](MODEL_FILES.md).
+UD-IQ4_XS. This page explains what sets them apart. Each file's size, RAM and speed are in
+[Getting started](GETTING_STARTED.md#1-pick-a-model), and every file's source and layout are in
+[MODEL_FILES.md](MODEL_FILES.md).
 
 ## The short answer
 
@@ -31,13 +32,13 @@ and need less RAM.
 
 ## Your hardware decides first
 
-| File | Download | RAM the engine takes | Experts a layer on the cards |
-| --- | ---: | ---: | ---: |
-| IQ3_S | 83.6 GB | [22.6 GiB](measurements/MEASUREMENTS.md#2026-10-19-other-quants) | [307 of 512](measurements/MEASUREMENTS.md#2026-10-19-other-quants) |
-| IQ3_XXS | 75.8 GB | [14.6 GiB](measurements/MEASUREMENTS.md#2026-10-19-other-quants) | [369](measurements/MEASUREMENTS.md#2026-10-19-other-quants) |
-| IQ2_XS | 68.0 GB | [7.1 GiB](measurements/MEASUREMENTS.md#2026-10-19-other-quants) | [460](measurements/MEASUREMENTS.md#2026-10-19-other-quants) |
-| Q2_0 | 66.4 GB | about 5.6 GiB (*estimate*) | [481](measurements/MEASUREMENTS.md#2026-10-19-other-quants) |
-| UD-IQ4_XS | 93.7 GB | about 32 GiB, against IQ3_S's 21 in the same test ([record](measurements/MEASUREMENTS.md#2026-10-29-ud-iq4xs-speed)) | [244](measurements/MEASUREMENTS.md#2026-10-29-ud-iq4xs-speed) |
+| File | Experts a layer on the cards |
+| --- | ---: |
+| IQ3_S | [307 of 512](measurements/MEASUREMENTS.md#2026-10-19-other-quants) |
+| IQ3_XXS | [369](measurements/MEASUREMENTS.md#2026-10-19-other-quants) |
+| IQ2_XS | [460](measurements/MEASUREMENTS.md#2026-10-19-other-quants) |
+| Q2_0 | [481](measurements/MEASUREMENTS.md#2026-10-19-other-quants) |
+| UD-IQ4_XS | [244](measurements/MEASUREMENTS.md#2026-10-29-ud-iq4xs-speed) |
 
 ### Disk
 
@@ -48,30 +49,28 @@ encoder are extra and the same for every file.
 
 ### RAM
 
-The figures are the most the engine's process took on two cards with one request slot and a 262,144-token
-conversation: the experts it keeps in RAM plus that conversation's memory. Q2_0's is an estimate: its measured
-expert store (1.91 GiB) plus the 3.7 GiB the other files added to theirs. Each further slot that holds a full
-262,144-token conversation adds about 3.2 GiB ([measurements/MEMORY_BUDGET.md](measurements/MEMORY_BUDGET.md)). Leave room beyond these for
-the system and your other programs: if the machine starts to swap, every reply slows down.
+The more experts stay in RAM, the more RAM a file needs, and the [table of files](GETTING_STARTED.md#1-pick-a-model)
+gives the figure for each. If the machine starts to swap, every reply slows down. Each further slot that holds a full
+262,144-token conversation adds about 3.2 GiB ([measurements/MEMORY_BUDGET.md](measurements/MEMORY_BUDGET.md)).
 
 ### Cards
 
 All the figures on this page are for two B60s. On one card the engine runs IQ3_S at less than half the
-speed and needs about 45 GiB of free RAM ([record](measurements/MEASUREMENTS.md#2026-10-19-one-card)). The smaller files have not
-been measured on one card. They should need far less RAM there, for the same reason as on two.
+speed ([record](measurements/MEASUREMENTS.md#2026-11-01-against-strata-and-llama-cpp)). The smaller files have not
+been measured on one card.
 
 ## Then speed
 
-| File | Reply speed after a short prompt (tokens/s) | Wait before the reply starts to a 246,571-token prompt (s) |
-| --- | ---: | ---: |
-| IQ3_S | [85](measurements/MEASUREMENTS.md#2026-10-18-against-llama-cpp) | [137.4](measurements/MEASUREMENTS.md#2026-10-19-other-quants) |
-| IQ3_XXS | [98.3](measurements/MEASUREMENTS.md#2026-10-19-other-quants) | [132.0](measurements/MEASUREMENTS.md#2026-10-19-other-quants) |
-| IQ2_XS | [100.8](measurements/MEASUREMENTS.md#2026-10-19-other-quants) | [127.9](measurements/MEASUREMENTS.md#2026-10-19-other-quants) |
-| Q2_0 | [104.4](measurements/MEASUREMENTS.md#2026-10-19-other-quants) | [128.1](measurements/MEASUREMENTS.md#2026-10-19-other-quants) |
-| UD-IQ4_XS | [81.5](measurements/MEASUREMENTS.md#2026-10-29-ud-iq4xs-speed), against IQ3_S's 99.7 in the same test | [145.5](measurements/MEASUREMENTS.md#2026-10-29-ud-iq4xs-speed), against IQ3_S's 139.9 |
+| File | Wait before the reply starts to a 246,571-token prompt (s) |
+| --- | ---: |
+| IQ3_S | [137.4](measurements/MEASUREMENTS.md#2026-10-19-other-quants) |
+| IQ3_XXS | [132.0](measurements/MEASUREMENTS.md#2026-10-19-other-quants) |
+| IQ2_XS | [127.9](measurements/MEASUREMENTS.md#2026-10-19-other-quants) |
+| Q2_0 | [128.1](measurements/MEASUREMENTS.md#2026-10-19-other-quants) |
+| UD-IQ4_XS | [145.5](measurements/MEASUREMENTS.md#2026-10-29-ud-iq4xs-speed), against IQ3_S's 139.9 |
 
-A token is a piece of a word: English text runs at about four tokens to three words. Reply speed is how fast the
-answer streams once it starts, after a 4,159-token prompt. All four stream several times faster than anyone reads,
+A token is a piece of a word: English text runs at about four tokens to three words. Reply speed, in the
+[table of files](GETTING_STARTED.md#1-pick-a-model), is how fast the answer streams once it starts. All four stream several times faster than anyone reads,
 so the difference shows in long answers, code and programs that call the model many times. The wait before the first
 token grows with the prompt. A 4,159-token prompt, about 3,000 words, starts in about two seconds on every file; a
 prompt that fills the whole context, such as a large codebase, takes over two minutes on
@@ -88,15 +87,15 @@ How much accuracy does each file give up? ISTA-DASLab scored each file on three 
 original 16-bit model (BF16), on [the files' model card](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF).
 These are their figures, not C0ven's:
 
-| File | AIME25, maths (30 problems) | GPQA-Diamond, science (198 questions) | LiveCodeBench v6, coding | Average, as a share of BF16's |
-| --- | ---: | ---: | ---: | ---: |
-| BF16, the original | 100 | 91.92 | 87.43 | 100% |
-| IQ3_S | 100 | 92.93 | 86.86 | 100.2% |
-| IQ3_XXS | 100 | 91.41 | 86.29 | 99.4% |
-| IQ2_XS | 96.67 | 87.37 | 83.43 | 95.7% |
-| Q2_0 | 96.67 | 89.39 | 81.14 | 95.7% |
+| File | AIME25, maths (30 problems) | GPQA-Diamond, science (198 questions) | LiveCodeBench v6, coding |
+| --- | ---: | ---: | ---: |
+| BF16, the original | 100 | 91.92 | 87.43 |
+| IQ3_S | 100 | 92.93 | 86.86 |
+| IQ3_XXS | 100 | 91.41 | 86.29 |
+| IQ2_XS | 96.67 | 87.37 | 83.43 |
+| Q2_0 | 96.67 | 89.39 | 81.14 |
 
-The scores are percent correct. A share above 100% is chance: the tests are small, and one question of GPQA-Diamond
+The scores are percent correct. An average above the original's is chance: the tests are small, and one question of GPQA-Diamond
 is half a point. Read the 3-bit files as matching the original and the 2-bit files as about 4 points behind it, losing
 one maths problem in 30 and a few science and coding questions. Q2_0 does a little better at science and IQ2_XS at
 coding.
