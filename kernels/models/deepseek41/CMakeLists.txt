@@ -9,17 +9,11 @@ engine_add_kernel_module(deepseek41_attn SOURCE kernels/models/deepseek41/attn.c
 # deepseek41's tests only.
 engine_add_kernel_module(deepseek41_check SOURCE kernels/models/deepseek41/check.cl
                          OPTIONS ${DEEPSEEK41_KERNEL_INCLUDES})
-# The attention output product: a module per attn_output_a's weight types (blocks 0-26 and 27-39) and lanes a row.
-set(deepseek41_modules deepseek41 deepseek41_attn deepseek41_check)
-foreach(type Q8_0 Q6_K)
-  string(TOLOWER ${type} lower)
-  foreach(lanes 16 8 4)
-    engine_add_kernel_module(deepseek41_og_${lower}_l${lanes} SOURCE kernels/models/deepseek41/output.cl
-                             OPTIONS -DQTYPE=QT_${type} -DLANES=${lanes} -I${CMAKE_SOURCE_DIR}/kernels/quant
-                             ${DEEPSEEK41_KERNEL_INCLUDES})
-    list(APPEND deepseek41_modules deepseek41_og_${lower}_l${lanes})
-  endforeach()
-endforeach()
+# The attention output product, attn_output_a in Q5_K, at layout.h's D41_OG_LANES.
+engine_add_kernel_module(deepseek41_og SOURCE kernels/models/deepseek41/output.cl
+                         OPTIONS -DQTYPE=QT_Q5_K -DLANES=4 -I${CMAKE_SOURCE_DIR}/kernels/quant
+                         ${DEEPSEEK41_KERNEL_INCLUDES})
+set(deepseek41_modules deepseek41 deepseek41_attn deepseek41_check deepseek41_og)
 
 # engine_add_kernel_module depends on the headers under kernels/ and shared/; these two lie outside them.
 foreach(module ${deepseek41_modules})
