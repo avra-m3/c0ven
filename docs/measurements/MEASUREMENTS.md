@@ -306,7 +306,51 @@ reordered layout run 3.2-8.8 times faster than in the file's layout
 | A change of the KV split's blocks moved on a thread beside the steps ([ADR-0048](../adr/0048-the-kv-splits-blocks-move-beside-the-steps.md)), 4 slots, a 262,144-token context and a 524,288-token pool, 7 loads an arm against the commit before | A change blocks the engine 1.0-3.6 ms instead of 14.5-37.8 ms, 28 changes a full load; 42.4-45.0 ms a load instead of 647.3-676.2. The moves take 13.5-36.5 ms on their own thread. Giving pages back, 0.0 ms instead of 34.8 (one load). No rate changed beyond the spread of the loads: a 255,028-token prompt 1,690.3 against 1,690.2 tokens/s and decode at that context 69.6 against 70.0 (medians); four 123,777-token prompts at once 1,498 against 1,503 tokens/s; four short requests 83.0 against 81.6 tokens/s in all. Decode at long context varied up to 14% between loads of either arm with the host's free CPU | <a id="2026-10-25-kv-moves-beside-the-steps"></a>[2026-10-25](#2026-10-25-kv-moves-beside-the-steps) |
 | The engine's counters (`engine_stats`, the `STATS` line, the `DONE` counters; [ADR-0049](../adr/0049-counters-in-the-core-read-by-a-snapshot-call.md)) | three ABBA rounds, 6 fresh servers an arm, 4 slots at 262,144: prompt rates within 0.3% (1,853 → 1,856, 1,747 → 1,750, 1,597 → 1,595 tokens/s); decode medians 0.995-1.043 of main's on seven of eight prompts, long-gen 0.905 in the series and 1.10 alone; four writers 93.9 → 93.3 tokens/s; each run's geometric mean of decode rates 0.975-0.993 (main) and 0.977-1.011. The counters: 331 experts a layer at load, 328 at the end (the floor the load keeps room for, 246, is reported beside it); 66 misses a row; a plain step 20.2 ms, a round 35.0 ms; 67 tokens a second of card time in plain steps, 112 in rounds with the draft layer's drafts, 126 with the slot's own; the engine thread busy 99.3%, swap rounds 1.3% of it | <a id="2026-10-25-counters-abba"></a>[2026-10-25](#2026-10-25-counters-abba) |
 
-### One request, two cards and one
+### One request and four at once: C0ven, Strata and llama.cpp
+
+One request at a time through each server's `/v1/chat/completions`, or four sent together, greedy, 512 tokens out at most,
+a 262,144-token context, the same IQ3_S file. C0ven 0.12.2 ran with DFlash 2 drafting and the image encoder; one slot, or
+four with `--slots 4 --kv-tokens 524288 --default-max-tokens 32768`. Strata is 0.2.9 with engine 0.1.55 and llama.cpp
+release b12032 with its SYCL backend; [BENCHMARKS.md](../BENCHMARKS.md) gives their settings. Prompt reading is the prompt's
+tokens over the time to the first token, decode the tokens after the first over the time to the last, both at the client.
+Six fresh server processes each, in six rounds with even rounds reversed, except llama.cpp at 255k: two.
+
+| Two cards | C0ven | Strata | llama.cpp | Measured |
+| --- | --- | --- | --- | --- |
+| Prompt reading, doc-4k-qa (4,159 tokens), tokens/s | 2,379.1 (2,356.6-2,386.8) | 823.3 (802.1-837.3) | 358.4 (305.0-367.2) | <a id="2026-11-01-against-strata-and-llama-cpp"></a>[2026-11-01](#2026-11-01-against-strata-and-llama-cpp) |
+| Prompt reading, doc-32k (32,010 tokens), tokens/s | 2,634.5 (2,608.3-2,637.4) | 1,561.1 (1,558.2-1,575.4) | 357.0 (353.3-357.5) | [2026-11-01](#2026-11-01-against-strata-and-llama-cpp) |
+| Prompt reading, the 255,017-token prompt, tokens/s | 2,134.7 (2,131.5-2,135.9) | 1,114.5 (1,113.4-1,115.1); it counts 255,198 tokens | about 199.1 (198.8-199.5), two runs | [2026-11-01](#2026-11-01-against-strata-and-llama-cpp) |
+| Decode after doc-4k-qa, tokens/s | 102.31 (83.57-105.55) | 55.73 (54.81-55.86) | 17.17 (17.12-17.23) | [2026-11-01](#2026-11-01-against-strata-and-llama-cpp) |
+| Decode after doc-32k, tokens/s | 99.43 (98.29-129.41); 98.3-99.7 in the four runs that end at 110 tokens, 127.5 and 129.4 in the two that reach 512 | 63.62 (61.76-64.09); every run ends at 110 tokens | 14.49 (14.44-14.56) | [2026-11-01](#2026-11-01-against-strata-and-llama-cpp) |
+| Decode after the 255,017-token prompt, tokens/s | 75.53 (65.69-81.31) | 41.89 (41.80-41.96) | about 5.91 (5.89-5.92), two runs | [2026-11-01](#2026-11-01-against-strata-and-llama-cpp) |
+| Time to the first token, doc-4k-qa, s | 1.75 (1.74-1.76) | 5.05 (4.97-5.19) | 11.61 (11.33-13.64) | [2026-11-01](#2026-11-01-against-strata-and-llama-cpp) |
+| Time to the first token, doc-32k, s | 12.15 (12.14-12.27) | 20.50 (20.32-20.54) | 89.67 (89.55-90.60) | [2026-11-01](#2026-11-01-against-strata-and-llama-cpp) |
+| Time to the first token, the 255,017-token prompt, s | 119.47 (119.39-119.64) | 228.99 (228.87-229.21) | about 1,280.6 (1,278.6-1,282.6), two runs | [2026-11-01](#2026-11-01-against-strata-and-llama-cpp) |
+
+| One card | C0ven | Strata | llama.cpp | Measured |
+| --- | --- | --- | --- | --- |
+| Prompt reading, doc-4k-qa, tokens/s | 1,446.5 (1,375.8-1,471.7) | 1,063.4 (1,044.5-1,077.9) | 255.1 (105.2-289.5); its first token fell run by run, cause not checked | [2026-11-01](#2026-11-01-against-strata-and-llama-cpp) |
+| Prompt reading, doc-32k, tokens/s | 1,495.6 (1,356.7-1,497.2) | 1,261.0 (1,254.4-1,263.9) | 282.3 (278.1-284.8) | [2026-11-01](#2026-11-01-against-strata-and-llama-cpp) |
+| Prompt reading, the 255,017-token prompt, tokens/s | 1,102.1 (1,072.1-1,102.9) | 752.1 (751.9-752.5) | about 168.6 (168.0-169.2), two runs | [2026-11-01](#2026-11-01-against-strata-and-llama-cpp) |
+| Decode after doc-4k-qa, tokens/s | 48.68 (48.28-50.45) | 33.97 (32.97-34.01) | 15.20 (15.01-15.45) | [2026-11-01](#2026-11-01-against-strata-and-llama-cpp) |
+| Decode after doc-32k, tokens/s | 53.18 (43.06-54.51); the lowest is the one run that ends at 110 tokens | 32.90 (32.68-32.97) | 13.19 (12.99-13.34) | [2026-11-01](#2026-11-01-against-strata-and-llama-cpp) |
+| Decode after the 255,017-token prompt, tokens/s | 37.27 (36.49-38.17) | 29.78 (29.74-29.78) | about 5.84 (5.81-5.88), two runs | [2026-11-01](#2026-11-01-against-strata-and-llama-cpp) |
+| Time to the first token, doc-4k-qa, s | 2.88 (2.83-3.02) | 3.91 (3.86-3.98) | 16.33 (14.37-39.53) | [2026-11-01](#2026-11-01-against-strata-and-llama-cpp) |
+| Time to the first token, doc-32k, s | 21.40 (21.38-23.59) | 25.39 (25.33-25.52) | 113.41 (112.38-115.11) | [2026-11-01](#2026-11-01-against-strata-and-llama-cpp) |
+| Time to the first token, the 255,017-token prompt, s | 231.39 (231.22-237.86) | 339.29 (339.15-339.40) | about 1,512.8 (1,507.4-1,518.2), two runs | [2026-11-01](#2026-11-01-against-strata-and-llama-cpp) |
+
+Four requests at once on two cards, `agent-turn1` to `agent-turn4` with no shared prefix (22,324 prompt tokens; Strata counts
+21,892). All four stop at a tool call, so the tokens out vary. The aggregate rate is all tokens out over the time from
+the first send to the last token. Reading is all prompt tokens over the time to the last first token.
+
+| Four requests | C0ven | Strata | llama.cpp | Measured |
+| --- | --- | --- | --- | --- |
+| Aggregate rate, tokens/s | 40.91 (36.00-43.78) | 14.60 (12.49-14.67) | 6.50 (5.82-7.52) | [2026-11-01](#2026-11-01-against-strata-and-llama-cpp) |
+| Reading, tokens/s | 1,712.0 (1,697.6-1,757.4) | 771.5 (673.8-777.6) | 299.0 (276.6-303.4) | [2026-11-01](#2026-11-01-against-strata-and-llama-cpp) |
+| Time to the last first token, s | 13.04 (12.70-13.15) | 28.37 (28.15-32.49) | 74.66 (73.57-80.71) | [2026-11-01](#2026-11-01-against-strata-and-llama-cpp) |
+| Time to the last token, s | 16.72 (15.67-18.06) | 44.62 (41.82-52.19) | 108.80 (97.12-116.51) | [2026-11-01](#2026-11-01-against-strata-and-llama-cpp) |
+
+### One request, two cards and one, C0ven 0.5.0
 
 One request at a time through `/v1/chat/completions`, greedy, 512 tokens out, one slot at a 262,144-token context,
 the IQ3_S file, DFlash 2 drafting and the image encoder loaded. Prompt reading is the prompt's tokens over the time to
