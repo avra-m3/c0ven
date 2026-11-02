@@ -40,9 +40,8 @@ _RULES: list[tuple[re.Pattern[str], SplitKind]] = [
     ]
 ]
 _SHARED = re.compile(r"blk\.\d+\.ffn_(gate|up|down)_shexp\.weight")
-_UNEVEN_SHARED_TYPE = "Q5_K"
-"""Its 256-value blocks cut only at 1,280/1,024, and the larger part is on the card that does not post the layer's
-misses. Q8_0's 32-value blocks cut at 1,152/1,152."""
+"""Q5_K's 256-value blocks cut only at 1,280/1,024, and the larger part is on the card that does not post the layer's
+misses."""
 
 
 def split_of(name: str) -> SplitKind:
@@ -67,7 +66,7 @@ def bytes_on_card(t: FileTensor, card: int) -> int:
         case SplitKind.WHOLE:
             return t.nbytes
         case SplitKind.ROWS | SplitKind.COLUMNS:
-            if t.type_name == _UNEVEN_SHARED_TYPE and _SHARED.fullmatch(t.name):
+            if _SHARED.fullmatch(t.name):
                 return t.nbytes * (4 if card == posting_card(t.layer) else 5) // 9
             return t.nbytes // 2
         case _:

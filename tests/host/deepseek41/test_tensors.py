@@ -21,16 +21,16 @@ NAMES = TABLE.by_name()
 
 def test_counts_and_sums():
     assert len(TABLE.tensors) == 1_043
-    assert TABLE.bytes_of(Category.EXPERTS) == 156_881_387_520
-    assert TABLE.bytes_of(Category.DENSE) == 7_169_927_616
-    assert TABLE.bytes_of(Category.NGRAM) == 135_172_021_600
-    assert NAMES["output.weight"].nbytes == 542_976_000
-    assert NAMES["token_embd.weight"].nbytes == 703_283_200
-    assert sum(t.nbytes for t in TABLE.tensors) == 300_469_616_416
+    assert TABLE.bytes_of(Category.EXPERTS) == 114_555_617_280
+    assert TABLE.bytes_of(Category.DENSE) == 5_249_577_408
+    assert TABLE.bytes_of(Category.NGRAM) == 110_595_290_400
+    assert NAMES["output.weight"].nbytes == 455_065_600
+    assert NAMES["token_embd.weight"].nbytes == 455_065_600
+    assert sum(t.nbytes for t in TABLE.tensors) == 231_310_636_768
 
 
 def test_each_shard_starts_at_the_files_offset_and_each_tensor_ends_where_the_next_starts():
-    first = {2: 24_032, 3: 19_712, 4: 16_192, 5: 5_728, 6: 192}
+    first = {2: 22_112, 3: 21_632, 4: 20_896, 5: 1_024, 6: 416}
     for shard, offset in first.items():
         rows = sorted((t for t in TABLE.tensors if t.shard == shard), key=lambda t: t.offset)
         assert rows[0].offset == offset, shard
@@ -40,11 +40,10 @@ def test_each_shard_starts_at_the_files_offset_and_each_tensor_ends_where_the_ne
 
 def test_expert_sizes():
     sizes = [TABLE.expert_bytes(n) for n in range(numbers.LAYERS)]
-    assert sizes[0] == 8_478_720
-    assert sizes[2] == 7_649_280
-    assert sizes[25] == 12_072_960
-    assert sum(sizes[:20]) / 20 / 2**20 == pytest.approx(8.49, abs=0.01)
-    assert sum(sizes[20:]) / 20 / 2**20 == pytest.approx(10.99, abs=0.01)
+    assert sizes[0] == 6_912_000
+    assert sizes[25] == max(sizes) == 8_663_040
+    assert sum(sizes[:20]) / 20 / 2**20 == pytest.approx(6.96, abs=0.01)
+    assert sum(sizes[20:]) / 20 / 2**20 == pytest.approx(7.26, abs=0.01)
     assert all(t.nbytes % numbers.EXPERTS_PER_LAYER == 0 for t in TABLE.tensors if t.category is Category.EXPERTS)
 
 
@@ -87,7 +86,7 @@ def test_every_tensor_has_the_split_the_design_gives_it():
 def test_card_bytes():
     """The indexer's `attn_q_b` is whole, as both cards score every position; the Engram gates are halved by stream."""
     card0, card1 = (sum(bytes_on_card(t, card) for t in TABLE.tensors) for card in (0, 1))
-    assert (card0, card1) == (4_337_184_192, 4_334_480_832)
+    assert (card0, card1) == (3_267_502_528, 3_267_502_528)
     indexer = NAMES["blk.2.indexer.attn_q_b.weight"]
     assert bytes_on_card(indexer, 0) == bytes_on_card(indexer, 1) == indexer.nbytes
     gate = NAMES["blk.1.engram_gate.weight"]
@@ -100,16 +99,13 @@ def test_an_experts_parts_are_exact_ninths():
 
 
 def test_the_unequal_shared_expert():
-    """Q5_K, 7 odd layers and 6 even in 27-39: the larger part is on the card that does not post the misses, 5/9 and 4/9
-    of each matrix."""
+    """Q5_K in every layer: the larger part is on the card that does not post the misses, 5/9 and 4/9 of each matrix."""
     t = NAMES["blk.27.ffn_gate_shexp.weight"]
     assert t.type_name == "Q5_K"
     assert (bytes_on_card(t, 0), bytes_on_card(t, 1)) == (4_505_600, 3_604_480)
     t = NAMES["blk.28.ffn_down_shexp.weight"]
     assert (bytes_on_card(t, 0), bytes_on_card(t, 1)) == (3_604_480, 4_505_600)
-    t = NAMES["blk.26.ffn_gate_shexp.weight"]
-    assert t.type_name == "Q8_0"
-    assert bytes_on_card(t, 0) == bytes_on_card(t, 1) == t.nbytes // 2
+    assert all(t.type_name == "Q5_K" for t in TABLE.tensors if "_shexp" in t.name)
 
 
 def test_nothing_is_lost_or_doubled_by_a_split():

@@ -70,6 +70,8 @@ class ModelMemory:
     ssd_tier: bool = False
     """The experts VRAM and the arena do not hold stay on the SSD. The arena takes what the host can spare and may be
     empty; without this it holds every expert VRAM does not."""
+    host_headroom: int = SSD_TIER_HEADROOM
+    """What a plan with an SSD tier leaves free on the host, bytes."""
     engram_cache: int = 0
     """The Engram row cache and its tags, host bytes."""
     ssd_staging_ring: int = 0
@@ -238,6 +240,7 @@ class MemoryPlan:
     one count."""
     tiers: Tiers | None = None
     """None: the model has no SSD tier."""
+    host_headroom_bytes: int = SSD_TIER_HEADROOM
     engram_cache_bytes: int = 0
     """As ModelMemory.engram_cache, host bytes."""
     ssd_staging_bytes: int = 0
@@ -332,7 +335,7 @@ class MemoryPlan:
                 ("SSD staging ring", gib(self.ssd_staging_bytes)),
                 ("prompt staging per card", gib(self.prompt_staging_per_card)),
                 ("prompt host ring", gib(self.prompt_host_ring_bytes)),
-                ("host headroom", gib(SSD_TIER_HEADROOM)),
+                ("host headroom", gib(self.host_headroom_bytes)),
             ]
         return rows
 
@@ -482,7 +485,7 @@ def _arena_budget(m: ModelMemory, o: PlanOptions, pinned_outside_arena: int) -> 
         return reserved
     ngram = m.ngram_bytes if o.ngram_in_ram else 0
     caches = m.engram_cache + m.ssd_staging_ring + m.prompt_host_ring
-    return reserved + max(0, limit - pinned_outside_arena - o.host_working - ngram - caches - SSD_TIER_HEADROOM)
+    return reserved + max(0, limit - pinned_outside_arena - o.host_working - ngram - caches - m.host_headroom)
 
 
 def _layer_experts(
@@ -577,6 +580,7 @@ def _plan(m: ModelMemory, o: PlanOptions) -> MemoryPlan:
         card_free=card_free,
         card_layer_experts=on_cards,
         tiers=tiers if m.ssd_tier else None,
+        host_headroom_bytes=m.host_headroom,
         engram_cache_bytes=m.engram_cache,
         ssd_staging_bytes=m.ssd_staging_ring,
         prompt_host_ring_bytes=m.prompt_host_ring,

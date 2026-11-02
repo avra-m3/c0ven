@@ -304,7 +304,8 @@ arena = host - pinned - engine working set - n-gram table in RAM - Engram cache 
 ```
 
 Pinned here is the streamed KV and the checkpoints. The working set is `PlanOptions.host_working`. Headroom is 24 GiB
-(`SSD_TIER_HEADROOM`), the 22 GiB default of `tools/check.py --mem-floor` and 2 GiB, and has no option. The arena is
+(`SSD_TIER_HEADROOM`), the 22 GiB default of `tools/check.py --mem-floor` and 2 GiB, unless the model sets its own
+(`ModelMemory.host_headroom`: 5 GiB for deepseek41), and has no option. The arena is
 capped by the experts left to hold, and it holds whole experts, the same bytes a layer. The SSD holds the rest.
 
 An arena under one expert, or a host with no figure to read, gives arena 0 with every expert outside VRAM on the SSD.

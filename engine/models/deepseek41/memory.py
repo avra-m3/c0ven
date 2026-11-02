@@ -48,6 +48,7 @@ def model_memory(table: TensorTable, cards: int = 2) -> ModelMemory:
         card_weights=weights,
         layer_expert_bytes=tuple(table.expert_bytes(n) for n in range(numbers.LAYERS)),
         ssd_tier=True,
+        host_headroom=numbers.HOST_HEADROOM,
         engram_cache=numbers.ENGRAM_CACHE_ROWS * numbers.ENGRAM_ROW_BYTES + numbers.ENGRAM_TAG_BYTES,
         ssd_staging_ring=staging_ring_bytes(table),
         routes_per_row=numbers.ROUTES_PER_ROW,
