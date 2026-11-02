@@ -442,7 +442,7 @@ struct Bench {
     auto *h = static_cast<uint32_t *>(rt.alloc_host(HEADERS * 128, 4096));
     auto rate = [&](uint32_t kind) {
       const double us = time_launch(rt, 0, [&](ze::List &L) {
-        L.launch(lib.get(0, "deepseek41", "ds_job_store_rate"), {h, HEADERS, kind}, 1, 1, 1, 16 * 16);
+        L.launch(lib.get(0, "deepseek41_check", "ds_job_store_rate"), {h, HEADERS, kind}, 1, 1, 1, 16 * 16);
       });
       return HEADERS * 192.0 / us / 1e3;
     };
@@ -655,12 +655,13 @@ struct Bench {
         constexpr uint32_t ROUNDS = 100, HOLD_TICKS = 4800000;  // 2 ms at the top clock, past the longest delay
         const double delays_us[] = {0, 1, 10, 100, 1000};
         const char *kernel = fence ? "ds_moe_combine" : "ds_moe_combine_no_fence";
+        const char *module = fence ? "deepseek41" : "deepseek41_check";
         const uint32_t lx = D41_CMB_SGS(W) * 16;
         ze::List L(rt, c, ze::List::regular, false, false);
         uint64_t *pstamp = const_cast<uint64_t *>(stamp);
         if (how == none_between) {
           const uint32_t on = fence;
-          L.launch(lib.get(c, "deepseek41", "ds_moe_combine_read_twice"),
+          L.launch(lib.get(c, "deepseek41_check", "ds_moe_combine_read_twice"),
                    {y, w, slots, sh, cpu, nmiss, out, HOLD_TICKS, pstamp, on}, W, 1, 1, lx);
         } else {
           L.launch(lib.get(c, "deepseek41", "ds_moe_combine"), {y, w, slots, sh, cpu, nmiss, read_first, none}, W, 1, 1,
@@ -670,9 +671,9 @@ struct Bench {
             wt.flag = const_cast<const uint32_t *>(flag), wt.want = want, wt.stuck = stuck, wt.start = start, wt.stamp = pstamp;
             launch_wait(L, lib, wt);
           } else {
-            L.launch(lib.get(c, "deepseek41", "ds_hold"), {HOLD_TICKS, pstamp}, 1, 1, 1, 1);
+            L.launch(lib.get(c, "deepseek41_check", "ds_hold"), {HOLD_TICKS, pstamp}, 1, 1, 1, 1);
           }
-          L.launch(lib.get(c, "deepseek41", kernel), {y, w, slots, sh, cpu, nmiss, out, none}, W, 1, 1, lx);
+          L.launch(lib.get(c, module, kernel), {y, w, slots, sh, cpu, nmiss, out, none}, W, 1, 1, lx);
         }
         L.close();
         uint32_t wrong = 0;
