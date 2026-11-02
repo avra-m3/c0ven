@@ -2,13 +2,16 @@
 // weights: attn_kv and attn_q_a whole in Q8_0, on both cards with the same bits; attn_q_b, engram_kv, the head and the
 // shared experts in Q5_K, the shared experts cut 1,280/1,024. Each against the dequantised weights' product at 1, 2, 3
 // and 8 rows, by lanes a row and K split in the work-group, with each one's time at 1, 2, 4 and 8 rows and its time with
-// the weights cold, every card visible. Limit: 1e-5 of the largest |reference|. No model is needed.
+// the weights cold, every card visible. Then the router's product, ffn_gate_inp in BF16 on the stream's bf16 form, by K
+// split, against ggml's MUL_MAT. Limits: 1e-5 of the largest |reference|, the router's 1e-4 as for the other BF16
+// products. No model is needed.
 #include <cmath>
 #include <deque>
 #include <string>
 #include <thread>
 
 #include "ds41_kernel_test.h"
+#include "ggml-cpu.h"
 #include "ggml.h"
 #include "load/gguf.h"
 #include "load/runs.h"
@@ -21,7 +24,7 @@ using namespace ds41test;
 namespace {
 
 constexpr uint32_t WMAX = STEP_MAX_ROWS;
-constexpr double MV_LIMIT = 1e-5;
+constexpr double MV_LIMIT = 1e-5, BF16_LIMIT = 1e-4;
 constexpr uint64_t COLD_BYTES = 40ull << 20;  // more than the card's 18 MiB cache
 constexpr uint32_t THREADS = 16;
 
@@ -226,6 +229,138 @@ struct Bench {
   }
 };
 
+// ffn_gate_inp . x by ggml's MUL_MAT, as upstream's graph has it: BF16 weights and F32 rows, which ggml converts.
+std::vector<float> ggml_router(const std::vector<uint16_t> &w, const std::vector<float> &x, uint32_t W) {
+  ggml_init_params ip = {(size_t)(64u << 20) + w.size() * 2 + x.size() * 8, nullptr, false};
+  ggml_context *ctx = ggml_init(ip);
+  ggml_tensor *tw = ggml_new_tensor_2d(ctx, GGML_TYPE_BF16, D41_EMBD, D41_EXPERTS);
+  ggml_tensor *tx = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, D41_EMBD, W);
+  std::copy(w.begin(), w.end(), (uint16_t *)tw->data);
+  std::copy(x.begin(), x.begin() + (size_t)W * D41_EMBD, (float *)tx->data);
+  ggml_tensor *r = ggml_mul_mat(ctx, tw, tx);
+  ggml_cgraph *gf = ggml_new_graph(ctx);
+  ggml_build_forward_expand(gf, r);
+  EXPECT(ggml_graph_compute_with_ctx(ctx, gf, 1) == GGML_STATUS_SUCCESS, "ggml's graph failed");
+  std::vector<float> y((const float *)r->data, (const float *)r->data + (size_t)W * D41_EXPERTS);
+  ggml_free(ctx);
+  return y;
+}
+
+// The router's product, whole on each card. mv_xmx_bf16 reads all 8 rows of xb, also past W.
+struct Router {
+  ze::Runtime &rt;
+  ze::Library &lib;
+  Checker &ck;
+  std::mt19937 rng{7};
+  static constexpr uint32_t N = D41_EXPERTS, K = D41_EMBD;
+
+  void launch(ze::List &L, uint32_t card, const uint16_t *dw, const uint16_t *xb, const uint32_t *ntok, float *y,
+              uint32_t ks) {
+    const uint32_t zero = 0;
+    const float one = 1.0f;
+    const void *const none = nullptr;
+    L.launch(lib.get(card, "common", "mv_xmx_bf16"), {dw, N, K, K, xb, ntok, y, N, zero, one, zero, ks, none}, N / 16, 1,
+             1, 16 * ks);
+  }
+
+  void run() {
+    std::vector<uint16_t> hw((size_t)N * K);
+    {
+      const auto f = randn(rng, hw.size(), 0.02f);
+      for (size_t i = 0; i < hw.size(); i++) hw[i] = ggml_fp32_to_bf16(f[i]).bits;
+    }
+    struct Mem {
+      Io io;
+      uint16_t *w, *xb;
+      uint32_t *ntok;
+      float *y;
+      Mem(ze::Runtime &r, uint32_t c, const std::vector<uint16_t> &hw_) : io(r, c) {
+        w = io.dev<uint16_t>(hw_.size());
+        io.put(w, hw_);
+        xb = io.dev<uint16_t>((size_t)WMAX * K);
+        ntok = io.dev<uint32_t>(1);
+        y = io.dev<float>((size_t)WMAX * N);
+      }
+    };
+    std::vector<Mem *> mem;
+    for (uint32_t c = 0; c < rt.ncards(); c++) mem.push_back(new Mem(rt, c, hw));
+
+    const uint32_t splits[] = {1, 2, 4, 8, 16, 32, 64};
+    const float scales[] = {1.0f, 1e3f, 1e-3f};
+    std::vector<float> marks((size_t)WMAX * N, 0.0f);
+    std::memset(marks.data(), 0xab, marks.size() * 4);
+    for (float scale : scales)
+      for (uint32_t W : WIDTHS) {
+        // The rows past W hold other values, which the product reads and must not use.
+        const auto x = randn(rng, (size_t)WMAX * K, scale);
+        std::vector<uint16_t> hb(x.size());
+        for (size_t i = 0; i < x.size(); i++) hb[i] = ggml_fp32_to_bf16(x[i]).bits;
+        const auto viag = ggml_router(hw, x, W);
+        // The same product in double, on the rounded weights and rows.
+        std::vector<double> dbl((size_t)W * N);
+        in_parallel(N, [&](uint64_t n0, uint64_t n1) {
+          for (uint64_t n = n0; n < n1; n++)
+            for (uint32_t t = 0; t < W; t++) {
+              double acc = 0;
+              for (uint32_t c = 0; c < K; c++)
+                acc += (double)ggml_bf16_to_fp32(ggml_bf16_t{hw[n * K + c]}) *
+                       ggml_bf16_to_fp32(ggml_bf16_t{hb[(size_t)t * K + c]});
+              dbl[t * N + n] = acc;
+            }
+        });
+        ck.rel("ggml's router product against the same in double", viag.data(), dbl.data(), viag.size(), BF16_LIMIT);
+        for (Mem *m : mem) {
+          m->io.put(m->xb, hb);
+          m->io.put(m->ntok, &W, 1);
+        }
+        for (uint32_t ks : splits) {
+          std::vector<std::vector<float>> got;
+          for (Mem *m : mem) {
+            m->io.put(m->y, marks);
+            launch(m->io.L, m->io.card, m->w, m->xb, m->ntok, m->y, ks);
+            m->io.L.synchronize();
+            got.push_back(m->io.get(m->y, (size_t)WMAX * N));
+          }
+          for (uint32_t t = 0; t < W; t++) {
+            ck.rel("router against ggml's MUL_MAT", &got[0][t * N], &viag[t * N], N, BF16_LIMIT);
+            ck.rel("router against the same in double", &got[0][t * N], &dbl[t * N], N, BF16_LIMIT);
+          }
+          if (got.size() > 1)
+            ck.exact("router, both cards' bits", got[0].data(), got[1].data(), got[0].size() * 4);
+          ck.exact("router writes nothing past W", &got[0][(size_t)W * N], &marks[(size_t)W * N],
+                   (size_t)(WMAX - W) * N * 4);
+        }
+      }
+
+    // Times, with the weights hot and cold (copies in turn, 40 MiB at least).
+    Mem &m = *mem[0];
+    const auto x = randn(rng, (size_t)WMAX * K);
+    std::vector<uint16_t> hb(x.size());
+    for (size_t i = 0; i < x.size(); i++) hb[i] = ggml_fp32_to_bf16(x[i]).bits;
+    m.io.put(m.xb, hb);
+    const uint32_t copies = (uint32_t)((COLD_BYTES + hw.size() * 2 - 1) / (hw.size() * 2));
+    std::vector<uint16_t *> cold;
+    for (uint32_t i = 0; i < copies; i++) {
+      cold.push_back(m.io.dev<uint16_t>(hw.size()));
+      m.io.put(cold.back(), hw);
+    }
+    time_launch(rt, 0, [&](ze::List &L) { launch(L, 0, m.w, m.xb, m.ntok, m.y, D41_RT_KS); });
+    log_clocks("before timing the router's product");
+    for (uint32_t ks : splits)
+      for (uint32_t W : TIMED_WIDTHS) {
+        m.io.put(m.ntok, &W, 1);
+        const double hot = time_launch(rt, 0, [&](ze::List &L) { launch(L, 0, m.w, m.xb, m.ntok, m.y, ks); });
+        uint32_t at = 0;
+        const double cool = time_launch(rt, 0, [&](ze::List &L) { launch(L, 0, cold[at++ % copies], m.xb, m.ntok, m.y, ks); });
+        std::printf("time mv_xmx_bf16 ffn_gate_inp, K split %u, W=%u: %.2f us, weights cold (%u copies) %.2f us\n", ks, W,
+                    hot, copies, cool);
+      }
+    log_clocks("after timing the router's product");
+    for (uint16_t *c : cold) rt.free(c);
+    for (Mem *p : mem) delete p;
+  }
+};
+
 }  // namespace
 
 int main() {
@@ -262,5 +397,6 @@ int main() {
   b.run({"shared gate and up, part B", QT_Q5_K, {{&sg, 1280, 1024}, {&su, 1280, 1024}}, 0, D41_EMBD, true, false});
   b.run({"shared down, part A", QT_Q5_K, {{&sd, 0, D41_EMBD}}, 0, 1280, false, false});
   b.run({"shared down, part B", QT_Q5_K, {{&sd, 0, D41_EMBD}}, 1280, 1024, false, false});
+  Router{rt, lib, b.ck}.run();
   return b.ck.report();
 }
