@@ -53,6 +53,9 @@ std::vector<uint16_t> df_tensor(const std::string &dir, const std::string &name,
 
 bool Model::init_dflash() {
   if (::access((opt_.mtp_dir + "/dflash-manifest.json").c_str(), R_OK) != 0) return false;
+  if (shape_.embd != DF_EMBD)
+    throw std::runtime_error("DFlash 2 reads hidden states of " + std::to_string(DF_EMBD) +
+                             " values; the model's are " + std::to_string(shape_.embd));
   if (kDfTargetLayers[DF_LAYERS - 1] >= shape_.layers)
     throw std::runtime_error("DFlash 2 reads layer " + std::to_string(kDfTargetLayers[DF_LAYERS - 1]) + "; the model has " +
                              std::to_string(shape_.layers));
@@ -61,8 +64,8 @@ bool Model::init_dflash() {
   dfbplan_ = static_cast<DraftPlan *>(rt_->alloc_host(sizeof(DraftPlan)));
   std::memset(dfcplan_, 0, sizeof(DraftPlan));
   std::memset(dfbplan_, 0, sizeof(DraftPlan));
-  dfembed_ = static_cast<float *>(rt_->alloc_host(STEP_MAX_ROWS * Q_EMBD * 4));
-  dfex_ = static_cast<float *>(rt_->alloc_host((size_t)2 * DF_LAYERS * ncards_ * STEP_MAX_ROWS * Q_EMBD * 4));
+  dfembed_ = static_cast<float *>(rt_->alloc_host(STEP_MAX_ROWS * DF_EMBD * 4));
+  dfex_ = static_cast<float *>(rt_->alloc_host((size_t)2 * DF_LAYERS * ncards_ * STEP_MAX_ROWS * DF_EMBD * 4));
   dtop_idx_ = static_cast<uint32_t *>(rt_->alloc_host((size_t)ncards_ * STEP_MAX_ROWS * opt_.candidates * 4));
   dtop_val_ = static_cast<float *>(rt_->alloc_host((size_t)ncards_ * STEP_MAX_ROWS * opt_.candidates * 4));
   dtop_n_ = static_cast<uint32_t *>(rt_->alloc_host(ncards_ * STEP_MAX_ROWS * 4));
@@ -79,7 +82,7 @@ void Model::load_dflash(Card &card) {
   const std::string dir = opt_.mtp_dir;
   card.df = std::make_unique<DfCard>();
   DfCard &D = *card.df;
-  const uint32_t c = card.c, C = ncards_, E = Q_EMBD;
+  const uint32_t c = card.c, C = ncards_, E = DF_EMBD;
   if (DF_H % C || DF_KV % C || DF_FF % C) throw std::runtime_error("DFlash 2 does not split over these cards");
   D.nq = DF_H / C;
   D.nkv = DF_KV / C;
@@ -162,7 +165,7 @@ void Model::record_df(Card &card, uint32_t W, bool block) {
   DfCard &D = *card.df;
   auto list = std::make_unique<ze::List>(*rt_, card.c, ze::List::regular);
   ze::List &L = *list;
-  const uint32_t c = card.c, C = ncards_, E = Q_EMBD;
+  const uint32_t c = card.c, C = ncards_, E = DF_EMBD;
   auto df = [&](const char *name) { return kernel(c, "qwen4exp_dflash", name); };
   const uint32_t zero = 0, nq = D.nq, nkv = D.nkv, qd = nq * DF_D, kd = nkv * DF_D;
   const float one = 1.0f;
@@ -287,7 +290,7 @@ std::vector<std::vector<std::vector<Candidate>>> Model::df_pass(const StepIn *ct
         lo = std::min(lo, bk.pos);
         dfbplan_->rows[r] = {bk.slot, pos, r - j, bk.n, lo, {0, 0, 0}};
         const int32_t tok = j == 0 ? bk.token : DF_MASK;
-        to_float(te.data + (uint64_t)tok * te.row_bytes(), dfembed_ + (size_t)r * Q_EMBD, Q_EMBD);
+        to_float(te.data + (uint64_t)tok * te.row_bytes(), dfembed_ + (size_t)r * DF_EMBD, DF_EMBD);
       }
     }
     dfbplan_->nrows = nb;
@@ -376,7 +379,7 @@ std::vector<uint16_t> Model::df_features(uint32_t row) {
 
 std::vector<float> Model::df_hidden() {
   if (!df_on_) throw std::runtime_error("DFlash 2 is not loaded");
-  std::vector<float> v((size_t)STEP_MAX_ROWS * Q_EMBD);
+  std::vector<float> v((size_t)STEP_MAX_ROWS * DF_EMBD);
   Card &card = *cards_[0];
   card.up->copy(v.data(), card.df->hn, v.size() * 4);
   card.up->synchronize();

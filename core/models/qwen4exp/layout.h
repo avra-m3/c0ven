@@ -12,7 +12,6 @@
 #include "kernel_sizes.h"
 #endif
 
-#define Q_EMBD 2560
 #define Q_HC_DIM (Q_HC * Q_EMBD)    // 10,240
 
 #define Q_ATT_SLOTS 16  // p_attn_xmx's query slots a KV head: its 12 heads, rounded up to 8 (prompt_attn.cl)
@@ -26,8 +25,9 @@
 
 // The DFlash 2 drafter (docs/MODEL_FILES.md, "The DFlash 2 drafter"): Qwen3-shaped layers that read the main
 // model's hidden states at five layers. Its norms take no +1.
+#define DF_EMBD 2560                  // its hidden size; the main file's embedding must equal it
 #define DF_LAYERS 5
-#define DF_FEAT (DF_LAYERS * Q_EMBD)  // 12,800: the five layers' means of the streams, one after another
+#define DF_FEAT (DF_LAYERS * DF_EMBD)  // 12,800: the five layers' means of the streams, one after another
 #define DF_H 32                       // query heads
 #define DF_KV 8                       // KV heads; query head h reads KV head h / 4
 #define DF_D 128
@@ -39,14 +39,23 @@
 #define DF_ROPE_BASE 10000.0f
 #define DF_EPS 1e-6f
 #define DF_MASK 248077                // the token of a block's rows after its first
+#ifdef __OPENCL_C_VERSION__
+#if Q_EMBD != DF_EMBD
+#error "dflash.cl mixes the main model's embedding with the drafter's hidden size"
+#endif
+#endif
 
 // The decode step's doorbell with the CPU (ADR-0011): the reader does a system-scope acquire fence, then a volatile
 // load. Card 0 writes one record per layer in host memory, its step last; the CPU computes the misses and answers by
 // its own flag. A layer with no miss is skipped by both.
-#define MISS_USED 10  // the experts a record holds: its layout does not follow the file
+#define MISS_USED 10    // the experts a record holds: its layout does not follow the file
+#define MISS_EMBD 2560  // the values of the block's input it holds, the same way
 #ifdef __OPENCL_C_VERSION__
 #if Q_USED > MISS_USED
 #error "a MissJob holds fewer experts than the kernels route"
+#endif
+#if Q_EMBD > MISS_EMBD
+#error "a MissJob holds fewer values than the kernels' embedding"
 #endif
 #endif
 typedef struct {
@@ -55,9 +64,9 @@ typedef struct {
   i32 ids[MISS_USED];      // the misses' ids, then their weights
   float w[MISS_USED];
   i32 all[MISS_USED];      // every routed expert's id, for the swaps' counts
-  float x[Q_EMBD];         // the MoE block's input
+  float x[MISS_EMBD];      // the MoE block's input
 } MissJob;
-SHARED_ASSERT(sizeof(MissJob) == 8 + 12 * MISS_USED + 4 * Q_EMBD, "MissJob layout");
+SHARED_ASSERT(sizeof(MissJob) == 8 + 12 * MISS_USED + 4 * MISS_EMBD, "MissJob layout");
 
 // A slot's rotation in a decode step (docs/spec/MODEL_VISION.md, section 4.2). With images in the prompt a position is
 // three numbers (time, height, width) and no longer the cell: a decode row at cell c turns by c - delta on all three.

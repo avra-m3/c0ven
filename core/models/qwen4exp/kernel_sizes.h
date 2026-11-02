@@ -6,6 +6,7 @@
 #define Q_ATT_D 256
 #define Q_ATT_H 24  // query heads
 #define Q_ATT_KV 2  // KV heads; query head h reads KV head h / 12
+#define Q_EMBD 2560
 #define Q_EPS 1e-6f
 #define Q_GDN_CONV 4
 #define Q_GDN_D 128  // head size

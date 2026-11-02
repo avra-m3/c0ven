@@ -187,7 +187,7 @@ struct Model::DfCard {
     float *in_norm = nullptr, *post_norm = nullptr, *qn = nullptr, *kn = nullptr;
     uint16_t *q = nullptr, *k = nullptr, *v = nullptr, *o = nullptr, *gate = nullptr, *up = nullptr,
              *down = nullptr;
-    float *abase = nullptr, *mbase = nullptr;  // the convolutions' fixed taps, [set][tap][Q_EMBD]
+    float *abase = nullptr, *mbase = nullptr;  // the convolutions' fixed taps, [set][tap][DF_EMBD]
     uint16_t *akp = nullptr, *mkp = nullptr;   // their dynamic taps' projections, DF_KP rows
     float *rk = nullptr, *rv = nullptr;        // the ring: [slot][DF_RING][nkv][DF_D], a cell at position % DF_RING
   };
@@ -233,7 +233,7 @@ struct Model::Card {
   uint32_t *ngroups;
   uint8_t *xa8, *oa8, *ha8, *sha8;
   float *yo = nullptr;  // a window's out product (ssm_out, attn_output), before one copy takes it to ex1_
-  // A window's partial sums with two cards (ADR-0030): [exchange 0 mixer, 1 MoE][card][STEP_MAX_ROWS][Q_EMBD]. Each
+  // A window's partial sums with two cards (ADR-0030): [exchange 0 mixer, 1 MoE][card][STEP_MAX_ROWS][embd]. Each
   // card writes its own block here and one copy places it in the other card's.
   float *xp = nullptr;
   StepPlan *plan = nullptr;  // the step plan, copied from host memory by the decode step's first command
