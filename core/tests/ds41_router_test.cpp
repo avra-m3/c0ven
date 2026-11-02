@@ -486,7 +486,7 @@ struct Bench {
       L.launch(lib.get(c, "deepseek41", "ds_swiglu_clamp_a8"), {pg, pu, stride, ff, ha}, W, 1, 1, sgs * 16);
     };
     auto launch = [&](ze::List &L, uint32_t W, uint32_t ff, uint32_t sgs) { launch_at(L, W, g, u, ff, ff, sgs); };
-    for (uint32_t ff : {1152u, 1280u, 1024u, 2304u})
+    for (uint32_t ff : {1280u, 1024u, 2304u})
       for (uint32_t W : WIDTHS) {
         // Values on both sides of the clamp, the clamp itself, and units all at or near 0.
         std::vector<float> vg = randn(rng, W * ff, 6.0f), vu = randn(rng, W * ff, 6.0f);
@@ -529,21 +529,19 @@ struct Bench {
         auto got_one = io.get(ha, W * (ff + ff / 8u));
         ck.exact("ds_swiglu_clamp_a8 rows of one matrix", got_one.data(), got.data(), got_one.size());
       }
-    // A time for each width of the shared part (Q8_0 and Q5_K's), and the sub-groups the kernel is pinned to.
+    // A time for each width of the shared part, Q5_K's cut, and the sub-groups the kernel is pinned to.
     io.put(g, randn(rng, WMAX * FF, 3.0f));
     io.put(u, randn(rng, WMAX * FF, 3.0f));
-    for (uint32_t sgs : {8u, 16u, 20u, 24u, 36u})
-      for (uint32_t W : TIMED_WIDTHS)
-        std::printf("time ds_swiglu_clamp_a8 1152 rows, %u sub-groups W=%u: %.2f us\n", sgs, W,
-                    time_launch(rt, c, [&](ze::List &L) { launch(L, W, 1152, sgs); }));
+    for (uint32_t ff : {1280u, 1024u})
+      for (uint32_t sgs : {8u, 16u, 20u, 24u, 36u})
+        for (uint32_t W : TIMED_WIDTHS)
+          std::printf("time ds_swiglu_clamp_a8 %u rows, %u sub-groups W=%u: %.2f us\n", ff, sgs, W,
+                      time_launch(rt, c, [&](ze::List &L) { launch(L, W, ff, sgs); }));
+    io.put(one, randn(rng, WMAX * 2 * FF, 3.0f));
     for (uint32_t ff : {1280u, 1024u})
       for (uint32_t W : TIMED_WIDTHS)
-        std::printf("time ds_swiglu_clamp_a8 %u rows W=%u: %.2f us\n", ff, W,
-                    time_launch(rt, c, [&](ze::List &L) { launch(L, W, ff, D41_SWIGLU_SGS); }));
-    io.put(one, randn(rng, WMAX * 2 * FF, 3.0f));
-    for (uint32_t W : TIMED_WIDTHS)
-      std::printf("time ds_swiglu_clamp_a8 1152 rows of one matrix W=%u: %.2f us\n", W,
-                  time_launch(rt, c, [&](ze::List &L) { launch_at(L, W, one, one + 1152, 2304, 1152, D41_SWIGLU_SGS); }));
+        std::printf("time ds_swiglu_clamp_a8 %u rows of one matrix W=%u: %.2f us\n", ff, W,
+                    time_launch(rt, c, [&](ze::List &L) { launch_at(L, W, one, one + ff, 2 * ff, ff, D41_SWIGLU_SGS); }));
     rt.free(g);
     rt.free(u);
     rt.free(one);
