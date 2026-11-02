@@ -72,10 +72,13 @@ static inline uint2 dec_u64(__global const uchar *p) { return (uint2)(ld_u32(p),
 #endif
 
 #if GRID_BYTES > 0
-#define GRID_PARAM , __local const uchar *grid
-#define GRID_ONLY_PARAM __local const uchar *grid
-#define GRID_ONLY_ARG grid
-#define GRID_ARG , grid
+// With -DGRID_CONSTANT the kernels read the codebook where it lies, through a __constant argument. deepseek41's modules
+// choose that by type (kernels/quant/moe.cl).
+#ifdef GRID_CONSTANT
+#define GRID_AS __constant
+#define LOAD_GRID(src) __constant const uchar *grid = (src) + GRID_OFF;
+#else
+#define GRID_AS __local
 // Copies the type's codebook into shared local memory; every work-item of the group takes part.
 #define LOAD_GRID(src)                                                                      \
   __local uint grid_words[GRID_BYTES / 4];                                                  \
@@ -83,6 +86,11 @@ static inline uint2 dec_u64(__global const uchar *p) { return (uint2)(ld_u32(p),
     grid_words[i_] = ((__global const uint *)((src) + GRID_OFF))[i_];                       \
   barrier(CLK_LOCAL_MEM_FENCE);                                                             \
   __local const uchar *grid = (__local const uchar *)grid_words;
+#endif
+#define GRID_PARAM , GRID_AS const uchar *grid
+#define GRID_ONLY_PARAM GRID_AS const uchar *grid
+#define GRID_ONLY_ARG grid
+#define GRID_ARG , grid
 #else
 #define GRID_PARAM
 #define GRID_ONLY_PARAM void
@@ -205,7 +213,7 @@ static inline void decode_unit(__global const uchar *W, ulong n, ulong k, uint s
   __global const uchar *qs = FIELD(0, k) + 8 * s;
   uint idx = dec_u32(qs), aux = dec_u32(qs + 4);
   for (uint l = 0; l < 4; l++) {
-    uint2 e = *(__local const uint2 *)(grid + 8 * ((idx >> (8 * l)) & 255));
+    uint2 e = *(GRID_AS const uint2 *)(grid + 8 * ((idx >> (8 * l)) & 255));
     uint s7 = (aux >> (7 * l)) & 127;
     uint signs = s7 | ((popcount(s7) & 1) << 7);
     w[2 * l] = apply_signs4(e.x, signs & 15);
@@ -217,7 +225,7 @@ static inline void decode_unit(__global const uchar *W, ulong n, ulong k, uint s
   __global const uchar *qs = FIELD(0, k) + 8 * s;
   for (uint l = 0; l < 4; l++) {
     uint v = ld_u16(qs + 2 * l);
-    uint2 e = *(__local const uint2 *)(grid + 8 * (v & 511));
+    uint2 e = *(GRID_AS const uint2 *)(grid + 8 * (v & 511));
     uint s7 = v >> 9;
     uint signs = s7 | ((popcount(s7) & 1) << 7);
     w[2 * l] = apply_signs4(e.x, signs & 15);
@@ -233,7 +241,7 @@ static inline void decode_unit(__global const uchar *W, ulong n, ulong k, uint s
   __global const uchar *qs = FIELD(0, k) + 4 * s;
   uint qh = ld_u16(FIELD(1, k) + 2 * s);
   for (uint l = 0; l < 4; l++) {
-    uint2 e = *(__local const uint2 *)(grid + 8 * (qs[l] | (((qh >> (3 * l)) & 7) << 8)));
+    uint2 e = *(GRID_AS const uint2 *)(grid + 8 * (qs[l] | (((qh >> (3 * l)) & 7) << 8)));
     w[2 * l] = iq1_word(e.x, qh & 0x8000);
     w[2 * l + 1] = iq1_word(e.y, qh & 0x8000);
   }
@@ -250,7 +258,7 @@ static inline void decode_unit(__global const uchar *W, ulong n, ulong k, uint s
   uint ss = ld_u16(scw + 2 * (s / 2)) >> (6 * (s & 1));
   for (uint l = 0; l < 4; l++) {
     uint h = qh[l / 2] >> (4 * (l & 1));
-    uint2 e = *(__local const uint2 *)(grid + 8 * (qs[l] | ((h & 7) << 8)));
+    uint2 e = *(GRID_AS const uint2 *)(grid + 8 * (qs[l] | ((h & 7) << 8)));
     w[2 * l] = iq1_word(e.x, h & 8);
     w[2 * l + 1] = iq1_word(e.y, h & 8);
   }
@@ -318,7 +326,7 @@ static inline void decode_unit(__global const uchar *W, ulong n, ulong k, uint s
   uint sc = FIELD(3, k)[s];
   for (uint g = 0; g < 4; g++) {
     uint idx = qs[g] | (((qh >> (2 * g)) & 3) << 8);
-    __local const uint *e = (__local const uint *)(grid + 8 * idx);
+    GRID_AS const uint *e = (GRID_AS const uint *)(grid + 8 * idx);
     uint signs = sg[g];
     w[2 * g] = apply_signs4(e[0], signs & 15);
     w[2 * g + 1] = apply_signs4(e[1], signs >> 4);
@@ -434,7 +442,7 @@ static inline void decode_unit_pairs(__global const uchar *W, ulong n, ulong k, 
   half dl = convert_half(d * (0.5f + (float)(sc & 15))), dh = convert_half(d * (0.5f + (float)(sc >> 4)));
   __attribute__((opencl_unroll_hint)) for (uint g = 0; g < 4; g++) {
     uint idx = qs[g] | (((qh >> (2 * g)) & 3) << 8);
-    uint2 e = *(__local const uint2 *)(grid + 8 * idx);
+    uint2 e = *(GRID_AS const uint2 *)(grid + 8 * idx);
     uint sg = signs >> (8 * g);
     half dg = g < 2 ? dl : dh;
     mag4_pairs(e.x, sg & 15, dg, &p[4 * g], &p[4 * g + 1]);
@@ -576,7 +584,7 @@ static inline void raw_pairs(uint8 r, uint p[16], half tbl GRID_PARAM) {
   half dl = convert_half(d * (0.5f + (float)(sc & 15))), dh = convert_half(d * (0.5f + (float)(sc >> 4)));
   __attribute__((opencl_unroll_hint)) for (uint g = 0; g < 4; g++) {
     uint idx = ((r.s0 >> (8 * g)) & 255) | (((qh >> (2 * g)) & 3) << 8);
-    uint2 e = *(__local const uint2 *)(grid + 8 * idx);
+    uint2 e = *(GRID_AS const uint2 *)(grid + 8 * idx);
     uint sg = r.s1 >> (8 * g);
     half dg = g < 2 ? dl : dh;
     mag4_pairs(e.x, sg & 15, dg, &p[4 * g], &p[4 * g + 1]);
