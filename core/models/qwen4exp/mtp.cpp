@@ -116,7 +116,7 @@ static std::vector<uint16_t> mtp_tensor(const std::string &dir, const std::strin
 
 uint64_t Model::mtp_bytes() const {
   // Per card: each expert's half, IQ4_NL (18 bytes per 32 values), gate, up and down.
-  const uint64_t ff = Q_FF / ncards_;
+  const uint64_t ff = shape_.ff / ncards_;
   return (uint64_t)Q_EXPERTS * (2 * align256(ff * (Q_EMBD / 32) * 18) + align256(Q_EMBD * (ff / 32) * 18));
 }
 
@@ -185,9 +185,9 @@ void Model::load_mtp(Card &card) {
     r.insert(r.end(), g.begin(), g.end());
     M.router = dev16(r);
   }
-  M.sh_gate = dev16(rows(tensor("mtp.layers.0.mlp.shared_expert.gate_proj.weight", (size_t)Q_FF * E), E, f0, ff));
-  M.sh_up = dev16(rows(tensor("mtp.layers.0.mlp.shared_expert.up_proj.weight", (size_t)Q_FF * E), E, f0, ff));
-  M.sh_down = dev16(cols(tensor("mtp.layers.0.mlp.shared_expert.down_proj.weight", (size_t)E * Q_FF), E, Q_FF, f0, ff));
+  M.sh_gate = dev16(rows(tensor("mtp.layers.0.mlp.shared_expert.gate_proj.weight", (size_t)shape_.ff * E), E, f0, ff));
+  M.sh_up = dev16(rows(tensor("mtp.layers.0.mlp.shared_expert.up_proj.weight", (size_t)shape_.ff * E), E, f0, ff));
+  M.sh_down = dev16(cols(tensor("mtp.layers.0.mlp.shared_expert.down_proj.weight", (size_t)E * shape_.ff), E, shape_.ff, f0, ff));
   M.mx_norm = norm("mtp.hyper_connection_mixer.hc_norm.weight", Q_HC_DIM, 1.0f);
   M.mx_down = dev16(tensor("mtp.hyper_connection_mixer.input_mix_weight_down.weight", (size_t)Q_HC_LR * Q_HC_DIM));
   M.mx_up = dev16(up_rows(tensor("mtp.hyper_connection_mixer.input_mix_weight_up.weight", (size_t)Q_HC_DIM * Q_HC_LR)));
@@ -248,8 +248,8 @@ void Model::load_mtp(Card &card) {
       }
     }
     if (!cached) {
-      auto gu = tensor("mtp.layers.0.mlp.experts.gate_up_proj", (size_t)Q_EXPERTS * 2 * Q_FF * E);
-      auto dn = tensor("mtp.layers.0.mlp.experts.down_proj", (size_t)Q_EXPERTS * E * Q_FF);
+      auto gu = tensor("mtp.layers.0.mlp.experts.gate_up_proj", (size_t)Q_EXPERTS * 2 * shape_.ff * E);
+      auto dn = tensor("mtp.layers.0.mlp.experts.down_proj", (size_t)Q_EXPERTS * E * shape_.ff);
       const size_t grow = ggml_row_size((ggml_type)qt, E), drow = ggml_row_size((ggml_type)qt, ff);
       // Written to a temporary file and renamed into place once complete, so a reader never sees half a file.
       std::string tmp = cache_path.empty() ? "" : cache_path + ".tmp." + std::to_string(::getpid());
@@ -268,15 +268,15 @@ void Model::load_mtp(Card &card) {
           uint8_t *slot = buf.data() + i * M.slot_bytes;
           // gate: rows f0.. of the first 640, up: rows f0.. of the second 640 (gate_up_proj is [gate; up]).
           for (int which = 0; which < 2; which++) {
-            const uint16_t *src = &gu[((size_t)e * 2 * Q_FF + (size_t)which * Q_FF + f0) * E];
+            const uint16_t *src = &gu[((size_t)e * 2 * shape_.ff + (size_t)which * shape_.ff + f0) * E];
             for (size_t j = 0; j < (size_t)ff * E; j++) f[j] = bf16f(src[j]);
             ggml_quantize_chunk((ggml_type)qt, f.data(), q.data(), 0, ff, E, nullptr);
             to_runs(qt, {{q.data(), grow, 0, ff, 0, E / qk}}, slot + (which ? M.up_off : 0));
           }
           // down: this card's ff inputs of each of the 2,560 rows.
-          const uint16_t *src = &dn[(size_t)e * E * Q_FF];
+          const uint16_t *src = &dn[(size_t)e * E * shape_.ff];
           for (size_t r = 0; r < E; r++)
-            for (size_t j = 0; j < ff; j++) f[r * ff + j] = bf16f(src[r * Q_FF + f0 + j]);
+            for (size_t j = 0; j < ff; j++) f[r * ff + j] = bf16f(src[r * shape_.ff + f0 + j]);
           ggml_quantize_chunk((ggml_type)qt, f.data(), q.data(), 0, E, ff, nullptr);
           to_runs(qt, {{q.data(), drow, 0, E, 0, ff / qk}}, slot + M.down_off);
         });

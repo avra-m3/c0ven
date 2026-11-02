@@ -6,6 +6,7 @@
 #include <variant>
 
 #include "models/qwen4exp/layout.h"
+#include "quant.h"
 
 namespace engine::qwen4exp {
 
@@ -92,13 +93,9 @@ std::vector<std::string> shape_mismatches(const Shape &s, const std::map<std::st
     uint32_t file, built;
   } sizes[] = {
       {"embedding_length", s.embd, Q_EMBD},
-      {"block_count", s.layers, Q_LAYERS},
       {"hyper_connection.count", s.hc, Q_HC},
       {"hyper_connection.low_rank", s.hc_lr, Q_HC_LR},
-      {"ssm.group_count", s.gdn_kh, Q_GDN_KH},
-      {"ssm.time_step_rank", s.gdn_vh, Q_GDN_VH},
       {"ssm.state_size", s.gdn_d, Q_GDN_D},
-      {"ssm.inner_size", s.gdn_inner, Q_GDN_VH * Q_GDN_D},
       {"ssm.conv_kernel", s.gdn_conv, Q_GDN_CONV},
       {"attention.head_count", s.att_h, Q_ATT_H},
       {"attention.head_count_kv", s.att_kv, Q_ATT_KV},
@@ -109,14 +106,8 @@ std::vector<std::string> shape_mismatches(const Shape &s, const std::map<std::st
       {"attention.indexer.key_length", s.idx_d, Q_IDX_D},
       {"attention.indexer.top_k", s.idx_topk, Q_IDX_TOPK},
       {"the largest of attention.compress_ratios", s.idx_block, Q_IDX_BLOCK},
-      {"full_attention_interval", s.attn_interval, 4},
       {"expert_count", s.experts, Q_EXPERTS},
       {"expert_used_count", s.used, Q_USED},
-      {"expert_feed_forward_length", s.ff, Q_FF},
-      {"expert_shared_feed_forward_length", s.shared_ff, Q_FF},
-      {"output.weight's rows", s.vocab, Q_VOCAB},
-      {"the length of ple.head_vocab_sizes", s.ple_heads, Q_PLE_HEADS},
-      {"embedding_length_per_layer_input", s.ple_row, Q_PLE_ROW},
       {"ple.ngram_size", s.ple_dil, Q_PLE_DIL},
   };
   for (const auto &f : sizes)
@@ -126,13 +117,37 @@ std::vector<std::string> shape_mismatches(const Shape &s, const std::map<std::st
   if (s.rope_base != Q_ROPE_BASE) bad.push_back("rope.freq_base differs from this build's");
   if (s.eps != Q_EPS) bad.push_back("attention.layer_norm_rms_epsilon differs from this build's");
 
-  // Layer l is attention by Q_IS_ATTN, and only attention layers have an indexer.
+  // Sizes the code divides by or walks over.
+  const struct {
+    const char *name;
+    uint32_t value;
+  } counts[] = {
+      {"block_count", s.layers},
+      {"ssm.group_count", s.gdn_kh},
+      {"full_attention_interval", s.attn_interval},
+      {"expert_feed_forward_length", s.ff},
+      {"output.weight's rows", s.vocab},
+  };
+  for (const auto &c : counts)
+    if (c.value == 0) bad.push_back(std::string(c.name) + " is 0");
+  if (!bad.empty()) return bad;
+
+  // How the sizes fit together: each key head has the same number of value heads, the shared expert is as wide as the
+  // others, and the n-gram heads' rows make one embedding (docs/spec/MODEL_LAYER.md, MODEL_IO.md).
+  if (s.gdn_vh % s.gdn_kh)
+    bad.push_back("ssm.time_step_rank " + std::to_string(s.gdn_vh) + " is not a multiple of ssm.group_count " +
+                  std::to_string(s.gdn_kh));
+  if (s.gdn_inner != s.gdn_vh * s.gdn_d) bad.push_back("ssm.inner_size is not time_step_rank x state_size");
+  if (s.shared_ff != s.ff) bad.push_back("expert_shared_feed_forward_length differs from expert_feed_forward_length");
+  if (s.ple_heads * s.ple_row != s.embd) bad.push_back("the n-gram heads' rows do not make one embedding");
+
+  // Only attention layers have an indexer.
   if (s.compress_ratios.size() != s.layers) {
     bad.push_back("attention.compress_ratios has " + std::to_string(s.compress_ratios.size()) + " values for " +
                   std::to_string(s.layers) + " layers");
   } else {
     for (uint32_t l = 0; l < s.layers; l++)
-      if (s.compress_ratios[l] != (Q_IS_ATTN(l) ? (int64_t)s.idx_block : 0))
+      if (s.compress_ratios[l] != (s.attn(l) ? (int64_t)s.idx_block : 0))
         bad.push_back("attention.compress_ratios[" + std::to_string(l) + "] is " +
                       std::to_string(s.compress_ratios[l]));
   }
@@ -156,6 +171,31 @@ std::vector<std::string> shape_mismatches(const Shape &s, const std::map<std::st
       else if (it->second.shape != w.shape)
         bad.push_back(name + " is " + shape_text(it->second.shape) + ", expected " + shape_text(w.shape));
     }
+  return bad;
+}
+
+std::vector<std::string> split_mismatches(const Shape &s, const std::map<std::string, GgufTensor> &tensors, uint32_t n) {
+  std::vector<std::string> bad;
+  const struct {
+    const char *name;
+    uint32_t value;
+  } shared[] = {
+      {"ssm.group_count", s.gdn_kh},
+      {"ssm.time_step_rank", s.gdn_vh},
+      {"expert_feed_forward_length", s.ff},
+      {"output.weight's rows", s.vocab},
+  };
+  for (const auto &f : shared)
+    if (f.value % n) bad.push_back(std::string(f.name) + " " + std::to_string(f.value) + " does not divide equally");
+  for (uint32_t l = 0; l < s.layers; l++) {
+    const std::string name = "blk." + std::to_string(l) + ".ffn_down_exps.weight";
+    auto it = tensors.find(name);
+    if (it == tensors.end()) continue;
+    const uint32_t block = quant_block_values(it->second.type);
+    if (block && (s.ff / n) % block)
+      bad.push_back(name + ": a card's " + std::to_string(s.ff / n) + " columns are not whole blocks of " +
+                    std::to_string(block));
+  }
   return bad;
 }
 

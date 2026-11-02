@@ -14,27 +14,35 @@ using engine::GgufTensor;
 using engine::GgufValue;
 using engine::qwen4exp::read_shape;
 using engine::qwen4exp::shape_mismatches;
+using engine::qwen4exp::split_mismatches;
 
 namespace {
 
 using Meta = std::map<std::string, GgufValue>;
 using Tensors = std::map<std::string, GgufTensor>;
 
+// IQ3_S's sizes that layout.h no longer holds.
+constexpr uint32_t kLayers = 48, kKeyHeads = 16, kValueHeads = 48, kFF = 640, kVocab = 248320;
+
+// The compress ratios of a file of this many layers: the indexer's block on every fourth layer.
+std::vector<int64_t> ratios_for(uint32_t layers) {
+  std::vector<int64_t> ratios(layers, 0);
+  for (uint32_t l = 3; l < layers; l += 4) ratios[l] = Q_IDX_BLOCK;
+  return ratios;
+}
+
 // The metadata of a file this build runs, as IQ3_S's header has it.
 Meta good_meta() {
-  std::vector<int64_t> ratios(Q_LAYERS, 0);
-  for (uint32_t l = 0; l < Q_LAYERS; l++)
-    if (Q_IS_ATTN(l)) ratios[l] = Q_IDX_BLOCK;
   Meta m;
   const auto set = [&](const std::string &key, GgufValue v) { m["qwen4exp." + key] = std::move(v); };
   set("embedding_length", (int64_t)Q_EMBD);
-  set("block_count", (int64_t)Q_LAYERS);
+  set("block_count", (int64_t)kLayers);
   set("hyper_connection.count", (int64_t)Q_HC);
   set("hyper_connection.low_rank", (int64_t)Q_HC_LR);
-  set("ssm.group_count", (int64_t)Q_GDN_KH);
-  set("ssm.time_step_rank", (int64_t)Q_GDN_VH);
+  set("ssm.group_count", (int64_t)kKeyHeads);
+  set("ssm.time_step_rank", (int64_t)kValueHeads);
   set("ssm.state_size", (int64_t)Q_GDN_D);
-  set("ssm.inner_size", (int64_t)(Q_GDN_VH * Q_GDN_D));
+  set("ssm.inner_size", (int64_t)(kValueHeads * Q_GDN_D));
   set("ssm.conv_kernel", (int64_t)Q_GDN_CONV);
   set("attention.head_count", (int64_t)Q_ATT_H);
   set("attention.head_count_kv", (int64_t)Q_ATT_KV);
@@ -46,14 +54,14 @@ Meta good_meta() {
   set("attention.indexer.head_count", (int64_t)Q_IDX_H);
   set("attention.indexer.key_length", (int64_t)Q_IDX_D);
   set("attention.indexer.top_k", (int64_t)Q_IDX_TOPK);
-  set("attention.compress_ratios", ratios);
+  set("attention.compress_ratios", ratios_for(kLayers));
   set("full_attention_interval", (int64_t)4);
   set("expert_count", (int64_t)Q_EXPERTS);
   set("expert_used_count", (int64_t)Q_USED);
-  set("expert_feed_forward_length", (int64_t)Q_FF);
-  set("expert_shared_feed_forward_length", (int64_t)Q_FF);
-  set("ple.head_vocab_sizes", std::vector<int64_t>(Q_PLE_HEADS, 1));
-  set("embedding_length_per_layer_input", (int64_t)Q_PLE_ROW);
+  set("expert_feed_forward_length", (int64_t)kFF);
+  set("expert_shared_feed_forward_length", (int64_t)kFF);
+  set("ple.head_vocab_sizes", std::vector<int64_t>(16, 1));
+  set("embedding_length_per_layer_input", (int64_t)160);
   set("ple.ngram_size", (int64_t)Q_PLE_DIL);
   return m;
 }
@@ -65,14 +73,14 @@ void add(Tensors &t, const std::string &name, std::vector<uint64_t> shape) {
   t[name] = g;
 }
 
-Tensors tensors_for(uint64_t experts) {
+Tensors tensors_for(uint64_t experts, uint32_t layers = kLayers) {
   Tensors t;
-  add(t, "output.weight", {Q_EMBD, Q_VOCAB});
-  for (uint32_t l = 0; l < Q_LAYERS; l++) {
+  add(t, "output.weight", {Q_EMBD, kVocab});
+  for (uint32_t l = 0; l < layers; l++) {
     const std::string b = "blk." + std::to_string(l) + ".";
-    add(t, b + "ffn_gate_exps.weight", {Q_EMBD, Q_FF, experts});
-    add(t, b + "ffn_up_exps.weight", {Q_EMBD, Q_FF, experts});
-    add(t, b + "ffn_down_exps.weight", {Q_FF, Q_EMBD, experts});
+    add(t, b + "ffn_gate_exps.weight", {Q_EMBD, kFF, experts});
+    add(t, b + "ffn_up_exps.weight", {Q_EMBD, kFF, experts});
+    add(t, b + "ffn_down_exps.weight", {kFF, Q_EMBD, experts});
     add(t, b + "ffn_gate_inp.weight", {Q_EMBD, experts});
   }
   return t;
@@ -134,14 +142,44 @@ int main() {
     EXPECT(names(bad, "attention.head_count is 8"), "head_count");
   }
   {
-    Tensors t = tensors;
-    t["output.weight"].shape[1] = 1000;
-    EXPECT(names(mismatches(good, t), "output.weight's rows is 1000"), "vocabulary");
-  }
-  {
     Meta m = good;
     m["qwen4exp.rope.freq_base"] = 10000.0;
     EXPECT(names(mismatches(m, tensors), "rope.freq_base"), "rope base");
+  }
+
+  // The sizes that come from the file: another layer count or vocabulary is not a difference.
+  {
+    Meta m = good;
+    m["qwen4exp.block_count"] = (int64_t)24;
+    m["qwen4exp.attention.compress_ratios"] = ratios_for(24);
+    Tensors t = tensors_for(Q_EXPERTS, 24);
+    t["output.weight"].shape[1] = 1000;
+    const auto s = read_shape(m, t);
+    EXPECT(shape_mismatches(s, t).empty(), "24 layers: '%s'", shape_mismatches(s, t).at(0).c_str());
+    EXPECT(s.layers == 24 && s.vocab == 1000, "the file's sizes");
+    EXPECT(s.attn(3) && !s.attn(4) && s.attn(23) && s.attn_layers() == 6, "which layers are attention");
+  }
+
+  // Rules the sizes have to keep.
+  {
+    Meta m = good;
+    m["qwen4exp.ssm.time_step_rank"] = (int64_t)40;
+    m["qwen4exp.ssm.inner_size"] = (int64_t)(40 * Q_GDN_D);
+    EXPECT(names(mismatches(m, tensors), "ssm.time_step_rank 40 is not a multiple"), "value heads");
+    m = good;
+    m["qwen4exp.ssm.inner_size"] = (int64_t)1;
+    EXPECT(names(mismatches(m, tensors), "ssm.inner_size"), "inner size");
+    m = good;
+    m["qwen4exp.expert_shared_feed_forward_length"] = (int64_t)320;
+    EXPECT(names(mismatches(m, tensors), "expert_shared_feed_forward_length"), "shared expert width");
+    m = good;
+    m["qwen4exp.embedding_length_per_layer_input"] = (int64_t)100;
+    EXPECT(names(mismatches(m, tensors), "n-gram heads"), "n-gram rows");
+    for (const char *key : {"block_count", "ssm.group_count", "full_attention_interval", "expert_feed_forward_length"}) {
+      m = good;
+      m[std::string("qwen4exp.") + key] = (int64_t)0;
+      EXPECT(names(mismatches(m, tensors), std::string(key) + " is 0"), "%s of 0", key);
+    }
   }
 
   // Which layers have an indexer.
@@ -152,6 +190,27 @@ int main() {
     m = good;
     std::get<std::vector<int64_t>>(m["qwen4exp.attention.compress_ratios"]).pop_back();
     EXPECT(names(mismatches(m, tensors), "has 47 values for 48 layers"), "a ratio short");
+  }
+
+  // Sharing between cards.
+  {
+    const auto s = read_shape(good, tensors);
+    EXPECT(split_mismatches(s, tensors, 1).empty() && split_mismatches(s, tensors, 2).empty(), "one and two cards");
+    Tensors t = tensors;
+    t["output.weight"].shape[1] = 1001;
+    const auto odd = read_shape(good, t);
+    EXPECT(split_mismatches(odd, t, 1).empty(), "any vocabulary on one card");
+    EXPECT(names(split_mismatches(odd, t, 2), "output.weight's rows 1001 does not divide equally"), "odd vocabulary");
+    Meta m = good;
+    m["qwen4exp.ssm.group_count"] = (int64_t)15;
+    EXPECT(names(split_mismatches(read_shape(m, tensors), tensors, 2), "ssm.group_count 15"), "odd key heads");
+    t = tensors;
+    t["blk.2.ffn_down_exps.weight"].type = QT_Q2_0;
+    EXPECT(split_mismatches(read_shape(good, t), t, 2).empty(), "Q2_0 down: 320 columns are 5 blocks");
+    m = good;
+    m["qwen4exp.expert_feed_forward_length"] = (int64_t)200;
+    EXPECT(names(split_mismatches(read_shape(m, t), t, 2), "blk.2.ffn_down_exps.weight: a card's 100 columns"),
+           "down columns off the blocks");
   }
 
   // What read_shape refuses.

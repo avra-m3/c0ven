@@ -260,7 +260,7 @@ int main(int argc, char **argv) {
     }
     Seg &o = out[s];
     o.first = first, o.k = kTop;
-    std::vector<int32_t> order(Q_VOCAB);
+    std::vector<int32_t> order(model.info().vocab);
     for (size_t i = first; i + 1 < tok.size(); i++) {
       const int32_t p1 = i >= 1 ? tok[i - 1] : qwen4exp::kNoToken, p2 = i >= 2 ? tok[i - 2] : qwen4exp::kNoToken;
       const auto cand = model.step(0, (uint32_t)i, tok[i], p1, p2);

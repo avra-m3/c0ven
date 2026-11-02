@@ -25,7 +25,7 @@ void Model::note_routing(uint32_t layer, const int32_t *ids, uint32_t n, float w
 void Model::note_prompt_routing() {
   const PromptCard *P = cards_[0]->pc.get();
   if (!P || !P->prof) return;
-  std::vector<uint32_t> v(Q_LAYERS * Q_EXPERTS);
+  std::vector<uint32_t> v(shape_.layers * Q_EXPERTS);
   cards_[0]->up->copy(v.data(), P->prof, v.size() * 4);
   const uint32_t z = 0;
   cards_[0]->up->fill(P->prof, &z, 4, v.size() * 4);
@@ -79,7 +79,7 @@ uint32_t Model::swap_round(uint32_t max_swaps, bool decay) {
 // swap thread: the engine thread changes the maps and the spares only after joining it.
 void Model::choose_swaps(const std::vector<float> &use, uint32_t max_swaps) {
   std::vector<std::pair<float, SwapPlan>> all;
-  for (uint32_t l = 0; l < Q_LAYERS; l++) {
+  for (uint32_t l = 0; l < shape_.layers; l++) {
     HostLayer &hl = *host_layers_[l];
     const float *u = &use[(size_t)l * Q_EXPERTS];
     std::vector<uint32_t> in, out;
@@ -111,10 +111,10 @@ uint32_t Model::apply_round() {
   uint32_t swapped = 0;
   if (applied) {
     // A refill's slot past the cache's blocks: the blocks it needs, from the spare ones (plan_refills counted them).
-    std::vector<int32_t> top(Q_LAYERS, -1);
+    std::vector<int32_t> top(shape_.layers, -1);
     for (const SwapPlan &w : swap_next_)
       if (w.out == kNoExpert) top[w.l] = std::max(top[w.l], w.slot);
-    for (uint32_t l = 0; l < Q_LAYERS; l++) {
+    for (uint32_t l = 0; l < shape_.layers; l++) {
       if (top[l] < 0) continue;
       size_t b = cards_[0]->cache[l].blocks.size();
       while (cache_slots(l, b) <= (uint32_t)top[l]) b++;
@@ -128,7 +128,7 @@ uint32_t Model::apply_round() {
       const int32_t s = w.out == kNoExpert ? w.slot : host_layers_[w.l]->slot_of[w.out];
       card.up->copy(L.cache + (uint64_t)s * L.slot_bytes, swap_buf_ + i * slot_max, L.slot_bytes);
     }
-    std::vector<bool> changed(Q_LAYERS, false);
+    std::vector<bool> changed(shape_.layers, false);
     std::vector<const SwapPlan *> refills;
     for (const SwapPlan &w : swap_next_) {
       if (w.out == kNoExpert) {
@@ -155,7 +155,7 @@ uint32_t Model::apply_round() {
     std::vector<PieceMove> moves;
     for (const SwapPlan *w : refills) refill_maps(*w, moves);
     pool_->run(moves.size(), [&](uint64_t i) { std::memcpy(moves[i].to, moves[i].from, moves[i].bytes); });
-    for (uint32_t l = 0; l < Q_LAYERS; l++) {
+    for (uint32_t l = 0; l < shape_.layers; l++) {
       if (!changed[l]) continue;
       HostLayer &hl = *host_layers_[l];
       for (auto &card : cards_) {
