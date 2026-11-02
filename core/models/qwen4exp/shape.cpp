@@ -39,6 +39,8 @@ const std::vector<int64_t> &ints_of(const std::map<std::string, GgufValue> &meta
   return *v;
 }
 
+static_assert(KV_PAGE_CELLS == Q_IDX_BLOCK, "a page is one indexer block");
+
 // The counts kernels/models/qwen4exp/CMakeLists.txt builds modules for.
 constexpr uint32_t kBuiltExperts = 512, kBuiltExpertsSmall = 256;
 

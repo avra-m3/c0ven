@@ -167,6 +167,10 @@ int main() {
     EXPECT(s.attn(3) && !s.attn(4) && s.attn(23) && s.attn_layers() == 6, "which layers are attention");
     EXPECT(s.ple_hist() == Q_PLE_HIST, "positions of PLE history");
     EXPECT(s.kv_head_bytes() == KV_HEAD_BYTES, "a KV head's bytes in a cell");
+    EXPECT(s.idx_key_bytes() == IDX_KEY_BYTES, "an indexer key's bytes in a cell");
+    EXPECT(s.idx_cells() == Q_IDX_CELLS && s.idx_blocks() == Q_IDX_BLOCKS, "the indexer's cells and blocks");
+    EXPECT(s.att_splits() == (Q_IDX_CELLS + 63) / 64, "attn_split's parts");
+    EXPECT(s.idx_cand() == 2 * (Q_IDX_BLOCKS + 1) + 2, "words per row of the indexer's candidates");
     auto no_conv = s;
     no_conv.gdn_conv = 0;
     EXPECT(no_conv.ple_hist() == 0, "a convolution size of 0 does not wrap");
@@ -202,6 +206,9 @@ int main() {
     m = good;
     std::get<std::vector<int64_t>>(m["qwen4exp.attention.compress_ratios"]).pop_back();
     EXPECT(names(mismatches(m, tensors), "has 47 values for 48 layers"), "a ratio short");
+    m = good;
+    m["qwen4exp.attention.compress_ratios"] = std::vector<int64_t>(kLayers, 0);
+    EXPECT(names(mismatches(m, tensors), "compress_ratios is 0"), "no layer with a ratio");
   }
 
   // Sharing between cards.

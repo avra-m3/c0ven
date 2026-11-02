@@ -384,7 +384,7 @@ class Model final : public engine::Model {
   uint32_t *top_idx_ = nullptr;  // [card][candidates]
   float *top_val_ = nullptr;
   uint32_t *top_n_ = nullptr;
-  uint32_t *icand_ = nullptr;  // [attention layer][card][row][kIdxCand]: the indexer's candidates
+  uint32_t *icand_ = nullptr;  // [attention layer][card][row][Shape::idx_cand()]: the indexer's candidates
   std::vector<float> use_;  // [layer][expert] decayed routing counts, with Options::adapt_swaps
   uint64_t swaps_ = 0;
   std::vector<SwapPlan> swap_next_;  // chosen by the last round, applied by the next
@@ -444,7 +444,7 @@ class Model final : public engine::Model {
   PromptPlan *pplan_ = nullptr;  // the chunk's plan, then its runs' (PROMPT_MAX_RUNS, n 0 when unused)
   uint32_t *prows_ = nullptr;  // each card's count of the chunk's rows when the hyper-connections split them
   uint32_t *ppos_ = nullptr;  // the runs' positions (step.h), ppos_run() values apart
-  uint32_t ppos_run() const { return (tmax_ + Q_IDX_BLOCK) * 4; }
+  uint32_t ppos_run() const { return (tmax_ + shape_.idx_block) * 4; }
   float *pembed_ = nullptr, *pngram_ = nullptr;
   uint16_t *pngram16_ = nullptr;  // the n-gram rows as bf16, for the cards
   // The next chunk's n-gram rows, read during this chunk (prompt's next), and which chunk they are for.
