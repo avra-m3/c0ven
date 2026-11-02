@@ -22,7 +22,6 @@
 
 // Q_EXPERTS is a build option of the modules that route experts (kernels/models/qwen4exp/CMakeLists.txt, ADR-0063).
 
-#define Q_PLE_DIL 3                 // the PLE conv's dilation (the n-gram size)
 #define Q_PLE_HIST (Q_PLE_DIL * (Q_GDN_CONV - 1))  // 9 positions of history
 
 // The DFlash 2 drafter (docs/MODEL_FILES.md, "The DFlash 2 drafter"): Qwen3-shaped layers that read the main

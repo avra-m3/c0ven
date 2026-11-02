@@ -15,6 +15,7 @@
 #define Q_IDX_D 128
 #define Q_IDX_H 4  // indexer query heads
 #define Q_IDX_TOPK 2048
+#define Q_PLE_DIL 3  // the PLE conv's dilation (the n-gram size)
 #define Q_ROPE_BASE 10000000.0f
 #define Q_ROT 64  // rotated dimensions per head, NeoX pairs (i, i + 32)
 #define Q_USED 10
