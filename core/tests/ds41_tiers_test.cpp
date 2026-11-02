@@ -492,7 +492,8 @@ void check_read_failure(const Generated &g) {
   EXPECT(flag == 9, "the next layer runs");
 }
 
-// The engine thread hands a job over and goes on while its reads are held; the arena's sum runs while they are too.
+// The engine thread hands a job over and goes on while its reads are held. A read has started before the arena's sum
+// starts and is held until the sum ends, so a job that runs the two in turn fails here.
 void check_engine_thread(const Generated &g) {
   SsdReader reader(g.paths, staging_ring_bytes(g.largest(), 1));
   ExpertArena arena(16 * g.largest());
@@ -502,12 +503,17 @@ void check_engine_thread(const Generated &g) {
 
   std::mutex mu;
   std::condition_variable cv;
-  bool submitted = false, arena_done = false, timed_out = false;
+  bool submitted = false, arena_done = false, timed_out = false, read_before_sum = false;
   std::set<std::thread::id> readers;
   reader.set_read_hook([&] {
     std::unique_lock<std::mutex> lk(mu);
     readers.insert(std::this_thread::get_id());
+    cv.notify_all();
     if (!cv.wait_for(lk, std::chrono::seconds(60), [&] { return submitted && arena_done; })) timed_out = true;
+  });
+  mj.set_arena_start_hook([&] {
+    std::unique_lock<std::mutex> lk(mu);
+    read_before_sum = cv.wait_for(lk, std::chrono::seconds(10), [&] { return !readers.empty(); });
   });
   mj.set_arena_hook([&] {
     std::lock_guard<std::mutex> lk(mu);
@@ -531,7 +537,8 @@ void check_engine_thread(const Generated &g) {
     cv.notify_all();
   }
   mj.wait();
-  EXPECT(!timed_out, "the reads waited for the arena's sum, or the other way round");
+  EXPECT(read_before_sum, "no read had started when the arena's sum started");
+  EXPECT(!timed_out, "the reads were still held 60 s after they started");
   EXPECT(flag == 3, "the job finished");
   EXPECT(!readers.empty() && !readers.count(std::this_thread::get_id()), "a read ran on the engine thread");
 }

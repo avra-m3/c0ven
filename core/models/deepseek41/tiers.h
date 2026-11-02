@@ -222,7 +222,9 @@ class MissJobs {
   void submit(const MissAsk &ask);  // takes no lock longer than a queue push, never reads
   // Sleeps until every submitted job is done. Throws the first failure since the last wait.
   void wait();
-  // Called on the job's thread when the arena sum ends, reads possibly still running. For tests.
+  // Called on the job's thread just before the arena sum starts, and when it ends, reads possibly still running. For
+  // tests.
+  void set_arena_start_hook(std::function<void()> hook) { arena_start_hook_ = std::move(hook); }
   void set_arena_hook(std::function<void()> hook) { arena_hook_ = std::move(hook); }
 
  private:
@@ -237,7 +239,7 @@ class MissJobs {
   SsdReader &reader_;
   Pool &pool_;
   CpuExperts cpu_;
-  std::function<void()> arena_hook_;
+  std::function<void()> arena_start_hook_, arena_hook_;
 
   std::vector<CpuExperts::Job> arena_jobs_, ssd_jobs_;
   std::vector<SsdJob> ssd_refs_;

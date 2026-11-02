@@ -355,6 +355,7 @@ MissCounts MissJobs::run_layer(const MissAsk &ask) {
   std::exception_ptr failed;
   try {
     if (arena) {
+      if (arena_start_hook_) arena_start_hook_();
       arena_y_.resize(values);
       cpu_.compute_many(l.shape, arena_jobs_, real, ask.jobs[0].x, x_stride, arena_y_.data(), E);
     }
