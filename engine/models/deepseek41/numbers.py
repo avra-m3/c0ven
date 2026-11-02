@@ -52,7 +52,10 @@ WORKING_PER_CARD = RESERVE_PER_CARD + BUFFERS_PER_CARD + LISTS_PER_CARD
 
 # In host memory.
 ENGRAM_CACHE_ROWS = 1 << 20
-ENGRAM_ROW_BYTES = 176
+ENGRAM_ROW_BYTES = 144
+HOST_HEADROOM = 5 * 2**30
+"""What the plan leaves free on the host, bytes: the margin for this model's tests (issue #28). A timed run
+sets its memory floor below it."""
 ENGRAM_TAG_BYTES = 8 * 2**20
 READ_ALIGN = 4_096
 """An `O_DIRECT` read's alignment, which each of an expert's 3 matrices may need in a staging slot."""

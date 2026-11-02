@@ -1,7 +1,7 @@
 """The GGUF tensor table: every tensor's name, type, shard, offset and size (ADR-0004: read with llama.cpp's `gguf`).
 
 The control plane reads the table and passes offsets and types to the core in `open`; the core never parses the file.
-tensors.tsv holds the same rows for Unsloth's UD-IQ2_XXS file, so tests run without it.
+tensors.tsv holds the same rows for ISTA-DASLab's GSQ-RCO IQ1_M file, so tests run without it.
 """
 
 from __future__ import annotations

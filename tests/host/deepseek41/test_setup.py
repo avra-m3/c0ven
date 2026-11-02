@@ -72,10 +72,10 @@ def test_the_open_config_passes_each_tensor_of_the_file(tmp_path: Path, monkeypa
     assert len(by_name) == 1_043
     # Shards count from 0 here and from 1 in the file names; the offsets are the table's own.
     assert by_name["output.weight"] == Tensor(
-        "output.weight", 14, 1, 24_032, 542_976_000, (5_120, 129_280), SplitKind.ROWS, -1
+        "output.weight", 13, 1, 22_112, 455_065_600, (5_120, 129_280), SplitKind.ROWS, -1
     )
     expert = by_name["blk.14.ffn_down_exps.weight"]
-    assert (expert.shard, expert.offset, expert.split, expert.layer) == (2, 19_712, SplitKind.EXPERT_COLUMNS, 14)
+    assert (expert.shard, expert.offset, expert.split, expert.layer) == (2, 3_001_837_184, SplitKind.EXPERT_COLUMNS, 14)
 
 
 def test_the_engram_table_stays_on_the_ssd_when_the_host_has_room():

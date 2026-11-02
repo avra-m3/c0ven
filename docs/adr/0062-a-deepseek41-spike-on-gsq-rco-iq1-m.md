@@ -1,4 +1,4 @@
-# ADR-0062: a deepseek41 spike on Unsloth's UD-IQ2_XXS file, its experts in VRAM, an arena and the SSD
+# ADR-0062: a deepseek41 spike on GSQ-RCO's IQ1_M file, its experts in VRAM, an arena and the SSD
 
 **Status:** draft, 2026-11-01; not accepted. For `deepseek41` only, it departs
 from items 2-4 of [ADR-0006](0006-scope.md) (item 2 as
@@ -21,15 +21,17 @@ more than another host layout would.
   are mixed by hyper-connections. Attention has one 512-wide KV head, a window of 128 positions, and from layer 2 on
   a compressed cache (2 positions a row at layers 2-19, 1 at 20-39) read through an indexer's top 512. Layers 1 and 14
   add Engram rows: 24 rows a layer of a 768,022,850-row table, hashed from the last 4 tokens.
-- Unsloth's UD-IQ2_XXS file is 300.5 GB in 6 shards. Its experts are IQ1_S, IQ2_XXS and IQ2_S (gate and up) and
-  Q2_K, IQ2_XS, IQ2_XXS, IQ2_S and IQ3_XXS (down), all in 256-value blocks: 146.1 GiB in all, a mean expert of
-  8.49 MiB at layers 0-19 and 10.99 MiB at 20-39. The dense tensors and the head are 7.18 GiB. The Engram table is
-  Q5_K, one 176-byte block a row, 135,172,021,600 B in the last shard.
-- Split by tensors, each card holds 4.04 GiB of dense weights and its part of about 104 experts a layer at layers
-  0-19 and 80 at 20-39; the cached experts are 34.1 GiB across both cards (*estimate*, from the file's tensor sizes,
+- [ISTA-DASLab's GSQ-RCO IQ1_M build](https://huggingface.co/ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF) is
+  231.3 GB in 6 shards, the last being the Engram file every build of that repository shares. Its experts are IQ1_S,
+  IQ1_M and IQ2_XXS (gate and up) and the same with IQ2_S (down), all in 256-value blocks: 106.7 GiB in all, a mean
+  expert of 6.96 MiB at layers 0-19 and 7.26 MiB at 20-39. The dense tensors and the head are 5.31 GiB: every shared
+  expert, `attn_output_a`, `attn_output_b`, `attn_q_b`, `engram_kv` and the head in Q5_K, `attn_kv` and `attn_q_a` in
+  Q8_0, the router in BF16. The Engram table is IQ4_NL, 144 B a row, 110,595,290,400 B in the last shard.
+- Split by tensors, each card holds 3.04 GiB of dense weights and its part of about 133 experts a layer at layers
+  0-19 and 128 at 20-39; the cached experts are 36.1 GiB across both cards (*estimate*, from the file's tensor sizes,
   the same bytes for every layer, one slot at 16,384 positions, 0.75 GiB of working memory and 0.33 GiB of recorded
-  lists a card). About 112 GiB of experts stay off the cards, more than the host's 92 GB of RAM
-  ([ADR-0006](0006-scope.md) item 1).
+  lists a card). About 70.6 GiB of experts stay off the cards. An arena holds them all when the host has about 80 GiB
+  free (*estimate*, the same sizes), which is most of its 92 GB of RAM ([ADR-0006](0006-scope.md) item 1).
 - The pinned llama.cpp `3cf03257f` has no `deepseek41`. Upstream llama.cpp runs it since
   [#31086](https://github.com/ggml-org/llama.cpp/pull/31086) and its follow-up
   [#31137](https://github.com/ggml-org/llama.cpp/pull/31137), with the stream in F32 and no simulation of DeepSeek's
@@ -40,22 +42,21 @@ more than another host layout would.
 
 ## Decision
 
-1. **A second architecture, `deepseek41`, is built from Unsloth's UD-IQ2_XXS file.** It is a spike: correct tokens
+1. **A second architecture, `deepseek41`, is built from GSQ-RCO's IQ1_M file.** It is a spike: correct tokens
    first, with Flash-Next's speed rules applied from the first version.
 2. **deepseek41 splits by tensors as ADR-0023 does, except as this item says.** Each card computes half the query
    heads, half the output groups and half the columns of `attn_output_b`. A routed expert splits by rows into whole
    256-value blocks: part A is 1,280 of its 2,304 rows, part B the other 1,024. Each card's cache for a layer has as
    many part-A slots as part-B slots, so its count is even, and a cached expert holds part A on one card and part B on
-   the other, as its slot pair sets. The shared expert splits 1,152/1,152 where it is Q8_0 and 1,280/1,024 where it
-   is Q5_K. The KV
-   head, the compressed rows, the router, norms, hyper-connection mixes, compressor and indexer are whole on both
+   the other, as its slot pair sets. The shared expert, in Q5_K's blocks, splits 1,280/1,024 too, the larger part on the
+   card that does not post the layer's misses. The KV head, the compressed rows, the router, norms, hyper-connection mixes, compressor and indexer are whole on both
    cards, and the indexer's keys are not split by position. The head splits by vocabulary rows and Engram's product
    by rows. Each Engram layer adds a third exchange to the layer's two.
 3. **Experts are held in three tiers, each given as a size.** The cards hold a hot set per layer, sized in bytes and
    filled hottest first from a routing profile. An arena of the engine's anonymous memory, under
    [ADR-0035](0035-the-arena-in-the-engines-own-memory.md) and [ADR-0037](0037-the-cards-vms-without-page-faults.md),
    holds the next-hottest, sized by the memory plan from the host's available memory less pinned memory, the working
-   set and a headroom. The rest stay on the SSD. The fit report gives each tier's experts from the core's own counts,
+   set and a headroom of 5 GiB, this model's own. The rest stay on the SSD. The fit report gives each tier's experts from the core's own counts,
    its expected share of routings and the SSD reads a token. Experts never go through the page cache: the shards' file
    pages are given back after load, and only `token_embd` stays mapped. This departs from ADR-0023 item 5, under
    which every expert is on the cards or in the arena, and from ADR-0032 item 7's mapping for swaps.
@@ -73,9 +74,9 @@ more than another host layout would.
    #31137, its CPU backend, with f16 caches, on the same file. The end-to-end gate is a mean KL of at most 0.04
    against it. This departs from ADR-0012 items 1 and 2 and from ADR-0054 for this model; ADR-0012 items 3 and 4
    stand.
-7. **The Engram reads follow ADR-0015,** with rows of 176 B, issued as soon as the step's token ids are known. The
+7. **The Engram reads follow ADR-0015,** with rows of 144 B, issued as soon as the step's token ids are known. The
    card waits for both layers' rows before layer 1 and copies them to the card. This amends ADR-0015 item 3, which
-   names layer 1 as the only reader. The table is never read into RAM: ADR-0057 item 6 does not apply to a 135 GB
+   names layer 1 as the only reader. The table is never read into RAM: ADR-0057 item 6 does not apply to a 110 GB
    table, and `--ngram-ram` has no effect on this model.
 8. **The KV and indexer state stays on the cards, indexed by position, and is priced in experts.** The context is at
    most 16,384 positions until the indexer's candidate filter is built; below that the filter keeps every block.
@@ -93,16 +94,18 @@ more than another host layout would.
 
 ## Why
 
-- ADR-0023's reason holds: both cards work on every token. Split by layers at 20, the cards would cache about 133
-  more experts, but read 7.71 GB of dense weights a token one card after the other against 4.34 GB on both at once:
-  about 8-9 ms more a token at 370-420 GB/s
-  ([measurements](../measurements/MEASUREMENTS.md#2026-10-14-decode-expert-kernels)), against about 3 ms of misses
+- ADR-0023's reason holds: both cards work on every token. Split by layers at 20, the cards would cache about 120
+  more experts, but read 5.70 GB of dense weights a token one card after the other against 3.27 GB on both at once:
+  about 6-7 ms more a token at 370-420 GB/s
+  ([measurements](../measurements/MEASUREMENTS.md#2026-10-14-decode-expert-kernels)), against about 2 ms of misses
   the extra experts remove at uniform routing (*estimate*, from the file's sizes, the SSD read rate
   ([measurements](../measurements/MEASUREMENTS.md#2026-10-16-load-read-rates)) and an assumed CPU rate of
-  32.7 GB/s). The tensor split pays 82 exchanges a token for this; it keeps its lead while each costs under about 65 us
+  32.7 GB/s). The tensor split pays 82 exchanges a token for this; it keeps its lead while each costs under about 50 us
   on average (*estimate*, by the same figures).
 - Cutting every expert at the same block and taking the larger part from the slot keeps both cards' bytes equal, so
   no cached expert is lost to the unequal parts, and any expert fits any slot pair.
+- IQ1_M is the build whose experts the test machine can hold off the SSD. Its backbone is the smallest of the repository's
+  builds, and the arena can reach every expert with about 80 GiB free (*estimate*, above).
 - A page-cache host tier lets the file's reads reclaim the host's memory, the condition under which decode stalled
   for seconds on Flash-Next; an anonymous arena held the worst step to 48.1 ms under the same reclaim
   ([measurements](../measurements/MEASUREMENTS.md#2026-10-17-anon-arena-under-reclaim)).
@@ -127,6 +130,11 @@ more than another host layout would.
 - **Down split exactly 1,152/1,152 inside a block:** it needs a half-block runs layout for 5 types and an edge case in
   each down kernel. It is the follow-up if the measured imbalance passes 2% of the step.
 - **The page cache over the file's mapping as the host tier:** above.
+- **Unsloth's UD-IQ2_XXS file:** 146.1 GiB of experts and a 135 GB Engram table. About 112 GiB of experts stay off the
+  cards, so about 140 GiB free would keep them all off the SSD, more than the test machine has (*estimate*, from the file's
+  tensor sizes).
+- **GSQ-RCO's IQ2_XXS and IQ2_XS builds:** backbones of 138.2 GB and 155.2 GB against IQ1_M's 120.7 GB, each byte more
+  on the SSD on the test machine.
 - **DeepSeek's code as the token reference:** it simulates FP8 and FP4 activations that no GGUF engine computes, so
   tokens could not agree even with correct kernels.
 - **A prompt chunk path at once:** decode windows give correct tokens with no new kernels; the chunk path follows the
