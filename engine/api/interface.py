@@ -192,6 +192,9 @@ class EngineFacts:
     fetch_rows: int = 0
     """The most rows a prompt chunk may have and still fetch only the uncached experts its router picks; a longer one
     copies every uncached expert. 0: every chunk is staged one way."""
+    decode_weight: int = 0
+    """What a decode token is worth in prompt rows when the scheduler sizes a prompt piece beside writers. 0: decode
+    does not count."""
 
 
 IMAGE_PATCH_BYTES = 768

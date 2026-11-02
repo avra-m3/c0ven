@@ -450,6 +450,7 @@ class NativeEngine:
             copy_bytes_per_s=tuple(float(info.copy_bytes_per_s[i]) for i in range(info.cards)),
             expert_budget=tuple(int(info.expert_budget[i]) for i in range(info.cards)),
             fetch_rows=int(info.fetch_rows),
+            decode_weight=int(info.decode_weight),
         )
 
     def sleep(self) -> None:

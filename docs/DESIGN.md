@@ -422,12 +422,14 @@ read whole, and a longer one in pieces, each holding the writers about as long a
 uncached experts are fetched as its router picks them ([ADR-0046](adr/0046-a-short-chunk-fetches-the-experts-its-router-picks.md));
 a longer chunk copies every uncached expert, and is slower near that size. A piece holds at most `fetch_rows` less
 the three writers' rows that may ride in its chunk, and at most 1,024 rows: 1,021 on qwen4exp with experts left
-uncached (`fetch_rows` 1,024), 1,024 with every expert cached (`fetch_rows` 0). A long prompt's piece is sized to 1.6
-times the budget, so it reaches that limit when rows are cheap enough, and a plan's pieces are priced at most 1.6 times
-the budget. Another prompt joins a chunk only while the chunk stays within the limit, since a longer one holds the
+uncached (`fetch_rows` 1,024), 1,024 with every expert cached (`fetch_rows` 0). A long prompt's piece aims between the budget and
+1.6 times it: past the budget, up to where more time returns little in a score of prompt rows plus decode tokens, each
+worth `decode_weight` prompt rows, which the model reports. So a large fixed part fills pieces to that limit and a small
+one stays at the budget. A plan's pieces are priced at most 1.6 times the budget. Another prompt joins a chunk only while the chunk stays within the limit, since a longer one holds the
 writers longest. These come from chunk times and writers' gaps measured at piece sizes of 256 to 3,072 rows
 ([the record](measurements/MEASUREMENTS.md#2026-11-01-whole-rows-and-stretch)) and a mixed load
-([the record](measurements/MEASUREMENTS.md#2026-11-01-full-prompt-pieces)). With `ENGINE_CACHE_DIR` set,
+([the record](measurements/MEASUREMENTS.md#2026-11-01-full-prompt-pieces),
+[the rule](measurements/MEASUREMENTS.md#2026-11-01-piece-rule-with-a-slow-split)). With `ENGINE_CACHE_DIR` set,
 the engine process writes the cost model there at each sleep and at exit, one file for each model file, engine version
 and set of options (the key of the working memory's file), and the next start and wake begin from it instead of the
 estimates. The protocol's
