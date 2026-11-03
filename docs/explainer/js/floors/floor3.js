@@ -1,6 +1,6 @@
 // Floor 3, musical desks, around x = X3. Which experts sit on the card follows the conversation: the player runs one
 // night by hand, then the narrator runs the same night with the engine's swap rule.
-import { $, box, camera, canvasTex, halo, haloTex, mat, reduced, scene, sign, toScreen, tubes, up, v, view, windowsTex } from "../world.js";
+import { $, box, camera, canvasTex, halo, haloTex, mat, pool, reduced, scene, sign, toScreen, tubes, up, v, view, windowsTex } from "../world.js";
 import { backOut, ease, lerp, tween } from "../motion.js";
 import { makeAdviser, makeChair, makeEnvelope, makeFax, makeFaxPage, paperM, poseAdviser, wood, woodDark, wrapAngle } from "../props.js";
 import { speak, speaking } from "../narration.js";
@@ -86,16 +86,6 @@ const slabTex = tile((g) => {
   g.fillStyle = "#30353c"; g.fillRect(0, 0, 256, 3); g.fillRect(0, 0, 3, 256);
   for (let k = 0; k < 500; k++) { g.fillStyle = k % 2 ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.08)"; g.fillRect((k * 71) % 256, (k * 113) % 256, 3, 3); }
 });
-// Light that a lamp throws on a surface: an additive disc, so no real light is needed.
-const poolTex = canvasTex(128, 128, (g) => {
-  const r = g.createRadialGradient(64, 64, 0, 64, 64, 64);
-  r.addColorStop(0, "rgba(255,255,255,0.85)"); r.addColorStop(0.45, "rgba(255,255,255,0.35)"); r.addColorStop(1, "rgba(255,255,255,0)");
-  g.fillStyle = r; g.fillRect(0, 0, 128, 128);
-});
-function pool(parent, color, r, x, y, z, opacity) {
-  const p = new THREE.Mesh(new THREE.PlaneGeometry(r * 2, r * 2), new THREE.MeshBasicMaterial({ map: poolTex, color, transparent: true, opacity, blending: THREE.AdditiveBlending, depthWrite: false }));
-  p.rotation.x = -Math.PI / 2; p.position.set(x, y, z); parent.add(p); return p;
-}
 // A side wall, cut away towards the front so the room stays open to the camera.
 function sideWall(parent, x, m, back, front) {
   const sh = new THREE.Shape();

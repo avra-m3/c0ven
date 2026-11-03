@@ -64,11 +64,22 @@ export function halo(color, size, x, y, z, parent = scene, opacity = 0.8) {
   const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: haloTex, color, transparent: true, opacity, blending: THREE.AdditiveBlending, depthWrite: false }));
   s.scale.setScalar(size); s.position.set(x, y, z); parent.add(s); return s;
 }
+// Light that a lamp throws on a surface: an additive disc, so no real light is needed.
+export const poolTex = canvasTex(128, 128, (g) => {
+  const r = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+  r.addColorStop(0, "rgba(255,255,255,0.85)"); r.addColorStop(0.45, "rgba(255,255,255,0.35)"); r.addColorStop(1, "rgba(255,255,255,0)");
+  g.fillStyle = r; g.fillRect(0, 0, 128, 128);
+});
+export function pool(parent, color, r, x, y, z, opacity) {
+  const p = new THREE.Mesh(new THREE.PlaneGeometry(r * 2, r * 2), new THREE.MeshBasicMaterial({ map: poolTex, color, transparent: true, opacity, blending: THREE.AdditiveBlending, depthWrite: false }));
+  p.rotation.x = -Math.PI / 2; p.position.set(x, y, z); parent.add(p); return p;
+}
 export const tubes = [];
 export function tube(x, y, z) {
   const t = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.05, 0.18), new THREE.MeshBasicMaterial({ color: 0xe6efe9 }));
   t.position.set(x, y, z); scene.add(t); tubes.push(t);
   const l = new THREE.PointLight(0xdfe9e4, 0.45, 9, 1.6); l.position.set(x, y - 0.2, z); scene.add(l);
+  return l;
 }
 export function keyLight(x, y, z, tx, angle, dist) {
   const k = new THREE.SpotLight(0xe8f0ea, 1.3, dist, angle, 0.6, 1.2);

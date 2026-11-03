@@ -1,5 +1,5 @@
 // Floor 1, the shelf room, around x = 0. Reading the model's weights is the slow part, so move them closer.
-import { $, box, keyLight, mat, reduced, scene, sign, tube, up, view, windowsTex } from "../world.js";
+import { $, box, canvasTex, halo, haloTex, keyLight, mat, pool, reduced, scene, sign, tube, up, view, windowsTex } from "../world.js";
 import { backOut, ease, sleep, tween } from "../motion.js";
 import { makeAdviser, makeChair, makeDesk, makeEnvelope, poseAdviser, sitAndThink, wood, woodDark } from "../props.js";
 import { speak } from "../narration.js";
@@ -24,24 +24,64 @@ const RUNS = {
   closer: { label: "Shelf moved", fetch: 0.8, think: 0.6 },
 };
 
+// Hands of the wall clock; they turn only while the stopwatch runs.
+const clock = { run: false, a: 0, h1: null, h2: null };
+// The tubes' point lights; the middle one flickers.
+const tubeLights = [];
+
+// Tiled surfaces, 256 pixels to a unit, as on floor 3.
+function tile(draw) { const t = canvasTex(256, 256, draw); t.wrapS = t.wrapT = THREE.RepeatWrapping; return t; }
+const rep = (t, x, y) => { const c = t.clone(); c.needsUpdate = true; c.repeat.set(x, y); return c; };
+const carpetTex = tile((g) => {
+  for (let i = 0; i < 4; i++) { g.fillStyle = i === 1 || i === 2 ? "#343d4b" : "#2c333f"; g.fillRect((i % 2) * 128, (i >> 1) * 128, 128, 128); }
+  for (let k = 0; k < 1500; k++) { g.fillStyle = k % 3 ? "rgba(82,94,114,0.45)" : "rgba(14,18,24,0.45)"; g.fillRect((k * 67) % 256, (k * 113 + (k >> 2)) % 256, 2, 2); }
+  g.fillStyle = "rgba(11,14,19,0.55)"; g.fillRect(0, 0, 256, 2); g.fillRect(0, 128, 256, 2); g.fillRect(0, 0, 2, 256); g.fillRect(128, 0, 2, 256);
+});
+
 (() => {
-  const floor = new THREE.Mesh(new THREE.PlaneGeometry(30, 14), mat(0x2f3540, { roughness: 1 }));
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(30, 14), mat(0xffffff, { map: rep(carpetTex, 30, 14), roughness: 1 }));
   floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; scene.add(floor);
   const wall = new THREE.Mesh(new THREE.PlaneGeometry(30, 6), mat(0x323b4b));
   wall.position.set(0, 3, -2.6); wall.receiveShadow = true; scene.add(wall);
   box(30, 0.12, 0.06, mat(0x262c37), 0, 0.06, -2.56);
+  box(30, 0.05, 0.04, mat(0x2a313d), 0, 1.72, -2.56);
   const win = new THREE.Mesh(new THREE.PlaneGeometry(13, 1.6), new THREE.MeshBasicMaterial({ map: windowsTex }));
   win.position.set(2.2, 2.85, -2.58); scene.add(win);
   for (let i = 0; i <= 8; i++) box(0.06, 1.7, 0.06, mat(0x262c37), -4.3 + i * 13 / 8, 2.85, -2.55);
   box(13.2, 0.08, 0.1, mat(0x262c37), 2.2, 2.02, -2.55);
   box(13.2, 0.08, 0.1, mat(0x262c37), 2.2, 3.68, -2.55);
+  for (const x of [-4.38, 8.78]) box(0.1, 1.8, 0.12, mat(0x262c37), x, 2.85, -2.54);
+  box(13.4, 0.06, 0.22, mat(0x3a4250), 2.2, 1.97, -2.47);
   sign("FLOOR 1", 0.9, 0.34, -2.9, 2.85, -2.56);
+  sign("QUIET, PLEASE", 1.2, 0.3, 11.2, 3.4, -2.56, "#d9c9a8", "#3a2a22");
   keyLight(2.5, 7, 4, 2.5, Math.PI / 4.5, 26);
-  for (const x of [-0.6, 3.2, 7]) tube(x, 4.4, 0.4);
+  for (const x of [-0.6, 3.2, 7]) {
+    tubeLights.push(tube(x, 4.4, 0.4));
+    halo(0xdfe9e4, 1.1, x, 4.28, 0.45, scene, 0.13);
+    pool(scene, 0xc8daf0, 1.7, x, 0.02, 0.4, 0.055);
+  }
   for (const x of [5.2, 9.5]) { box(1.8, 0.08, 0.9, wood, x, 0.98, -1.6); box(0.5, 0.9, 0.8, woodDark, x + 0.55, 0.47, -1.6); }
   const plant = new THREE.Mesh(new THREE.IcosahedronGeometry(0.42, 0), mat(0x3f5a4b, { flatShading: true }));
   plant.position.set(-3.4, 1.0, -1.9); plant.castShadow = true; scene.add(plant);
   box(0.36, 0.5, 0.36, mat(0x55473a), -3.4, 0.25, -1.9);
+  // The courier's drop: a low table by the window with the night's envelopes waiting.
+  box(0.7, 0.05, 0.5, woodDark, -5.6, 0.72, 0.8);
+  for (const [dx, dz] of [[-0.3, -0.2], [0.3, -0.2], [-0.3, 0.2], [0.3, 0.2]]) box(0.04, 0.7, 0.04, woodDark, -5.6 + dx, 0.35, 0.8 + dz);
+  for (const [dy, r] of [[0, 0.1], [0.014, -0.08], [0.028, 0.05]]) {
+    const e = box(0.3, 0.012, 0.2, mat(0xdfe3ea, { roughness: 0.6 }), -5.62, 0.76 + dy, 0.8);
+    e.rotation.y = r;
+  }
+  // The wall clock at the room's right end; its hands are driven from the stopwatch.
+  const face = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 0.04, 28), mat(0xe9ebe6, { emissive: 0x30343a, emissiveIntensity: 0.3 }));
+  face.rotation.x = Math.PI / 2; face.position.set(1.3, 2.95, -2.55); scene.add(face);
+  const rim = new THREE.Mesh(new THREE.TorusGeometry(0.3, 0.03, 6, 28), mat(0x1a1f27));
+  rim.position.set(1.3, 2.95, -2.53); scene.add(rim);
+  for (let k = 0; k < 12; k++) box(0.016, k % 3 ? 0.035 : 0.06, 0.01, mat(0x1a1f27), 1.3 + Math.sin(k * Math.PI / 6) * 0.23, 2.95 + Math.cos(k * Math.PI / 6) * 0.23, -2.52, scene).rotation.z = -k * Math.PI / 6;
+  for (const [len, ref] of [[0.15, "h1"], [0.22, "h2"]]) {
+    const pivot = new THREE.Group(); pivot.position.set(1.3, 2.95, -2.5); scene.add(pivot);
+    box(0.02, len, 0.012, mat(0x1a1f27), 0, len / 2 - 0.01, 0, pivot);
+    clock[ref] = pivot;
+  }
 })();
 makeDesk(0.35, 1.35);
 // Just behind where the adviser stands, so sitting down lands on the seat.
@@ -76,7 +116,7 @@ function setLegs(len) {
   for (const l of shelfLegs) { l.pivot.visible = len > 0.01; l.pivot.scale.y = L; l.foot.scale.y = 1 / L; }
 }
 const spineCols = [0x5d6b7f, 0x7a6a55, 0x4f6a63, 0x6d7486, 0x8a5a48, 0x3f4e66];
-let k = 0;
+let k = 0, shelfManual = null;
 for (let s = 0; s < 5; s++) {
   const y = 0.06 + s * 0.56;
   box(1.2, 0.05, 0.52, shelfWood, 0, y, 0, shelfBody);
@@ -85,12 +125,19 @@ for (let s = 0; s < 5; s++) {
   while (x < 0.5) {
     const w = 0.05 + ((k * 7) % 5) * 0.012, h = 0.34 + ((k * 5) % 7) * 0.025;
     if (x + w > 0.56) break;
-    box(w, h, 0.36, mat(spineCols[k % spineCols.length]), x + w / 2, y + 0.025 + h / 2, 0.02, shelfBody);
+    // The one manual the adviser reads through each run, in the desk book's colour.
+    const manual = s === 1 && !shelfManual && x > -0.1 && x < 0;
+    const b = box(w, h, 0.36, mat(manual ? 0x4f6a63 : spineCols[k % spineCols.length]), x + w / 2, y + 0.025 + h / 2, 0.02, shelfBody);
+    if (manual) shelfManual = b;
+    if (k % 9 === 4) b.rotation.z = 0.12;
     x += w + 0.008; k++;
   }
+  box(0.03, 0.3, 0.34, woodDark, 0.5, y + 0.17, 0.04, shelfBody).rotation.z = -0.16;
 }
+sign("MANUALS", 0.72, 0.2, 0, 2.62, 0.06, "#d9c9a8", "#3a2a22", shelfBody);
 shelf.position.set(FAR, 0, 0);
 shelf.rotation.y = -0.18;
+let shelfRest = true;
 
 const HOME = 0.35;
 const A1 = makeAdviser({ x: HOME, z: 0.45 });
@@ -104,6 +151,19 @@ const ENV_IN = new THREE.Vector3(0.15, 1.03, 1.1), ENV_OUT = new THREE.Vector3(-
 E1.group.position.copy(ENV_OUT);
 const deskBook = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.06, 0.22), mat(0x4f6a63));
 deskBook.position.set(0.75, 1.05, 1.05); deskBook.rotation.y = 0.3; deskBook.castShadow = true; deskBook.visible = false; scene.add(deskBook);
+
+// Warmth from the desk lamp, on the desktop and the floor.
+pool(scene, 0xffb060, 0.5, -0.28, 1.02, 1.12, 0.38);
+pool(scene, 0xffa040, 1.0, 0.1, 0.02, 1.5, 0.1);
+
+// Dust drifting in the tubes' light, so the room is not perfectly still.
+const motes = reduced ? [] : Array.from({ length: 6 }, (_, i) => {
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: haloTex, color: 0xd8dde6, transparent: true, opacity: 0.05, depthWrite: false }));
+  s.scale.setScalar(0.05 + (i % 3) * 0.015);
+  s.position.set(0.4 + i * 0.55 + Math.random(), 1.3 + Math.random() * 1.5, 0.1 + Math.random() * 0.6);
+  s.userData.ph = i * 1.3;
+  scene.add(s); return s;
+});
 
 // The walk, drawn on the floor in the reveal
 const pathGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(HOME, 0.02, 0.6), new THREE.Vector3(FAR - 0.8, 0.02, 0.6)]);
@@ -128,6 +188,7 @@ const squash = (u, kk) => shelfBody.scale.set(1 + 0.6 * kk * Math.sin(u * Math.P
 
 // The shelf crouches, pops its legs out, looks both ways, waddles to `to` in `seconds`, and sets itself down.
 async function moveShelf(to, seconds) {
+  shelfRest = false;
   const LEG = 0.42, from = shelf.position.x, dir = Math.sign(to - from);
   const steps = Math.max(3, Math.round(Math.abs(to - from) / 0.55));
   // The boots are built with their toes toward +x; mirror them to point the way it walks.
@@ -159,13 +220,19 @@ async function moveShelf(to, seconds) {
   tween(0.5, (u) => { dust.scale.setScalar(1 + u * 2.2); dust.material.opacity = 0.45 * (1 - u); });
   await tween(0.3, (u) => squash(u, 0.07));
   shelfBody.scale.set(1, 1, 1);
+  shelfRest = true;
 }
 
 // Floor 1: one word delivered and stamped. The clock counts only the adviser's fetching and thinking.
 async function deliver(run) {
   setClock(0, 0);
-  E1.stamp.visible = false; deskBook.visible = false;
-  await tween(0.7, (u) => E1.group.position.lerpVectors(ENV_OUT, ENV_IN, ease(u)));
+  E1.stamp.visible = false; E1.stamp.scale.set(1, 1, 1); deskBook.visible = false; shelfManual.visible = true;
+  clock.run = true; clock.a = 0;
+  await tween(0.7, (u) => {
+    E1.group.position.lerpVectors(ENV_OUT, ENV_IN, ease(u));
+    E1.group.rotation.z = (1 - ease(u)) * Math.sin(u * 13) * 0.18;
+  });
+  E1.group.rotation.z = 0;
   await sleep(0.2);
   const target = shelf.position.x - 0.85, dist = target - HOME;
   let last = 0;
@@ -177,6 +244,7 @@ async function deliver(run) {
     A1.heading = there ? Math.PI / 2 : -Math.PI / 2;
     A1.walkPhase += (u - last) * dist * 12; last = u;
     A1.reach = u > 0.4 && there;
+    if (A1.reach) shelfManual.visible = false;  // the manual comes off this shelf
     handBook.visible = A1.carry = !there;
     setClock(run.fetch * u, 0);
   });
@@ -185,14 +253,18 @@ async function deliver(run) {
   handBook.visible = A1.carry = false; deskBook.visible = true;
   await sitAndThink(A1, run.fetch, run.think);
   E1.stamp.visible = true;
+  clock.run = false;
+  if (!reduced) tween(0.25, (u) => { const s = 1 + 0.6 * Math.sin(u * Math.PI); E1.stamp.scale.set(s, 1, s); });
   addHistory(run);
   await sleep(0.4);
 }
 
 function resetFloor1() {
   shelf.position.x = FAR; setPath();
+  shelfBody.position.y = 0; shelfBody.scale.set(1, 1, 1); shelfRest = true;
   adv.position.set(HOME, 0, 0.45); adv.rotation.y = A1.heading = 0; A1.sit = 0; A1.reach = false;
-  E1.group.position.copy(ENV_OUT); E1.stamp.visible = false; deskBook.visible = false;
+  E1.group.position.copy(ENV_OUT); E1.group.rotation.z = 0; E1.stamp.visible = false; E1.stamp.scale.set(1, 1, 1);
+  deskBook.visible = false; shelfManual.visible = true; clock.run = false;
 }
 async function intro() {
   await speak("intro");
@@ -238,9 +310,25 @@ async function reveal() {
 }
 
 setPath();
+let tubeLit = 1;
 
 export default {
   ...config, anchors, camera: camera1, enter: resetFloor1, start: intro,
-  frame(t, dt) { poseAdviser(A1, t, dt); },
+  frame(t, dt) {
+    poseAdviser(A1, t, dt);
+    if (clock.run) { clock.a += dt * 1.2; clock.h2.rotation.z = -clock.a * 2.4; clock.h1.rotation.z = -clock.a * 0.1; }
+    if (!reduced) {
+      if (shelfRest) shelfBody.position.y = (1 + Math.sin(t * 1.3)) * 0.008;  // the shelf, waiting, breathing
+      const dip = (t * 0.53 + 1.7) % 9 < 0.05 ? 0.15 : 1;
+      tubeLit += (dip - tubeLit) * Math.min(1, dt * 12);
+      tubeLights[1].intensity = 0.45 * tubeLit;
+      for (const m of motes) {
+        m.position.y += dt * 0.03;
+        m.position.x += Math.sin(t * 0.5 + m.userData.ph) * dt * 0.02;
+        if (m.position.y > 2.9) m.position.y = 1.2;
+        m.material.opacity = 0.035 + 0.03 * Math.sin(t * 0.8 + m.userData.ph);
+      }
+    }
+  },
   onLabels(on) { pathLine.material.opacity = on ? 0.95 : 0; },
 };
