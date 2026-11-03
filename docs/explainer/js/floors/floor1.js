@@ -103,7 +103,11 @@ const carpetTex = tile((g) => {
   halo(0xffb45c, 0.7, 7.5, 1.5, -0.8, scene, 0.4);
   const warm = new THREE.PointLight(0xffc27a, 0.75, 8, 1.6); warm.position.set(7.5, 1.45, -0.8); scene.add(warm);
   pool(scene, 0xffa850, 1.4, 7.5, 0.02, -0.8, 0.15);
-  for (const x of [5.2, 9.5]) { box(1.8, 0.08, 0.9, wood, x, 0.98, -1.6); box(0.5, 0.9, 0.8, woodDark, x + 0.55, 0.47, -1.6); }
+  for (const x of [5.2, 9.5]) {
+    box(1.8, 0.08, 0.9, wood, x, 0.98, -1.6);
+    box(0.5, 0.9, 0.8, woodDark, x + 0.55, 0.47, -1.6);
+    box(0.08, 0.9, 0.86, woodDark, x - 0.78, 0.47, -1.6);
+  }
   const plant = new THREE.Mesh(new THREE.IcosahedronGeometry(0.42, 0), mat(0x3f5a4b, { flatShading: true }));
   plant.position.set(-3.4, 0.72, -1.9); plant.castShadow = true; scene.add(plant);
   box(0.36, 0.5, 0.36, mat(0x55473a), -3.4, 0.25, -1.9);
@@ -134,16 +138,16 @@ const carpetTex = tile((g) => {
     note(60, 60, 150, 110, "#f2f2ec", 0.05); note(250, 40, 130, 90, "#f2e6c0", -0.06); note(150, 190, 170, 100, "#e8eef2", 0.02);
   });
   const corkBoard = new THREE.Mesh(new THREE.PlaneGeometry(1.0, 0.66), new THREE.MeshStandardMaterial({ map: cork, roughness: 0.9 }));
-  corkBoard.position.set(-1.3, 1.9, -2.55); scene.add(corkBoard);
-  for (const [w, h, x, y] of [[1.12, 0.05, -1.3, 2.255], [1.12, 0.05, -1.3, 1.545], [0.05, 0.72, -1.83, 1.9], [0.05, 0.72, -0.77, 1.9]]) box(w, h, 0.05, woodDark, x, y, -2.54);
+  corkBoard.position.set(-1.3, 1.6, -2.55); scene.add(corkBoard);
+  for (const [w, h, x, y] of [[1.12, 0.05, -1.3, 1.955], [1.12, 0.05, -1.3, 1.245], [0.05, 0.72, -1.83, 1.6], [0.05, 0.72, -0.77, 1.6]]) box(w, h, 0.05, woodDark, x, y, -2.54);
   // The wall clock on the band above the window; its hands are driven from the stopwatch.
   const face = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 0.04, 28), mat(0xe9ebe6, { emissive: 0x30343a, emissiveIntensity: 0.3 }));
-  face.rotation.x = Math.PI / 2; face.position.set(5.0, 3.97, -2.55); scene.add(face);
+  face.rotation.x = Math.PI / 2; face.position.set(5.0, 4.06, -2.55); scene.add(face);
   const rim = new THREE.Mesh(new THREE.TorusGeometry(0.3, 0.03, 6, 28), mat(0x1a1f27));
-  rim.position.set(5.0, 3.97, -2.53); scene.add(rim);
-  for (let k = 0; k < 12; k++) box(0.016, k % 3 ? 0.032 : 0.055, 0.01, mat(0x1a1f27), 5.0 + Math.sin(k * Math.PI / 6) * 0.23, 3.97 + Math.cos(k * Math.PI / 6) * 0.23, -2.52, scene).rotation.z = -k * Math.PI / 6;
+  rim.position.set(5.0, 4.06, -2.53); scene.add(rim);
+  for (let k = 0; k < 12; k++) box(0.016, k % 3 ? 0.032 : 0.055, 0.01, mat(0x1a1f27), 5.0 + Math.sin(k * Math.PI / 6) * 0.23, 4.06 + Math.cos(k * Math.PI / 6) * 0.23, -2.52, scene).rotation.z = -k * Math.PI / 6;
   for (const [len, ref] of [[0.15, "h1"], [0.22, "h2"]]) {
-    const pivot = new THREE.Group(); pivot.position.set(5.0, 3.97, -2.5); scene.add(pivot);
+    const pivot = new THREE.Group(); pivot.position.set(5.0, 4.06, -2.5); scene.add(pivot);
     box(0.02, len, 0.012, mat(0x1a1f27), 0, len / 2 - 0.01, 0, pivot);
     clock[ref] = pivot;
   }
@@ -210,20 +214,21 @@ for (let s = 0; s < 5; s++) {
   }
   box(0.03, 0.3, 0.34, woodDark, 0.5, y + 0.17, 0.04, shelfBody).rotation.z = -0.16;
 }
-sign("MANUALS", 0.85, 0.24, 0, 2.62, 0.06, "#d9c9a8", "#3a2a22", shelfBody);
+sign("MANUALS", 0.85, 0.24, 0, 2.6, 0, "#d9c9a8", "#3a2a22", shelfBody);
 shelf.position.set(FAR, 0, 0);
-shelf.rotation.y = -0.18;
 let shelfRest = true;
 
 const HOME = 0.35;
 const A1 = makeAdviser({ x: HOME, z: 0.45 });
 const adv = A1.group;
-// A dark cap with an amber band and a badge, so the adviser is a person and not the stock figure.
-const capC = mat(0x42352a, { roughness: 0.95 });
-const cap = new THREE.Mesh(new THREE.SphereGeometry(0.178, 18, 10, 0, Math.PI * 2, 0, Math.PI / 2.05), capC);
-cap.position.y = 0.17; cap.castShadow = true; A1.head.add(cap);
-box(0.26, 0.016, 0.17, capC, 0, 0.19, 0.17, A1.head).rotation.x = 0.12;
-box(0.29, 0.02, 0.014, mat(0xe8a33d), 0, 0.185, 0.11, A1.head);
+// A dark flat cap with an amber band, peak and button, so the adviser is a person and not the stock figure.
+const capC = mat(0x161109, { roughness: 0.95 });
+const cap = new THREE.Mesh(new THREE.SphereGeometry(0.185, 18, 10, 0, Math.PI * 2, 0, Math.PI / 2.05), capC);
+cap.position.y = 0.175; cap.castShadow = true; A1.head.add(cap);
+box(0.2, 0.014, 0.11, capC, 0, 0.192, 0.175, A1.head).rotation.x = 0.25;
+const btn = new THREE.Mesh(new THREE.SphereGeometry(0.02, 10, 8), capC); btn.position.y = 0.36; A1.head.add(btn);
+const band = new THREE.Mesh(new THREE.TorusGeometry(0.184, 0.013, 8, 24), mat(0xc77f1e));
+band.rotation.x = Math.PI / 2; band.position.y = 0.192; A1.head.add(band);
 box(0.05, 0.07, 0.012, paperM, 0.12, 0.42, 0.236, A1.body);
 box(0.05, 0.014, 0.012, mat(0xe8a33d), 0.12, 0.46, 0.236, A1.body);
 // The manual, carried flat across both hands; rotated back out of the forearm's tilt in the carry pose.
@@ -231,13 +236,13 @@ const handBook = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.07, 0.24), mat(0x4
 handBook.position.set(-0.25, 0.02, -0.04); handBook.rotation.x = 1.95; handBook.visible = false; A1.armR.hand.add(handBook);
 
 const E1 = makeEnvelope();
-const ENV_IN = new THREE.Vector3(0.15, 1.03, 1.1), ENV_OUT = new THREE.Vector3(-2.7, 1.6, -1.0);
+const ENV_IN = new THREE.Vector3(0.15, 1.03, 1.1), ENV_OUT = new THREE.Vector3(-2.72, 0.8, -1);
 E1.group.position.copy(ENV_OUT);
 const deskBook = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.06, 0.22), mat(0x4f6a63));
 deskBook.position.set(0.75, 1.05, 1.05); deskBook.rotation.y = 0.3; deskBook.castShadow = true; deskBook.visible = false; scene.add(deskBook);
 
 // Warmth from the desk lamp, on the desktop and the floor.
-pool(scene, 0xffb060, 0.5, -0.28, 1.02, 1.12, 0.38);
+pool(scene, 0xffb060, 0.5, -0.28, 1.04, 1.12, 0.38);
 pool(scene, 0xffa040, 1.0, 0.1, 0.02, 1.5, 0.1);
 
 // Dust drifting in the tubes' light, so the room is not perfectly still.
