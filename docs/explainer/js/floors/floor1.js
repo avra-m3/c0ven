@@ -50,7 +50,7 @@ const carpetTex = tile((g) => {
     box(0.06, 0.12, 6.6, mat(0x262c37), sx, 0.06, 0.7);
   }
   const ceil = new THREE.Mesh(new THREE.PlaneGeometry(15.5, 6.6), mat(0x262c37, { roughness: 1 }));
-  ceil.rotation.x = Math.PI / 2; ceil.position.set(3.15, 4.7, 0.7); scene.add(ceil);
+  ceil.rotation.x = Math.PI / 2; ceil.position.set(3.15, 5.0, 0.7); scene.add(ceil);
   // The back wall, built in panels around the window opening at x −4.3…8.7, y 2.05…3.68.
   for (const [w, h, x, y] of [[30, 2.05, 0, 1.025], [30, 2.32, 0, 4.84], [10.7, 1.63, -9.65, 2.865], [6.3, 1.63, 11.85, 2.865]]) {
     const p = new THREE.Mesh(new THREE.PlaneGeometry(w, h), plaster);
@@ -76,20 +76,21 @@ const carpetTex = tile((g) => {
     b.position.set(x, h / 2, z); scene.add(b);
   }
   box(30, 0.12, 0.06, mat(0x262c37), 0, 0.06, -2.56);
-  box(30, 0.05, 0.04, mat(0x2a313d), 0, 1.72, -2.56);
+  // Chair rail, stopped at the window jambs like a real one.
+  for (const [w, x] of [[10.7, -9.65], [6.3, 11.85]]) box(w, 0.05, 0.04, mat(0x2a313d), x, 1.72, -2.56);
   for (let i = 1; i < 8; i++) box(0.06, 1.63, 0.06, mat(0x262c37), -4.3 + i * 13 / 8, 2.865, -2.55);
   box(13.2, 0.08, 0.1, mat(0x262c37), 2.2, 2.02, -2.55);
   box(13.2, 0.08, 0.1, mat(0x262c37), 2.2, 3.68, -2.55);
   for (const x of [-4.38, 8.78]) box(0.1, 1.8, 0.12, mat(0x262c37), x, 2.85, -2.54);
   box(13.4, 0.06, 0.22, mat(0x3a4250), 2.2, 1.97, -2.47);
-  sign("FLOOR 1", 0.9, 0.34, -2.9, 2.85, -2.56);
-  sign("QUIET, PLEASE", 1.2, 0.3, 3.4, 3.92, -2.56, "#d9c9a8", "#3a2a22");
+  sign("FLOOR 1", 1.05, 0.4, -0.8, 4.05, -2.56);
+  sign("QUIET, PLEASE", 1.4, 0.32, 2.4, 4.02, -2.56, "#d9c9a8", "#3a2a22");
   keyLight(2.5, 7, 4, 2.5, Math.PI / 4.5, 26);
   for (const x of [-0.6, 3.2, 7]) {
     tubeLights.push(tube(x, 4.4, 0.4));
     halo(0xdfe9e4, 1.1, x, 4.28, 0.45, scene, 0.13);
     pool(scene, 0xc8daf0, 1.7, x, 0.02, 0.4, 0.055);
-    for (const dx of [-0.7, 0.7]) box(0.012, 0.25, 0.012, mat(0x8a9099, { metalness: 0.6, roughness: 0.4 }), x + dx, 4.57, 0.4);
+    for (const dx of [-0.7, 0.7]) box(0.012, 0.58, 0.012, mat(0x8a9099, { metalness: 0.6, roughness: 0.4 }), x + dx, 4.69, 0.4);
   }
   // The ends are lit less than the middle: the key tube does the work, corners fall dark.
   tubeLights[0].intensity = 0.36; tubeLights[2].intensity = 0.3;
@@ -104,7 +105,7 @@ const carpetTex = tile((g) => {
   pool(scene, 0xffa850, 1.4, 7.5, 0.02, -0.8, 0.15);
   for (const x of [5.2, 9.5]) { box(1.8, 0.08, 0.9, wood, x, 0.98, -1.6); box(0.5, 0.9, 0.8, woodDark, x + 0.55, 0.47, -1.6); }
   const plant = new THREE.Mesh(new THREE.IcosahedronGeometry(0.42, 0), mat(0x3f5a4b, { flatShading: true }));
-  plant.position.set(-3.4, 1.0, -1.9); plant.castShadow = true; scene.add(plant);
+  plant.position.set(-3.4, 0.72, -1.9); plant.castShadow = true; scene.add(plant);
   box(0.36, 0.5, 0.36, mat(0x55473a), -3.4, 0.25, -1.9);
   // The courier's drop: a low table with the night's envelopes waiting.
   box(0.7, 0.05, 0.5, woodDark, -2.7, 0.72, -1.0);
@@ -135,14 +136,14 @@ const carpetTex = tile((g) => {
   const corkBoard = new THREE.Mesh(new THREE.PlaneGeometry(1.0, 0.66), new THREE.MeshStandardMaterial({ map: cork, roughness: 0.9 }));
   corkBoard.position.set(-1.3, 1.9, -2.55); scene.add(corkBoard);
   for (const [w, h, x, y] of [[1.12, 0.05, -1.3, 2.255], [1.12, 0.05, -1.3, 1.545], [0.05, 0.72, -1.83, 1.9], [0.05, 0.72, -0.77, 1.9]]) box(w, h, 0.05, woodDark, x, y, -2.54);
-  // The wall clock at the room's right end; its hands are driven from the stopwatch.
+  // The wall clock on the band above the window; its hands are driven from the stopwatch.
   const face = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 0.04, 28), mat(0xe9ebe6, { emissive: 0x30343a, emissiveIntensity: 0.3 }));
-  face.rotation.x = Math.PI / 2; face.position.set(1.3, 2.95, -2.55); scene.add(face);
+  face.rotation.x = Math.PI / 2; face.position.set(5.0, 3.97, -2.55); scene.add(face);
   const rim = new THREE.Mesh(new THREE.TorusGeometry(0.3, 0.03, 6, 28), mat(0x1a1f27));
-  rim.position.set(1.3, 2.95, -2.53); scene.add(rim);
-  for (let k = 0; k < 12; k++) box(0.016, k % 3 ? 0.035 : 0.06, 0.01, mat(0x1a1f27), 1.3 + Math.sin(k * Math.PI / 6) * 0.23, 2.95 + Math.cos(k * Math.PI / 6) * 0.23, -2.52, scene).rotation.z = -k * Math.PI / 6;
+  rim.position.set(5.0, 3.97, -2.53); scene.add(rim);
+  for (let k = 0; k < 12; k++) box(0.016, k % 3 ? 0.032 : 0.055, 0.01, mat(0x1a1f27), 5.0 + Math.sin(k * Math.PI / 6) * 0.23, 3.97 + Math.cos(k * Math.PI / 6) * 0.23, -2.52, scene).rotation.z = -k * Math.PI / 6;
   for (const [len, ref] of [[0.15, "h1"], [0.22, "h2"]]) {
-    const pivot = new THREE.Group(); pivot.position.set(1.3, 2.95, -2.5); scene.add(pivot);
+    const pivot = new THREE.Group(); pivot.position.set(5.0, 3.97, -2.5); scene.add(pivot);
     box(0.02, len, 0.012, mat(0x1a1f27), 0, len / 2 - 0.01, 0, pivot);
     clock[ref] = pivot;
   }
@@ -209,7 +210,7 @@ for (let s = 0; s < 5; s++) {
   }
   box(0.03, 0.3, 0.34, woodDark, 0.5, y + 0.17, 0.04, shelfBody).rotation.z = -0.16;
 }
-sign("MANUALS", 0.72, 0.2, 0, 2.62, 0.06, "#d9c9a8", "#3a2a22", shelfBody);
+sign("MANUALS", 0.85, 0.24, 0, 2.62, 0.06, "#d9c9a8", "#3a2a22", shelfBody);
 shelf.position.set(FAR, 0, 0);
 shelf.rotation.y = -0.18;
 let shelfRest = true;
@@ -258,8 +259,13 @@ function setPath() {
   pathLine.computeLineDistances();
 }
 
-const camera1 = { look: new THREE.Vector3(2.4, 1.05, 0), wide: new THREE.Vector3(2.6, 3.0, 8.2), narrow: new THREE.Vector3(2.2, 3.4, 10.5), fog: [11, 24], par: 1 };
-camera1.place = () => innerWidth / innerHeight < 0.9 ? camera1.narrow : camera1.wide;
+const camera1 = { look: new THREE.Vector3(2.4, 1.05, 0), wide: new THREE.Vector3(2.6, 3.0, 8.2), narrow: new THREE.Vector3(2.6, 3.4, 13.0), fog: [13, 32], par: 1 };
+// A tall window sees little sideways; widen its fov so desk and shelf both stay in frame.
+camera1.place = () => {
+  if (innerWidth / innerHeight < 0.9) { view.baseFov = 74; return camera1.narrow; }
+  view.baseFov = 42;
+  return camera1.wide;
+};
 const anchors = [
   [$("aAdv"), () => up(adv, 2.2)],
   [$("aShelf"), () => up(shelf, 2.65)],
