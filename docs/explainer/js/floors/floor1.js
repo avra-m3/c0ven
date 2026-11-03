@@ -1,7 +1,7 @@
 // Floor 1, the shelf room, around x = 0. Reading the model's weights is the slow part, so move them closer.
 import { $, box, canvasTex, halo, haloTex, keyLight, mat, pool, reduced, scene, sign, tube, up, view, windowsTex } from "../world.js";
 import { backOut, ease, sleep, tween } from "../motion.js";
-import { makeAdviser, makeChair, makeDesk, makeEnvelope, poseAdviser, sitAndThink, wood, woodDark } from "../props.js";
+import { makeAdviser, makeChair, makeDesk, makeEnvelope, paperM, poseAdviser, sitAndThink, wood, woodDark } from "../props.js";
 import { speak } from "../narration.js";
 import { addHistory, choose, clearStage, endings, findEnding, goFloor, labels, revealButtons, setClock } from "../hud.js";
 
@@ -41,36 +41,100 @@ const carpetTex = tile((g) => {
 (() => {
   const floor = new THREE.Mesh(new THREE.PlaneGeometry(30, 14), mat(0xffffff, { map: rep(carpetTex, 30, 14), roughness: 1 }));
   floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; scene.add(floor);
-  const wall = new THREE.Mesh(new THREE.PlaneGeometry(30, 6), mat(0x323b4b));
-  wall.position.set(0, 3, -2.6); wall.receiveShadow = true; scene.add(wall);
+  // The room's shell: side walls and a low ceiling band, so it reads as a box and not a backdrop.
+  const plaster = mat(0x323b4b), plasterSide = mat(0x2d3646);
+  for (const sx of [-4.6, 10.9]) {
+    const w = new THREE.Mesh(new THREE.PlaneGeometry(6.6, 6), plasterSide);
+    w.rotation.y = sx < 0 ? Math.PI / 2 : -Math.PI / 2;
+    w.position.set(sx, 3, 0.7); w.receiveShadow = true; scene.add(w);
+    box(0.06, 0.12, 6.6, mat(0x262c37), sx, 0.06, 0.7);
+  }
+  const ceil = new THREE.Mesh(new THREE.PlaneGeometry(15.5, 6.6), mat(0x262c37, { roughness: 1 }));
+  ceil.rotation.x = Math.PI / 2; ceil.position.set(3.15, 4.7, 0.7); scene.add(ceil);
+  // The back wall, built in panels around the window opening at x −4.3…8.7, y 2.05…3.68.
+  for (const [w, h, x, y] of [[30, 2.05, 0, 1.025], [30, 2.32, 0, 4.84], [10.7, 1.63, -9.65, 2.865], [6.3, 1.63, 11.85, 2.865]]) {
+    const p = new THREE.Mesh(new THREE.PlaneGeometry(w, h), plaster);
+    p.position.set(x, y, -2.6); p.receiveShadow = true; scene.add(p);
+  }
+  // Evening glass in the opening; the lit skyline sits eight to twelve units beyond it.
+  const glass = new THREE.Mesh(new THREE.PlaneGeometry(13, 1.63), new THREE.MeshBasicMaterial({ color: 0x141a24, transparent: true, opacity: 0.45 }));
+  glass.position.set(2.2, 2.865, -2.72); scene.add(glass);
+  // Skyline windows on a tileable grid, repeated at the size of each building face.
+  const skyTile = canvasTex(128, 128, (g) => {
+    g.fillStyle = "#0b0f16"; g.fillRect(0, 0, 128, 128);
+    for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++) {
+      const i = r * 4 + c;
+      if ((i * 7) % 5 < 2) { g.fillStyle = i % 3 ? "#d8b46a" : "#9fb5c9"; g.globalAlpha = 0.3 + ((i * 13) % 50) / 100; g.fillRect(c * 32 + 9, r * 32 + 8, 14, 10); }
+    }
+    g.globalAlpha = 1;
+  });
+  skyTile.wrapS = skyTile.wrapT = THREE.RepeatWrapping;
+  for (const [x, h, w, z] of [[-7, 5, 3.4, -7.5], [-2.5, 7, 3.2, -9.5], [2, 4.5, 3, -8], [6.5, 6.5, 3.4, -10], [11, 5, 3, -8.5], [15, 7, 3.2, -9.5]]) {
+    const t = skyTile.clone(); t.needsUpdate = true; t.repeat.set(w / 1.6, h / 1.6);
+    const m = new THREE.MeshBasicMaterial({ map: t });
+    const b = new THREE.Mesh(new THREE.BoxGeometry(w, h, 2), [mat(0x161a21), mat(0x161a21), mat(0x161a21), mat(0x161a21), m, mat(0x161a21)]);
+    b.position.set(x, h / 2, z); scene.add(b);
+  }
   box(30, 0.12, 0.06, mat(0x262c37), 0, 0.06, -2.56);
   box(30, 0.05, 0.04, mat(0x2a313d), 0, 1.72, -2.56);
-  const win = new THREE.Mesh(new THREE.PlaneGeometry(13, 1.6), new THREE.MeshBasicMaterial({ map: windowsTex }));
-  win.position.set(2.2, 2.85, -2.58); scene.add(win);
-  for (let i = 0; i <= 8; i++) box(0.06, 1.7, 0.06, mat(0x262c37), -4.3 + i * 13 / 8, 2.85, -2.55);
+  for (let i = 1; i < 8; i++) box(0.06, 1.63, 0.06, mat(0x262c37), -4.3 + i * 13 / 8, 2.865, -2.55);
   box(13.2, 0.08, 0.1, mat(0x262c37), 2.2, 2.02, -2.55);
   box(13.2, 0.08, 0.1, mat(0x262c37), 2.2, 3.68, -2.55);
   for (const x of [-4.38, 8.78]) box(0.1, 1.8, 0.12, mat(0x262c37), x, 2.85, -2.54);
   box(13.4, 0.06, 0.22, mat(0x3a4250), 2.2, 1.97, -2.47);
   sign("FLOOR 1", 0.9, 0.34, -2.9, 2.85, -2.56);
-  sign("QUIET, PLEASE", 1.2, 0.3, 11.2, 3.4, -2.56, "#d9c9a8", "#3a2a22");
+  sign("QUIET, PLEASE", 1.2, 0.3, 3.4, 3.92, -2.56, "#d9c9a8", "#3a2a22");
   keyLight(2.5, 7, 4, 2.5, Math.PI / 4.5, 26);
   for (const x of [-0.6, 3.2, 7]) {
     tubeLights.push(tube(x, 4.4, 0.4));
     halo(0xdfe9e4, 1.1, x, 4.28, 0.45, scene, 0.13);
     pool(scene, 0xc8daf0, 1.7, x, 0.02, 0.4, 0.055);
+    for (const dx of [-0.7, 0.7]) box(0.012, 0.25, 0.012, mat(0x8a9099, { metalness: 0.6, roughness: 0.4 }), x + dx, 4.57, 0.4);
   }
+  // The ends are lit less than the middle: the key tube does the work, corners fall dark.
+  tubeLights[0].intensity = 0.36; tubeLights[2].intensity = 0.3;
+  // A warm reading lamp by the shelves, against the cool tubes.
+  const lampWood = mat(0x3b3029);
+  const base = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.18, 0.03, 16), lampWood); base.position.set(7.5, 0.015, -0.8); scene.add(base);
+  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.03, 1.5, 10), lampWood); pole.position.set(7.5, 0.76, -0.8); pole.castShadow = true; scene.add(pole);
+  const shade = new THREE.Mesh(new THREE.ConeGeometry(0.24, 0.26, 20, 1, true), mat(0xc9b39d, { side: THREE.DoubleSide, emissive: 0xffc070, emissiveIntensity: 0.5, roughness: 0.8 }));
+  shade.position.set(7.5, 1.55, -0.8); scene.add(shade);
+  halo(0xffb45c, 0.7, 7.5, 1.5, -0.8, scene, 0.4);
+  const warm = new THREE.PointLight(0xffc27a, 0.75, 8, 1.6); warm.position.set(7.5, 1.45, -0.8); scene.add(warm);
+  pool(scene, 0xffa850, 1.4, 7.5, 0.02, -0.8, 0.15);
   for (const x of [5.2, 9.5]) { box(1.8, 0.08, 0.9, wood, x, 0.98, -1.6); box(0.5, 0.9, 0.8, woodDark, x + 0.55, 0.47, -1.6); }
   const plant = new THREE.Mesh(new THREE.IcosahedronGeometry(0.42, 0), mat(0x3f5a4b, { flatShading: true }));
   plant.position.set(-3.4, 1.0, -1.9); plant.castShadow = true; scene.add(plant);
   box(0.36, 0.5, 0.36, mat(0x55473a), -3.4, 0.25, -1.9);
-  // The courier's drop: a low table by the window with the night's envelopes waiting.
-  box(0.7, 0.05, 0.5, woodDark, -5.6, 0.72, 0.8);
-  for (const [dx, dz] of [[-0.3, -0.2], [0.3, -0.2], [-0.3, 0.2], [0.3, 0.2]]) box(0.04, 0.7, 0.04, woodDark, -5.6 + dx, 0.35, 0.8 + dz);
+  // The courier's drop: a low table with the night's envelopes waiting.
+  box(0.7, 0.05, 0.5, woodDark, -2.7, 0.72, -1.0);
+  for (const [dx, dz] of [[-0.3, -0.2], [0.3, -0.2], [-0.3, 0.2], [0.3, 0.2]]) box(0.04, 0.7, 0.04, woodDark, -2.7 + dx, 0.35, -1.0 + dz);
   for (const [dy, r] of [[0, 0.1], [0.014, -0.08], [0.028, 0.05]]) {
-    const e = box(0.3, 0.012, 0.2, mat(0xdfe3ea, { roughness: 0.6 }), -5.62, 0.76 + dy, 0.8);
+    const e = box(0.3, 0.012, 0.2, mat(0xdfe3ea, { roughness: 0.6 }), -2.72, 0.76 + dy, -1.0);
     e.rotation.y = r;
   }
+  // A filing cabinet under the cork board; notices pinned to both.
+  box(0.52, 1.2, 0.5, mat(0x4d535c, { roughness: 0.55 }), -1.3, 0.6, -2.15);
+  for (const y of [0.35, 0.7, 1.05]) box(0.12, 0.02, 0.02, mat(0x8a9099, { metalness: 0.6, roughness: 0.4 }), -1.3, y, -1.88);
+  box(0.16, 0.2, 0.004, paperM, -1.4, 0.98, -1.889, scene).rotation.z = 0.04;
+  box(0.1, 0.1, 0.004, mat(0xd8c27a), -1.16, 0.86, -1.889, scene).rotation.z = -0.07;
+  const cork = canvasTex(512, 340, (g, w, h) => {
+    g.fillStyle = "#8a6a45"; g.fillRect(0, 0, w, h);
+    for (let k = 0; k < 700; k++) { g.fillStyle = "rgba(60,42,24,0.35)"; g.fillRect((k * 83) % w, (k * 131) % h, 3, 3); }
+    const note = (x, y, nw, nh, bg, rot) => {
+      g.save(); g.translate(x, y); g.rotate(rot);
+      g.fillStyle = "rgba(0,0,0,0.25)"; g.fillRect(4, 5, nw, nh);
+      g.fillStyle = bg; g.fillRect(0, 0, nw, nh);
+      g.fillStyle = "#5a5f68";
+      for (let r0 = 0; r0 < 4; r0++) g.fillRect(10, 16 + r0 * 16, nw - 20 - ((r0 * 37) % 40), 5);
+      g.fillStyle = "#c2453d"; g.beginPath(); g.arc(nw / 2, 8, 6, 0, 7); g.fill();
+      g.restore();
+    };
+    note(60, 60, 150, 110, "#f2f2ec", 0.05); note(250, 40, 130, 90, "#f2e6c0", -0.06); note(150, 190, 170, 100, "#e8eef2", 0.02);
+  });
+  const corkBoard = new THREE.Mesh(new THREE.PlaneGeometry(1.0, 0.66), new THREE.MeshStandardMaterial({ map: cork, roughness: 0.9 }));
+  corkBoard.position.set(-1.3, 1.9, -2.55); scene.add(corkBoard);
+  for (const [w, h, x, y] of [[1.12, 0.05, -1.3, 2.255], [1.12, 0.05, -1.3, 1.545], [0.05, 0.72, -1.83, 1.9], [0.05, 0.72, -0.77, 1.9]]) box(w, h, 0.05, woodDark, x, y, -2.54);
   // The wall clock at the room's right end; its hands are driven from the stopwatch.
   const face = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 0.04, 28), mat(0xe9ebe6, { emissive: 0x30343a, emissiveIntensity: 0.3 }));
   face.rotation.x = Math.PI / 2; face.position.set(1.3, 2.95, -2.55); scene.add(face);
@@ -86,6 +150,17 @@ const carpetTex = tile((g) => {
 makeDesk(0.35, 1.35);
 // Just behind where the adviser stands, so sitting down lands on the seat.
 makeChair(0.35, 0.15);
+// A runner along the adviser's walk, so the path crosses a furnished floor and not bare carpet.
+const runnerTex = canvasTex(512, 112, (g, w, h) => {
+  g.fillStyle = "#232c3a"; g.fillRect(0, 0, w, h);
+  g.strokeStyle = "#55637a"; g.lineWidth = 7; g.strokeRect(12, 10, w - 24, h - 20);
+  g.strokeStyle = "#8a6a45"; g.lineWidth = 3; g.strokeRect(26, 20, w - 52, h - 40);
+  g.fillStyle = "rgba(120,132,150,0.22)";
+  for (let x = 44; x < w - 40; x += 42) { g.save(); g.translate(x, h / 2); g.rotate(Math.PI / 4); g.fillRect(-10, -10, 20, 20); g.restore(); }
+  for (let k = 0; k < 500; k++) { g.fillStyle = "rgba(16,20,26,0.4)"; g.fillRect((k * 97) % w, (k * 61) % h, 2, 2); }
+});
+const runner = new THREE.Mesh(new THREE.PlaneGeometry(4.4, 1.0), new THREE.MeshStandardMaterial({ map: runnerTex, roughness: 1 }));
+runner.rotation.x = -Math.PI / 2; runner.position.set(3.2, 0.031, 0.05); runner.receiveShadow = true; scene.add(runner);
 
 // The shelf. shelf moves across the floor; shelfBody lifts and waddles on the legs that fold out from under it.
 const FAR = 6.2, NEAR = 1.9;
@@ -142,12 +217,20 @@ let shelfRest = true;
 const HOME = 0.35;
 const A1 = makeAdviser({ x: HOME, z: 0.45 });
 const adv = A1.group;
+// A dark cap with an amber band and a badge, so the adviser is a person and not the stock figure.
+const capC = mat(0x42352a, { roughness: 0.95 });
+const cap = new THREE.Mesh(new THREE.SphereGeometry(0.178, 18, 10, 0, Math.PI * 2, 0, Math.PI / 2.05), capC);
+cap.position.y = 0.17; cap.castShadow = true; A1.head.add(cap);
+box(0.26, 0.016, 0.17, capC, 0, 0.19, 0.17, A1.head).rotation.x = 0.12;
+box(0.29, 0.02, 0.014, mat(0xe8a33d), 0, 0.185, 0.11, A1.head);
+box(0.05, 0.07, 0.012, paperM, 0.12, 0.42, 0.236, A1.body);
+box(0.05, 0.014, 0.012, mat(0xe8a33d), 0.12, 0.46, 0.236, A1.body);
 // The manual, carried flat across both hands; rotated back out of the forearm's tilt in the carry pose.
 const handBook = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.07, 0.24), mat(0x4f6a63));
 handBook.position.set(-0.25, 0.02, -0.04); handBook.rotation.x = 1.95; handBook.visible = false; A1.armR.hand.add(handBook);
 
 const E1 = makeEnvelope();
-const ENV_IN = new THREE.Vector3(0.15, 1.03, 1.1), ENV_OUT = new THREE.Vector3(-4.5, 1.6, 0.8);
+const ENV_IN = new THREE.Vector3(0.15, 1.03, 1.1), ENV_OUT = new THREE.Vector3(-2.7, 1.6, -1.0);
 E1.group.position.copy(ENV_OUT);
 const deskBook = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.06, 0.22), mat(0x4f6a63));
 deskBook.position.set(0.75, 1.05, 1.05); deskBook.rotation.y = 0.3; deskBook.castShadow = true; deskBook.visible = false; scene.add(deskBook);
