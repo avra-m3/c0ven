@@ -11,6 +11,10 @@
 #define Q_GDN_D 128  // head size
 #define Q_HC 4  // residual streams
 #define Q_HC_LR 320
+#define Q_IDX_BLOCK 4  // positions per pooled key
+#define Q_IDX_D 128
+#define Q_IDX_H 4  // indexer query heads
+#define Q_IDX_TOPK 2048
 #define Q_ROPE_BASE 10000000.0f
 #define Q_ROT 64  // rotated dimensions per head, NeoX pairs (i, i + 32)
 #define Q_USED 10

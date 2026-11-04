@@ -130,7 +130,7 @@ Model::Model(const std::string &path, const Options &opt) : opt_(opt), gguf_(pat
     throw std::runtime_error(path + ": this build cannot run a file of this shape: " + why);
   }
   if (!opt_.routing_profile) opt_.routing_profile = ENGINE_QWEN4EXP_ROUTING_PROFILE;
-  if (opt_.max_ctx % Q_IDX_BLOCK) throw std::runtime_error("max_ctx must be a multiple of 4");
+  if (opt_.max_ctx % shape_.idx_block) throw std::runtime_error("max_ctx must be a multiple of 4");
   rt_ = std::make_unique<ze::Runtime>(1);
   lib_ = std::make_unique<ze::Library>(*rt_);
   ncards_ = std::min(opt_.max_cards, rt_->ncards());
@@ -149,8 +149,10 @@ Model::Model(const std::string &path, const Options &opt) : opt_(opt), gguf_(pat
   if (opt_.kv_resident) {
     const uint64_t r = (uint64_t)opt_.slots * ((opt_.kv_resident + KV_PAGE_CELLS - 1) / KV_PAGE_CELLS);
     kv_res_ = r < kv_pages_ ? (uint32_t)r : 0;  // a pool no larger than the resident pages is not streamed
-    if (kv_res_ && kv_res_ <= kKvsMaxMiss)
-      throw std::runtime_error("kv_resident must leave more than " + std::to_string(kKvsMaxMiss * KV_PAGE_CELLS / opt_.slots) + " cells a slot resident");
+    if (kv_res_ && kv_res_ <= kvs_max_miss(shape_))
+      throw std::runtime_error("kv_resident must leave more than " +
+                               std::to_string(kvs_max_miss(shape_) * KV_PAGE_CELLS / opt_.slots) +
+                               " cells a slot resident");
   }
   // Sharing moves experts in and out of the cache, so it needs the swaps, and a cache the engine sizes.
   share_ = opt_.share_kv && opt_.adapt_swaps && opt_.experts_per_layer < 0;
@@ -177,7 +179,8 @@ Model::Model(const std::string &path, const Options &opt) : opt_(opt), gguf_(pat
   stuck_ = static_cast<uint32_t *>(rt_->alloc_host(64));
   *stuck_ = 0;
   cpu_y_ = static_cast<float *>(rt_->alloc_host((size_t)shape_.layers * STEP_MAX_ROWS * Q_EMBD * 4));
-  icand_ = static_cast<uint32_t *>(rt_->alloc_host((size_t)shape_.attn_layers() * ncards_ * STEP_MAX_ROWS * kIdxCand * 4));
+  icand_ = static_cast<uint32_t *>(
+      rt_->alloc_host((size_t)shape_.attn_layers() * ncards_ * STEP_MAX_ROWS * shape_.idx_cand() * 4));
   top_idx_ = static_cast<uint32_t *>(rt_->alloc_host((size_t)ncards_ * STEP_MAX_ROWS * opt_.candidates * 4));
   top_val_ = static_cast<float *>(rt_->alloc_host((size_t)ncards_ * STEP_MAX_ROWS * opt_.candidates * 4));
   top_n_ = static_cast<uint32_t *>(rt_->alloc_host(ncards_ * STEP_MAX_ROWS * 4));
@@ -711,8 +714,8 @@ void Model::load_card(Card &card) {
         uint32_t R0 = kv_res_;
         if (share_) {
           const uint32_t x = 4 * L.idx;
-          L.kc = kv_region(card, x, page_bytes, 1, kv_res_, kKvsMaxMiss + 1);
-          L.vc = kv_region(card, x + 1, page_bytes, 1, kv_res_, kKvsMaxMiss + 1);
+          L.kc = kv_region(card, x, page_bytes, 1, kv_res_, kvs_max_miss(shape_) + 1);
+          L.vc = kv_region(card, x + 1, page_bytes, 1, kv_res_, kvs_max_miss(shape_) + 1);
           R0 = kv_pages_of(x, 0);
         } else {
           L.kc = upload<uint8_t>(card, nullptr, kv_res_ * page_bytes);
@@ -736,7 +739,7 @@ void Model::load_card(Card &card) {
         // not as referenced last step (CLOCK's second chance), which would leave it no victim.
         std::array<uint32_t, 8> kst0{0, 1, 0, 0, R0, 0, 0, 0};
         L.kst = upload<uint32_t>(card, kst0.data(), 32);
-        L.miss = upload<uint32_t>(card, nullptr, (size_t)2 * kKvsMaxMiss * 4);
+        L.miss = upload<uint32_t>(card, nullptr, (size_t)2 * kvs_max_miss(shape_) * 4);
       }
       if (share_) {  // backed as pages come into use (kv_share.cpp)
         const uint32_t x = 4 * L.idx;
@@ -744,15 +747,15 @@ void Model::load_card(Card &card) {
           L.kc = kv_region(card, x, page_bytes, 1);
           L.vc = kv_region(card, x + 1, page_bytes, 1);
         }
-        L.raw = kv_region(card, x + 2, KV_PAGE_CELLS * IDX_KEY_BYTES, C);
-        L.pooled = reinterpret_cast<float *>(kv_region(card, x + 3, Q_IDX_D * 4, C));
+        L.raw = kv_region(card, x + 2, KV_PAGE_CELLS * shape_.idx_key_bytes(), C);
+        L.pooled = reinterpret_cast<float *>(kv_region(card, x + 3, shape_.idx_d * 4, C));
       } else {
         if (!kv_res_) {
           L.kc = upload<uint8_t>(card, nullptr, cells * card.nkv * shape_.kv_head_bytes());
           L.vc = upload<uint8_t>(card, nullptr, cells * card.nkv * shape_.kv_head_bytes());
         }
-        L.raw = upload<uint8_t>(card, nullptr, own * KV_PAGE_CELLS * IDX_KEY_BYTES);
-        L.pooled = upload<float>(card, nullptr, own * Q_IDX_D * 4);
+        L.raw = upload<uint8_t>(card, nullptr, own * KV_PAGE_CELLS * shape_.idx_key_bytes());
+        L.pooled = upload<float>(card, nullptr, own * shape_.idx_d * 4);
       }
     }
     L.router = bf16_pair(blk(l, "ffn_gate_inp.weight"), blk(l, "ffn_gate_inp_shexp.weight"));
@@ -788,7 +791,7 @@ void Model::load_card(Card &card) {
   // The decode step's buffers, for STEP_MAX_ROWS rows.
   constexpr size_t W = STEP_MAX_ROWS;
   auto fbuf = [&](size_t n) { return upload<float>(card, nullptr, W * n * 4); };
-  const uint32_t nb_max = opt_.max_ctx / Q_IDX_BLOCK;
+  const uint32_t nb_max = opt_.max_ctx / shape_.idx_block;
   card.R = fbuf(shape_.hc_dim());
   card.n = fbuf(shape_.hc_dim());
   card.plan = upload<StepPlan>(card, nullptr, sizeof(StepPlan));
@@ -812,18 +815,18 @@ void Model::load_card(Card &card) {
   card.Q = fbuf(card.nq * 2 * shape_.att_key);
   card.Kt = fbuf(card.nkv * shape_.att_key);
   card.Vt = fbuf(card.nkv * shape_.att_key);
-  card.idxq = fbuf(Q_IDX_H * Q_IDX_D + Q_IDX_D);
+  card.idxq = fbuf(shape_.idx_h * shape_.idx_d + shape_.idx_d);
   card.scores = fbuf(nb_max);
-  card.bscores = fbuf(Q_IDX_BLOCKS + 1);
-  card.att = fbuf((size_t)STEP_MAX_ROWS * card.nq * kAttSplits * (shape_.att_key + 2));
-  card.blocks = upload<uint32_t>(card, nullptr, W * (Q_IDX_BLOCKS + 1) * 4);
-  card.cells = upload<uint32_t>(card, nullptr, W * Q_IDX_CELLS * 4);
+  card.bscores = fbuf(shape_.idx_blocks() + 1);
+  card.att = fbuf((size_t)STEP_MAX_ROWS * card.nq * shape_.att_splits() * (shape_.att_key + 2));
+  card.blocks = upload<uint32_t>(card, nullptr, W * (shape_.idx_blocks() + 1) * 4);
+  card.cells = upload<uint32_t>(card, nullptr, W * shape_.idx_cells() * 4);
   card.ncells = upload<uint32_t>(card, nullptr, W * 4);
   card.rl = fbuf(std::max(shape_.experts, kMtpExperts) + 1);  // the main layers' routers and the draft layer's
   card.w = fbuf(shape_.used);
   card.ids = upload<int32_t>(card, nullptr, W * shape_.used * 4);
-  card.merged = fbuf(2 * (Q_IDX_BLOCKS + 1));
-  card.icand = upload<uint32_t>(card, nullptr, W * kIdxCand * 4);
+  card.merged = fbuf(2 * (shape_.idx_blocks() + 1));
+  card.icand = upload<uint32_t>(card, nullptr, W * shape_.idx_cand() * 4);
   card.slots = upload<int32_t>(card, nullptr, W * shape_.used * 4);
   card.nmiss = upload<uint32_t>(card, nullptr, shape_.layers * W * 4);
   card.groups = reinterpret_cast<MoeGroup *>(upload<uint8_t>(card, nullptr, W * shape_.used * sizeof(MoeGroup)));
@@ -1226,25 +1229,25 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
       matvec(L, card, Ly.q, card.xa8, card.Q, W);
       matvec(L, card, Ly.k, card.xa8, card.Kt, W);
       matvec(L, card, Ly.v, card.xa8, card.Vt, W);
-      bf16mv(Ly.idx_w, Q_IDX_H * Q_IDX_D + Q_IDX_D, Q_EMBD, card.xbf16, card.idxq);
+      bf16mv(Ly.idx_w, shape_.idx_h * shape_.idx_d + shape_.idx_d, Q_EMBD, card.xbf16, card.idxq);
       L.together(false);
       L.together(true);
       L.launch(q4("attn_prep"), {card.Q, card.Kt, card.Vt, Ly.qn, Ly.kn, card.nq, card.nkv, Ly.kc, Ly.vc, card.ptab,
                                  npp_, plan, rope_, Ly.khost, Ly.vhost, Ly.where}, card.nq + card.nkv, W, 1,
                shape_.att_key);
       // The indexer, split by position: each card scores its own blocks and sends its best; both merge the same.
-      L.launch(q4("idx_prep"), {card.idxq, Ly.iqn, Ly.raw, card.ptab, npp_, plan, rope_, c, C}, Q_IDX_H + 1, W, 1,
-               Q_IDX_D);
+      L.launch(q4("idx_prep"), {card.idxq, Ly.iqn, Ly.raw, card.ptab, npp_, plan, rope_, c, C}, shape_.idx_h + 1, W, 1,
+               shape_.idx_d);
       L.together(false);
-      L.launch(q4("idx_pool"), {Ly.raw, card.ptab, npp_, Ly.ikn, Ly.pooled, plan, rope_, c, C}, W, 1, 1, Q_IDX_D);
-      uint32_t nbl = (opt_.max_ctx / Q_IDX_BLOCK + C - 1) / C;
+      L.launch(q4("idx_pool"), {Ly.raw, card.ptab, npp_, Ly.ikn, Ly.pooled, plan, rope_, c, C}, W, 1, 1, shape_.idx_d);
+      uint32_t nbl = (opt_.max_ctx / shape_.idx_block + C - 1) / C;
       L.launch(q4("idx_score"), {card.idxq, Ly.pooled, card.ptab, npp_, nbl, plan, card.scores, c, C},
                (nbl + 63) / 64, W, 1, 64);
       // This card's list goes to its own memory, then in one copy to host memory: faster than the kernel writing
       // host memory a pair at a time.
-      uint32_t *cand = icand_ + (size_t)Ly.idx * C * STEP_MAX_ROWS * kIdxCand;
+      uint32_t *cand = icand_ + (size_t)Ly.idx * C * STEP_MAX_ROWS * shape_.idx_cand();
       L.launch(q4("idx_cand"), {card.scores, nbl, plan, card.blocks, card.bscores, card.icand, c, C}, W, 1, 1, 1024);
-      L.copy(cand + (size_t)c * STEP_MAX_ROWS * kIdxCand, card.icand, (size_t)W * kIdxCand * 4,
+      L.copy(cand + (size_t)c * STEP_MAX_ROWS * shape_.idx_cand(), card.icand, (size_t)W * shape_.idx_cand() * 4,
              (*events_)[idx_ev(Ly.idx, c)]);
       if (C > 1) L.wait({(*events_)[idx_ev(Ly.idx, 1 - c)]});
       const uint32_t rows_apart_c = STEP_MAX_ROWS;
@@ -1252,12 +1255,12 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
                                  card.ncells}, W, 1, 1, 1024);
       if (kv_res_ && kvs) {  // streamed: every page the rows read gets a resident copy before the attention reads it
         L.launch(q4("kvs_claim"), {card.ptab, npp_, kv_pages_, card.cells, card.ncells, plan, Ly.where, Ly.spage,
-                                   Ly.ref, Ly.mark, Ly.kst, kKvsAhead, Ly.miss, kKvsMaxMiss}, 1, 1, 1, 1024);
-        L.launch(q4("kvs_gather"), {Ly.khost, Ly.vhost, Ly.kc, Ly.vc, card.nkv, Ly.kst, Ly.miss, kKvsMaxMiss}, 1024,
-                 1, 1, 64);
+                                   Ly.ref, Ly.mark, Ly.kst, kKvsAhead, Ly.miss, kvs_max_miss(shape_)}, 1, 1, 1, 1024);
+        L.launch(q4("kvs_gather"), {Ly.khost, Ly.vhost, Ly.kc, Ly.vc, card.nkv, Ly.kst, Ly.miss, kvs_max_miss(shape_)},
+                 1024, 1, 1, 64);
       }
       L.launch(q4("attn_split"), {card.Q, Ly.kc, Ly.vc, card.ptab, npp_, card.nq, card.nkv, card.cells, card.ncells,
-                                  plan, card.att, Ly.where}, card.nkv, W, kAttSplits, shape_.att_key);
+                                  plan, card.att, Ly.where}, card.nkv, W, shape_.att_splits(), shape_.att_key);
       L.launch(q4("attn_merge"), {card.Q, card.nq, card.ncells, plan, card.att, card.o, card.oa8}, card.nq, W, 1,
                shape_.att_key);
       out_product(Ly.o, p1, l);
@@ -1462,8 +1465,9 @@ std::vector<std::vector<Candidate>> Model::step(const StepIn *rows, uint32_t n, 
   // Streamed: the claim runs unless every row's pages are claimed already (kvs_to_), which only the rows that read
   // every cell (a context within the indexer's width) can be.
   bool kvs = false;
+  const uint32_t idx_cells = shape_.idx_cells();
   for (uint32_t r = 0; kv_res_ && r < n && !kvs; r++)
-    kvs = rows[r].pos + 1 > Q_IDX_CELLS || kvs_to_[rows[r].slot] <= rows[r].pos;
+    kvs = rows[r].pos + 1 > idx_cells || kvs_to_[rows[r].slot] <= rows[r].pos;
   const uint32_t key = kv_res_ && !kvs ? W + kKvsSkipList : W;
   last_width_ = key;
   plan_->nrows = n;
@@ -1526,7 +1530,7 @@ std::vector<std::vector<Candidate>> Model::step(const StepIn *rows, uint32_t n, 
     std::fill(kvs_to_.begin(), kvs_to_.end(), 0);
     for (uint32_t r = 0; r < n; r++) {
       uint32_t &to = kvs_to_[rows[r].slot];
-      if (rows[r].pos + 1 <= Q_IDX_CELLS)
+      if (rows[r].pos + 1 <= idx_cells)
         to = std::max(to, std::min(npp_ * KV_PAGE_CELLS, (rows[r].pos / KV_PAGE_CELLS + 1 + kKvsAhead) * KV_PAGE_CELLS));
     }
   }

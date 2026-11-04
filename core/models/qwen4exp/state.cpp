@@ -80,6 +80,7 @@ void Model::copy_cells(uint32_t from, uint32_t to, uint32_t cells) {
   for (auto &card : cards_) {
     const uint32_t C = card->C;
     const uint64_t kvb = (uint64_t)card->nkv * shape_.kv_head_bytes();
+    const uint64_t ikb = shape_.idx_key_bytes();
     for (auto &L : card->layers) {
       if (!L.attn) continue;
       if (kv_res_) {  // streamed: the host copies; the resident copy of `to`, if any, is stale from here
@@ -92,8 +93,7 @@ void Model::copy_cells(uint32_t from, uint32_t to, uint32_t cells) {
       }
       // The raw indexer keys live on the page's card. A part of a page has no pooled key.
       if (from % C == card->c)
-        card->up->copy(L.raw + kv_cell(to / C, 0) * IDX_KEY_BYTES, L.raw + kv_cell(from / C, 0) * IDX_KEY_BYTES,
-                       cells * IDX_KEY_BYTES);
+        card->up->copy(L.raw + kv_cell(to / C, 0) * ikb, L.raw + kv_cell(from / C, 0) * ikb, cells * ikb);
     }
     card->up->synchronize();
   }

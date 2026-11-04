@@ -394,7 +394,7 @@ void Model::record_mtp(Card &card, uint32_t W, uint32_t Wr, bool chain) {
   if (Wr > 0) {
     L.launch(q4("mtp_cells"), {M.first, pr, card.cells, card.ncells}, Wr, 1, 1, 256);
     L.launch(q4("attn_split"), {card.Q, M.kc, M.vc, no_table, mnpp, card.nq, card.nkv, card.cells, card.ncells, pr,
-                                card.att, no_table}, card.nkv, Wr, kAttSplits, shape_.att_key);
+                                card.att, no_table}, card.nkv, Wr, shape_.att_splits(), shape_.att_key);
     uint8_t *no_a8 = nullptr;
     L.launch(q4("attn_merge"), {card.Q, card.nq, card.ncells, pr, card.att, card.o, no_a8}, card.nq, Wr, 1,
              shape_.att_key);

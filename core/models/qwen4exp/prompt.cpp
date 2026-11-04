@@ -93,13 +93,13 @@ void Model::load_prompt(Card &card) {
   // Region B: DeltaNet (m, z, u, raw) or attention (Q, K, V, iq, scores, blocks, bscores, cells).
   {
     // The scores of this card's blocks only, as p_idx_score writes them: rows nbl apart.
-    const uint64_t nbl = (opt_.max_ctx / Q_IDX_BLOCK + ncards_ - 1) / ncards_;
+    const uint64_t nbl = (opt_.max_ctx / shape_.idx_block + ncards_ - 1) / ncards_;
     uint64_t gdn[] = {T * card.nch * 4, T * card.nvh * shape_.gdn_d * 4, T * card.nch * 4,
                       T * card.nvh * shape_.gdn_d * 4};
     uint64_t att[] = {T * card.nq * 2 * shape_.att_key * 4, T * card.nkv * shape_.att_key * 4,
                       T * card.nkv * shape_.att_key * 4,
-                      T * (Q_IDX_H + 1) * Q_IDX_D * 4, T * nbl * 4, T * (Q_IDX_BLOCKS + 1) * 4,
-                      T * (Q_IDX_BLOCKS + 1) * 4, T * Q_IDX_CELLS * 4};
+                      T * (shape_.idx_h + 1) * shape_.idx_d * 4, T * nbl * 4, T * (shape_.idx_blocks() + 1) * 4,
+                      T * (shape_.idx_blocks() + 1) * 4, T * shape_.idx_cells() * 4};
     uint64_t sg = 0, sa = 0;
     for (uint64_t b : gdn) sg += align256(b);
     for (uint64_t b : att) sa += align256(b);
@@ -114,18 +114,19 @@ void Model::load_prompt(Card &card) {
     for (int i = 0; i < 8; i++) *ap[i] = at, at += align256(att[i]);
   }
   P.ncells = u32(T);
-  P.cand = u32(T * kIdxCand);
-  P.cand_peer = u32(T * kIdxCand);
-  P.merged = f32(T * 2 * (Q_IDX_BLOCKS + 1));
+  P.cand = u32(T * shape_.idx_cand());
+  P.cand_peer = u32(T * shape_.idx_cand());
+  P.merged = f32(T * 2 * (shape_.idx_blocks() + 1));
   P.kh = u16((uint64_t)opt_.max_ctx * card.nkv * shape_.att_key);
   P.vh = u16((uint64_t)opt_.max_ctx * card.nkv * shape_.att_key);
-  P.apart = f32((uint64_t)PROMPT_MAX_RUNS * PROMPT_SHORT_RUN * card.nq * kAttSplits * (shape_.att_key + 2));
+  P.apart = f32((uint64_t)PROMPT_MAX_RUNS * PROMPT_SHORT_RUN * card.nq * shape_.att_splits() * (shape_.att_key + 2));
   P.hp = card.nkv * Q_ATT_SLOTS;
   P.qt = u16(T * shape_.att_key * P.hp);
-  P.ikh = u16((uint64_t)kv_pages_ / ncards_ * Q_IDX_D);  // the pooled keys split for p_idx_score_xmx (p_idx_ksplit)
-  P.ikl = u16((uint64_t)kv_pages_ / ncards_ * Q_IDX_D);
-  P.iqh = u16(T * Q_IDX_D * Q_IDX_H);  // and the queries (p_idx_qsplit)
-  P.iql = u16(T * Q_IDX_D * Q_IDX_H);
+  // The pooled keys split for p_idx_score_xmx (p_idx_ksplit).
+  P.ikh = u16((uint64_t)kv_pages_ / ncards_ * shape_.idx_d);
+  P.ikl = u16((uint64_t)kv_pages_ / ncards_ * shape_.idx_d);
+  P.iqh = u16(T * shape_.idx_d * shape_.idx_h);  // and the queries (p_idx_qsplit)
+  P.iql = u16(T * shape_.idx_d * shape_.idx_h);
   if (kv_res_) P.kvst = dev((uint64_t)2 * T * card.nkv * shape_.kv_head_bytes());  // p_attn_prep's staging, K then V
   card.up->fill(P.qt, &zero16, 2, T * shape_.att_key * P.hp * 2);
   P.rl = f32(T * (shape_.experts + 1));
@@ -317,7 +318,7 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
   const uint32_t pstride = ppos_run();
   const float one = 1.0f;
   const uint32_t zero = 0;
-  const uint32_t nb_max = opt_.max_ctx / Q_IDX_BLOCK, mt = max_tiles(T, shape_.used, shape_.experts);
+  const uint32_t nb_max = opt_.max_ctx / shape_.idx_block, mt = max_tiles(T, shape_.used, shape_.experts);
   // tm tiles of 8 tokens and tn tiles of 16 rows a sub-group, sg sub-groups a work-group (kernels/gemm.cl): 8, 2
   // and 4, or for bf16 4, 2 or 1 and 4 (modules gemm_bf16_t4n<tn>), or 4, 2 and 11 (gemm_bf16_t4n2s11). y2: a second
   // fp16 output, or null. nt and rows, for x and y from a row other than 0: where the count of tokens is, and the most.
@@ -443,7 +444,8 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
       dense(Ly.q, P.x16, Q_EMBD, P.Q, card.nq * 2 * shape_.att_key, false);
       dense(Ly.k, P.x16, Q_EMBD, P.K, card.nkv * shape_.att_key, false);
       dense(Ly.v, P.x16, Q_EMBD, P.V, card.nkv * shape_.att_key, false);
-      gemm(true, Ly.idx_w, (Q_IDX_H + 1) * Q_IDX_D, Q_EMBD, P.xb, Q_EMBD, P.iq, (Q_IDX_H + 1) * Q_IDX_D, false, 0, one);
+      gemm(true, Ly.idx_w, (shape_.idx_h + 1) * shape_.idx_d, Q_EMBD, P.xb, Q_EMBD, P.iq,
+           (shape_.idx_h + 1) * shape_.idx_d, false, 0, one);
       L.launch(q4("p_attn_prep"), {P.Q, P.K, P.V, Ly.qn, Ly.kn, card.nq, card.nkv, Ly.kc, Ly.vc, card.ptab, npp_,
                                    runs_p, ppos_, pstride, P.qt, P.hp, kv_res_ ? P.kvst : nullptr,
                                    kv_res_ ? P.kvst + (uint64_t)T * card.nkv * shape_.kv_head_bytes() : nullptr,
@@ -454,20 +456,20 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
                                     Ly.vhost, card.ptab, npp_, card.nkv, runs_p}, (T + 15) / 16, 1, 1, 256);
       // The indexer, split by position: each card scores its own blocks, the cards swap their best, both merge.
       const uint32_t nbl = (nb_max + C - 1) / C;
-      L.launch(q4("p_idx_prep"), {P.iq, Ly.iqn, Ly.raw, card.ptab, npp_, runs_p, ppos_, pstride, c, C}, Q_IDX_H + 1,
-               T, 1, Q_IDX_D);
+      L.launch(q4("p_idx_prep"), {P.iq, Ly.iqn, Ly.raw, card.ptab, npp_, runs_p, ppos_, pstride, c, C},
+               shape_.idx_h + 1, T, 1, shape_.idx_d);
       L.launch(q4("p_idx_pool"), {Ly.raw, card.ptab, npp_, Ly.ikn, Ly.pooled, runs_p, ppos_, pstride, c, C},
-               T / 4 + 1, 1, runs, Q_IDX_D);
+               T / shape_.idx_block + 1, 1, runs, shape_.idx_d);
       L.launch(q4("p_idx_ksplit"), {Ly.pooled, card.ptab, npp_, nbl, runs_p, P.ikh, P.ikl, c, C}, nbl, 1, runs,
-               Q_IDX_D);
-      L.launch(q4("p_idx_qsplit"), {P.iq, P.iqh, P.iql}, T, 1, 1, Q_IDX_D);
+               shape_.idx_d);
+      L.launch(q4("p_idx_qsplit"), {P.iq, P.iqh, P.iql}, T, 1, 1, shape_.idx_d);
       L.launch(kernel(c, "qwen4exp_attn", "p_idx_score_xmx"),
                {P.iqh, P.iql, P.ikh, P.ikl, card.ptab, npp_, nbl, runs_p, P.scores, c, C}, (nbl + kIdxXmxBlocks - 1) / kIdxXmxBlocks,
                (T + kIdxXmxRows - 1) / kIdxXmxRows, runs, 16 * kIdxXmxSg);
       L.launch(q4("p_idx_cand"), {P.scores, nbl, runs_p, P.blocks, P.bscores, P.cand, c, C}, T, 1, 1, 1024);
       const uint32_t *c0 = P.cand, *c1 = nullptr;
       if (C > 1) {
-        L.copy(peer->cand_peer, P.cand, (size_t)T * kIdxCand * 4, (*pevents_)[pev(kIdx, Ly.idx, c)]);
+        L.copy(peer->cand_peer, P.cand, (size_t)T * shape_.idx_cand() * 4, (*pevents_)[pev(kIdx, Ly.idx, c)]);
         L.wait({(*pevents_)[pev(kIdx, Ly.idx, 1 - c)]});
         c0 = c == 0 ? P.cand : P.cand_peer;
         c1 = c == 0 ? P.cand_peer : P.cand;
@@ -479,7 +481,7 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
                {P.Q, Ly.kc, Ly.vc, card.ptab, npp_, card.nq, card.nkv, P.cells, P.ncells, runs_p, P.apart, Ly.khost,
                 Ly.vhost},
                card.nkv,
-               runs * PROMPT_SHORT_RUN, kAttSplits, shape_.att_key);
+               runs * PROMPT_SHORT_RUN, shape_.att_splits(), shape_.att_key);
       L.launch(kernel(c, "qwen4exp_attn", "p_attn_rows_merge"), {P.Q, card.nq, P.ncells, runs_p, P.apart, P.o16},
                card.nq, runs * PROMPT_SHORT_RUN, 1, shape_.att_key);
       // kh and vh hold one sequence: each long run converts its own, then attends.
@@ -626,7 +628,7 @@ std::vector<std::vector<Candidate>> Model::prompt_runs(const PromptRun *runs, ui
     pplan_[1 + r] = {q.n, q.pos0, q.slot, at};
     // The positions of the run's cells, from its first block's first cell (step.h).
     uint32_t *ppos = ppos_ + (size_t)r * ppos_run();
-    const uint32_t base = q.pos0 / Q_IDX_BLOCK * Q_IDX_BLOCK;
+    const uint32_t base = q.pos0 / shape_.idx_block * shape_.idx_block;
     for (uint32_t e = 0; e < q.pos0 + q.n - base; e++) {
       const auto p = position(q.slot, base + e);
       for (uint32_t k = 0; k < 3; k++) ppos[4 * e + k] = p[k];

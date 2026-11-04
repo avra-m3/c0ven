@@ -121,7 +121,7 @@ std::array<uint32_t, 3> Model::position(uint32_t slot, uint32_t cell) const {
 void Model::set_rope(uint32_t slot, uint32_t cell, bool check) {
   const auto &blocks = blocks_[slot];
   if (check && mrope_image_at(blocks, cell)) throw std::runtime_error("an image's tokens go through the prompt path");
-  const uint32_t blk = cell / Q_IDX_BLOCK * Q_IDX_BLOCK;
+  const uint32_t blk = cell / shape_.idx_block * shape_.idx_block;
   const auto p = mrope_position(blocks, blk);
   rope_[slot] = {mrope_delta(blocks, cell), blk, p[0], p[1], p[2], {0, 0, 0}};
 }
