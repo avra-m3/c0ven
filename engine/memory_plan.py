@@ -377,9 +377,10 @@ def plan(m: ModelMemory, o: PlanOptions) -> MemoryPlan:
     return p
 
 
-NGRAM_MARGIN_SHARE = 0.25
-"""The share of the host's memory, at least 8 GiB, left free after the n-gram table moves into RAM: the table is the
-first thing the host would want back."""
+NGRAM_MARGIN_SHARE = 0.5
+"""The share of the host's memory, at least 8 GiB, left free after the n-gram table moves into RAM: the unlocked arena
+takes the host's free 2 MiB blocks, and with too few of them the host moves and swaps its small pages, which stops the
+cards (docs/measurements/MEASUREMENTS.md#2026-11-04-ngram-room)."""
 
 
 def ngram_fits(p: MemoryPlan, mem_total: int | None) -> bool:

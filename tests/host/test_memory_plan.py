@@ -199,10 +199,10 @@ def test_the_ngram_table_in_ram_counts_in_the_host_total():
 
 def test_the_ngram_table_moves_into_ram_only_with_room_to_spare():
     gib = 2**30
-    p = plan(MODEL, PlanOptions(slots=1, host_memory=56 * gib))
+    p = plan(MODEL, PlanOptions(slots=1, host_memory=80 * gib))
     assert not ngram_fits(p, mem_total=90 * gib)
-    roomy = plan(MODEL, PlanOptions(slots=1, host_memory=80 * gib))
-    assert ngram_fits(roomy, mem_total=90 * gib)
+    roomy = plan(MODEL, PlanOptions(slots=1, host_memory=120 * gib))
+    assert ngram_fits(roomy, mem_total=128 * gib)
     assert not ngram_fits(plan(MODEL, PlanOptions(slots=1)), mem_total=90 * gib)
 
 
