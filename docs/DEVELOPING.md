@@ -148,7 +148,7 @@ consecutive tokens of up to four sequences (`Model::prompt_runs`):
   their product ([`kernels/gemm.cl`](../kernels/gemm.cl), [`kernels/quant/qgemm.cl`](../kernels/quant/qgemm.cl)).
   The experts' assignments are grouped by expert on the card, and each expert's tile of up to 64 rows is computed
   with its weights decoded on the fly.
-- Each card stages the experts it does not cache into a staging buffer on the card, two layers' worth in turn, so
+- Each card stages the experts it does not cache into a staging buffer on the card, one layer's worth at a time, so
   the CPU computes nothing for a prompt. For a chunk of more than 1,024 rows a list recorded at load on the card's
   copy engine copies every uncached expert from the arena. For a chunk of 1,024 rows or fewer a thread per card
   copies them through an immediate list (`fetch_experts`): each layer's uncached experts, hottest first by the swap

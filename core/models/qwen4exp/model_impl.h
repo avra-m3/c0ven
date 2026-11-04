@@ -305,7 +305,7 @@ struct Model::PromptCard {
   float *pv = nullptr, *gates = nullptr;
   uint16_t *w16 = nullptr;  // a dense weight dequantised to fp16
   uint32_t *prof = nullptr;  // [layer][expert] rows routed, with Options::profile_routing (card 0)
-  // The experts the cards do not cache, streamed in on the copy engine: two layers' worth, used in turn.
+  // The experts the cards do not cache, streamed in on the copy engine, one layer's at a time.
   uint8_t *stage = nullptr;
   uint64_t stage_slot = 0;
   std::vector<int32_t *> stage_map;  // per layer: expert -> staging slot, or -1

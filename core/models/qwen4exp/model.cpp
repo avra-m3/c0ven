@@ -864,7 +864,7 @@ void Model::load_experts(bool first) {
     slot_bytes[l] = cards_[0]->layers[l].slot_bytes;
     per_set += slot_bytes[l];
   }
-  // The prompt path's staging holds two layers of the experts not cached, each card's share of them: its rows of gate
+  // The prompt path's staging holds one layer of the experts not cached, each card's share of them: its rows of gate
   // and up, and its region of down. The arena keeps down in one region per card, so a card stages only the blocks it
   // reads (docs/measurements/MEASUREMENTS.md#2026-10-17-staging-half-downs).
   std::vector<uint64_t> stg_bytes(shape_.layers);
@@ -877,7 +877,7 @@ void Model::load_experts(bool first) {
     if (tmax_ == 0) return (uint64_t)0;
     uint64_t mx = 0;
     for (uint32_t l = 0; l < shape_.layers; l++) mx = std::max(mx, (shape_.experts - n) * stg_bytes[l]);
-    return 2 * mx;
+    return mx;
   };
   uint64_t budget = UINT64_MAX;
   for (auto &card : cards_) {

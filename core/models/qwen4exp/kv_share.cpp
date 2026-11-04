@@ -81,7 +81,7 @@ void Model::share_cards(bool first, uint64_t budget, const std::vector<uint64_t>
   auto staging = [&](uint64_t n) {
     uint64_t mx = 0;
     for (uint32_t l = 0; tmax_ && l < shape_.layers; l++) mx = std::max(mx, (shape_.experts - n) * stg_bytes[l]);
-    return 2 * mx;
+    return mx;
   };
   size_t kv_all = 0;
   for (uint32_t x = 0; x < cards_[0]->kv.size(); x++) kv_all += kv_blocks_for(x, kv_level(x, kv_pages_, kv_res_));

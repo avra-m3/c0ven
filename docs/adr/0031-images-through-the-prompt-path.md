@@ -2,7 +2,7 @@
 
 **Status:** draft, 2026-10-17; not accepted. Would supersede item 2 of [ADR-0006](0006-scope.md) in part ("Vision ... out of scope") and extend
 [ADR-0012](0012-correctness-reference.md) to the image encoder.
-**Revisit when:** the encoder's time at one megapixel measures well above the estimate below, the staging slots
+**Revisit when:** the encoder's time at one megapixel measures well above the estimate below, the staging buffer
 measure too small on the deployed settings, or pinning the encoder's 0.90 GB fails at load.
 
 ## Context
@@ -16,7 +16,7 @@ measure too small on the deployed settings, or pinning the encoder's 0.90 GB fai
 - **Decode is bound by the experts on the cards.** An encoder resident in VRAM, split as the text model is, would take
   449 MB per card, 439 experts at the mean size, and cost about 0.3-0.6 ms on a 17.3 ms token (*estimate*, from
   [the hit-rate record](../measurements/MEASUREMENTS.md#2026-10-12-expert-hit-rates)).
-- **The prompt path's buffers sit idle between chunks.** Each card has two staging slots for the uncached experts and
+- **The prompt path's buffers sit idle between chunks.** Each card has a staging buffer for the uncached experts and
   activation regions sized for a chunk of 4,352 rows; none is in use between one chunk's lists and the next's
   ([DEVELOPING.md](../DEVELOPING.md#how-a-prompt-chunk-runs)).
 - **The encoder is compute-bound.** 0.90 GB of weights against about 5.6 TFLOP for a one-megapixel image
@@ -37,8 +37,8 @@ measure too small on the deployed settings, or pinning the encoder's 0.90 GB fai
    `preprocessor_config.json`, by Pillow), capped at the engine's largest image. The reference images are sized to a
    multiple of 32 pixels and inside both programs' limits, so neither resizes them.
 4. **The encoder holds no VRAM of its own.** Its weights stay in one pinned host copy, streamed layer by layer into the
-   prompt path's staging slots; its activations use the prompt path's regions. It runs between two prompt chunks,
-   before the chunk that holds the image's tokens. When the staging slots are smaller than two of its layers, it
+   prompt path's staging buffer; its activations use the prompt path's regions. It runs between two prompt chunks,
+   before the chunk that holds the image's tokens. When the staging buffer is smaller than two of its layers, it
    allocates two of its own.
 5. **The cards split an image by patches,** not by weights: each card runs every layer on half the patches, and they
    exchange keys and values once per layer. Each card copies its rows of K and V into the other card's memory, as
@@ -59,7 +59,7 @@ layer exchanges 4.7 MB per card at 4,096 patches, against two exchanges of 9.4 M
 ## Options not chosen
 
 - **The encoder resident in VRAM:** 439 experts per card for about 2-3% of decode speed, paid on every token.
-- **Expert slots lent to the encoder,** with the experts copied back after: the staging slots are free at the same
+- **Expert slots lent to the encoder,** with the experts copied back after: the staging buffer is free at the same
   moment and need no copy back.
 - **The weights split between the cards:** two exchanges a layer, half-width products, and the weights' bytes are not
   what bounds the encoder.

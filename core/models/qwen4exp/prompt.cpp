@@ -162,14 +162,14 @@ void Model::load_prompt(Card &card) {
 }
 
 // The staging buffer, the experts' staging maps, and the copy list that streams the experts a chunk of more than
-// kFetchRows needs: every layer's uncached experts, card c's half of gate and up and its region of down, into slot
-// l % 2, after the chunk's list has freed that slot (event kFree of layer l - 2); event kStaged of layer l says they
-// are in. A slot holds every expert the cache may leave out of the largest layer (HostLayer::pieces). Shorter chunks
-// fetch their experts on the fetch list (fetch_experts).
+// kFetchRows needs: every layer's uncached experts, card c's half of gate and up and its region of down, into the
+// buffer, after the chunk's list has finished with the layer before (event kFree of layer l - 1); event kStaged of
+// layer l says they are in. It holds every expert the cache may leave out of the largest layer (HostLayer::pieces).
+// Shorter chunks fetch their experts on the fetch list (fetch_experts).
 void Model::record_prompt_copy(Card &card) {
   PromptCard &P = *card.pc;
   for (auto &hl : host_layers_) P.stage_slot = std::max<uint64_t>(P.stage_slot, hl->pieces.size() * hl->stg_bytes);
-  if (P.stage_slot) P.stage = static_cast<uint8_t *>(rt_->alloc_device(card.c, 2 * P.stage_slot));
+  if (P.stage_slot) P.stage = static_cast<uint8_t *>(rt_->alloc_device(card.c, P.stage_slot));
   for (uint32_t l = 0; l < shape_.layers; l++)
     P.stage_map.push_back(upload<int32_t>(card, host_layers_[l]->stage_of.data(), shape_.experts * 4));
   P.copy = prompt_copies(card, staging_now(), copy_count_);
@@ -180,8 +180,8 @@ void Model::record_prompt_copy(Card &card) {
     // CPU copy into a page of a card's memory takes several times as long as the next ones.
     const HostLayer &hl = *host_layers_[0];
     const uint64_t piece = hl.stg_up_off;
-    for (uint64_t off = 0; off < 2 * P.stage_slot; off += piece)
-      P.fetch->copy(P.stage + off, hl.pieces[0], std::min(piece, 2 * P.stage_slot - off));
+    for (uint64_t off = 0; off < P.stage_slot; off += piece)
+      P.fetch->copy(P.stage + off, hl.pieces[0], std::min(piece, P.stage_slot - off));
     P.fetch->synchronize();
   }
 }
@@ -192,7 +192,7 @@ uint32_t Model::fetch_rows() const {
 }
 
 // The chunk's list copies each layer's routing counts to P.routed and signals kRouted after p_moe_count; it waits
-// on kStaged before the staged experts' products. Each layer's experts go into slot l % 2 once kFree of layer l - 2
+// on kStaged before the staged experts' products. Each layer's experts go into the buffer once kFree of layer l - 1
 // says the chunk is done with it. Every expert the chunk routes to is staged before kStaged, so the products are the
 // recorded list's; which experts go ahead of the router changes only the time.
 void Model::fetch_experts(uint32_t c, const std::vector<std::vector<uint32_t>> &order) {
@@ -221,9 +221,9 @@ void Model::fetch_experts(uint32_t c, const std::vector<std::vector<uint32_t>> &
   std::vector<uint8_t> done(shape_.experts);
   for (uint32_t l = 0; l < shape_.layers; l++) {
     const HostLayer &hl = *host_layers_[l];
-    uint8_t *slot = P.stage + (l % 2) * P.stage_slot;
+    uint8_t *slot = P.stage;
     const ze_event_handle_t routed = (*pevents_)[pev(kRouted, l, c)];
-    if (l >= 2) wait((*pevents_)[pev(kFree, l - 2, c)]);
+    if (l >= 1) wait((*pevents_)[pev(kFree, l - 1, c)]);
     std::fill(done.begin(), done.end(), 0);
     for (uint32_t e : order[l]) {
       if (zeEventQueryStatus(routed) == ZE_RESULT_SUCCESS) break;
@@ -264,8 +264,8 @@ std::unique_ptr<ze::List> Model::prompt_copies(Card &card, const Staging &st, ui
   for (uint32_t l = 0; l < shape_.layers; l++) {
     const HostLayer &hl = *host_layers_[l];
     const std::vector<ExpertWeights> &sw = st[l];
-    if (l >= 2) L.wait({(*pevents_)[pev(kFree, l - 2, card.c)]});
-    uint8_t *slot = P.stage + (l % 2) * P.stage_slot;
+    if (l >= 1) L.wait({(*pevents_)[pev(kFree, l - 1, card.c)]});
+    uint8_t *slot = P.stage;
     const uint64_t half = card.ff * hl.gate_row_bytes, dpart = hl.down_bytes / hl.down_parts;
     const uint64_t d0 = hl.down_parts > 1 ? card.c * dpart : 0;
     // Experts adjacent in the arena (load lays them out so) take one region copy a matrix: each copy has a fixed
@@ -509,7 +509,7 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
     for (auto &ch : gm) ch = (char)std::tolower(ch);
     for (auto &ch : dm) ch = (char)std::tolower(ch);
     const uint32_t E = Q_EMBD, ff = card.ff;
-    uint8_t *stage = P.stage + (l % 2) * P.stage_slot;
+    uint8_t *stage = P.stage;
     // The cached experts and the shared expert first: they give the staging its last moments. Each expert's rows of
     // hg and yg are its own, so the order changes no result.
     if (nslots_cached_ > 0) {

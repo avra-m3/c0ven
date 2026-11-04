@@ -238,16 +238,16 @@ void Model::load_vision(bool first) {
   for (const auto &[name, t] : g.tensors()) g.release(t);
 }
 
-// The weights' two slots: the prompt path's staging slots when each holds the largest stage, else two of the
-// encoder's own (ADR-0031, item 4). After record_prompt_copy, which sizes them.
+// The weights' two slots: in the prompt path's staging buffer when it holds two of the largest stage, else two of the
+// encoder's own (ADR-0031, item 4). After record_prompt_copy, which sizes it.
 void Model::vision_slots() {
   if (!vmax_tokens_) return;
   for (auto &card : cards_) {
     VisionCard &V = *card->vc;
     const PromptCard &P = *card->pc;
-    if (P.stage && P.stage_slot >= vstage_bytes_) {
+    if (P.stage && P.stage_slot >= 2 * vstage_bytes_) {
       V.slot[0] = P.stage;
-      V.slot[1] = P.stage + P.stage_slot;
+      V.slot[1] = P.stage + vstage_bytes_;
     } else {
       for (auto &s : V.slot) s = static_cast<uint8_t *>(rt_->alloc_device(card->c, vstage_bytes_));
     }
