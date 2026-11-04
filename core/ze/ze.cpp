@@ -4,6 +4,7 @@
 
 #include <sys/stat.h>
 
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -11,6 +12,10 @@
 #include <stdexcept>
 
 namespace engine::ze {
+
+// Set when a list times out. The driver's destroy and free calls then wait for a queue that never finishes, so the
+// destructors below make none: the process is to end, and the kernel takes back what the cards hold.
+static std::atomic<bool> queue_stuck{false};
 
 void check(ze_result_t r, const char *what) {
   if (r == ZE_RESULT_SUCCESS) return;
@@ -106,6 +111,7 @@ Runtime::Runtime(uint32_t min_cards) {
 }
 
 Runtime::~Runtime() {
+  if (queue_stuck) return;
   for (auto &[va, bytes] : mapped_) zeVirtualMemUnmap(ctx_, va, bytes);
   for (auto &[b, info] : blocks_) zePhysicalMemDestroy(ctx_, b);
   for (auto &[va, info] : ranges_) zeVirtualMemFree(ctx_, va, info.second);
@@ -285,6 +291,7 @@ ze_kernel_handle_t Library::get(uint32_t card, const std::string &module, const 
 }
 
 Module::~Module() {
+  if (queue_stuck) return;
   for (auto &[n, k] : kernels_) zeKernelDestroy(k);
   if (mod_) zeModuleDestroy(mod_);
 }
@@ -319,6 +326,7 @@ EventPool::EventPool(Runtime &rt, uint32_t count, bool timestamps) {
 }
 
 EventPool::~EventPool() {
+  if (queue_stuck) return;
   for (auto e : events_) zeEventDestroy(e);
   if (pool_) zeEventPoolDestroy(pool_);
 }
@@ -345,6 +353,7 @@ List::List(Runtime &rt, uint32_t card, Kind kind, bool copy_engine, bool in_orde
 }
 
 List::~List() {
+  if (queue_stuck) return;
   if (fence_) zeFenceDestroy(fence_);
   if (list_) zeCommandListDestroy(list_);
   if (queue_) zeCommandQueueDestroy(queue_);
@@ -447,10 +456,12 @@ void List::synchronize() {
   if (kind_ != immediate && !submitted_) return;
   const ze_result_t r = kind_ == immediate ? zeCommandListHostSynchronize(list_, kListWaitNs)
                                            : zeFenceHostSynchronize(fence_, kListWaitNs);
-  if (r == ZE_RESULT_NOT_READY)
+  if (r == ZE_RESULT_NOT_READY) {
+    queue_stuck = true;
     throw std::runtime_error("card " + std::to_string(card_) + " did not finish a list in " +
                              std::to_string(kListWaitNs / 1'000'000'000ull) +
                              " s; its engine may have been reset (the kernel log, /sys/class/devcoredump)");
+  }
   check(r, kind_ == immediate ? "zeCommandListHostSynchronize" : "zeFenceHostSynchronize");
 }
 

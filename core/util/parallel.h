@@ -22,6 +22,8 @@ class Pool {
   // Calls f(i) for every i in [0, n), spread over the workers and the caller; returns when all are done.
   void run(uint64_t n, const std::function<void(uint64_t)> &f);
   unsigned size() const { return (unsigned)threads_.size() + 1; }
+  // How many times run has been called. For the thread that calls run, between runs.
+  uint64_t runs_started() const { return generation_; }
 
  private:
   struct Job {

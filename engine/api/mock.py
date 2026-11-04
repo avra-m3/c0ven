@@ -47,6 +47,10 @@ type Script = Callable[[Sequence[int]], int]
 
 _MASK = (1 << 64) - 1
 
+CARD_MEMORY = 24_385_683_456
+"""The card the plan assumes where none is read (mock, reference, tools/plan.py), bytes: one Arc Pro B60's
+(docs/measurements/MEASUREMENTS.md#2026-10-11-device-memory)."""
+
 
 def mix(h: int, x: int) -> int:
     """splitmix64 of h ^ x: a stand-in for the state a token leaves behind."""
