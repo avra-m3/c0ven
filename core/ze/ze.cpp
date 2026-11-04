@@ -66,8 +66,13 @@ Runtime::Runtime(uint32_t min_cards) {
       uint32_t nm = 0;
       ZE_CHECK(zeDeviceGetMemoryProperties(dev, &nm, nullptr));
       std::vector<ze_device_memory_properties_t> mp(nm, {ZE_STRUCTURE_TYPE_DEVICE_MEMORY_PROPERTIES});
+      std::vector<ze_device_memory_ext_properties_t> mx(nm, {ZE_STRUCTURE_TYPE_DEVICE_MEMORY_EXT_PROPERTIES});
+      for (uint32_t i = 0; i < nm; i++) mp[i].pNext = &mx[i];
       ZE_CHECK(zeDeviceGetMemoryProperties(dev, &nm, mp.data()));
-      for (auto &m : mp) c.memory += m.totalSize;
+      // totalSize is what the driver offers one process, a share of the memory. A discrete card's physical size is what
+      // it holds before it spills into host memory. Zero says the driver does not know it.
+      const bool integrated = p.flags & ZE_DEVICE_PROPERTY_FLAG_INTEGRATED;
+      for (uint32_t i = 0; i < nm; i++) c.memory += !integrated && mx[i].physicalSize ? mx[i].physicalSize : mp[i].totalSize;
       ze_device_memory_access_properties_t ma = {ZE_STRUCTURE_TYPE_DEVICE_MEMORY_ACCESS_PROPERTIES};
       ZE_CHECK(zeDeviceGetMemoryAccessProperties(dev, &ma));
       c.shared_system = ma.sharedSystemAllocCapabilities;

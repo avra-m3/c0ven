@@ -41,7 +41,7 @@ typedef struct {
   int32_t experts_per_layer;   /* experts cached on the cards per layer; negative or 0 with the flag: as many as fit */
   uint32_t cpu_threads;        /* the CPU's expert workers, the engine thread among them; default 16 */
   uint32_t flags;              /* ENGINE_CONFIG_* */
-  uint64_t reserve_bytes;      /* device memory left free per card; default 512 MiB */
+  uint64_t reserve_bytes;      /* device memory per card the core does not count on; default 1 GiB */
   uint32_t prompt_chunk;       /* tokens per prompt pass at most, a multiple of 64; default 4352; with the flag, 0
                                   turns the prompt path off */
   uint32_t checkpoints;        /* slot checkpoints held in host memory, each a slot's fixed state; default 2 */
