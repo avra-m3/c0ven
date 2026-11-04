@@ -192,7 +192,8 @@ Model::Model(const std::string &path, const Options &opt) : opt_(opt), gguf_(pat
   head_plan_->nrows = 1;
   cplan_ = static_cast<CommitPlan *>(rt_->alloc_host(sizeof(CommitPlan)));
   std::memset(cplan_, 0, sizeof(CommitPlan));
-  yarn_fs_ = opt_.max_ctx > Q_TRAINED_CTX ? (float)Q_TRAINED_CTX / (float)opt_.max_ctx : 1.0f;
+  yarn_fs_ = opt_.max_ctx > shape_.context ? (float)shape_.context / (float)opt_.max_ctx : 1.0f;
+  q_yarn_range(shape_.context, shape_.rot, shape_.rope_base, &yarn_low_, &yarn_high_);
   rope_ = static_cast<SlotRope *>(rt_->alloc_host(opt_.slots * sizeof(SlotRope)));
   std::memset(rope_, 0, opt_.slots * sizeof(SlotRope));
   images_.resize(opt_.slots);
@@ -1264,13 +1265,15 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
       L.together(false);
       L.together(true);
       L.launch(q4("attn_prep"), {card.Q, card.Kt, card.Vt, Ly.qn, Ly.kn, card.nq, card.nkv, Ly.kc, Ly.vc, card.ptab,
-                                 npp_, plan, rope_, Ly.khost, Ly.vhost, Ly.where, yarn_fs_}, card.nq + card.nkv, W, 1,
-               shape_.att_key);
+                                 npp_, plan, rope_, Ly.khost, Ly.vhost, Ly.where, yarn_fs_, yarn_low_, yarn_high_},
+               card.nq + card.nkv, W, 1, shape_.att_key);
       // The indexer, split by position: each card scores its own blocks and sends its best; both merge the same.
-      L.launch(q4("idx_prep"), {card.idxq, Ly.iqn, Ly.raw, card.ptab, npp_, plan, rope_, c, C, yarn_fs_}, shape_.idx_h + 1,
-               W, 1, shape_.idx_d);
+      L.launch(q4("idx_prep"),
+               {card.idxq, Ly.iqn, Ly.raw, card.ptab, npp_, plan, rope_, c, C, yarn_fs_, yarn_low_, yarn_high_},
+               shape_.idx_h + 1, W, 1, shape_.idx_d);
       L.together(false);
-      L.launch(q4("idx_pool"), {Ly.raw, card.ptab, npp_, Ly.ikn, Ly.pooled, plan, rope_, c, C, yarn_fs_}, W, 1, 1,
+      L.launch(q4("idx_pool"),
+               {Ly.raw, card.ptab, npp_, Ly.ikn, Ly.pooled, plan, rope_, c, C, yarn_fs_, yarn_low_, yarn_high_}, W, 1, 1,
                shape_.idx_d);
       uint32_t nbl = (opt_.max_ctx / shape_.idx_block + C - 1) / C;
       L.launch(q4("idx_score"), {card.idxq, Ly.pooled, card.ptab, npp_, nbl, plan, card.scores, c, C},

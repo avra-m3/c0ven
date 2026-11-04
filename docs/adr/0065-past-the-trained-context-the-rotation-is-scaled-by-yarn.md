@@ -19,8 +19,11 @@ scale.
 1. A context above 262,144 tokens rotates by YaRN, with the parameters in
    [MODEL_LAYER.md, section 3.3](../spec/MODEL_LAYER.md#33-rope-821-832). At 262,144 tokens and below the rotation is
    unchanged, bit for bit.
-2. The longest context the engine accepts is 1,048,576 tokens.
-3. The core takes `s` from `max_ctx` at load. There is no flag and no change to the C ABI.
+2. The longest context the engine accepts is 4 times the file's `context_length`: 1,048,576 tokens in every published
+   file. The factor is the engine's limit, and nothing past it has run.
+3. The core takes `s` from `max_ctx` and the file's `context_length` at load, and the pairs that scale from
+   `context_length`, `rope.dimension_count` and `rope.freq_base`. YaRN's `beta_fast`, `beta_slow` and the 0.1 in its
+   magnitude are fixed by the method. There is no flag and no change to the C ABI.
 4. `s` applies to every request on the server, whatever its length.
 5. The main layers' Q and K, the indexer's queries and its pooled keys scale. The MTP layer and DFlash 2 do not: they
    attend over a short window of positions, far inside the trained distances.

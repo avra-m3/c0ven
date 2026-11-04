@@ -93,7 +93,7 @@ def test_the_table_is_read_from_the_gguf_once(tmp_path: Path, monkeypatch: pytes
 
     def from_gguf(path: Path) -> tensors.TensorTable:
         reads.append(path)
-        return tensors.TensorTable(from_tsv().tensors, shard_paths(path))
+        return tensors.TensorTable(from_tsv().tensors, shard_paths(path), 262_144)
 
     monkeypatch.setattr(tensors, "from_gguf", from_gguf)
     cache = tmp_path / "cache"
@@ -102,6 +102,11 @@ def test_the_table_is_read_from_the_gguf_once(tmp_path: Path, monkeypatch: pytes
     assert reads == [first]
     assert b == a
     assert b.shard_paths == shard_paths(first)
+    assert b.context_length == 262_144
     first.write_bytes(b"changed")
     from_gguf_cached(first, cache)
     assert reads == [first, first]
+    for kept in cache.glob("*.tsv"):
+        kept.write_text(kept.read_text().split("\n", 1)[1])
+    assert from_gguf_cached(first, cache).context_length == 262_144
+    assert reads == [first, first, first]

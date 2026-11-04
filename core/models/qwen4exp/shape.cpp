@@ -55,6 +55,7 @@ std::string shape_text(const std::vector<uint64_t> &shape) {
 Shape read_shape(const std::map<std::string, GgufValue> &meta, const std::map<std::string, GgufTensor> &tensors) {
   Shape s{};
   s.embd = size_of(meta, "embedding_length");
+  s.context = size_of(meta, "context_length");
   s.layers = size_of(meta, "block_count");
   s.hc = size_of(meta, "hyper_connection.count");
   s.hc_lr = size_of(meta, "hyper_connection.low_rank");

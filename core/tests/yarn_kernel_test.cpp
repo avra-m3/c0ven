@@ -17,6 +17,8 @@ using namespace engine;
 
 namespace {
 
+constexpr uint32_t kTrained = 262144;  // every published file's context_length
+
 constexpr uint32_t kRows = 4, kPos0 = 1000000, kRow = (Q_IDX_H + 1) * Q_IDX_D;
 
 // The heads after the norm: what the kernels rotate.
@@ -34,10 +36,11 @@ std::vector<double> normed(const std::vector<float> &iq) {
 }
 
 // Dimension d of a head at x, rotated at position pos with factor fs.
-double reference(const double *x, uint32_t d, uint32_t pos, float fs) {
+double reference(const double *x, uint32_t d, uint32_t pos, float fs, uint32_t low, uint32_t high) {
   if (d >= Q_ROT) return x[d];
   const uint32_t i = d % (Q_ROT / 2);
-  const float theta = q_yarn_theta((float)pos * std::pow(Q_ROPE_BASE, -2.0f * (float)i / (float)Q_ROT), i, fs);
+  const float angle = (float)pos * std::pow(Q_ROPE_BASE, -2.0f * (float)i / (float)Q_ROT);
+  const float theta = q_yarn_theta(angle, i, fs, low, high);
   const double c = std::cos((double)theta) * q_yarn_scale(fs), s = std::sin((double)theta) * q_yarn_scale(fs);
   return d < Q_ROT / 2 ? x[i] * c - x[i + Q_ROT / 2] * s : x[i] * s + x[i + Q_ROT / 2] * c;
 }
@@ -74,20 +77,22 @@ int main() {
   for (uint32_t e = 0; e < kRows; e++)
     for (uint32_t a = 0; a < 3; a++) ppos[4 * e + a] = kPos0 + e;
 
+  uint32_t low = 0, high = 0;
+  q_yarn_range(kTrained, Q_ROT, Q_ROPE_BASE, &low, &high);
   const uint32_t npp = 1, zero = 0, one = 1, pstride = 4 * kRows;
   auto run = [&](bool prompt, float fs) {
     std::memcpy(iq, in.data(), in.size() * 4);
     if (prompt)
       L.launch(lib.get(card, "qwen4exp_prompt", "p_idx_prep"),
-               {iq, qn, raw, pt, npp, runs, ppos, pstride, zero, one, fs}, Q_IDX_H, kRows, 1, Q_IDX_D);
+               {iq, qn, raw, pt, npp, runs, ppos, pstride, zero, one, fs, low, high}, Q_IDX_H, kRows, 1, Q_IDX_D);
     else
-      L.launch(lib.get(card, "qwen4exp", "idx_prep"), {iq, qn, raw, pt, npp, plan, sr, zero, one, fs}, Q_IDX_H, kRows,
-               1, Q_IDX_D);
+      L.launch(lib.get(card, "qwen4exp", "idx_prep"), {iq, qn, raw, pt, npp, plan, sr, zero, one, fs, low, high}, Q_IDX_H,
+               kRows, 1, Q_IDX_D);
     L.synchronize();
     return std::vector<float>(iq, iq + in.size());
   };
 
-  const float fs = (float)Q_TRAINED_CTX / 1048576.0f, m = q_yarn_scale(fs);
+  const float fs = (float)kTrained / 1048576.0f, m = q_yarn_scale(fs);
   for (bool prompt : {false, true}) {
     const std::vector<float> trained = run(prompt, 1.0f), scaled = run(prompt, fs);
     double err_trained = 0, err_slow = 0, err_fast = 0, err_rest = 0;
@@ -98,16 +103,17 @@ int main() {
           const uint32_t i = d % (Q_ROT / 2);
           if (d >= Q_ROT) {
             err_rest = std::max(err_rest, std::fabs((double)scaled[at + d] - x[at + d]));
-          } else if (i <= Q_YARN_LOW) {
+          } else if (i <= low) {
             err_fast = std::max(err_fast, std::fabs((double)scaled[at + d] - (double)trained[at + d] * m));
           } else {
-            err_slow = std::max(err_slow, std::fabs((double)scaled[at + d] - reference(&x[at], d, kPos0 + t, fs)));
-            err_trained =
-                std::max(err_trained, std::fabs((double)trained[at + d] - reference(&x[at], d, kPos0 + t, 1.0f)));
+            const double want = reference(&x[at], d, kPos0 + t, fs, low, high);
+            err_slow = std::max(err_slow, std::fabs((double)scaled[at + d] - want));
+            const double at_one = reference(&x[at], d, kPos0 + t, 1.0f, low, high);
+            err_trained = std::max(err_trained, std::fabs((double)trained[at + d] - at_one));
           }
         }
       }
-    std::printf("%s: unrotated %.2e, pairs 0-14 %.2e, pairs 15-31 %.2e, the same at s = 1 %.2e\n",
+    std::printf("%s: unrotated %.2e, pairs to the range %.2e, the rest %.2e, the same at s = 1 %.2e\n",
                 prompt ? "p_idx_prep" : "idx_prep", err_rest, err_fast, err_slow, err_trained);
     EXPECT(err_rest <= 1e-2 && err_fast <= 1e-2 && err_slow <= 1e-2 && err_trained <= 1e-2, "over tolerance");
   }

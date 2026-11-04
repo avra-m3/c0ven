@@ -6,10 +6,9 @@ section 4.1, and reference/prompts.jsonl. Where a number is an estimate it says 
 
 from __future__ import annotations
 
-CONTEXT = 262_144
-"""The context the model was trained on; past it the core rotates by YaRN (ADR-0065)."""
-MAX_CONTEXT = 1_048_576
-"""The longest context the engine accepts."""
+MAX_YARN_SCALE = 4
+"""The longest context the engine accepts, as a multiple of the file's context_length; past that the core rotates by
+YaRN (ADR-0065)."""
 
 # Token ids (spec/MODEL_IO.md, section 4.1).
 IM_START = 248_045

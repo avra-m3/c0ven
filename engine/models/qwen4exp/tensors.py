@@ -1,8 +1,9 @@
 """The GGUF tensor table: every tensor's name, type, shard, offset and size (ADR-0004: read with llama.cpp's `gguf`).
 
 The control plane reads the table and passes offsets and types to the core in `open`; the core never parses the
-file. The committed docs/model/tensors-IQ3_S.tsv holds the same rows for the IQ3_S file, so tests run without it;
-tensors-UD-IQ4_XS.tsv holds them for Unsloth's UD-IQ4_XS file, an experiment: `from_tsv(TSV_UD_IQ4_XS)`.
+file. A TSV's first line holds the file's `context_length`. The committed docs/model/tensors-IQ3_S.tsv holds the same
+rows for the IQ3_S file, so tests run without it; tensors-UD-IQ4_XS.tsv holds them for Unsloth's UD-IQ4_XS file, an
+experiment: `from_tsv(TSV_UD_IQ4_XS)`.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from engine.gguf_files import shard_paths
 
 TABLES = Path(__file__).resolve().parents[3] / "docs" / "model"
 TSV = TABLES / "tensors-IQ3_S.tsv"
+CONTEXT_LINE = "# context_length "
 TSV_UD_IQ4_XS = TABLES / "tensors-UD-IQ4_XS.tsv"
 _LAYER = re.compile(r"^blk\.(\d+)\.")
 
@@ -81,6 +83,8 @@ class FileTensor:
 class TensorTable:
     tensors: tuple[FileTensor, ...]
     shard_paths: tuple[Path, ...] = ()
+    context_length: int = 0
+    """The context the model was trained on, from the file; 0 in a table kept before it was read."""
 
     def __post_init__(self) -> None:
         names = [t.name for t in self.tensors]
@@ -133,7 +137,13 @@ class TensorTable:
 
 def from_tsv(path: Path = TSV) -> TensorTable:
     rows: list[FileTensor] = []
+    context = 0
     with path.open(newline="") as f:
+        first = f.readline()
+        if first.startswith(CONTEXT_LINE):
+            context = int(first.removeprefix(CONTEXT_LINE))
+        else:
+            f.seek(0)
         for row in csv.DictReader(f, delimiter="\t"):
             rows.append(
                 FileTensor(
@@ -146,14 +156,20 @@ def from_tsv(path: Path = TSV) -> TensorTable:
                     int(row["data_offset"]),
                 )
             )
-    return TensorTable(tuple(rows))
+    return TensorTable(tuple(rows), context_length=context)
 
 
 def from_gguf(path: Path) -> TensorTable:
     paths = shard_paths(path)
     rows: list[FileTensor] = []
+    context = 0
     for shard, p in enumerate(paths, start=1):
         reader = gguf.GGUFReader(p)
+        if shard == 1:
+            field = reader.get_field("qwen4exp.context_length")
+            if field is None:
+                raise ValueError(f"{p} has no qwen4exp.context_length")
+            context = int(field.contents())
         for t in reader.tensors:
             kind = gguf.GGMLQuantizationType(int(t.tensor_type))
             rows.append(
@@ -167,12 +183,13 @@ def from_gguf(path: Path) -> TensorTable:
                     int(t.data_offset),
                 )
             )
-    return TensorTable(tuple(rows), paths)
+    return TensorTable(tuple(rows), paths, context)
 
 
 def to_tsv(table: TensorTable, path: Path) -> None:
     """The table in the committed file's form, which `from_tsv` reads."""
     with path.open("w", newline="") as f:
+        f.write(f"{CONTEXT_LINE}{table.context_length}\n")
         w = csv.writer(f, delimiter="\t", lineterminator="\n")
         w.writerow(["name", "type", "ggml_type", "shape", "bytes", "shard", "data_offset", "category"])
         for t in table.tensors:
@@ -189,7 +206,9 @@ def from_gguf_cached(path: Path, cache: Path | None) -> TensorTable:
     key = "\n".join(f"{p.resolve()} {p.stat().st_size} {p.stat().st_mtime_ns}" for p in paths)
     file = cache / f"tensors-{hashlib.sha256(key.encode()).hexdigest()[:16]}.tsv"
     if file.is_file():
-        return replace(from_tsv(file), shard_paths=paths)
+        kept = from_tsv(file)
+        if kept.context_length:
+            return replace(kept, shard_paths=paths)
     table = from_gguf(path)
     cache.mkdir(parents=True, exist_ok=True)
     tmp = file.with_name(f"{file.name}.{os.getpid()}.tmp")

@@ -248,9 +248,9 @@ The rules ([ADR-0033](adr/0033-paged-kv-kept-by-python.md)):
 
 ### Past the trained context
 
-A context above 262,144 tokens rotates K, Q and the indexer's queries and pooled keys by YaRN, with
-`s = context / 262,144` ([MODEL_LAYER.md, section 3.3](spec/MODEL_LAYER.md#33-rope-821-832),
-[ADR-0065](adr/0065-past-the-trained-context-the-rotation-is-scaled-by-yarn.md)). The core takes `s` from `max_ctx` at
+A context above the file's `context_length`, 262,144 tokens, rotates K, Q and the indexer's queries and pooled keys by YaRN, with
+`s = context / context_length` ([MODEL_LAYER.md, section 3.3](spec/MODEL_LAYER.md#33-rope-821-832),
+[ADR-0065](adr/0065-past-the-trained-context-the-rotation-is-scaled-by-yarn.md)). The core takes `s` from `max_ctx` and the file at
 load, in `core/models/qwen4exp/yarn.h`, so it is the same for every request on the server. K in the cache is stored
 rotated, and so holds for that `s` only. The draft layers do not scale: they attend over a short window of positions.
 

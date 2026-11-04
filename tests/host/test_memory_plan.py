@@ -33,7 +33,7 @@ def test_the_sizes_follow_the_layers():
     """MEMORY_BUDGET.md's sizes for this file. Half its layers are 6 attention and 18 DeltaNet."""
     assert (MODEL.layers, MODEL.experts) == (48, 48 * 512)
     assert (MODEL.kv_cell_host, MODEL.checkpoint_bytes) == (13_056, 118_038_528)
-    half = model_memory(TensorTable(tuple(t for t in TABLE.tensors if t.layer < 24)))
+    half = model_memory(TensorTable(tuple(t for t in TABLE.tensors if t.layer < 24), context_length=262_144))
     assert (half.layers, half.experts) == (24, 24 * 512)
     assert half.kv_cell_host == 6 * 1_088
     assert half.indexer_cell_per_card == 6 * 136 // 2

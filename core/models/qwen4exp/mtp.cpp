@@ -391,7 +391,8 @@ void Model::record_mtp(Card &card, uint32_t W, uint32_t Wr, bool chain) {
   const uint8_t *no_kv = nullptr;  // the draft layer's KV is not streamed
   // No YaRN: the layer attends only over the window's own cells, far inside the trained distances (ADR-0065).
   L.launch(q4("attn_prep"), {card.Q, card.Kt, card.Vt, M.qn, M.kn, card.nq, card.nkv, M.kc, M.vc, no_table, mnpp, pl,
-                             rope_, no_kv, no_kv, no_table, 1.0f}, card.nq + card.nkv, W, 1, shape_.att_key);
+                             rope_, no_kv, no_kv, no_table, 1.0f, yarn_low_, yarn_high_},
+             card.nq + card.nkv, W, 1, shape_.att_key);
   if (Wr > 0) {
     L.launch(q4("mtp_cells"), {M.first, pr, card.cells, card.ncells}, Wr, 1, 1, 256);
     L.launch(q4("attn_split"), {card.Q, M.kc, M.vc, no_table, mnpp, card.nq, card.nkv, card.cells, card.ncells, pr,

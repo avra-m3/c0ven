@@ -15,6 +15,7 @@ namespace engine::qwen4exp {
 
 struct Shape {
   uint32_t embd, layers;
+  uint32_t context;        // the context the model was trained on; past it the rotation scales (yarn.h)
   uint32_t hc, hc_lr;
   uint32_t gdn_kh, gdn_vh, gdn_d, gdn_inner, gdn_conv;
   uint32_t att_h, att_kv, att_key, att_value;

@@ -50,6 +50,7 @@ Meta good_meta() {
   set("attention.head_count_kv", (int64_t)Q_ATT_KV);
   set("attention.key_length", (int64_t)Q_ATT_D);
   set("attention.value_length", (int64_t)Q_ATT_D);
+  set("context_length", (int64_t)262144);
   set("rope.dimension_count", (int64_t)Q_ROT);
   set("rope.freq_base", (double)Q_ROPE_BASE);
   set("attention.layer_norm_rms_epsilon", (double)Q_EPS);
