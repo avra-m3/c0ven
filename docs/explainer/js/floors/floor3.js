@@ -1,8 +1,10 @@
 // Floor 3, musical desks, around x = X3. Which experts sit on the card follows the conversation: the player runs one
 // night by hand, then the narrator runs the same night with the engine's swap rule.
-import { $, box, camera, canvasTex, halo, haloTex, mat, reduced, scene, sign, toScreen, tubes, up, v, view, windowsTex } from "../world.js";
+import { $, box, camera, canvasTex, closeFloor, halo, haloTex, mat, openFloor, pool, reduced, rep, scene, sign, toScreen, tubes, up, v, view } from "../world.js";
 import { backOut, ease, lerp, tween } from "../motion.js";
-import { makeAdviser, makeChair, makeEnvelope, makeFax, makeFaxPage, paperM, poseAdviser, wood, woodDark, wrapAngle } from "../props.js";
+import { laminate, makeAdviser, makeCabinet, makeCat, makeChair, makeClock, makeCoatStand, makeCooler, makeEnvelope, makeFax, makeFaxPage, makeLadder, makeLibrary, makePlant, makeRug, makeVan, oak, paperM, poseAdviser, roomDesk, steel3, wood, woodDark, wrapAngle } from "../props.js";
+import { asphaltTex, boardsTex, brickTex, carpetTex, city, curtainWall, floorDrop, makeHoist, makeLift, plaster, skirtM, slabTex, traffic, trimM, wallWithDoor, windowView } from "../tower.js";
+import { parkCar } from "../lift.js";
 import { speak, speaking } from "../narration.js";
 import { addHistory, choose, clearStage, endings, findEnding, goFloor, labels, revealButtons, setClock } from "../hud.js";
 
@@ -13,20 +15,22 @@ const config = {
     ["Desks", "the graphics card's room for experts: only some fit"],
     ["Annex", "main memory, which holds every expert; the CPU works out the ones not on the card"],
     ["Tally board", "how often each expert was used lately; the counts fade every round"],
-    ["A move", "a swap: copying an expert onto the card, in place of a quiet one"],
+    ["A move", "a swap: copying an expert onto the card, in place of a quiet one, down the same road as floor 2's van"],
+    ["An intern", "the stand-in while the copy runs: the CPU reads the leaving expert from a spare copy"],
     ["The letter", "a new prompt: the experts it used count too, and a round follows it"],
   ],
   lesson: "Which experts a conversation needs changes as it goes. c0ven counts what each word uses, and every few words swaps the busiest outsiders in for the quietest residents, but only when the difference is clear. The copying runs alongside the work, so the card pauses for only a moment.",
   next: "Floor 4 · coming next.",
 };
 
-// Two rooms of four desks, the main office and the annex, either side of a lane ("row") or, on a tall screen, one
+// Two rooms of four desks, the main office and the annex, either side of an alley ("row") or, on a tall screen, one
 // behind the other ("stack"). Each room is built around its own origin and layout3 places them. Slots 0-3 are the
 // office's chairs and 4-7 the annex's, each room's in the order back left, back right, front left, front right.
 // A desk sits 1.2 in front of its chair.
-const X3 = 120;
+const X3 = 120, opened = openFloor();
 const wireMat = new THREE.LineBasicMaterial({ color: 0x14171c });
 const COL = 1.3, ROWZ = [-1.8, 0.4], RW = 6.0, RD = 5.2, LANE = 3.4;
+const G3 = -floorDrop(3), ROAD_NEAR = RD / 2 + 2.6, ROAD_FAR = RD / 2 + 4.4, HOIST_UP = 0.12, HOIST_DOWN = G3 + 0.16;   // the road's lanes are in R3.road's z
 const SLOTS = Array.from({ length: 8 }, () => [0, 0]);
 const STAFF = [
   { name: "Pat", topic: "Cooking", color: 0xe07a3b, suit: 0x56657d, hair: 0x3b322b, skin: 0xe0c3a8, hat: "toque" },
@@ -50,52 +54,6 @@ const boardTex = canvasTex(1024, 640, () => {});
 const boardMat = new THREE.MeshStandardMaterial({ map: boardTex, emissiveMap: boardTex, emissive: 0xffffff, emissiveIntensity: 0.32, roughness: 0.9 });
 const BW = 3.2, BH = 2.0;
 
-// Tiled surfaces, 256 pixels to a unit; rep() gives a surface its own repeat.
-function tile(draw) { const t = canvasTex(256, 256, draw); t.wrapS = t.wrapT = THREE.RepeatWrapping; return t; }
-const rep = (t, x, y) => { const c = t.clone(); c.needsUpdate = true; c.repeat.set(x, y); return c; };
-const carpetTex = tile((g) => {
-  for (let i = 0; i < 4; i++) { g.fillStyle = i === 1 || i === 2 ? "#2a3240" : "#2f3846"; g.fillRect((i % 2) * 128, (i >> 1) * 128, 128, 128); }
-  for (let k = 0; k < 1600; k++) { g.fillStyle = k % 3 ? "rgba(70,84,104,0.5)" : "rgba(14,18,24,0.5)"; g.fillRect((k * 53) % 256, (k * 97 + (k >> 3)) % 256, 2, 2); }
-  g.fillStyle = "rgba(10,13,18,0.55)"; g.fillRect(0, 0, 256, 2); g.fillRect(0, 128, 256, 2); g.fillRect(0, 0, 2, 256); g.fillRect(128, 0, 2, 256);
-});
-const boardsTex = tile((g) => {
-  for (let r = 0; r < 5; r++) {
-    const y = Math.round(r * 51.2);
-    g.fillStyle = ["#4c3828", "#563f2c", "#45332a", "#513b29", "#4a3729"][r]; g.fillRect(0, y, 256, 52);
-    g.strokeStyle = "rgba(255,226,190,0.05)"; g.lineWidth = 2;
-    for (let k = 0; k < 4; k++) { g.beginPath(); g.moveTo(0, y + 10 + k * 10); g.bezierCurveTo(80, y + 5 + k * 11, 170, y + 15 + k * 9, 256, y + 10 + k * 10); g.stroke(); }
-    g.fillStyle = "rgba(18,11,7,0.7)"; g.fillRect(0, y, 256, 2); g.fillRect((r * 89 + 40) % 256, y, 2, 52);
-  }
-});
-const brickTex = tile((g) => {
-  g.fillStyle = "#33231e"; g.fillRect(0, 0, 256, 256);
-  for (let r = 0; r < 12; r++) for (let c = -1; c < 4; c++) {
-    g.fillStyle = ["#5e3d33", "#664236", "#563a30", "#6b4639"][(r * 3 + c * 5 + 8) % 4];
-    g.fillRect(c * 64 + (r % 2) * 32 + 2, Math.round(r * 21.33) + 2, 60, 18);
-  }
-});
-const cobbleTex = tile((g) => {
-  g.fillStyle = "#121519"; g.fillRect(0, 0, 256, 256);
-  for (let r = 0; r < 5; r++) for (let c = -1; c < 5; c++) {
-    g.fillStyle = ["#2a2e35", "#31353c", "#25292f", "#363a41"][(r * 7 + c * 3 + 8) % 4];
-    g.beginPath(); g.ellipse(c * 64 + (r % 2) * 32 + 32, r * 51.2 + 25.6, 28, 22, 0, 0, Math.PI * 2); g.fill();
-  }
-});
-const slabTex = tile((g) => {
-  g.fillStyle = "#3a3f47"; g.fillRect(0, 0, 256, 256);
-  g.fillStyle = "#30353c"; g.fillRect(0, 0, 256, 3); g.fillRect(0, 0, 3, 256);
-  for (let k = 0; k < 500; k++) { g.fillStyle = k % 2 ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.08)"; g.fillRect((k * 71) % 256, (k * 113) % 256, 3, 3); }
-});
-// Light that a lamp throws on a surface: an additive disc, so no real light is needed.
-const poolTex = canvasTex(128, 128, (g) => {
-  const r = g.createRadialGradient(64, 64, 0, 64, 64, 64);
-  r.addColorStop(0, "rgba(255,255,255,0.85)"); r.addColorStop(0.45, "rgba(255,255,255,0.35)"); r.addColorStop(1, "rgba(255,255,255,0)");
-  g.fillStyle = r; g.fillRect(0, 0, 128, 128);
-});
-function pool(parent, color, r, x, y, z, opacity) {
-  const p = new THREE.Mesh(new THREE.PlaneGeometry(r * 2, r * 2), new THREE.MeshBasicMaterial({ map: poolTex, color, transparent: true, opacity, blending: THREE.AdditiveBlending, depthWrite: false }));
-  p.rotation.x = -Math.PI / 2; p.position.set(x, y, z); parent.add(p); return p;
-}
 // A side wall, cut away towards the front so the room stays open to the camera.
 function sideWall(parent, x, m, back, front) {
   const sh = new THREE.Shape();
@@ -104,53 +62,6 @@ function sideWall(parent, x, m, back, front) {
   // The shape's x runs along z, back to front; the extrusion is the wall's thickness, along -x.
   w.rotation.y = -Math.PI / 2; w.position.set(x + 0.06, 0, 0); w.castShadow = w.receiveShadow = true;
   parent.add(w); return w;
-}
-
-// A desk centred at (x, z) of a room, the adviser behind it facing out. The office's: pale laminate, a slim lamp, a
-// laptop. The annex's: dark oak, a green banker's lamp, books. Lamps are emissive with a halo and a pool of light.
-const laminate = mat(0x9ba1a9, { roughness: 0.5 }), steel3 = mat(0x6d737c, { metalness: 0.5, roughness: 0.45 }), plastic = mat(0x23272f, { roughness: 0.5 });
-const oak = mat(0x4a3324, { roughness: 0.6 }), leather = mat(0x2d4a39, { roughness: 0.7 }), brass = mat(0xb08a4a, { metalness: 0.7, roughness: 0.35 });
-function desk3(room, x, z, annex) {
-  const top = box(1.8, 0.07, 0.9, annex ? oak : laminate, x, 0.985, z, room);
-  top.castShadow = true;
-  if (annex) {
-    box(1.4, 0.006, 0.55, leather, x - 0.1, 1.022, z + 0.05, room);
-    box(1.7, 0.8, 0.05, oak, x, 0.53, z + 0.4, room);
-    for (const sx of [-0.85, 0.85]) box(0.07, 0.95, 0.86, oak, x + sx, 0.475, z, room);
-    for (const [w, h, c, dy] of [[0.3, 0.07, 0x6b3a32, 0], [0.27, 0.06, 0x2f4a5c, 0.065], [0.29, 0.05, 0x7a6a3a, 0.12]]) {
-      const b = box(w, h, 0.21, mat(c), x + 0.62, 1.055 + dy, z - 0.2, room); b.rotation.y = 0.1 - dy;
-    }
-    // Banker's lamp: brass stem, green half-shade lit from under.
-    const base = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.09, 0.03, 16), brass); base.position.set(x - 0.62, 1.035, z - 0.22); room.add(base);
-    box(0.02, 0.26, 0.02, brass, x - 0.62, 1.17, z - 0.22, room);
-    const shade = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, 0.38, 16, 1, true, 0, Math.PI), mat(0x2f7a4c, { side: THREE.DoubleSide, emissive: 0x2f7a4c, emissiveIntensity: 0.35, roughness: 0.4 }));
-    shade.rotation.z = Math.PI / 2; shade.position.set(x - 0.62, 1.31, z - 0.18); room.add(shade);
-    box(0.34, 0.01, 0.12, mat(0xffe2a8, { emissive: 0xffc070, emissiveIntensity: 1.4 }), x - 0.62, 1.305, z - 0.18, room);
-    halo(0xffb45c, 0.6, x - 0.62, 1.27, z - 0.1, room, 0.42);
-    pool(room, 0xffb060, 0.6, x - 0.4, 1.027, z + 0.05, 0.45);
-    pool(room, 0xffa040, 1.1, x - 0.3, 0.106, z + 0.75, 0.16);
-  } else {
-    for (const sx of [-0.82, 0.82]) {
-      for (const dz of [-0.38, 0.38]) box(0.045, 0.95, 0.045, steel3, x + sx, 0.475, z + dz, room);
-      box(0.045, 0.045, 0.8, steel3, x + sx, 0.08, z, room);
-    }
-    box(0.46, 0.6, 0.78, mat(0x5a606a, { roughness: 0.55 }), x + 0.6, 0.62, z, room);
-    for (const dy of [0.48, 0.74]) box(0.14, 0.02, 0.02, steel3, x + 0.6, dy, z + 0.4, room);
-    // A laptop open towards the adviser; the screen's glow spills round the lid.
-    box(0.36, 0.02, 0.25, plastic, x + 0.02, 1.03, z - 0.14, room);
-    const lid = box(0.36, 0.24, 0.014, plastic, x + 0.02, 1.15, z - 0.02, room); lid.rotation.x = 0.22;
-    halo(0x9fc4ff, 0.5, x + 0.02, 1.16, z - 0.12, room, 0.3);
-    // Slim arm lamp, cool white.
-    box(0.14, 0.02, 0.14, steel3, x - 0.72, 1.03, z - 0.28, room);
-    const arm = box(0.022, 0.44, 0.022, steel3, x - 0.7, 1.24, z - 0.24, room); arm.rotation.x = 0.25;
-    box(0.24, 0.04, 0.09, mat(0xdde3ea, { emissive: 0xeaf2ff, emissiveIntensity: 1.2 }), x - 0.62, 1.44, z - 0.16, room);
-    halo(0xdfeaff, 0.6, x - 0.62, 1.4, z - 0.13, room, 0.38);
-    pool(room, 0xbcd4ff, 0.6, x - 0.45, 1.027, z - 0.02, 0.38);
-    pool(room, 0x9fb8e0, 1.1, x - 0.3, 0.106, z + 0.75, 0.12);
-  }
-  const stack = box(0.28, 0.03, 0.21, paperM, x - 0.15, 1.035, z + 0.22, room); stack.rotation.y = 0.18;
-  const mug = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.04, 0.1, 12), mat(annex ? 0xd9d2c0 : 0xe8a33d, { roughness: 0.5 }));
-  mug.position.set(x + 0.32, 1.07, z + 0.2); mug.castShadow = true; room.add(mug);
 }
 
 // Hats and headphones, one per adviser, so each reads at a glance; they ride on the head and turn with it.
@@ -178,29 +89,73 @@ function dress3(A, kind, color) {
 (() => {
   const [office, annex] = rooms;
   scene.add(office, annex);
-  const ground = new THREE.Mesh(new THREE.PlaneGeometry(70, 50), mat(0x13161b, { roughness: 1 }));
-  ground.rotation.x = -Math.PI / 2; ground.position.set(X3, 0, 0); ground.receiveShadow = true; scene.add(ground);
+  // The street, three storeys down, and the buildings' walls falling to it.
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(90, 60), mat(0x13161b, { roughness: 1 }));
+  ground.rotation.x = -Math.PI / 2; ground.position.set(X3, G3, 0); ground.receiveShadow = true; scene.add(ground);
+  // The road and pavements run in front of the nearer building, so layout3 moves them with it.
+  R3.road = new THREE.Group(); scene.add(R3.road);
+  const road = new THREE.Mesh(new THREE.PlaneGeometry(90, 5.6), mat(0xffffff, { map: rep(asphaltTex, 40, 3), roughness: 0.5, metalness: 0.15 }));
+  road.rotation.x = -Math.PI / 2; road.position.set(X3, G3 + 0.02, RD / 2 + 4.5); R3.road.add(road);
+  for (let x = -44; x <= 44; x += 2.2) box(1.1, 0.02, 0.1, mat(0xd8d2b8, { roughness: 0.8 }), X3 + x, G3 + 0.04, RD / 2 + 4.5, R3.road);
+  box(90, 0.12, 1.5, mat(0xffffff, { map: rep(slabTex, 90, 2), roughness: 0.9 }), X3, G3 + 0.06, RD / 2 + 0.95, R3.road);
+  box(90, 0.12, 1.5, mat(0xffffff, { map: rep(slabTex, 90, 2), roughness: 0.9 }), X3, G3 + 0.06, RD / 2 + 8.05, R3.road);
+  R3.traffic = traffic(R3.road, G3 + 0.1, RD / 2 + 4.5, X3 - 42, X3 + 42, 8);
+  for (const x of [-16, -7, 2, 11, 20]) pool(R3.road, 0xffa850, 2.4, X3 + x, G3 + 0.14, RD / 2 + 1.2, 0.26);
+  // One light on the street, so the van reads from up here.
+  const kerbLight = new THREE.PointLight(0xffe2b8, 0.9, 22, 1.2); kerbLight.position.set(X3, G3 + 6, RD / 2 + 3.5); R3.road.add(kerbLight);
+  R3.van = makeVan(); R3.road.add(R3.van.group);
+  curtainWall(office, 0, RD / 2 + 0.01, RW, G3, -0.1, 2.5);
+  box(RW, -G3 - 0.1, RD, mat(0x12151b), 0, G3 / 2 - 0.05, 0, office);
+  box(RW + 0.08, 0.2, RD + 0.08, mat(0x4a4f58), 0, -0.03, 0, office);
+  box(RW, -G3 - 0.1, RD, mat(0xffffff, { map: rep(brickTex, RW, -G3), roughness: 0.95 }), 0, G3 / 2 - 0.05, 0, annex);
+  box(RW + 0.08, 0.2, RD + 0.08, mat(0x4a3d33), 0, -0.03, 0, annex);
+  for (const r of [0, 1]) for (const wx of [-1.9, 0, 1.9]) for (const lv of [-1.3, -3.8, -6.3]) {
+    const pane = new THREE.Mesh(new THREE.PlaneGeometry(0.7, 1.2), new THREE.MeshBasicMaterial({ color: (wx + lv) % 2 ? 0xc99f5e : 0x1c2028 }));
+    pane.position.set(wx, lv, RD / 2 + 0.01); if (r) annex.add(pane);
+    if (r) box(0.84, 0.05, 0.08, mat(0x6e675c), wx, lv - 0.63, RD / 2 + 0.02, annex);
+  }
+  // Above the office the tower runs on up, out of the frame; the annex's old building stops one storey on.
+  R3.upper = new THREE.Group(); office.add(R3.upper);
+  box(RW, 44, 7.9, mat(0x12151b), 0, 4.6 + 22, -RD / 2 - 4.1, R3.upper);
+  curtainWall(R3.upper, 0, -RD / 2 - 0.05, RW, 4.6, 48.6, 2.3, 0x83878e);
+  // The shaft's top and sides, so the car stays out of sight from above.
+  box(2.5, 0.1, 2.4, mat(0x2a2e36), 0, 4.6, -RD / 2 - 1.2, office);
+  for (const sx of [-1, 1]) box(0.1, 4.6, 2.4, mat(0x171a20), sx * 1.2, 2.3, -RD / 2 - 1.2, office);
+  box(2.5, 4.6, 0.1, mat(0x171a20), 0, 2.3, -RD / 2 - 2.4, office);
+  R3.annexUp = new THREE.Group(); annex.add(R3.annexUp);
+  box(RW, 2.8, 4, mat(0xffffff, { map: rep(brickTex, RW, 2.8), roughness: 0.95 }), 0, 6.0, -RD / 2 - 2.0, R3.annexUp);
+  box(RW + 0.3, 0.2, 4.3, mat(0x4a3d33), 0, 7.5, -RD / 2 - 2.0, R3.annexUp);
+  for (const dx of [-2, 2]) box(0.7, 1.2, 0.7, mat(0xffffff, { map: rep(brickTex, 0.7, 1.2), roughness: 0.95 }), dx, 8.1, -RD / 2 - 2.0, R3.annexUp);
+  // The tower's street door under a canopy, the annex's plain one, and the annex's way down: floor 2's hoist.
+  box(1.0, 1.9, 0.04, mat(0x3a3020), 0, G3 + 1.07, RD / 2 + 0.03, office);
+  box(2.2, 0.1, 0.7, mat(0x20252e), 0, G3 + 2.3, RD / 2 + 0.35, office);
+  sign("MERIDIAN WORDS", 2.0, 0.24, 0, G3 + 2.48, RD / 2 + 0.52, "#14171c", "#f0ad45", office).material.emissive = new THREE.Color(0x4a3210);
+  box(0.9, 1.9, 0.04, mat(0x2a2320), -0.95, G3 + 1.07, RD / 2 + 0.03, annex);
+  const davit = mat(0x2a2e36, { metalness: 0.5, roughness: 0.5 });
+  box(0.1, 3.4, 0.1, davit, 0.85, 1.7, RD / 2 + 0.08, annex);
+  box(0.95, 0.1, 0.1, davit, 0.42, 3.4, RD / 2 + 0.08, annex);
+  box(0.1, 0.1, 0.6, davit, 0, 3.4, RD / 2 + 0.3, annex);
+  R3.hoist = makeHoist(annex, 0, RD / 2 + 0.55, 3.35);
+  R3.hoist.pallet.scale.set(1.25, 1, 2.1);
 
   // The main office: blue-grey carpet, plaster walls, a tube overhead, windows onto the city
-  const plaster = mat(0x3e495a), trimM = mat(0x2a313d);
   box(RW, 0.1, RD, mat(0xffffff, { map: rep(carpetTex, RW, RD), roughness: 1 }), 0, 0.05, 0, office);
-  box(RW, 4.6, 0.12, plaster, 0, 2.3, -RD / 2, office);
-  box(RW, 0.07, 0.05, trimM, 0, 1.05, -RD / 2 + 0.08, office);
-  box(RW, 0.14, 0.03, mat(0x1d222b), 0, 0.17, -RD / 2 + 0.075, office);
+  // The back wall, with the lift in its middle, level with the aisle.
+  wallWithDoor(office, plaster, -RW / 2, RW / 2, 4.6, -RD / 2 + 0.06, 0, 0.12, 0.1);
+  for (const [a, b] of [[-RW / 2, -0.77], [0.77, RW / 2]]) {
+    box(b - a, 0.07, 0.05, trimM, (a + b) / 2, 1.05, -RD / 2 + 0.08, office);
+    box(b - a, 0.14, 0.03, skirtM, (a + b) / 2, 0.17, -RD / 2 + 0.075, office);
+  }
   for (const sx of [-1, 1]) sideWall(office, sx * RW / 2, plaster, 4.6, 1.3);
   R3.officeSign = sign("MAIN OFFICE", 2.4, 0.42, 0, 4.22, -RD / 2 + 0.07, undefined, undefined, office);
+  R3.lift = makeLift(office, { x: 0, y: 0.1, z: -RD / 2 + 0.065, number: 3, name: "Musical Desks", signSide: 0 });
   R3.officeWin = new THREE.Group(); office.add(R3.officeWin);
   for (const sx of [-1, 1]) {
-    const t = rep(windowsTex, 0.22, 1); t.offset.x = sx > 0 ? 0.55 : 0.12;
-    const w = new THREE.Mesh(new THREE.PlaneGeometry(1.4, 1.15), new THREE.MeshBasicMaterial({ map: t, color: 0xaab4c2 }));
+    const w = new THREE.Mesh(new THREE.PlaneGeometry(1.4, 1.15), new THREE.MeshBasicMaterial({ map: windowView(sx > 0 ? 31 : 17, 3) }));
     w.position.set(sx * 1.75, 2.75, -RD / 2 + 0.07); R3.officeWin.add(w);
     for (const [fw, fh, fx, fy] of [[1.5, 0.07, 0, 0.6], [1.5, 0.1, 0, -0.6], [0.07, 1.2, -0.72, 0], [0.07, 1.2, 0.72, 0], [0.04, 1.15, 0, 0]]) box(fw, fh, 0.05, trimM, sx * 1.75 + fx, 2.75 + fy, -RD / 2 + 0.09, R3.officeWin);
   }
-  const clock = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.04, 24), mat(0xe9ebe6, { emissive: 0x30343a, emissiveIntensity: 0.3 }));
-  clock.rotation.x = Math.PI / 2; clock.position.set(-2.4, 3.6, -RD / 2 + 0.09); office.add(clock);
-  const rim = new THREE.Mesh(new THREE.TorusGeometry(0.22, 0.025, 6, 24), mat(0x1a1f27)); rim.position.set(-2.4, 3.6, -RD / 2 + 0.11); office.add(rim);
-  for (let k = 0; k < 12; k++) box(0.015, k % 3 ? 0.03 : 0.05, 0.01, mat(0x1a1f27), -2.4 + Math.sin(k * Math.PI / 6) * 0.17, 3.6 + Math.cos(k * Math.PI / 6) * 0.17, -RD / 2 + 0.115, office).rotation.z = -k * Math.PI / 6;
-  for (const [len, rot] of [[0.16, 1.05], [0.1, 2.15]]) { const hnd = box(0.018, len, 0.01, mat(0x1a1f27), -2.4 + Math.sin(rot) * len / 2, 3.6 + Math.cos(rot) * len / 2, -RD / 2 + 0.12, office); hnd.rotation.z = -rot; }
+  makeClock(office, -2.4, 3.6, -RD / 2 + 0.09);
   // Hanging tube: emissive with a glow; the room's one real light sits under it.
   const tubeM = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.05, 0.16), new THREE.MeshBasicMaterial({ color: 0xe6efe9 }));
   tubeM.position.set(0, 3.75, -0.7); office.add(tubeM); tubes.push(tubeM);
@@ -209,70 +164,34 @@ function dress3(A, kind, color) {
   const cool = new THREE.PointLight(0xdfe9e4, 0.55, 10, 1.6); cool.position.set(0, 3.5, 0.2); office.add(cool);
   pool(office, 0xc8daf0, 2.6, 0, 0.104, -0.4, 0.1);
   // Water cooler, plant, filing cabinet, coat stand
-  box(0.34, 0.9, 0.34, mat(0xc9ccc4, { roughness: 0.5 }), -2.55, 0.55, -2.15, office);
-  const bottle = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.13, 0.42, 16), mat(0x7fb3d9, { transparent: true, opacity: 0.75, roughness: 0.15, emissive: 0x1d3a52, emissiveIntensity: 0.5 }));
-  bottle.position.set(-2.55, 1.21, -2.15); office.add(bottle);
-  box(0.36, 0.4, 0.36, mat(0x55473a), 2.55, 0.3, -2.2, office);
-  const plant = new THREE.Mesh(new THREE.IcosahedronGeometry(0.4, 0), mat(0x3f5a4b, { flatShading: true }));
-  plant.position.set(2.55, 0.86, -2.2); plant.scale.y = 1.3; plant.castShadow = true; office.add(plant);
-  box(0.5, 1.15, 0.5, mat(0x4d535c, { roughness: 0.5 }), -2.68, 0.68, -0.6, office);
-  for (const dy of [0.45, 0.8, 1.1]) box(0.02, 0.02, 0.16, steel3, -2.42, dy, -0.6, office);
-  const stand = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.03, 1.8, 8), mat(0x3b3029)); stand.position.set(2.7, 1.0, 2.25); office.add(stand);
-  const coat = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.17, 0.8, 10), mat(0x6a4a3a)); coat.position.set(2.62, 1.35, 2.25); office.add(coat);
+  makeCooler(office, -2.55, -2.15);
+  makePlant(office, 2.55, -2.2, 1.15);
+  makeCabinet(office, -2.68, -0.6, 3);
+  makeCoatStand(office, 2.7, 2.25);
 
   // The annex: floorboards, brick, every manual nobody visits, warm lamps
   box(RW, 0.1, RD, mat(0xffffff, { map: rep(boardsTex, RW, RD), roughness: 0.8 }), 0, 0.05, 0, annex);
   R3.annexBack = new THREE.Group(); annex.add(R3.annexBack);
   box(RW, 4.6, 0.12, mat(0xffffff, { map: rep(brickTex, RW, 4.6), roughness: 0.95 }), 0, 2.3, -RD / 2, R3.annexBack);
-  const library = canvasTex(1024, 640, (g, w, h) => {
-    g.fillStyle = "#2c2520"; g.fillRect(0, 0, w, h);
-    const cols = ["#5d6b7f", "#7a6a55", "#4f6a63", "#6d7486", "#8a5a48", "#3f4e66", "#6b5a3a"];
-    let n = 0;
-    for (let row = 0; row < 5; row++) {
-      const y1 = 14 + row * 126 + 108;
-      let x = 10;
-      while (x < w - 16) {
-        const bw = 9 + ((n * 7) % 6) * 3, bh = 80 + ((n * 5) % 7) * 4;
-        g.fillStyle = cols[n % cols.length]; g.fillRect(x, y1 - bh, bw, bh);
-        x += bw + 2; n++;
-      }
-      g.fillStyle = "#4a3d31"; g.fillRect(0, y1, w, 12);
-    }
-  });
-  const lib = new THREE.Mesh(new THREE.PlaneGeometry(RW - 0.7, 3.1), new THREE.MeshStandardMaterial({ map: library, roughness: 0.9 }));
-  lib.position.set(0, 1.75, -RD / 2 + 0.07); R3.annexBack.add(lib);
-  for (const lx of [-1, 1]) { const rail = box(0.05, 3.3, 0.05, mat(0x6b5845), 2.1 + lx * 0.2, 1.65, -RD / 2 + 0.35, R3.annexBack); rail.rotation.x = -0.1; }
-  for (let k = 0; k < 7; k++) box(0.45, 0.03, 0.04, mat(0x6b5845), 2.1, 0.3 + k * 0.45, -RD / 2 + 0.35 - 0.04 * k + 0.12, R3.annexBack);
+  makeLibrary(R3.annexBack, 0, 1.75, -RD / 2 + 0.07, RW - 0.7, 3.1, 5);
+  makeLadder(R3.annexBack, 2.1, -RD / 2 + 0.35);
   sign("ANNEX", 1.4, 0.42, 0, 4.22, -RD / 2 + 0.07, "#d9c9a8", "#3a2a22", R3.annexBack);
   R3.annexSides = [-1, 1].map((sx) => sideWall(annex, sx * RW / 2, mat(0xffffff, { map: brickTex, roughness: 0.95 }), 4.6, 1.3));
   // On a tall screen the annex stands in front: a low parapet with a gap at the aisle replaces its back wall.
   R3.parapet = new THREE.Group(); annex.add(R3.parapet);
   for (const sx of [-1, 1]) box(RW / 2 - 0.62, 0.5, 0.16, mat(0xffffff, { map: rep(brickTex, 2.4, 0.5), roughness: 0.95 }), sx * (RW / 4 + 0.31), 0.25, -RD / 2, R3.parapet);
   sign("ANNEX", 1.1, 0.33, -1.6, 0.72, -RD / 2 + 0.09, "#d9c9a8", "#3a2a22", R3.parapet);
-  const rug = canvasTex(128, 256, (g, w, h) => {
-    g.fillStyle = "#5a2a2a"; g.fillRect(0, 0, w, h);
-    g.strokeStyle = "#b08a4a"; g.lineWidth = 5; g.strokeRect(10, 10, w - 20, h - 20);
-    g.strokeStyle = "#3a1c1e"; g.lineWidth = 3; g.strokeRect(22, 22, w - 44, h - 44);
-    g.fillStyle = "#7a3a36"; for (let k = 0; k < 5; k++) { g.beginPath(); g.ellipse(64, 48 + k * 40, 22, 12, 0, 0, Math.PI * 2); g.fill(); }
-  });
-  const rugM = new THREE.Mesh(new THREE.PlaneGeometry(1.3, 3.8), new THREE.MeshStandardMaterial({ map: rug, roughness: 1 }));
-  rugM.rotation.x = -Math.PI / 2; rugM.position.set(0, 0.104, -0.3); rugM.receiveShadow = true; annex.add(rugM);
+  makeRug(annex, 0, 0.104, -0.3, 1.3, 3.8);
   const warm = new THREE.PointLight(0xffc27a, 0.75, 10, 1.6); warm.position.set(0, 3.4, 0.4); annex.add(warm);
   // Books piled by the wall, and the annex cat asleep on them
   for (const [bx, bz, n] of [[2.65, 0.4, 5], [2.62, -0.25, 3], [-2.66, -0.5, 4]]) for (let k = 0; k < n; k++) {
     const b = box(0.34 - (k % 2) * 0.04, 0.07, 0.26, mat([0x6b3a32, 0x2f4a5c, 0x7a6a3a, 0x4f6a63][(k + n) % 4]), bx, 0.135 + k * 0.07, bz, annex); b.rotation.y = (k * 0.7) % 0.5 - 0.25;
   }
-  const fur = mat(0x9a7b5a, { roughness: 1 });
-  const cat = new THREE.Group(); cat.position.set(2.65, 0.47, 0.4); cat.rotation.y = -0.6; annex.add(cat);
-  const body = new THREE.Mesh(new THREE.SphereGeometry(0.15, 14, 10), fur); body.scale.set(1.3, 0.62, 1); body.castShadow = true; cat.add(body);
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.08, 12, 10), fur); head.position.set(0.17, 0.0, 0.05); cat.add(head);
-  for (const ez of [-0.035, 0.035]) { const ear = new THREE.Mesh(new THREE.ConeGeometry(0.025, 0.05, 6), fur); ear.position.set(0.18, 0.07, 0.05 + ez); cat.add(ear); }
-  const tail = new THREE.Mesh(new THREE.TorusGeometry(0.13, 0.022, 6, 14, Math.PI * 1.1), fur); tail.rotation.x = Math.PI / 2; tail.position.set(-0.02, -0.04, 0.02); cat.add(tail);
-  R3.cat = body;
+  R3.cat = makeCat(annex, 2.65, 0.47, 0.4);
 
-  for (const [r, room] of rooms.entries()) for (const row of ROWZ) for (const sx of [-1, 1]) desk3(room, sx * COL, row + 1.2, r === 1);
+  for (const [r, room] of rooms.entries()) for (const row of ROWZ) for (const sx of [-1, 1]) roomDesk(room, sx * COL, row + 1.2, r === 1);
 
-  // A side table with a fax machine, at each room's lane side; layout3 places them.
+  // A side table with a fax machine, at each room's alley side; layout3 places them.
   R3.fax = rooms.map((room, r) => {
     const g = new THREE.Group(); room.add(g);
     box(0.6, 0.06, 0.5, r ? oak : laminate, 0, 0.75, 0, g);
@@ -281,49 +200,36 @@ function dress3(A, kind, color) {
     return g;
   });
 
-  // The lane between the rooms, the pavement in front, and the road beyond (side by side only)
-  R3.lane = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshStandardMaterial({ map: rep(cobbleTex, 1, 1), roughness: 0.55, metalness: 0.1 }));
-  R3.lane.rotation.x = -Math.PI / 2; R3.lane.receiveShadow = true; scene.add(R3.lane);
-  // The street lamp's reflection in a wet patch of the lane.
-  R3.puddle = pool(scene, 0xffb45c, 0.5, 0, 0.02, 0, 0.3); R3.puddle.scale.set(0.9, 2.2, 1);
-  R3.street = new THREE.Group(); scene.add(R3.street);
-  box(34, 0.06, 1.6, mat(0xffffff, { map: rep(slabTex, 34 / 0.8, 2), roughness: 0.9 }), 0, 0.03, RD / 2 + 0.8, R3.street);
-  box(34, 0.12, 0.14, mat(0x4a4f58), 0, 0.06, RD / 2 + 1.65, R3.street);
-  box(34, 0.02, 4.0, mat(0x181b21, { roughness: 0.95 }), 0, 0.01, RD / 2 + 3.7, R3.street);
-  for (let x = -16; x <= 16; x += 1.4) box(0.7, 0.025, 0.08, mat(0xd8d2b8, { roughness: 0.8 }), x, 0.025, RD / 2 + 3.4, R3.street);
+  // The alley's end wall, side by side only: it closes the gap between the buildings and carries the tally board.
+  R3.alley = new THREE.Group(); scene.add(R3.alley);
+  box(LANE, 4.6 - G3, 0.1, mat(0xffffff, { map: rep(brickTex, LANE, 4.6 - G3), roughness: 0.95, color: 0x8a8378 }), X3, (4.6 + G3) / 2, -RD / 2 + 0.2, R3.alley);
 
-  // Two telephone poles and the line the fax travels on; one pole carries a street lamp.
+  // Two telephone poles up from the street and the line the fax travels on; one pole carries a street lamp.
   R3.poles = [0, 1].map(() => {
     const g = new THREE.Group(); scene.add(g);
-    const p = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, 3.7, 10), mat(0x3b3029)); p.position.y = 1.85; p.castShadow = true; g.add(p);
+    const p = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, 3.7 - G3, 10), mat(0x3b3029)); p.position.y = (3.7 + G3) / 2; p.castShadow = true; g.add(p);
     g.arm = new THREE.Group(); g.add(g.arm);
     box(0.6, 0.06, 0.06, mat(0x3b3029), 0, 3.55, 0, g.arm);
     return g;
   });
-  // The lamp's arm points along its local +z; layout3 turns it into the lane.
+  // The lamp's arm points along its local +z; layout3 turns it into the alley.
   R3.lamp = new THREE.Group(); R3.poles[0].add(R3.lamp);
   box(0.06, 0.05, 0.55, steel3, 0, 3.15, 0.27, R3.lamp);
   box(0.26, 0.08, 0.2, steel3, 0, 3.12, 0.55, R3.lamp);
   box(0.22, 0.03, 0.16, mat(0xffd59a, { emissive: 0xffb45c, emissiveIntensity: 1.3 }), 0, 3.07, 0.55, R3.lamp);
   halo(0xffb45c, 1.4, 0, 3.02, 0.6, R3.lamp, 0.42);
-  R3.lampPool = pool(scene, 0xffa850, 1.6, 0, 0.03, 0, 0.32);
+  R3.lampPool = pool(scene, 0xffa850, 1.6, 0, G3 + 0.16, 0, 0.32);
   R3.wire = new THREE.Line(new THREE.BufferGeometry(), wireMat); scene.add(R3.wire);
 
-  // The board on its frame. Side by side it stands at the back of the lane on two posts; one behind the other it
-  // leans against the office's back wall.
+  // The board on its frame. Side by side it hangs on the alley's end wall; one behind the other it leans against the
+  // office's back wall.
   R3.board = new THREE.Group(); scene.add(R3.board);
   R3.boardFace = new THREE.Group(); R3.board.add(R3.boardFace);
   const face = new THREE.Mesh(new THREE.PlaneGeometry(BW, BH), boardMat); R3.boardFace.add(face);
   for (const [w, h, x, y] of [[BW + 0.16, 0.08, 0, BH / 2 + 0.04], [BW + 0.16, 0.08, 0, -BH / 2 - 0.04], [0.08, BH, -BW / 2 - 0.04, 0], [0.08, BH, BW / 2 + 0.04, 0]]) box(w, h, 0.07, wood, x, y, 0, R3.boardFace);
   box(BW, 0.04, 0.12, woodDark, 0, -BH / 2 - 0.08, 0.06, R3.boardFace);
-  R3.boardPosts = new THREE.Group(); R3.board.add(R3.boardPosts);
-  for (const sx of [-1, 1]) box(0.1, 2.0, 0.1, woodDark, sx * (BW / 2 - 0.2), 1.0, -0.06, R3.boardPosts);
 
-  const cityMat = new THREE.MeshBasicMaterial({ map: windowsTex, color: 0x8a93a0 });
-  [[-15, 7, 3], [-10, 10, 3.5], [-4, 6, 4], [2.5, 12, 3], [8, 8, 4], [13, 11, 3.2], [18, 7, 3]].forEach(([dx, h, w]) => {
-    const b = new THREE.Mesh(new THREE.BoxGeometry(w, h, 2), [mat(0x161a21), mat(0x161a21), mat(0x161a21), mat(0x161a21), cityMat, mat(0x161a21)]);
-    b.position.set(X3 + dx, h / 2, -15); scene.add(b);
-  });
+  R3.city = city(scene, X3, 3, { near: -19 });
   // A broad, soft key light over both rooms, for shadows; no hard pool on the ground.
   const key = new THREE.SpotLight(0xe8f0ea, 1.0, 50, 0.85, 1, 1);
   key.position.set(X3 + 1.5, 15, 10); key.target.position.set(X3, 0, 0);
@@ -378,6 +284,34 @@ for (const [i, s] of STAFF.entries()) {
   s.ring = new THREE.Mesh(new THREE.RingGeometry(0.42, 0.6, 32), new THREE.MeshBasicMaterial({ color: s.color, transparent: true, opacity: 0, side: THREE.DoubleSide, depthWrite: false }));
   s.ring.rotation.x = -Math.PI / 2; scene.add(s.ring);
 }
+// The interns who mind a desk while its adviser is away. The player's are given no notice and panic; the narrator's
+// keep typing. Each has a tag, placed with the names in dom3.
+const INTERNS = [[0x6b4a2e, 0xe0c3a8], [0x2a2420, 0x8d5a3b], [0xb98a44, 0xd9b9a0], [0x3b322b, 0xb98a64]].map(([hair, skin], i) => {
+  const chair = makeChair(0, 0), A = makeAdviser({ suit: 0xd9d6cb, hair, skin, tie: 0xf2c230, nodPhase: i * 1.7 });
+  A.sit = 1; chair.visible = A.group.visible = false;
+  return { chair, A, on: false, slot: -1, tag: null };
+});
+const internAt = (slot) => INTERNS.find((n) => n.on && n.slot === slot);
+function seatIntern(slot, player, watching) {
+  const n = INTERNS.find((i) => !i.on);
+  if (!n) return;
+  const [x, z] = SLOTS[slot];
+  n.on = true; n.slot = slot; n.tag.style.display = "";
+  n.A.typing = n.A.busy = !player; n.A.cheer = player; n.A.watch = player ? watching : null; n.A.heading = 0; n.A.lift = 0;
+  n.chair.position.set(x, 0, z); n.A.group.position.set(x, 0, z + 0.05); n.A.group.rotation.set(0, 0, 0);
+  n.chair.visible = n.A.group.visible = true;
+  puff(x, z);
+  const size = (k) => { n.chair.scale.setScalar(k); n.A.group.scale.setScalar(k); };
+  if (reduced) size(0.92); else tween(0.25, (u) => size(0.92 * Math.max(0.01, backOut(u))));
+}
+function dismissIntern(n) {
+  if (!n.on) return;
+  n.on = false; n.tag.style.display = "none";
+  puff(n.chair.position.x, n.chair.position.z);
+  const size = (k) => { n.chair.scale.setScalar(k); n.A.group.scale.setScalar(k); };
+  const gone = () => { n.chair.visible = n.A.group.visible = false; };
+  if (reduced) gone(); else tween(0.16, (u) => size(0.92 * Math.max(0.01, 1 - u))).then(gone);
+}
 // A column of light on whoever the current question needs.
 const beamTex = canvasTex(16, 128, (g, w, h) => {
   const l = g.createLinearGradient(0, 0, 0, h); l.addColorStop(0, "rgba(255,255,255,0)"); l.addColorStop(1, "rgba(255,255,255,0.9)");
@@ -410,48 +344,56 @@ function layout3(mode) {
   const half = RW / 2 + LANE / 2;
   const o = row ? [X3 - half, 0] : [X3, -(RD / 2 + 0.9)], a = row ? [X3 + half, 0] : [X3, RD / 2 + 0.9];
   rooms[0].position.set(o[0], 0, o[1]); rooms[1].position.set(a[0], 0, a[1]);
-  L3.aisle = [o[0], a[0]];
+  L3.aisle = [o[0], a[0]]; L3.o = o; L3.a = a;
   for (let i = 0; i < 8; i++) {
     const [rx, rz] = i < 4 ? o : a;
     SLOTS[i][0] = rx + (i % 2 ? COL : -COL); SLOTS[i][1] = rz + ROWZ[(i >> 1) & 1];
   }
-  R3.annexBack.visible = row; R3.parapet.visible = !row;
+  R3.annexBack.visible = R3.annexUp.visible = row; R3.parapet.visible = !row;
   for (const w of R3.annexSides) w.scale.y = row ? 1 : 0.3;
   R3.officeWin.visible = R3.officeSign.visible = row;
-  R3.street.visible = row;
-  R3.street.position.x = X3;
-  // The fax tables sit at each room's lane side.
+  R3.alley.visible = row;
+  R3.road.position.z = row ? 0 : a[1];
+  // The van's stops and runs, in the road's coordinates. One behind the other, the tower's door is round the corner.
+  const s0 = row ? o[0] : X3 - 14, s1 = row ? a[0] : X3, at = (x, z) => new THREE.Vector3(x, 0, z);
+  L3.stops = [s0, s1];
+  L3.vanOut = new THREE.LineCurve3(at(s0, ROAD_NEAR), at(s1, ROAD_NEAR));
+  L3.vanBack = row ? new THREE.CatmullRomCurve3([at(s1, ROAD_NEAR), at(s1 + 0.8, ROAD_NEAR), at(s1 + 1.8, ROAD_NEAR + 0.9), at(s1 + 0.8, ROAD_FAR), at(s0 - 0.8, ROAD_FAR), at(s0 - 1.8, ROAD_NEAR + 0.9), at(s0 - 0.8, ROAD_NEAR), at(s0, ROAD_NEAR)])
+    : new THREE.LineCurve3(at(s1, ROAD_NEAR), at(X3 + 14, ROAD_NEAR));
+  parkVan();
+  // The fax tables sit at each room's alley side.
   R3.fax[0].position.set(RW / 2 - 0.45, 0, 1.95); R3.fax[0].rotation.y = 0;
   R3.fax[1].position.set(row ? -(RW / 2 - 0.45) : RW / 2 - 0.45, 0, row ? 1.95 : -1.95); R3.fax[1].rotation.y = 0;
   MFAX.set(o[0] + R3.fax[0].position.x, 1.05, o[1] + R3.fax[0].position.z);
   AFAX.set(a[0] + R3.fax[1].position.x, 1.05, a[1] + R3.fax[1].position.z);
   const P = row ? [[X3 - LANE / 2 + 0.12, 2.3], [X3 + LANE / 2 - 0.12, 2.3]] : [[X3 + RW / 2 + 0.3, -1.1], [X3 + RW / 2 + 0.3, 1.1]];
-  // Cross-arms square to the wire; the lamp leans over the lane, or over the rooms' side.
+  // Cross-arms square to the wire; the lamp leans over the alley, or over the rooms' side.
   R3.poles.forEach((p, k) => { p.position.set(P[k][0], 0, P[k][1]); p.arm.rotation.y = row ? Math.PI / 2 : 0; });
   R3.lamp.rotation.y = row ? Math.PI / 2 : -Math.PI / 2;
-  R3.lampPool.position.set(P[0][0] + (row ? 0.55 : -0.55), 0.03, P[0][1]);
+  R3.lampPool.position.set(P[0][0] + (row ? 0.55 : -0.55), G3 + 0.16, P[0][1]);
   const p0 = new THREE.Vector3(P[0][0], 3.55, P[0][1]), p1 = new THREE.Vector3(P[1][0], 3.55, P[1][1]);
   const mid = p0.clone().lerp(p1, 0.5); mid.y = 3.15;
   R3.wire.geometry.dispose();
   R3.wire.geometry = new THREE.BufferGeometry().setFromPoints(new THREE.QuadraticBezierCurve3(p0, mid, p1).getPoints(30));
   const rise = (f, p) => new THREE.Vector3(lerp(f.x, p.x, 0.7), 2.9, lerp(f.z, p.z, 0.7));
   L3.faxRoute = new THREE.CatmullRomCurve3([MFAX.clone(), rise(MFAX, p0), p0.clone().setY(3.62), mid.clone().setY(3.3), p1.clone().setY(3.62), rise(AFAX, p1), AFAX.clone()]);
-  R3.lane.position.set(X3, 0.012, 0);
-  R3.lane.scale.set(row ? LANE : RW, row ? RD : 1.8, 1);
-  R3.lane.material.map.repeat.set(row ? LANE : RW, row ? RD : 1.8);
-  R3.puddle.position.set(row ? X3 - LANE / 2 + 0.75 : X3 + RW / 2 - 0.3, 0.02, row ? 1.4 : 0);
-  // The board: on posts at the back of the lane, or leaning on the office's back wall.
+  // The board: on the alley's end wall, or leaning on the office's back wall.
   R3.board.position.set(X3, 0, row ? -RD / 2 + 0.35 : o[1] - RD / 2 + 0.22);
   R3.boardFace.position.y = row ? 3.0 : 3.5;
   R3.boardFace.rotation.x = row ? 0 : -0.16;
-  R3.boardPosts.visible = row;
   L3.board.set(X3, R3.boardFace.position.y, R3.board.position.z + 0.08);
   L3.office.set(o[0], 4.5, o[1] - RD / 2 + 0.1);
   L3.annex.set(row ? a[0] : a[0] - 1.6, row ? 4.5 : 0.95, a[1] - RD / 2 + 0.1);
 }
+function parkVan() {
+  const V = R3.van, p = L3.vanOut.getPointAt(0);
+  V.group.position.set(p.x, G3 + 0.03, p.z); V.group.rotation.y = 0; V.body.rotation.set(0, 0, 0); V.body.position.y = 0;
+  V.lights(false); V.brake(false);
+}
 function placeAt(s, i) {
   const [x, z] = SLOTS[i];
   s.slot = i;
+  s.chair.visible = s.A.group.visible = true;
   s.chair.position.set(x, 0, z); s.chair.rotation.set(0, 0, 0);
   s.A.group.position.set(x, 0, z + 0.05); s.A.group.rotation.set(0, 0, 0); s.A.heading = 0;
   s.A.lift = 0; s.A.sit = 1; s.A.busy = false; s.A.walking = 0; s.A.cheer = false;
@@ -484,19 +426,25 @@ function resetFloor3() {
   const want = pickLayout3();
   if (want !== L3.mode) layout3(want);
   STAFF.forEach((s, i) => { s.moves = 0; s.moving = false; s.ready = 0; s.A.watch = null; placeAt(s, i); pack(s, false); });
+  for (const n of INTERNS) dismissIntern(n);
+  fit3.wide = false; R3.hoist.set(HOIST_UP); R3.lift.show(3); parkVan();
   E3.group.visible = false; page3.visible = false; letter3.visible = false;
   L3.need = null; L3.letterMark = false; L3.hot.clear();
 }
 
 // ---------- Camera ----------
-const camera3 = { look: new THREE.Vector3(X3, 1.3, 0.6), offset: true, fog: [20, 46], par: 0.7, fov: 36 };
+const camera3 = { look: new THREE.Vector3(X3, 1.3, 0.6), offset: true, fog: [20, 90], par: 0.7, fov: 36 };
 
 // Floor 3's camera looks down at a fixed pitch from whatever distance and screen offset fit the layout's outline
 // into the part of the screen the HUD leaves clear: beside the side panel or under it, whichever shows it larger.
-const fit3 = { key: "", at: 0, fov: 36, d: 20, snap: true, pos: new THREE.Vector3(), look: new THREE.Vector3(), off: [0, 0], tPos: new THREE.Vector3(), tLook: new THREE.Vector3(), tOff: [0, 0] };
-const FIT3 = { row: { pitch: 0.44, pts: [] }, stack: { pitch: 0.82, pts: [] } };
-for (const [m, hx, z0, z1, hb, hf] of [["row", 7.75, -2.6, RD / 2 + 1.5, 4.7, 1.8], ["stack", RW / 2 + 0.4, -RD - 0.9, RD + 0.9, 4.7, 1.6]])
-  for (const sx of [-1, 1]) FIT3[m].pts.push(new THREE.Vector3(X3 + sx * hx, 0, z0), new THREE.Vector3(X3 + sx * hx, hb, z0), new THREE.Vector3(X3 + sx * hx, 0, z1), new THREE.Vector3(X3 + sx * hx, hf, z1));
+const fit3 = { key: "", at: 0, fov: 36, d: 20, fog: 20, wide: false, snap: true, pos: new THREE.Vector3(), look: new THREE.Vector3(), off: [0, 0], tPos: new THREE.Vector3(), tLook: new THREE.Vector3(), tOff: [0, 0] };
+// A trip pulls the camera back to the wide outline, which adds the street.
+const FIT3 = { row: { pitch: 0.44, pts: [], wide: [] }, stack: { pitch: 0.82, pts: [], wide: [] } };
+for (const [m, hx, z0, z1, hb, hf, zs] of [["row", 7.75, -2.6, RD / 2 + 0.3, 4.7, 1.8, ROAD_NEAR + 1], ["stack", RW / 2 + 0.4, -RD - 0.9, RD + 0.9, 4.7, 1.6, RD / 2 + 0.9 + ROAD_NEAR + 1]])
+  for (const sx of [-1, 1]) {
+    FIT3[m].pts.push(new THREE.Vector3(X3 + sx * hx, 0, z0), new THREE.Vector3(X3 + sx * hx, hb, z0), new THREE.Vector3(X3 + sx * hx, 0, z1), new THREE.Vector3(X3 + sx * hx, hf, z1));
+    FIT3[m].wide.push(...FIT3[m].pts.slice(-4), new THREE.Vector3(X3 + sx * hx, G3, zs));
+  }
 const probe = new THREE.PerspectiveCamera(), pv = new THREE.Vector3();
 function freeRects() {
   const W = innerWidth, H = innerHeight, narrow = W <= 720, g = 12;
@@ -506,8 +454,8 @@ function freeRects() {
   const under = { x: g, y: sd.bottom + 6, w: W - 2 * g, h: bottom - sd.bottom - 6 };
   return narrow ? [under] : [{ x: g, y: top, w: sd.left - 2 * g, h: bottom - top }, under];
 }
-function fitPoints(m, rect) {
-  const { pitch, pts } = FIT3[m], W = innerWidth, H = innerHeight;
+function fitPoints(m, rect, wide) {
+  const { pitch } = FIT3[m], pts = wide ? FIT3[m].wide : FIT3[m].pts, W = innerWidth, H = innerHeight;
   probe.fov = fit3.fov; probe.aspect = W / H; probe.near = 0.1; probe.far = 300; probe.updateProjectionMatrix();
   const lo3 = pts[0].clone(), hi3 = pts[0].clone();
   for (const p of pts) { lo3.min(p); hi3.max(p); }
@@ -528,7 +476,7 @@ function fitPoints(m, rect) {
   const e = ext(hi);
   return { c, dir, d: hi, off: [(e[0] + e[1]) / 2 - (rect.x + rect.w / 2), (e[2] + e[3]) / 2 - (rect.y + rect.h / 2)], scale: 1 / hi };
 }
-const bestFit = (m, rects) => rects.map((r) => fitPoints(m, r)).reduce((a, b) => (b.scale > a.scale ? b : a));
+const bestFit = (m, rects, wide) => rects.map((r) => fitPoints(m, r, wide)).reduce((a, b) => (b.scale > a.scale ? b : a));
 // One behind the other wins only where it shows the rooms clearly larger.
 function pickLayout3() {
   const rects = freeRects();
@@ -536,12 +484,12 @@ function pickLayout3() {
 }
 function cam3(dt) {
   const now = performance.now();
-  if (!fit3.key || now - fit3.at > 200) {
+  if (!fit3.key || now - fit3.at > 100) {
     fit3.at = now;
-    const rects = freeRects(), key = L3.mode + innerWidth + "x" + innerHeight + rects.map((r) => [r.x, r.y, r.w, r.h].map(Math.round).join(",")).join("|");
+    const rects = freeRects(), key = L3.mode + fit3.wide + innerWidth + "x" + innerHeight + rects.map((r) => [r.x, r.y, r.w, r.h].map(Math.round).join(",")).join("|");
     if (key !== fit3.key) {
       fit3.key = key;
-      const b = bestFit(L3.mode, rects);
+      const b = bestFit(L3.mode, rects, fit3.wide);
       fit3.tPos.copy(b.c).addScaledVector(b.dir, b.d); fit3.tLook.copy(b.c); fit3.tOff = b.off; fit3.d = b.d;
     }
   }
@@ -551,7 +499,8 @@ function cam3(dt) {
   fit3.off[0] += (fit3.tOff[0] - fit3.off[0]) * k; fit3.off[1] += (fit3.tOff[1] - fit3.off[1]) * k;
   camera.setViewOffset(innerWidth, innerHeight, fit3.off[0], fit3.off[1], innerWidth, innerHeight);
   camera3.look.copy(fit3.look);
-  scene.fog.near = fit3.d * 0.95; scene.fog.far = fit3.d * 2.4;
+  fit3.fog += (fit3.d - fit3.fog) * k;
+  scene.fog.near = fit3.fog * 1.05; scene.fog.far = fit3.fog * 4.2;
   return fit3.pos;
 }
 
@@ -584,7 +533,8 @@ function scene3(t, dt) {
   const k = reduced ? 1 : Math.min(1, dt * 10), pulse = reduced ? 0.5 : 0.5 + 0.5 * Math.sin(t * 7);
   for (const [i, s] of STAFF.entries()) {
     const need = L3.need === s, picked = sel === i && tagsLive;
-    s.ring.position.set(s.chair.position.x, 0.11, s.chair.position.z + 0.35);
+    const [rx, rz] = s.moving ? SLOTS[s.slot] : [s.chair.position.x, s.chair.position.z];
+    s.ring.position.set(rx, 0.11, rz + 0.35);
     s.ring.material.color.setHex(picked ? 0xe8a33d : s.color);
     s.ring.material.opacity = need ? 0.6 + 0.35 * pulse : picked ? 0.9 : s.queued ? 0.45 : 0;
     if (s.moving) continue;
@@ -597,7 +547,10 @@ function scene3(t, dt) {
   }
   const n = L3.need;
   beam3.material.opacity = n ? 0.26 + 0.14 * pulse : 0;
-  if (n) { beam3.position.set(n.A.group.position.x, 1.75, n.A.group.position.z + 0.1); beam3.material.color.setHex(n.color); }
+  if (n) {
+    const [bx, bz] = n.moving ? SLOTS[n.slot] : [n.A.group.position.x, n.A.group.position.z];
+    beam3.position.set(bx, 1.75, bz + 0.1); beam3.material.color.setHex(n.color);
+  }
   if (!reduced) R3.cat.scale.y = 0.62 + Math.sin(t * 1.7) * 0.025;
 }
 // Floor 3, after each render: the name tags, and the reveal's labels, kept from covering one another. Side by
@@ -609,10 +562,14 @@ function dom3() {
       const front = L3.mode === "row" && s.slot % 4 >= 2 && !s.moving, g = s.A.group.position;
       const [x, y] = front ? toScreen(v.set(g.x, 0.1, g.z + 1.95)) : toScreen(v.set(g.x, 2.02 + s.A.lift, g.z));
       const [w, h] = sizeOf(s.tag);
-      return { s, x, w, h, y: front ? y : y - h };
+      return { el: s.tag, x, w, h, y: front ? y : y - h };
     });
+    for (const n of INTERNS) if (n.on) {
+      const g = n.A.group.position, [x, y] = toScreen(v.set(g.x, 2.0, g.z)), [w, h] = sizeOf(n.tag);
+      items.push({ el: n.tag, x, w, h, y: y - h });
+    }
     declutter(items);
-    for (const it of items) it.s.tag.style.transform = `translate(${Math.round(Math.min(innerWidth - it.w - 4, Math.max(4, it.x - it.w / 2)))}px, ${Math.round(it.y)}px)`;
+    for (const it of items) it.el.style.transform = `translate(${Math.round(Math.min(innerWidth - it.w - 4, Math.max(4, it.x - it.w / 2)))}px, ${Math.round(it.y)}px)`;
   }
   const labs = [];
   for (const [el, at] of anchors3) {
@@ -631,7 +588,7 @@ const SHIFT_AT = 12;
 // Seconds on the stopwatch. A desk answers in LOCAL; a fax goes out, is thought over in the annex, and comes back.
 // The player's swap stops the office for SWAP; the narrator's round holds it for ROUND, its packing done behind.
 const T3 = { LOCAL: 0.5, FAX_OUT: 0.35, FAX_THINK: 0.9, SWAP: 1.0, ROUND: 0.1 };
-// The narrator's chairs move in ZIP: the round's ROUND on the clock, the rest during the next question.
+// With reduced motion the narrator's trip is a wait of ZIP, and the player's a wait of SWAP.
 const ZIP = 0.3;
 // The swap rule of the engine (core/models/qwen4exp/swap.cpp), at the scale of eight advisers: a round every 3
 // questions and one after the letter; counts fade by 0.8 a round; a newcomer replaces the quietest resident only
@@ -743,6 +700,10 @@ STAFF.forEach((s, i) => {
   b.addEventListener("click", () => tapTag(i));
   s.tag = b; s.bar = b.querySelector(".n"); tagsBox.appendChild(b);
 });
+for (const n of INTERNS) {
+  n.tag = document.createElement("span"); n.tag.className = "tag intern"; n.tag.textContent = "Intern"; n.tag.style.display = "none";
+  tagsBox.appendChild(n.tag);
+}
 let tagsLive = false, sel = -1, queue = [], react = null, nightOn = false;
 const swapping = new Set();
 function showTags(on, live) {
@@ -786,77 +747,156 @@ function tapTag(i) {
   paintTags();
 }
 
-// A chair moves from slot `from` to slot `to`, out along its room's aisle, across, and in; k picks one of two
-// tracks, so the two chairs of a swap pass each other. The player's swap: legs pop out, the chair scurries and lands,
-// its rider's arms up. The narrator's: the packed chair zips across with the box on the rider's lap.
-function route3(from, to, k) {
-  const [x0, z0] = SLOTS[from], [x1, z1] = SLOTS[to];
-  if (L3.mode === "row") {
-    const g0 = L3.aisle[from < 4 ? 0 : 1], g1 = L3.aisle[to < 4 ? 0 : 1], lz = RD / 2 + 0.65 + 0.5 * k;
-    return [[x0, z0], [g0, z0], [g0, lz], [g1, lz], [g1, z1], [x1, z1]];
-  }
-  const tx = X3 + (k ? 0.28 : -0.28);
-  return [[x0, z0], [tx, z0], [tx, z1], [x1, z1]];
+// ---------- The trip ----------
+// A swap goes by road, as floor 2's crates do: office staff take the lift, annex staff the hoist, and the van runs
+// between the two while an intern minds each desk. TRIP is seconds on screen; the stopwatch charges the player's as
+// SWAP. The player's chair sprouts legs and scurries, its rider's arms up; the narrator's glides with the box on the lap.
+const TRIP = 3, LEG3 = 0.78;
+const eased = (t, a, b) => ease(Math.min(1, Math.max(0, (t - a) / (b - a))));
+// A mover's route: legs in order, each lasting until t1 seconds into the trip, along pts [x, y, z], y being the level
+// underfoot. `hide` is inside the lift, `van` inside the van.
+function tripLegs(from, to, k) {
+  const [x0, z0] = SLOTS[from], [x1, z1] = SLOTS[to], off = k * 0.3, [ox, oz] = L3.o, [ax, az] = L3.a, [s0, s1] = L3.stops;
+  const door = oz - RD / 2 + 0.75, car = oz - RD / 2 - 0.55, gate = oz + RD / 2 + 0.12, edge = az + RD / 2 - 0.2;
+  const px = ax + off, pz = az + RD / 2 + 0.55, kerb = R3.road.position.z + ROAD_NEAR - 0.6;
+  const pave = G3 + 0.14, road = G3 + 0.03, up = HOIST_UP - 0.02, down = HOIST_DOWN - 0.02;
+  if (from < 4) return [
+    { t1: 0.5, run: true, pts: [[x0, 0, z0], [ox + off, 0, z0], [ox + off, 0, door]] },
+    { t1: 0.62, run: true, pts: [[ox + off, 0, door], [ox + off, 0, car]] },
+    { t1: 1.0, hide: true, pts: [[ox, 0, car], [ox, G3, car]] },
+    { t1: 1.12, run: true, pts: [[s0 + off, pave, gate], [s0 + off, road, kerb]] },
+    { t1: 1.62, van: true },
+    { t1: 1.74, run: true, pts: [[s1 + off, road, kerb], [px, down, pz]] },
+    { t1: 1.86, pts: [[px, down, pz]] },
+    { t1: 2.35, pts: [[px, down, pz], [px, up, pz]] },
+    { t1: 2.85, run: true, pts: [[px, up, pz], [ax + off, 0, edge], [ax + off, 0, z1], [x1, 0, z1]] },
+  ];
+  return [
+    { t1: 0.45, run: true, pts: [[x0, 0, z0], [ax + off, 0, z0], [ax + off, 0, edge], [px, up, pz]] },
+    { t1: 0.5, pts: [[px, up, pz]] },
+    { t1: 1.05, pts: [[px, up, pz], [px, down, pz]] },
+    { t1: 1.62, pts: [[px, down, pz]] },
+    { t1: 1.74, run: true, pts: [[px, down, pz], [s1 + off, road, kerb]] },
+    { t1: 2.4, van: true },
+    { t1: 2.5, run: true, pts: [[s0 + off, road, kerb], [s0 + off, pave, gate]] },
+    { t1: 2.72, hide: true, pts: [[ox, G3, car], [ox, 0, car]] },
+    { t1: TRIP, run: true, pts: [[ox + off, 0, car], [ox + off, 0, door], [ox + off, 0, z1], [x1, 0, z1]] },
+  ];
 }
-const LEG3 = 0.78;
-async function scoot(s, from, to, style, k, clockFn) {
-  const pts = route3(from, to, k), lens = [];
+// The point a fraction f of the way along a list of points.
+function along(pts, f) {
   let total = 0;
-  for (let n = 1; n < pts.length; n++) { const d = Math.hypot(pts[n][0] - pts[n - 1][0], pts[n][1] - pts[n - 1][1]); lens.push(d); total += d; }
-  const player = style === "player", streak = streaks[STAFF.indexOf(s)];
-  let h = 0, last = performance.now(), px = pts[0][0], pz = pts[0][1];
-  s.moving = true; s.ready = 0; s.A.busy = false; s.A.watch = null;
-  if (player) puff(pts[0][0], pts[0][1]);
-  await rt(player ? T3.SWAP : ZIP, (u) => {
-    const now = performance.now(), dt = Math.min(0.05, (now - last) / 1000); last = now;
-    // Player: legs out in the first 16%, run to 86%, land. Narrator: one smooth glide.
-    const run = player ? Math.min(1, Math.max(0, (u - 0.16) / 0.7)) : u;
-    let d = ease(run) * total, n = 0;
-    while (n < lens.length - 1 && d > lens[n]) { d -= lens[n]; n++; }
-    const [ax, az] = pts[n], [bx, bz] = pts[n + 1], f = lens[n] ? Math.min(1, d / lens[n]) : 1;
-    const x = lerp(ax, bx, f), z = lerp(az, bz, f), moving = run > 0 && run < 1;
-    const want = moving ? Math.atan2(bx - ax, bz - az) : 0;
-    h += reduced ? wrapAngle(want - h) : wrapAngle(want - h) * Math.min(1, dt * 16);
-    const speed = Math.hypot(x - px, z - pz) / Math.max(dt, 0.001); px = x; pz = z;
-    let lift = 0, lean = 0;
-    if (player) {
-      const len = LEG3 * (u < 0.16 ? backOut(u / 0.16) : u > 0.86 ? 1 - ease((u - 0.86) / 0.14) : 1);
-      const ph = ease(run) * total * 8, amp = reduced ? 0 : Math.min(1, run * 8, (1 - run) * 8);
-      setChairLegs(s.legs, len);
-      for (const l of s.legs) l.pivot.rotation.x = Math.sin(ph + l.phase) * 0.6 * amp;
-      lift = Math.max(0, len - 0.44) + Math.abs(Math.sin(ph)) * 0.06 * amp;
-      lean = reduced ? 0 : 0.12 * amp + (u < 0.16 ? -0.15 * Math.sin(u / 0.16 * Math.PI) : 0);
-      s.A.cheer = u > 0.06 && u < 0.9;
-    } else {
-      lift = 0.08 * Math.sin(u * Math.PI);
-      lean = reduced ? 0 : 0.2 * Math.sin(u * Math.PI);
-      if (!reduced) {
-        streak.position.set(x - Math.sin(h) * 0.7, 0.75, z - Math.cos(h) * 0.7);
-        streak.material.opacity = Math.min(0.55, speed / 40);
-        // The streak lies along the motion as seen on screen.
-        const a = v.set(x, 0.75, z).project(camera), b2 = new THREE.Vector3(x - Math.sin(h), 0.75, z - Math.cos(h)).project(camera);
-        streak.material.rotation = Math.atan2((a.y - b2.y) / camera.aspect, a.x - b2.x);
-      }
-      s.box.group.position.set(x + Math.sin(h) * 0.25, 0.92 + lift, z + Math.cos(h) * 0.25);
-      s.box.group.rotation.set(0, h, 0);
-    }
-    s.chair.position.set(x, lift, z); s.chair.rotation.set(lean, h, 0);
-    s.A.group.position.set(x + Math.sin(h) * 0.05, 0, z + Math.cos(h) * 0.05);
-    s.A.group.rotation.set(lean, h, 0); s.A.heading = h; s.A.lift = lift;
-    if (clockFn) clockFn(u);
-  });
-  streak.material.opacity = 0;
-  pack(s, false);
-  placeAt(s, to);
-  s.moving = false;
-  if (player) { puff(pts[pts.length - 1][0], pts[pts.length - 1][1]); if (!reduced) view.shake = 0.03; }
+  for (let n = 1; n < pts.length; n++) total += Math.hypot(pts[n][0] - pts[n - 1][0], pts[n][1] - pts[n - 1][1], pts[n][2] - pts[n - 1][2]);
+  let d = f * total;
+  for (let n = 1; n < pts.length; n++) {
+    const a = pts[n - 1], b = pts[n], len = Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+    if (d <= len && len) { const g = d / len; return [lerp(a[0], b[0], g), lerp(a[1], b[1], g), lerp(a[2], b[2], g)]; }
+    d -= len;
+  }
+  return pts[pts.length - 1];
 }
-// The pair's places swap the moment the swap starts; their chairs catch up.
-async function swapPair(a, b, style, clockFn) {
-  const ia = a.slot, ib = b.slot;
-  a.moves++; b.moves++;
-  a.slot = ib; b.slot = ia;
-  await Promise.all([scoot(a, ia, ib, style, 0, clockFn), scoot(b, ib, ia, style, 1)]);
+function moveAlong(m, t, dt, player) {
+  const { s } = m;
+  let i = 0;
+  while (i < m.legs.length - 1 && t >= m.legs[i].t1) i++;
+  const leg = m.legs[i], hidden = leg.hide || leg.van;
+  s.chair.visible = s.A.group.visible = !hidden;
+  s.box.group.visible = !hidden && !player;
+  let x, y, z;
+  if (leg.van) { const g = R3.van.group.position; x = g.x; y = G3; z = g.z + R3.road.position.z; }
+  else [x, y, z] = along(leg.pts, eased(t, i ? m.legs[i - 1].t1 : 0, leg.t1));
+  const step = Math.hypot(x - m.x, z - m.z), want = step > 0.001 && !hidden ? Math.atan2(x - m.x, z - m.z) : 0;
+  m.x = x; m.z = z;
+  m.h += wrapAngle(want - m.h) * Math.min(1, dt * 16);
+  m.ph += step * 8;
+  let lift, lean;
+  if (player) {
+    m.len += ((leg.run ? LEG3 : 0) - m.len) * Math.min(1, dt * 14);
+    const amp = m.len / LEG3;
+    setChairLegs(s.legs, m.len);
+    for (const l of s.legs) l.pivot.rotation.x = Math.sin(m.ph + l.phase) * 0.6 * amp;
+    lift = Math.max(0, m.len - 0.44) + Math.abs(Math.sin(m.ph)) * 0.06 * amp;
+    lean = 0.12 * amp;
+    s.A.cheer = !!leg.run;
+  } else {
+    const glide = leg.run ? 1 : 0;
+    lift = 0.08 * glide; lean = 0.2 * glide;
+    m.streak.position.set(x - Math.sin(m.h) * 0.7, y + 0.75, z - Math.cos(m.h) * 0.7);
+    m.streak.material.opacity = hidden ? 0 : Math.min(0.55, step / Math.max(dt, 0.001) / 40);
+    const a = v.set(x, y + 0.75, z).project(camera), b2 = new THREE.Vector3(x - Math.sin(m.h), y + 0.75, z - Math.cos(m.h)).project(camera);
+    m.streak.material.rotation = Math.atan2((a.y - b2.y) / camera.aspect, a.x - b2.x);
+    s.box.group.position.set(x + Math.sin(m.h) * 0.25, y + 0.92 + lift, z + Math.cos(m.h) * 0.25);
+    s.box.group.rotation.set(0, m.h, 0);
+  }
+  s.chair.position.set(x, y + lift, z); s.chair.rotation.set(lean, m.h, 0);
+  s.A.group.position.set(x + Math.sin(m.h) * 0.05, 0, z + Math.cos(m.h) * 0.05);
+  s.A.group.rotation.set(lean, m.h, 0); s.A.heading = m.h; s.A.lift = y + lift;
+}
+// The van's two runs: out along the near lane to the annex, and back round by the far lane.
+function driveVan(t, dt) {
+  const V = R3.van, out = eased(t, 1.12, 1.62), back = eased(t, 1.74, 2.4), running = back > 0 && back < 1 ? L3.vanBack : L3.vanOut;
+  const u = running === L3.vanBack ? back : back >= 1 ? 0 : out, p = running.getPointAt(u), dir = running.getTangentAt(Math.min(0.999, Math.max(0.001, u)));
+  const moved = Math.hypot(p.x - V.group.position.x, p.z - V.group.position.z);
+  for (const w of V.wheels) w.rotation.z -= moved / 0.22;
+  V.group.position.set(p.x, G3 + 0.03, p.z);
+  V.group.rotation.y = -Math.atan2(dir.z, dir.x);
+  const boarding = Math.sin(Math.PI * Math.min(1, Math.max(0, (t - 1.04) / 0.14))) + Math.sin(Math.PI * Math.min(1, Math.max(0, (t - 1.66) / 0.14)));
+  V.body.rotation.x = -0.05 * boarding;
+  V.body.rotation.z = moved > 0.001 ? (u < 0.5 ? 0.035 : -0.045) * Math.sin(u * Math.PI) : 0;
+  V.lights(t > 1.0 && t < 2.5); V.brake(u > 0.7 && moved > 0.001);
+}
+async function trip(run, style, clockFn) {
+  const player = style === "player";
+  const movers = run.map(([s, from, to, k]) => {
+    s.moving = true; s.ready = 0; s.A.busy = false; s.A.watch = null;
+    if (player) puff(SLOTS[from][0], SLOTS[from][1]);
+    return { s, from, to, legs: tripLegs(from, to, k), h: 0, len: 0, ph: 0, x: SLOTS[from][0], z: SLOTS[from][1], streak: streaks[STAFF.indexOf(s)] };
+  });
+  const seat = () => { for (const m of movers) seatIntern(m.from, player, movers[0].s.chair.position); };
+  if (reduced) {
+    for (const m of movers) { m.s.chair.visible = m.s.A.group.visible = m.s.box.group.visible = false; }
+    seat();
+    await rt(player ? T3.SWAP : ZIP, (u) => { if (clockFn) clockFn(u); });
+  } else {
+    parkCar({ lift: R3.lift, number: 3 });
+    fit3.wide = true;
+    let last = performance.now(), seated = false, left = false;
+    await rt(TRIP, (u) => {
+      const t = u * TRIP, now = performance.now(), dt = Math.min(0.05, (now - last) / 1000);
+      last = now;
+      if (!seated && t > 0.12) { seated = true; seat(); }
+      if (!left && t > 2.5) { left = true; fit3.wide = false; for (const n of INTERNS) dismissIntern(n); }
+      R3.hoist.set(lerp(HOIST_UP, HOIST_DOWN, eased(t, 0.5, 1.05) - eased(t, 1.86, 2.35)));
+      R3.lift.open(eased(t, 0.35, 0.55) - eased(t, 0.62, 0.8) + eased(t, 2.6, 2.8));
+      R3.lift.show(3 - 3 * (eased(t, 0.62, 1.0) - eased(t, 2.5, 2.72)));
+      driveVan(t, dt);
+      for (const m of movers) moveAlong(m, t, dt, player);
+      if (clockFn) clockFn(u);
+    });
+    tween(0.25, (u) => R3.lift.open(1 - u));
+    R3.hoist.set(HOIST_UP); R3.lift.show(3); parkVan();
+  }
+  for (const n of INTERNS) dismissIntern(n);
+  fit3.wide = false;
+  for (const m of movers) {
+    m.streak.material.opacity = 0;
+    pack(m.s, false);
+    placeAt(m.s, m.to);
+    m.s.moving = false;
+    if (player) puff(SLOTS[m.to][0], SLOTS[m.to][1]);
+  }
+  if (player && !reduced) view.shake = 0.03;
+}
+// The pairs' places swap the moment the swap starts, and their chairs catch up. One van: a trip waits for the last.
+let tripLine = Promise.resolve();
+function swapPairs(pairs, style, clockFn) {
+  const run = pairs.flatMap(([a, b], k) => {
+    const ia = a.slot, ib = b.slot;
+    a.moves++; b.moves++;
+    a.slot = ib; b.slot = ia;
+    return [[a, ia, ib, k], [b, ib, ia, k]];
+  });
+  return (tripLine = tripLine.then(() => trip(run, style, clockFn)));
 }
 // While the player's swap stops the office, everyone else downs tools and watches the chairs go.
 function hold3(on, movers) {
@@ -866,7 +906,7 @@ function hold3(on, movers) {
 
 // One question, from the envelope's drop to its stamp. The clock counts st.mov and st.th.
 async function answer(e, st) {
-  const s = STAFF[e], [x, z] = SLOTS[s.slot];
+  const s = STAFF[e], [x, z] = SLOTS[s.slot], stand = s.moving && internAt(s.slot), who = stand ? stand.A : s.A;
   E3.stamp.material.color.setHex(s.color); E3.stamp.material.emissive.setHex(s.color);
   E3band.material.color.setHex(s.color); E3band.material.emissive.setHex(s.color);
   E3.stamp.visible = false; E3.group.visible = true;
@@ -874,7 +914,7 @@ async function answer(e, st) {
   const m0 = st.mov, t0 = st.th;
   if (inOffice(s)) {
     const from = new THREE.Vector3(x - 0.3, 4.6, z + 1.25), to = new THREE.Vector3(x - 0.3, 1.04, z + 1.25);
-    s.A.busy = true;
+    who.busy = true;
     await rt(T3.LOCAL, (u) => {
       E3.group.position.lerpVectors(from, to, ease(Math.min(1, u / 0.35)));
       E3.stamp.visible = u > 0.75;
@@ -899,9 +939,9 @@ async function answer(e, st) {
       st.mov = m0 + T3.FAX_OUT * u; setClock(st.mov, st.th);
     });
     page3.visible = false; wireMat.color.setHex(0x14171c);
-    s.A.busy = true;
+    who.busy = true;
     await rt(T3.FAX_THINK, (u) => { st.th = t0 + T3.FAX_THINK * u; setClock(st.mov, st.th); });
-    s.A.busy = false;
+    who.busy = !!who.typing;
     wireMat.color.setHex(0xe8a33d); page3.visible = true;
     await rt(T3.FAX_OUT, (u) => { place(1 - u); st.mov = m0 + T3.FAX_OUT * (1 + u); setClock(st.mov, st.th); });
     page3.visible = false; wireMat.color.setHex(0x14171c);
@@ -911,7 +951,7 @@ async function answer(e, st) {
     st.faxes++; st.faxRun++; st.localRun = 0; st.faxTimes.push(performance.now() / 1000);
     if (e === 4 || e === 5) st.legalFaxes++;
   }
-  s.A.busy = false;
+  who.busy = !!who.typing;
   s.tag.classList.remove("need"); L3.need = null;
   E3.group.visible = false;
 }
@@ -956,7 +996,7 @@ async function night(mode, hooks = {}) {
       swapping.add(ia); swapping.add(ib); paintTags();
       const m0 = st.mov;
       hold3(true, [a, b]);
-      await swapPair(a, b, "player", (u) => { st.mov = m0 + T3.SWAP * u; setClock(st.mov, st.th); });
+      await swapPairs([[a, b]], "player", (u) => { st.mov = m0 + T3.SWAP * u; setClock(st.mov, st.th); });
       hold3(false, [a, b]);
       st.mov = m0 + T3.SWAP; st.swaps++;
       swapping.delete(ia); swapping.delete(ib);
@@ -973,10 +1013,10 @@ async function night(mode, hooks = {}) {
         if (st.pending.length) {
           if (hooks.beforeApply) await hooks.beforeApply(st.pending, st);
           const m0 = st.mov, moving = st.pending;
-          // The boxes close and the chairs set off: the round holds the office for ROUND; they land during the
-          // next question.
+          // The boxes close and the advisers set off: the round holds the office for ROUND; interns mind the desks
+          // through the next questions until they land.
           for (const s of moving.flat()) tween(0.12, (u) => { for (const f of s.box.flaps) f.rotation.x = -Math.sign(f.position.z) * lerp(1.2, Math.PI, u); });
-          zips.push(Promise.all(moving.map(([a, b]) => swapPair(a, b, "engine"))));
+          zips.push(swapPairs(moving, "engine"));
           await rt(T3.ROUND, (u) => { st.mov = m0 + T3.ROUND * u; setClock(st.mov, st.th); });
           st.mov = m0 + T3.ROUND;
           if (hooks.applied) hooks.applied(moving, st);
@@ -1142,13 +1182,17 @@ async function reveal3() {
 
 resetFloor3();
 drawBoard();
+closeFloor(3, opened);
 
 export default {
-  ...config, camera: camera3, start: f3Intro,
+  ...config, camera: camera3, lift: R3.lift, start: f3Intro,
   enter() { fit3.snap = true; fit3.key = ""; resetFloor3(); counts.fill(0); drawBoard(); },
   frame(t, dt) {
     for (const s of STAFF) poseAdviser(s.A, t, dt);
+    for (const n of INTERNS) if (n.on) poseAdviser(n.A, t, dt);
     scene3(t, dt);
+    R3.city(t);
+    if (!reduced) R3.traffic(dt);
   },
   afterRender: dom3,
   onLabels() { tagSize.clear(); },

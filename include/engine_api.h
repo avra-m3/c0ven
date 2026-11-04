@@ -338,7 +338,9 @@ ENGINE_API engine_status engine_wake(engine_ctx *e, engine_info *info);
 /* The last error's message, valid until the next call on e (or for open's failures, with e null). */
 ENGINE_API const char *engine_last_error(const engine_ctx *e);
 
-/* Frees everything. */
+/* Frees everything. Once a command list has timed out ("did not finish a list"), the cards' memory and queues stay,
+ * as the driver's calls would wait on the stuck queue. The caller then ends the process with _exit, because the
+ * driver's teardown at a normal exit waits on it too. */
 ENGINE_API void engine_close(engine_ctx *e);
 
 /* One card the engine can use, as Level Zero reports it (ZE_AFFINITY_MASK applies). */
