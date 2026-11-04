@@ -26,11 +26,12 @@ class Pool {
   uint64_t runs_started() const { return generation_; }
 
  private:
+  // next and done on lines of their own: every thread takes from next for each index, and the caller polls done.
   struct Job {
     const std::function<void(uint64_t)> *fn;
     uint64_t n;
-    std::atomic<uint64_t> next{0};
-    std::atomic<uint64_t> done{0};
+    alignas(64) std::atomic<uint64_t> next{0};
+    alignas(64) std::atomic<uint64_t> done{0};
   };
   void work();
   static void drain(Job &job);
