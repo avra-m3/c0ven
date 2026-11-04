@@ -441,6 +441,19 @@ One card's value is given first.
 | The expert budget from each card's physical memory less 1 GiB, against the driver's offered size less 512 MiB, one card, one slot at 262,144 | experts cached a layer 129 → 137; decode after doc-4k-qa 50.1 → 51.0 tokens/s, gpqa-1 50.6 → 52.5, long-gen 47.9 → 47.8; first token doc-4k-qa 2.80 → 2.82 s, gpqa-1 1.25 → 1.21, long-gen 0.77 → 0.72. Two cards: first token short 0.39 → 0.36 s, mixed 6.08 → 5.75; decode short 103.25 → 105.45 tokens/s, four 30.00 → 35.15, mixed 35.05 → 36.50 | <a id="2026-11-04-budget-from-physical-size"></a>[2026-11-04](#2026-11-04-budget-from-physical-size) |
 | The prompt's staging buffer written through the CPU's mapping of it, one card, one slot at 262,144, 137 experts cached a layer | first token long-gen 0.76 (0.76-0.78) → 0.64 (0.64-0.65) s, gpqa-1 1.26 (1.24-1.32) → 1.04 (1.03-1.06) s; prompt reading by the client's clock 113 (110-114) → 134 (133-135) tokens/s, 172 (165-175) → 209 (205-211). doc-4k-qa and doc-32k, whose chunks do not take this path, level. Decode level. Start to `core open` 25.1 → 25.6 s. Two cards level: short first token 0.35 → 0.34 s, decode 105.3 → 104.2 tokens/s, four 36.1 → 34.2, mixed 38.0 → 38.7 | <a id="2026-11-05-staging-through-a-mapping"></a>[2026-11-05](#2026-11-05-staging-through-a-mapping) |
 
+### Past the trained context
+
+The IQ3_S file with `--context 524288`, one slot, and the rotation scaled by YaRN. One request with `max_tokens` 64 on a
+prompt of repeated text. The arena was not locked, so the times are indicative
+([DEVELOPING.md](../DEVELOPING.md) says not to time runs that way), and there was one run.
+
+| Test | Value | Measured |
+| --- | --- | --- |
+| First token, 299,999-token prompt | 133.45 s | <a id="2026-11-02-context-524288"></a>[2026-11-02](#2026-11-02-context-524288) |
+| Prompt reading | 2,260.91 tokens/s | [2026-11-02](#2026-11-02-context-524288) |
+| Decode after it, 64 tokens | 56.66 tokens/s | [2026-11-02](#2026-11-02-context-524288) |
+| Experts cached per layer, plan 363 | 325 at load, 314.3 at the end | [2026-11-02](#2026-11-02-context-524288) |
+
 ### Other quants
 
 ISTA-DASLab's IQ3_XXS, IQ2_XS and Q2_0 files of the same model, each against IQ3_S in its own ABBA series on two
