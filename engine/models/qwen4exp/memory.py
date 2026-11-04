@@ -42,5 +42,4 @@ def model_memory(
         checkpoint_bytes=state,
         max_context=numbers.CONTEXT,
         ngram_bytes=sum(t.nbytes for t in table.tensors if split_of(t.name) is SplitKind.FILE),
-        reference_vram=numbers.USABLE_VRAM,
     )
