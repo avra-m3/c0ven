@@ -8,6 +8,7 @@ import sys
 import pytest
 
 import protocol
+from frontend import engine_client
 from frontend.engine_client import EngineClient, EngineUnavailable, SleepMode
 
 ARGV = [sys.executable, "-m", "engine", "--backend", "mock", "--arch", "qwen4exp", "--slots", "2", "--context", "4096"]
@@ -97,6 +98,32 @@ def test_a_dead_engine_fails_its_requests_and_restarts():
         events = await run(client, (1, 2, 3), 4)
         assert isinstance(events[-1], protocol.Done)
         assert client.state.starts == 2
+        await client.close()
+
+    asyncio.run(main())
+
+
+# A child that fails its first request and then never exits, as an engine waiting on a stuck queue would.
+FAILS_AND_STAYS = """
+import sys, time
+print("READY 4096 2", flush=True)
+sys.stdin.readline()
+print("ERR - card 0 did not finish a list in 60 s", flush=True)
+time.sleep(600)
+"""
+
+
+def test_a_child_that_fails_and_stays_is_killed_and_its_requests_fail(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(engine_client, "FAILED_EXIT_S", 0.2)
+
+    async def main() -> None:
+        client = EngineClient([sys.executable, "-c", FAILS_AND_STAYS])
+        await client.start()
+        async with asyncio.timeout(30):
+            events = await run(client, (1, 2, 3), 4)
+        assert isinstance(events[-1], protocol.Error)
+        assert "exited" in events[-1].message
+        assert not client.alive
         await client.close()
 
     asyncio.run(main())
