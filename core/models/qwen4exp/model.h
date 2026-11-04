@@ -23,6 +23,7 @@
 #include "models/qwen4exp/layout.h"
 #include "models/qwen4exp/mrope.h"
 #include "models/qwen4exp/ngram.h"
+#include "models/qwen4exp/shape.h"
 #include "quant.h"
 #include "step.h"
 #include "util/parallel.h"
@@ -107,7 +108,7 @@ class Model final : public engine::Model {
   // final normed rows (STEP_MAX_ROWS x Q_EMBD).
   std::vector<uint16_t> df_features(uint32_t row);
   std::vector<float> df_hidden();
-  // For tests: the last decode step's logits of row `row`, all Q_VOCAB of them, from every card's share of the head.
+  // For tests: the last decode step's logits of row `row`, all the vocabulary's, from every card's share of the head.
   std::vector<float> logits(uint32_t row);
 
   // n prompt tokens of a sequence, from position pos0, in one pass (prompt.cpp); p1 and p2 are the two tokens
@@ -318,6 +319,7 @@ class Model final : public engine::Model {
 
   Options opt_;
   GgufModel gguf_;
+  Shape shape_;  // the file's sizes; any layout.h still holds are equal to it once the constructor has checked them
   std::unique_ptr<ze::Runtime> rt_;
   std::unique_ptr<ze::Library> lib_;
   std::unique_ptr<ze::EventPool> events_;

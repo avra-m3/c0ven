@@ -47,5 +47,6 @@ go to it, and `docker logs c0ven` shows the sleep.
 - While the engine sleeps or loads, `/health` and every request get 503, so only a lease wakes it.
 - If the lease's connection ends without a sleep, the engine goes to sleep on its own.
 - A sleep lets running requests go on for `--drain-timeout` seconds (30 by default), then cancels them.
-- Asleep, the engine still holds about 20 GiB of RAM and 0.32 GiB of VRAM a card. `--sleep-mode exit` gives the
-  RAM back, and each wake is then a full load. The [known limits](../../README.md#known-limits) have the rest.
+- Asleep, the engine still holds its experts in RAM, about 20 GiB, the image encoder's 0.90 GB when it has one, and
+  0.32 GiB of VRAM a card. `--sleep-mode exit` gives the RAM back, and each wake is then a full load. Sleeping beside
+  another model is not measured yet.

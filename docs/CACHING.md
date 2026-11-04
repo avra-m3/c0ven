@@ -3,7 +3,7 @@
 This page explains what the server keeps in memory between requests, how it reuses the beginning of a prompt it has
 seen before, and why that reuse works well on a quiet server and less well on a busy one. It is for people who run the
 server and want to understand what they see, without knowing how the model works inside. The flags it mentions are
-listed in the [README](../README.md#options).
+listed in [OPTIONS.md](OPTIONS.md).
 
 A token is a piece of text, often a short word or part of one. A prompt is the whole conversation so far, as tokens:
 the system message, every question and every answer. Sizes on this page are in tokens, with K for 1,024 tokens, as the

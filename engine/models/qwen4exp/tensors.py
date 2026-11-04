@@ -18,7 +18,6 @@ from pathlib import Path
 import gguf
 
 from engine.gguf_files import shard_paths
-from engine.models.qwen4exp import numbers
 
 TABLES = Path(__file__).resolve().parents[3] / "docs" / "model"
 TSV = TABLES / "tensors-IQ3_S.tsv"
@@ -91,10 +90,30 @@ class TensorTable:
     def by_name(self) -> dict[str, FileTensor]:
         return {t.name: t for t in self.tensors}
 
+    def _shape_of(self, name: str) -> tuple[int, ...]:
+        for t in self.tensors:
+            if t.name == name:
+                return t.shape
+        raise ValueError(f"tensor missing from the model: {name}")
+
+    @property
+    def layers(self) -> int:
+        """The file's layers: one past the highest numbered block."""
+        return 1 + max(t.layer for t in self.tensors)
+
+    @property
+    def vocab(self) -> int:
+        """The rows of output.weight, as the core reads it (core/models/qwen4exp/shape.h)."""
+        return self._shape_of("output.weight")[1]
+
+    @property
+    def experts_per_layer(self) -> int:
+        return self._shape_of("blk.0.ffn_gate_exps.weight")[2]
+
     def layer_kinds(self) -> list[LayerKind]:
         names = self.by_name()
         kinds: list[LayerKind] = []
-        for n in range(numbers.LAYERS):
+        for n in range(self.layers):
             if f"blk.{n}.attn_k.weight" in names:
                 kinds.append(LayerKind.ATTENTION)
             elif f"blk.{n}.ssm_a" in names:
@@ -107,9 +126,9 @@ class TensorTable:
         return sum(t.nbytes for t in self.tensors if t.category is category)
 
     def expert_bytes(self, layer: int) -> int:
-        """One routed expert of the layer: (gate + up + down) / 512."""
+        """One routed expert of the layer: (gate + up + down) / the experts in a layer."""
         total = sum(t.nbytes for t in self.tensors if t.layer == layer and t.category is Category.EXPERTS)
-        return total // numbers.EXPERTS_PER_LAYER
+        return total // self.experts_per_layer
 
 
 def from_tsv(path: Path = TSV) -> TensorTable:

@@ -88,7 +88,9 @@ flowchart TB
 
 The front end starts the engine process as its child and talks to it in token ids, one line per message over a pipe
 ([`protocol.py`](../protocol.py)). Every line about a request carries its id. If the engine dies, every request in
-flight gets an error and the next request starts it again. A fault on the cards cannot take down the API
+flight gets an error and the next request starts it again. An engine that fails sends `ERR -` and exits with no
+teardown, because a queue on the cards may never finish and the driver's calls would wait on it; the kernel frees the
+cards. A child that has not exited 10 s after `ERR -` is killed. A fault on the cards cannot take down the API
 ([ADR-0022](adr/0022-two-processes-python-and-cpp.md)).
 
 One engine process drives both cards. Host memory that both cards read must come from one Level Zero context that

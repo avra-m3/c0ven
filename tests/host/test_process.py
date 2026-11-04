@@ -6,6 +6,7 @@ import io
 import json
 import subprocess
 import sys
+import textwrap
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -488,6 +489,68 @@ def test_the_cost_model_is_kept_at_a_sleep(tmp_path: Path):
     )
     assert status == 0
     assert read_cost(file) is not None
+
+
+class FailsAtSubmit(MockEngine):
+    """A core whose plan failed, as when a list times out."""
+
+    closed = False
+
+    def submit(self, plan: StepPlan) -> None:
+        raise RuntimeError("card 0 did not finish a list in 60 s")
+
+    def close(self) -> None:
+        self.closed = True
+        super().close()
+
+
+def test_a_failed_engine_says_so_and_does_not_close_the_core():
+    engine = FailsAtSubmit()
+    out = io.StringIO()
+    stdin = cast("TextIO", lines_apart([protocol.Gen(1, 4, tuple(range(3, 40))).encode()], 0.0, 30.0))
+    status = serve(engine, open_config(), rule=every_16k, options=SchedulerOptions(), stdin=stdin, stdout=out)
+    assert status == 1
+    assert not engine.closed
+    last = protocol.parse_event(out.getvalue().splitlines()[-1])
+    assert isinstance(last, protocol.Error)
+    assert last.rid is None
+    assert "did not finish a list" in last.message
+
+
+# The engine's own entry point, with a core that fails its first plan, and whose close and exit-time teardown would
+# both wait for as long as the test does: the failed process has to skip both.
+STUCK_ENGINE = """
+    import atexit, runpy, sys, time
+    from engine import process
+    from engine.api.mock import MockEngine
+
+    class Stuck(MockEngine):
+        def submit(self, plan):
+            raise RuntimeError("card 0 did not finish a list in 60 s")
+        def close(self):
+            time.sleep(600)
+
+    process.make_engine = lambda *args: Stuck()
+    atexit.register(time.sleep, 600)
+    sys.argv = ["engine", "--backend", "mock", "--arch", "qwen4exp"]
+    runpy.run_module("engine", run_name="__main__")
+"""
+
+
+def test_a_failed_engine_exits_without_waiting_on_its_teardown():
+    argv = [sys.executable, "-c", textwrap.dedent(STUCK_ENGINE)]
+    p = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    assert p.stdin is not None
+    assert p.stdout is not None
+    try:
+        p.stdin.write(protocol.Gen(1, 4, tuple(range(3, 40))).encode() + "\n")
+        p.stdin.flush()
+        assert p.wait(timeout=30) == 1
+        events = [protocol.parse_event(line) for line in p.stdout]
+    finally:
+        p.kill()
+    assert isinstance(events[-1], protocol.Error)
+    assert "did not finish a list" in events[-1].message
 
 
 def test_a_cost_file_that_does_not_read_is_left_for_the_estimates(tmp_path: Path):

@@ -12,6 +12,10 @@ check them, how to lay them out, and how to point the engine at them.
 | The draft (MTP) layer | 31 tensors from Qwen's BF16 checkpoint, in `mtp/` | 5.2 GB | drafting without `dflash/`; with neither, the engine decodes one token a step |
 | The image encoder | `mmproj-Qwen3.8-Flash-Next-BF16.gguf` | 0.9 GB | images and video in requests |
 
+At load the engine reads the model's sizes from the file ([ADR-0062](adr/0062-a-models-shape-comes-from-its-file.md)).
+It stops, naming each problem, if a size that is still fixed at build time differs, if the sizes do not fit together, or
+if they do not divide equally between the cards. ISTA-DASLab's Coder file, with 256 experts a layer, is refused this way.
+
 ## The model directory
 
 Put every file in one directory:
@@ -56,8 +60,8 @@ At each load the engine quantises the draft layer's experts from BF16, which tak
 `mtp-manifest.json`, the expert type and the card split, and a file that does not match is written again
 ([DEVELOPING.md](DEVELOPING.md)).
 
-With Docker, mount the model directory at `/models` and give a volume for the cache, as in the README's
-[quick start](../README.md#quick-start):
+With Docker, mount the model directory at `/models` and give a volume for the cache, as in
+the [quick start](../README.md#quick-start):
 
 ```bash
 docker run ... -v <model dir>:/models:ro -v c0ven-cache:/cache -e ENGINE_CACHE_DIR=/cache \
@@ -68,6 +72,9 @@ The tests find the same directory through `FLASH_MODEL_DIR`, by default `/models
 ([TESTING.md](TESTING.md)).
 
 ## Getting the files
+
+`python -m tools.model_fetch` downloads a model file, the image encoder and the DFlash 2 drafter for you
+([quick start](../README.md#3-download-it)). The sections below say what it fetches, and how to do it by hand.
 
 ### The model
 

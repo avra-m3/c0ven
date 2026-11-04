@@ -138,7 +138,7 @@ larger arm's range, which suits only scenarios that repeat closely, such as a 25
 
 | Scenario | Configuration | Requests, 512 tokens out each unless named |
 | --- | --- | --- |
-| short | deployed | gpqa-1 alone |
+| short | deployed | gpqa-1 alone, 2,048 tokens out |
 | four | deployed | agent-turn1 to agent-turn4 at once |
 | mixed | deployed | gpqa-2 to gpqa-4 at once; agent-turn2 once all three have their first token |
 | long | one-slot | one 255k-token prompt alone, 256 tokens out |
