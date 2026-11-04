@@ -5,6 +5,7 @@
 #include <stdexcept>
 #include <variant>
 
+#include "models/qwen4exp/kernel_sizes.h"
 #include "models/qwen4exp/layout.h"
 #include "quant.h"
 

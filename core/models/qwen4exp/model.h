@@ -319,7 +319,7 @@ class Model final : public engine::Model {
 
   Options opt_;
   GgufModel gguf_;
-  Shape shape_;  // the file's sizes; any layout.h still holds are equal to it once the constructor has checked them
+  Shape shape_;  // the file's sizes; those still fixed at build time equal it once the constructor has checked them
   std::string layer_module_, prompt_module_;  // the kernels built for shape_.experts
   std::unique_ptr<ze::Runtime> rt_;
   std::unique_ptr<ze::Library> lib_;

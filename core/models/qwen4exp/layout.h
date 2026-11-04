@@ -7,6 +7,11 @@
 #include "step.h"
 #include "types.h"
 
+// The kernels see the sizes in kernel_sizes.h. Model code in the core does not, and reads them from Shape (ADR-0064).
+#ifdef __OPENCL_C_VERSION__
+#include "kernel_sizes.h"
+#endif
+
 #define Q_EMBD 2560
 #define Q_HC 4                      // residual streams
 #define Q_HC_DIM (Q_HC * Q_EMBD)    // 10,240
@@ -31,7 +36,6 @@
 #define Q_IDX_BLOCKS (Q_IDX_TOPK / Q_IDX_BLOCK)       // 512
 
 // Q_EXPERTS is a build option of the modules that route experts (kernels/models/qwen4exp/CMakeLists.txt, ADR-0063).
-#define Q_USED 10
 
 #define Q_PLE_DIL 3                 // the PLE conv's dilation (the n-gram size)
 #define Q_PLE_HIST (Q_PLE_DIL * (Q_GDN_CONV - 1))  // 9 positions of history
@@ -55,15 +59,21 @@
 // The decode step's doorbell with the CPU (ADR-0011): the reader does a system-scope acquire fence, then a volatile
 // load. Card 0 writes one record per layer in host memory, its step last; the CPU computes the misses and answers by
 // its own flag. A layer with no miss is skipped by both.
+#define MISS_USED 10  // the experts a record holds: its layout does not follow the file
+#ifdef __OPENCL_C_VERSION__
+#if Q_USED > MISS_USED
+#error "a MissJob holds fewer experts than the kernels route"
+#endif
+#endif
 typedef struct {
   u32 seq;                 // the step, written last, behind a release fence
   u32 nmiss;               // experts not on the cards
-  i32 ids[Q_USED];         // the misses' ids, then their weights
-  float w[Q_USED];
-  i32 all[Q_USED];         // every routed expert's id, for the swaps' counts
+  i32 ids[MISS_USED];      // the misses' ids, then their weights
+  float w[MISS_USED];
+  i32 all[MISS_USED];      // every routed expert's id, for the swaps' counts
   float x[Q_EMBD];         // the MoE block's input
 } MissJob;
-SHARED_ASSERT(sizeof(MissJob) == 128 + 4 * Q_EMBD, "MissJob layout");
+SHARED_ASSERT(sizeof(MissJob) == 8 + 12 * MISS_USED + 4 * Q_EMBD, "MissJob layout");
 
 // A slot's rotation in a decode step (docs/spec/MODEL_VISION.md, section 4.2). With images in the prompt a position is
 // three numbers (time, height, width) and no longer the cell: a decode row at cell c turns by c - delta on all three.

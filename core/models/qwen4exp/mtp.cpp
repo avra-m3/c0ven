@@ -405,16 +405,16 @@ void Model::record_mtp(Card &card, uint32_t W, uint32_t Wr, bool chain) {
     L.launch(q4("moe_group"), {card.slots, pr, card.groups, card.ngroups}, 1, 1, 1, 128);
     {
       const uint32_t qk = quant_block_values(mtp_type_);
-      uint32_t gbpr = E / qk, xs = (uint32_t)a8_bytes(E), per = Q_USED, K = E;
+      uint32_t gbpr = E / qk, xs = (uint32_t)a8_bytes(E), per = shape_.used, K = E;
       L.launch(kernel(c, mv_module(mtp_type_, 16), "moe_gate_up_g"),
                {M.cache, M.slot_bytes, card.groups, card.ngroups, card.ff, gbpr, M.up_off, card.xa8, K, xs, per, card.h,
-                card.grids}, (card.ff + 3) / 4, Wr * Q_USED, 1, 64);
-      L.launch(common("quantize_a8"), {card.h, card.ff, card.ff, Wr * Q_USED, card.ha8},
-               (card.ff / 32 * Wr * Q_USED + 3) / 4, 1, 1, 64);
+                card.grids}, (card.ff + 3) / 4, Wr * shape_.used, 1, 64);
+      L.launch(common("quantize_a8"), {card.h, card.ff, card.ff, Wr * shape_.used, card.ha8},
+               (card.ff / 32 * Wr * shape_.used + 3) / 4, 1, 1, 64);
       uint32_t dbpr = card.ff / qk, stride = (uint32_t)a8_bytes(card.ff);
       L.launch(kernel(c, mv_module(mtp_type_, 4), "moe_down_g"),
                {M.cache, M.slot_bytes, card.groups, card.ngroups, E, dbpr, M.down_off, card.ha8, card.ff, stride, card.y,
-                card.grids}, (E + 15) / 16, Wr * Q_USED, 1, 64);
+                card.grids}, (E + 15) / 16, Wr * shape_.used, 1, 64);
     }
     bf16mv(M.sh_gate, card.ff, E, card.xbf16, nrest, card.shg);
     bf16mv(M.sh_up, card.ff, E, card.xbf16, nrest, card.shu);

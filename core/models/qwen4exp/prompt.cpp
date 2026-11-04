@@ -32,7 +32,9 @@ uint32_t bucket(uint32_t n, uint32_t tmax) {
 constexpr uint32_t kKv16Groups = 4096;
 
 // The most tiles the experts' assignments can take: every expert's last tile may be partial.
-uint32_t max_tiles(uint32_t T, uint32_t experts) { return (T * Q_USED + MOE_TILE - 1) / MOE_TILE + experts; }
+uint32_t max_tiles(uint32_t T, uint32_t used, uint32_t experts) {
+  return (T * used + MOE_TILE - 1) / MOE_TILE + experts;
+}
 
 // The hyper-connections' down and inject products in one: 324 values per row, stored 336 apart (64-byte rows).
 constexpr uint32_t kLriW = 336;
@@ -76,15 +78,15 @@ void Model::load_prompt(Card &card) {
   // Region A: the mix (n, nb, a), the experts (xg, hg, yg), or the PLE module (pk, N).
   {
     uint64_t mix = align256(T * Q_HC_DIM * 2) * 2;
-    uint64_t moe = align256(T * Q_USED * Q_EMBD * 2) * 2 + align256(T * Q_USED * card.ff * 2);
+    uint64_t moe = align256(T * shape_.used * Q_EMBD * 2) * 2 + align256(T * shape_.used * card.ff * 2);
     uint64_t ple = align256(T * Q_HC_DIM * 4) * 2;
     P.reg_bytes[0] = std::max({mix, moe, ple});
     uint8_t *r = P.reg[0] = dev(P.reg_bytes[0]);
     P.a = reinterpret_cast<uint16_t *>(r);
     P.nb = reinterpret_cast<uint16_t *>(r + align256(T * Q_HC_DIM * 2));
     P.xg = reinterpret_cast<uint16_t *>(r);
-    P.yg = reinterpret_cast<uint16_t *>(r + align256(T * Q_USED * Q_EMBD * 2));
-    P.hg = reinterpret_cast<uint16_t *>(r + 2 * align256(T * Q_USED * Q_EMBD * 2));
+    P.yg = reinterpret_cast<uint16_t *>(r + align256(T * shape_.used * Q_EMBD * 2));
+    P.hg = reinterpret_cast<uint16_t *>(r + 2 * align256(T * shape_.used * Q_EMBD * 2));
     P.pk = reinterpret_cast<float *>(r);
     P.N = reinterpret_cast<float *>(r + align256(T * Q_HC_DIM * 4));
   }
@@ -125,16 +127,16 @@ void Model::load_prompt(Card &card) {
   if (kv_res_) P.kvst = dev((uint64_t)2 * T * card.nkv * KV_HEAD_BYTES);  // p_attn_prep's staging, K then V
   card.up->fill(P.qt, &zero16, 2, T * Q_ATT_D * P.hp * 2);
   P.rl = f32(T * (shape_.experts + 1));
-  P.ids = reinterpret_cast<int32_t *>(u32(T * Q_USED));
-  P.w = f32(T * Q_USED);
+  P.ids = reinterpret_cast<int32_t *>(u32(T * shape_.used));
+  P.w = f32(T * shape_.used);
   P.cnt = u32(shape_.experts);
   P.base = u32(shape_.experts);
   P.cursor = u32(shape_.experts);
-  P.inv = u32(T * Q_USED);
+  P.inv = u32(T * shape_.used);
   P.ntiles_c = u32(1);
   P.ntiles_s = u32(1);
-  P.tiles_c = reinterpret_cast<MoeTile *>(dev(max_tiles((uint32_t)T, shape_.experts) * sizeof(MoeTile)));
-  P.tiles_s = reinterpret_cast<MoeTile *>(dev(max_tiles((uint32_t)T, shape_.experts) * sizeof(MoeTile)));
+  P.tiles_c = reinterpret_cast<MoeTile *>(dev(max_tiles((uint32_t)T, shape_.used, shape_.experts) * sizeof(MoeTile)));
+  P.tiles_s = reinterpret_cast<MoeTile *>(dev(max_tiles((uint32_t)T, shape_.used, shape_.experts) * sizeof(MoeTile)));
   P.shg = f32(T * card.ff);
   P.shu = f32(T * card.ff);
   P.shh = u16(T * card.ff);
@@ -313,7 +315,7 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
   const uint32_t pstride = ppos_run();
   const float one = 1.0f;
   const uint32_t zero = 0;
-  const uint32_t nb_max = opt_.max_ctx / Q_IDX_BLOCK, mt = max_tiles(T, shape_.experts);
+  const uint32_t nb_max = opt_.max_ctx / Q_IDX_BLOCK, mt = max_tiles(T, shape_.used, shape_.experts);
   // tm tiles of 8 tokens and tn tiles of 16 rows a sub-group, sg sub-groups a work-group (kernels/gemm.cl): 8, 2
   // and 4, or for bf16 4, 2 or 1 and 4 (modules gemm_bf16_t4n<tn>), or 4, 2 and 11 (gemm_bf16_t4n2s11). y2: a second
   // fp16 output, or null. nt and rows, for x and y from a row other than 0: where the count of tokens is, and the most.
@@ -493,7 +495,7 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
     hc_mix(Ly, 1, true, 2 * l + 1);
     gemm(true, Ly.router, shape_.experts + 1, Q_EMBD, P.xb, Q_EMBD, P.rl, shape_.experts + 1, false, 0, one);
     L.launch(q4("p_router"), {P.rl, pp, P.ids, P.w}, (T + 3) / 4, 1, 1, 128);
-    const uint32_t nasg = T * Q_USED;
+    const uint32_t nasg = T * shape_.used;
     L.launch(q4("p_moe_count"), {P.ids, pp, P.cnt}, (nasg + 63) / 64, 1, 1, 64);
     if (fetch)
       L.copy(P.routed + (size_t)l * shape_.experts, P.cnt, shape_.experts * 4, (*pevents_)[pev(kRouted, l, c)]);
