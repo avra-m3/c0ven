@@ -14,11 +14,8 @@
 
 #define Q_EMBD 2560
 #define Q_HC_DIM (Q_HC * Q_EMBD)    // 10,240
-#define Q_EPS 1e-6f
 
 #define Q_ATT_SLOTS 16  // p_attn_xmx's query slots a KV head: its 12 heads, rounded up to 8 (prompt_attn.cl)
-#define Q_ROT 64                    // rotated dimensions per head, NeoX pairs (i, i + 32)
-#define Q_ROPE_BASE 10000000.0f
 
 #define Q_IDX_H 4                   // indexer query heads
 #define Q_IDX_D 128
