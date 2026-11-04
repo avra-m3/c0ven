@@ -148,37 +148,39 @@ void Model::load_mtp(Card &card) {
   };
   // The up projection's rows, value-major (row 4 i + s), as the main layers'.
   auto up_rows = [&](const std::vector<uint16_t> &w) {
+    const uint32_t hc = shape_.hc, lr = shape_.hc_lr;
     std::vector<uint16_t> v(w.size());
-    for (uint32_t s = 0; s < Q_HC; s++)
+    for (uint32_t s = 0; s < hc; s++)
       for (uint32_t i = 0; i < E; i++)
-        std::memcpy(&v[((size_t)i * Q_HC + s) * Q_HC_LR], &w[((size_t)s * E + i) * Q_HC_LR], Q_HC_LR * 2);
+        std::memcpy(&v[((size_t)i * hc + s) * lr], &w[((size_t)s * E + i) * lr], lr * 2);
     return v;
   };
 
   M.ge = norm("mtp.pre_fc_norm_embedding.weight", E, 1.0f);
-  M.gh = norm("mtp.pre_fc_norm_hidden.weight", Q_HC_DIM, 1.0f);
+  M.gh = norm("mtp.pre_fc_norm_hidden.weight", shape_.hc_dim(), 1.0f);
   M.fc_e = dev16(tensor("mtp.fc_embedding.weight", (size_t)E * E));
   M.fc_h = dev16(tensor("mtp.fc_hidden.weight", (size_t)E * E));
   const char *hcn[2] = {"mtp.layers.0.attn_hyper_connection.", "mtp.layers.0.mlp_hyper_connection."};
   for (int i = 0; i < 2; i++) {
     std::string p = hcn[i];
-    M.hc_norm[i] = norm(p + "hc_norm.weight", Q_HC_DIM, 1.0f);
-    auto down = tensor(p + "input_mix_weight_down.weight", (size_t)Q_HC_LR * Q_HC_DIM);
-    auto inj = tensor(p + "block_inject_weight.weight", (size_t)Q_HC * Q_HC_DIM);
+    M.hc_norm[i] = norm(p + "hc_norm.weight", shape_.hc_dim(), 1.0f);
+    auto down = tensor(p + "input_mix_weight_down.weight", (size_t)shape_.hc_lr * shape_.hc_dim());
+    auto inj = tensor(p + "block_inject_weight.weight", (size_t)shape_.hc * shape_.hc_dim());
     down.insert(down.end(), inj.begin(), inj.end());
     M.hc_down[i] = dev16(down);
-    M.hc_up[i] = dev16(up_rows(tensor(p + "input_mix_weight_up.weight", (size_t)Q_HC_DIM * Q_HC_LR)));
+    M.hc_up[i] = dev16(up_rows(tensor(p + "input_mix_weight_up.weight", (size_t)shape_.hc_dim() * shape_.hc_lr)));
   }
-  M.q = dev16(rows(tensor("mtp.layers.0.self_attn.q_proj.weight", (size_t)Q_ATT_H * 2 * Q_ATT_D * E), E,
-                   (size_t)2 * Q_ATT_D * q0, (size_t)2 * Q_ATT_D * card.nq));
-  M.k = dev16(rows(tensor("mtp.layers.0.self_attn.k_proj.weight", (size_t)Q_ATT_KV * Q_ATT_D * E), E,
-                   (size_t)Q_ATT_D * kv0, (size_t)Q_ATT_D * card.nkv));
-  M.v = dev16(rows(tensor("mtp.layers.0.self_attn.v_proj.weight", (size_t)Q_ATT_KV * Q_ATT_D * E), E,
-                   (size_t)Q_ATT_D * kv0, (size_t)Q_ATT_D * card.nkv));
-  M.o = dev16(cols(tensor("mtp.layers.0.self_attn.o_proj.weight", (size_t)E * Q_ATT_H * Q_ATT_D), E, Q_ATT_H * Q_ATT_D,
-                   (size_t)Q_ATT_D * q0, (size_t)Q_ATT_D * card.nq));
-  M.qn = norm("mtp.layers.0.self_attn.q_norm.weight", Q_ATT_D, 1.0f);
-  M.kn = norm("mtp.layers.0.self_attn.k_norm.weight", Q_ATT_D, 1.0f);
+  M.q = dev16(rows(tensor("mtp.layers.0.self_attn.q_proj.weight", (size_t)shape_.att_h * 2 * shape_.att_key * E), E,
+                   (size_t)2 * shape_.att_key * q0, (size_t)2 * shape_.att_key * card.nq));
+  M.k = dev16(rows(tensor("mtp.layers.0.self_attn.k_proj.weight", (size_t)shape_.att_kv * shape_.att_key * E), E,
+                   (size_t)shape_.att_key * kv0, (size_t)shape_.att_key * card.nkv));
+  M.v = dev16(rows(tensor("mtp.layers.0.self_attn.v_proj.weight", (size_t)shape_.att_kv * shape_.att_key * E), E,
+                   (size_t)shape_.att_key * kv0, (size_t)shape_.att_key * card.nkv));
+  M.o = dev16(cols(tensor("mtp.layers.0.self_attn.o_proj.weight", (size_t)E * shape_.att_h * shape_.att_key), E,
+                   shape_.att_h * shape_.att_key,
+                   (size_t)shape_.att_key * q0, (size_t)shape_.att_key * card.nq));
+  M.qn = norm("mtp.layers.0.self_attn.q_norm.weight", shape_.att_key, 1.0f);
+  M.kn = norm("mtp.layers.0.self_attn.k_norm.weight", shape_.att_key, 1.0f);
   {
     auto r = tensor("mtp.layers.0.mlp.gate.weight", (size_t)kMtpExperts * E);
     auto g = tensor("mtp.layers.0.mlp.shared_expert_gate.weight", E);
@@ -188,9 +190,11 @@ void Model::load_mtp(Card &card) {
   M.sh_gate = dev16(rows(tensor("mtp.layers.0.mlp.shared_expert.gate_proj.weight", (size_t)shape_.ff * E), E, f0, ff));
   M.sh_up = dev16(rows(tensor("mtp.layers.0.mlp.shared_expert.up_proj.weight", (size_t)shape_.ff * E), E, f0, ff));
   M.sh_down = dev16(cols(tensor("mtp.layers.0.mlp.shared_expert.down_proj.weight", (size_t)E * shape_.ff), E, shape_.ff, f0, ff));
-  M.mx_norm = norm("mtp.hyper_connection_mixer.hc_norm.weight", Q_HC_DIM, 1.0f);
-  M.mx_down = dev16(tensor("mtp.hyper_connection_mixer.input_mix_weight_down.weight", (size_t)Q_HC_LR * Q_HC_DIM));
-  M.mx_up = dev16(up_rows(tensor("mtp.hyper_connection_mixer.input_mix_weight_up.weight", (size_t)Q_HC_DIM * Q_HC_LR)));
+  M.mx_norm = norm("mtp.hyper_connection_mixer.hc_norm.weight", shape_.hc_dim(), 1.0f);
+  M.mx_down = dev16(tensor("mtp.hyper_connection_mixer.input_mix_weight_down.weight",
+                           (size_t)shape_.hc_lr * shape_.hc_dim()));
+  M.mx_up = dev16(up_rows(tensor("mtp.hyper_connection_mixer.input_mix_weight_up.weight",
+                                 (size_t)shape_.hc_dim() * shape_.hc_lr)));
 
   // The experts: this card's half of each, quantised to mtp_type_, in the runs layout of the main cache's slots.
   {
@@ -300,21 +304,21 @@ void Model::load_mtp(Card &card) {
       }
     }
   }
-  M.kv_stride = (uint64_t)opt_.max_ctx * card.nkv * KV_HEAD_BYTES;
+  M.kv_stride = (uint64_t)opt_.max_ctx * card.nkv * shape_.kv_head_bytes();
   M.kc = upload<uint8_t>(card, nullptr, opt_.slots * M.kv_stride);
   M.vc = upload<uint8_t>(card, nullptr, opt_.slots * M.kv_stride);
   constexpr size_t W = STEP_MAX_ROWS;
   auto fbuf = [&](size_t n) { return upload<float>(card, nullptr, W * n * 4); };
-  M.R = fbuf(Q_HC_DIM);
+  M.R = fbuf(shape_.hc_dim());
   M.e = fbuf(E);
   M.en = fbuf(E);
-  M.hn = fbuf(Q_HC_DIM);
-  M.hs = fbuf(Q_HC_DIM);
+  M.hn = fbuf(shape_.hc_dim());
+  M.hs = fbuf(shape_.hc_dim());
   M.first = upload<uint32_t>(card, nullptr, opt_.slots * 4);
   M.plan = upload<StepPlan>(card, nullptr, sizeof(StepPlan));
   M.rest = upload<StepPlan>(card, nullptr, sizeof(StepPlan));
   {
-    std::vector<uint32_t> n(Q_HC * W + 1);
+    std::vector<uint32_t> n(shape_.hc * W + 1);
     for (uint32_t i = 0; i < n.size(); i++) n[i] = i;
     M.counts = upload<uint32_t>(card, n.data(), n.size() * 4);
   }
@@ -350,14 +354,15 @@ void Model::record_mtp(Card &card, uint32_t W, uint32_t Wr, bool chain) {
   auto to_bf16 = [&](const float *x, uint32_t K, const uint32_t *ntok, uint16_t *xb, uint32_t width) {
     L.launch(common("to_bf16_rows"), {x, K, K, ntok, xb}, K / 64, width, 1, 64);
   };
-  const uint32_t lw = Q_HC_LR + Q_HC, post = Q_HC_LR;
+  const uint32_t lw = shape_.hc_lr + shape_.hc, post = shape_.hc_lr;
   // The hyper-connection mix into card.x, its a8 card.xa8 and its bf16 card.xbf16, as the decode step's hc_mix.
   auto hc_mix = [&](const float *norm, const uint16_t *down, const uint16_t *up, float *lri, uint32_t down_rows,
                     const StepPlan *p, uint32_t w) {
-    L.launch(q4("rms_norm"), {M.R, norm, p, card.n, card.xb16}, Q_HC, w, 1, 256);
-    L.launch(common("mv_xmx_bf16"), {down, down_rows, (uint32_t)Q_HC_DIM, (uint32_t)Q_HC_DIM, card.xb16, &p->nrows, lri,
+    L.launch(q4("rms_norm"), {M.R, norm, p, card.n, card.xb16}, shape_.hc, w, 1, 256);
+    L.launch(common("mv_xmx_bf16"), {down, down_rows, shape_.hc_dim(), shape_.hc_dim(), card.xb16, &p->nrows, lri,
                                      lw, mode_silu, quarter, post, 8u, card.lrb16}, (down_rows + 15) / 16, 1, 1, 16 * 8);
-    L.launch(q4("hc_up_mix_xmx"), {up, card.lrb16, card.n, p, card.x, card.xa8, card.xbf16}, Q_HC_DIM / 128, 1, 1, 128);
+    L.launch(q4("hc_up_mix_xmx"), {up, card.lrb16, card.n, p, card.x, card.xa8, card.xbf16}, shape_.hc_dim() / 128, 1, 1,
+             128);
   };
   const uint32_t rows_apart = STEP_MAX_ROWS;
   auto exchange = [&](uint32_t which, float *partials, const float *inj) {
@@ -371,30 +376,32 @@ void Model::record_mtp(Card &card, uint32_t W, uint32_t Wr, bool chain) {
   bf16mv(M.fc_e, E, E, card.xbf16, nrows, M.e);
   L.launch(q4("mtp_norm_h"), {chain ? M.R : card.R, M.gh, from_pad, pl, M.hn}, W, 1, 1, 256);
   // fc_hidden takes each of the 4 streams: the streams as rows of E, 8 to a read of the weights.
-  to_bf16(M.hn, E, M.counts + Q_HC * W, card.xb16, Q_HC * W);
-  for (uint32_t r0 = 0; r0 < Q_HC * W; r0 += 8)
-    bf16mv(M.fc_h, E, E, card.xb16 + (size_t)r0 * E, M.counts + std::min(8u, Q_HC * W - r0), M.hs + (size_t)r0 * E);
-  L.launch(q4("mtp_sum"), {M.hs, M.e, pl, M.R}, Q_HC_DIM / 64, W, 1, 64);
+  const uint32_t stream_rows = shape_.hc * W;
+  to_bf16(M.hn, E, M.counts + stream_rows, card.xb16, stream_rows);
+  for (uint32_t r0 = 0; r0 < stream_rows; r0 += 8)
+    bf16mv(M.fc_h, E, E, card.xb16 + (size_t)r0 * E, M.counts + std::min(8u, stream_rows - r0), M.hs + (size_t)r0 * E);
+  L.launch(q4("mtp_sum"), {M.hs, M.e, pl, M.R}, shape_.hc_dim() / 64, W, 1, 64);
   // Attention, densely over its own cells: every row's K and V into its cell, then the rest's rows attend.
   hc_mix(M.hc_norm[0], M.hc_down[0], M.hc_up[0], card.inj[0], lw, pl, W);
-  bf16mv(M.q, card.nq * 2 * Q_ATT_D, E, card.xbf16, nrows, card.Q);
-  bf16mv(M.k, card.nkv * Q_ATT_D, E, card.xbf16, nrows, card.Kt);
-  bf16mv(M.v, card.nkv * Q_ATT_D, E, card.xbf16, nrows, card.Vt);
+  bf16mv(M.q, card.nq * 2 * shape_.att_key, E, card.xbf16, nrows, card.Q);
+  bf16mv(M.k, card.nkv * shape_.att_key, E, card.xbf16, nrows, card.Kt);
+  bf16mv(M.v, card.nkv * shape_.att_key, E, card.xbf16, nrows, card.Vt);
   // The draft layer's KV is not paged: no table, and each slot's own run of pages (layout.h).
   const uint32_t *no_table = nullptr, mnpp = opt_.max_ctx / KV_PAGE_CELLS;
   const uint8_t *no_kv = nullptr;  // the draft layer's KV is not streamed
   L.launch(q4("attn_prep"), {card.Q, card.Kt, card.Vt, M.qn, M.kn, card.nq, card.nkv, M.kc, M.vc, no_table, mnpp, pl,
-                             rope_, no_kv, no_kv, no_table}, card.nq + card.nkv, W, 1, Q_ATT_D);
+                             rope_, no_kv, no_kv, no_table}, card.nq + card.nkv, W, 1, shape_.att_key);
   if (Wr > 0) {
     L.launch(q4("mtp_cells"), {M.first, pr, card.cells, card.ncells}, Wr, 1, 1, 256);
     L.launch(q4("attn_split"), {card.Q, M.kc, M.vc, no_table, mnpp, card.nq, card.nkv, card.cells, card.ncells, pr,
-                                card.att, no_table}, card.nkv, Wr, kAttSplits, Q_ATT_D);
+                                card.att, no_table}, card.nkv, Wr, kAttSplits, shape_.att_key);
     uint8_t *no_a8 = nullptr;
-    L.launch(q4("attn_merge"), {card.Q, card.nq, card.ncells, pr, card.att, card.o, no_a8}, card.nq, Wr, 1, Q_ATT_D);
+    L.launch(q4("attn_merge"), {card.Q, card.nq, card.ncells, pr, card.att, card.o, no_a8}, card.nq, Wr, 1,
+             shape_.att_key);
     float *p1 = mex1_ + (size_t)c * STEP_MAX_ROWS * E;
-    to_bf16(card.o, card.nq * Q_ATT_D, nrest, card.xb16, Wr);
-    bf16mv(M.o, E, card.nq * Q_ATT_D, card.xb16, nrest, p1, (*mevents_)[0 * C + c]);
-    exchange(0, mex1_, card.inj[0] + Q_HC_LR);
+    to_bf16(card.o, card.nq * shape_.att_key, nrest, card.xb16, Wr);
+    bf16mv(M.o, E, card.nq * shape_.att_key, card.xb16, nrest, p1, (*mevents_)[0 * C + c]);
+    exchange(0, mex1_, card.inj[0] + shape_.hc_lr);
     // The MoE block: every expert on the cards.
     hc_mix(M.hc_norm[1], M.hc_down[1], M.hc_up[1], card.inj[1], lw, pr, Wr);
     bf16mv(M.router, kMtpExperts + 1, E, card.xbf16, nrest, card.rl);
@@ -405,16 +412,16 @@ void Model::record_mtp(Card &card, uint32_t W, uint32_t Wr, bool chain) {
     L.launch(q4("moe_group"), {card.slots, pr, card.groups, card.ngroups}, 1, 1, 1, 128);
     {
       const uint32_t qk = quant_block_values(mtp_type_);
-      uint32_t gbpr = E / qk, xs = (uint32_t)a8_bytes(E), per = Q_USED, K = E;
+      uint32_t gbpr = E / qk, xs = (uint32_t)a8_bytes(E), per = shape_.used, K = E;
       L.launch(kernel(c, mv_module(mtp_type_, 16), "moe_gate_up_g"),
                {M.cache, M.slot_bytes, card.groups, card.ngroups, card.ff, gbpr, M.up_off, card.xa8, K, xs, per, card.h,
-                card.grids}, (card.ff + 3) / 4, Wr * Q_USED, 1, 64);
-      L.launch(common("quantize_a8"), {card.h, card.ff, card.ff, Wr * Q_USED, card.ha8},
-               (card.ff / 32 * Wr * Q_USED + 3) / 4, 1, 1, 64);
+                card.grids}, (card.ff + 3) / 4, Wr * shape_.used, 1, 64);
+      L.launch(common("quantize_a8"), {card.h, card.ff, card.ff, Wr * shape_.used, card.ha8},
+               (card.ff / 32 * Wr * shape_.used + 3) / 4, 1, 1, 64);
       uint32_t dbpr = card.ff / qk, stride = (uint32_t)a8_bytes(card.ff);
       L.launch(kernel(c, mv_module(mtp_type_, 4), "moe_down_g"),
                {M.cache, M.slot_bytes, card.groups, card.ngroups, E, dbpr, M.down_off, card.ha8, card.ff, stride, card.y,
-                card.grids}, (E + 15) / 16, Wr * Q_USED, 1, 64);
+                card.grids}, (E + 15) / 16, Wr * shape_.used, 1, 64);
     }
     bf16mv(M.sh_gate, card.ff, E, card.xbf16, nrest, card.shg);
     bf16mv(M.sh_up, card.ff, E, card.xbf16, nrest, card.shu);
@@ -425,9 +432,9 @@ void Model::record_mtp(Card &card, uint32_t W, uint32_t Wr, bool chain) {
     const float *nocpu = nullptr;
     L.launch(q4("moe_combine"), {card.y, card.w, card.slots, card.s, card.rl, nocpu, nmiss, pr, p2}, E / 64, Wr, 1, 64, 1,
              1, (*mevents_)[1 * C + c]);
-    exchange(1, mex2_, card.inj[1] + Q_HC_LR);
+    exchange(1, mex2_, card.inj[1] + shape_.hc_lr);
     // The MTP's own final mixer, then the main head (step 5), from its residual R (kept for the next draft step).
-    hc_mix(M.mx_norm, M.mx_down, M.mx_up, card.lr, Q_HC_LR, pr, Wr);
+    hc_mix(M.mx_norm, M.mx_down, M.mx_up, card.lr, shape_.hc_lr, pr, Wr);
     matvec(L, card, card.head, card.xa8, card.logits, Wr);
     uint32_t *ti = mtop_idx_ + (size_t)c * STEP_MAX_ROWS * opt_.candidates;
     float *tv = mtop_val_ + (size_t)c * STEP_MAX_ROWS * opt_.candidates;
@@ -525,7 +532,7 @@ std::vector<std::vector<Candidate>> Model::mtp_catchup_prompt(const StepIn *rows
   // The hidden inputs are the prompt path's final residuals of the last chunk's n rows before row end.
   if (n == 0 || n > STEP_MAX_ROWS || n > end) throw std::runtime_error("a prompt catch-up takes 1 to 8 rows");
   for (auto &card : cards_)
-    card->up->copy(card->R, card->pc->R + (size_t)(end - n) * Q_HC_DIM, (size_t)n * Q_HC_DIM * 4);
+    card->up->copy(card->R, card->pc->R + (size_t)(end - n) * shape_.hc_dim(), (size_t)n * shape_.hc_dim() * 4);
   for (auto &card : cards_) card->up->synchronize();
   return catchup(rows, n, keep, nullptr);
 }

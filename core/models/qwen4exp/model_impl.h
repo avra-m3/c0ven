@@ -18,7 +18,6 @@ namespace detail {
 using Ranges = std::vector<std::pair<uint64_t, uint64_t>>;  // [start, start + count)
 
 inline constexpr uint32_t kMtpExperts = 512;  // the draft layer's checkpoint has its own count (docs/MODEL_FILES.md)
-inline constexpr uint32_t kRecFloats = 2 * Q_USED + Q_EMBD;  // the router's record: ids, weights, x
 inline constexpr uint32_t kSgSize = 16;  // the kernels' SG_SIZE
 inline constexpr uint32_t kAttXmxSubGroups = 16;  // p_attn_xmx's sub-groups a work-group (prompt_attn.cl)
 inline constexpr uint32_t kIdxScoreRows = 8;  // prompt.cl's IDX_SCORE_ROWS
@@ -222,8 +221,8 @@ struct Model::Card {
   uint8_t *grids = nullptr;
   // Scratch.
   float *R, *n, *lr, *a, *inj[2], *x, *m, *z, *ab, *gb, *u, *o, *Q, *Kt, *Vt, *idxq, *scores, *bscores, *att;
-  uint16_t *xb16 = nullptr;  // up to 8 rows of Q_HC_DIM bf16 activations, for mv_xmx_bf16
-  uint16_t *lrb16 = nullptr;  // up to 8 rows of Q_HC_LR bf16, for hc_up_mix_xmx
+  uint16_t *xb16 = nullptr;  // up to 8 rows of Shape::hc_dim() bf16 activations, for mv_xmx_bf16
+  uint16_t *lrb16 = nullptr;  // up to 8 rows of Shape::hc_lr bf16, for hc_up_mix_xmx
   uint16_t *xbf16 = nullptr;  // up to 8 rows of x as bf16 (hc_up_mix_xmx writes them), for the BF16 products
   uint16_t *ngb16 = nullptr;  // up to 8 n-gram rows as bf16, for the PLE module's products
   uint32_t *blocks, *cells, *ncells;

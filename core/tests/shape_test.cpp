@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "models/qwen4exp/kernel_sizes.h"
 #include "models/qwen4exp/layout.h"
 #include "models/qwen4exp/shape.h"
 #include "test_util.h"
@@ -164,6 +165,11 @@ int main() {
     EXPECT(shape_mismatches(s, t).empty(), "24 layers: '%s'", shape_mismatches(s, t).at(0).c_str());
     EXPECT(s.layers == 24 && s.vocab == 1000, "the file's sizes");
     EXPECT(s.attn(3) && !s.attn(4) && s.attn(23) && s.attn_layers() == 6, "which layers are attention");
+    EXPECT(s.ple_hist() == Q_PLE_HIST, "positions of PLE history");
+    EXPECT(s.kv_head_bytes() == KV_HEAD_BYTES, "a KV head's bytes in a cell");
+    auto no_conv = s;
+    no_conv.gdn_conv = 0;
+    EXPECT(no_conv.ple_hist() == 0, "a convolution size of 0 does not wrap");
   }
 
   // Rules the sizes have to keep.
