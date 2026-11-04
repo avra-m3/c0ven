@@ -56,6 +56,9 @@ GATHER_S = 0.002
 """After a GEN reaches an idle engine, the loop waits this long for the next command before it plans, so requests
 sent together read their prompts in one plan."""
 
+FAILED_WRITE_S = 5.0
+"""How long a failed engine waits for its last lines to reach the pipe before it exits anyway."""
+
 VMSTAT_KEYS = ("pswpout", "compact_stall")
 """What a load is checked by: pages the host swapped out, and the times an allocation stalled to compact memory
 (ADR-0032)."""
@@ -475,12 +478,15 @@ def serve(
         swap_watch.stop()
         if state is not State.ASLEEP:  # asleep, it was written at the sleep
             write_cost(cost_file, scheduler.cost)
-        try:
-            engine.close()
-        except EngineError:
-            log.exception("close failed")
+        # After a failure a queue on the cards may never finish, and closing would wait on it. The process is ending,
+        # so the kernel frees the cards.
+        if status == 0:
+            try:
+                engine.close()
+            except EngineError:
+                log.exception("close failed")
         events.put(None)
-        writer.join()
+        writer.join(FAILED_WRITE_S if status else None)
     return status
 
 
