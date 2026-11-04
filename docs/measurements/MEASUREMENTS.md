@@ -265,6 +265,9 @@ experts were not read.
 | Dropping arena pieces (`munlock` and `MADV_DONTNEED` a piece, rounded in to 4 KiB) | 19 ms for 3.05 GB, 31 ms for 5.11 GB. Pieces dropped together free all but their partial end pages; a piece dropped between kept ones frees little: 113 of 2,900 MiB, the rest charged as partly mapped huge pages until the kernel splits them | [2026-10-25](#2026-10-25-arena-resident-and-tail-drop) |
 | Reading the arena's coldest 31 or 52 experts a layer back from the file with `O_DIRECT`, 8 threads | 3.05 GB in 0.59-1.06 s, 5.11 GB in 0.98-1.61 s (2.9-5.2 GB/s), no compaction stall. After a drop they fault back in small pages under either advice; `MADV_COLLAPSE` adds 0.70-0.78 s and 1.12-1.23 s | [2026-10-25](#2026-10-25-arena-resident-and-tail-drop) |
 | One expert read from the file on a miss (its three matrices, `O_DIRECT`) | 0.52-1.22 ms (median 0.79) with the three read at once; 1.17-2.67 ms (median 1.63) one after another | [2026-10-25](#2026-10-25-arena-resident-and-tail-drop) |
+| The plan's first estimate of working memory per card against the core's, IQ3_S, 15 loads on one and two cards, 1-4 slots, context 4,096-262,144, MTP, DFlash and no drafter | within 0.04 GiB; 3.36 against 3.37 GiB at 1 slot and 262,144 tokens, where the fixed 1.49 GiB was 1.88 GiB short | <a id="2026-11-04-working-memory-estimate"></a>[2026-11-04](#2026-11-04-working-memory-estimate) |
+| What the core holds per card with no context and no KV pool, reserve included | 2.26 GiB on two cards (2.23-2.29), 1.75 GiB on one (1.74-1.76); the same at 20 GiB of card memory and on UD-IQ4_XS | [2026-11-04](#2026-11-04-working-memory-estimate) |
+| A first load at 1 slot and 262,144 tokens, then a 255k prompt, same check | the estimate: n-gram table in the file, first token 119.41 s, no pages swapped out; the fixed 1.49 GiB: table in RAM, stopped at 21.9 GiB free, 240,394 pages swapped out | [2026-11-04](#2026-11-04-working-memory-estimate) |
 
 ### Prompts
 
