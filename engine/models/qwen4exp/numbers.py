@@ -6,22 +6,16 @@ section 4.1, and reference/prompts.jsonl. Where a number is an estimate it says 
 
 from __future__ import annotations
 
-ARCH = "qwen4exp"
-
 CONTEXT = 262_144
 
 # Token ids (spec/MODEL_IO.md, section 4.1).
-ENDOFTEXT = 248_044
 IM_START = 248_045
 IM_END = 248_046
-THINK = 248_068
-THINK_END = 248_069
-EOS_IDS = (IM_END, ENDOFTEXT)
+EOS_IDS = (IM_END, 248_044)
 """Generation stops at <|im_end|> or <|endoftext|> (generation_config.json, spec/MODEL_IO.md, section 2.3)."""
 
 # Tokens the chat template's turns start with, read from reference/prompts.jsonl: `<|im_start|>` then the role.
 SYSTEM = 8_678
-USER = 846
 ASSISTANT = 74_455
 NEWLINE = 198
 
