@@ -479,16 +479,16 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
       L.launch(q4("p_attn_prep"), {P.Q, P.K, P.V, Ly.qn, Ly.kn, card.nq, card.nkv, Ly.kc, Ly.vc, card.ptab, npp_,
                                    runs_p, ppos_, pstride, P.qt, P.hp, kv_res_ ? P.kvst : nullptr,
                                    kv_res_ ? P.kvst + (uint64_t)T * card.nkv * shape_.kv_head_bytes() : nullptr,
-                                   Ly.where},
+                                   Ly.where, yarn_fs_},
                card.nq + card.nkv, T, 1, shape_.att_key);
       if (kv_res_)
         L.launch(q4("p_kv_flush"), {P.kvst, P.kvst + (uint64_t)T * card.nkv * shape_.kv_head_bytes(), Ly.khost,
                                     Ly.vhost, card.ptab, npp_, card.nkv, runs_p}, (T + 15) / 16, 1, 1, 256);
       // The indexer, split by position: each card scores its own blocks, the cards swap their best, both merge.
       const uint32_t nbl = (nb_max + C - 1) / C;
-      L.launch(q4("p_idx_prep"), {P.iq, Ly.iqn, Ly.raw, card.ptab, npp_, runs_p, ppos_, pstride, c, C},
+      L.launch(q4("p_idx_prep"), {P.iq, Ly.iqn, Ly.raw, card.ptab, npp_, runs_p, ppos_, pstride, c, C, yarn_fs_},
                shape_.idx_h + 1, T, 1, shape_.idx_d);
-      L.launch(q4("p_idx_pool"), {Ly.raw, card.ptab, npp_, Ly.ikn, Ly.pooled, runs_p, ppos_, pstride, c, C},
+      L.launch(q4("p_idx_pool"), {Ly.raw, card.ptab, npp_, Ly.ikn, Ly.pooled, runs_p, ppos_, pstride, c, C, yarn_fs_},
                T / shape_.idx_block + 1, 1, runs, shape_.idx_d);
       L.launch(q4("p_idx_ksplit"), {Ly.pooled, card.ptab, npp_, nbl, runs_p, P.ikh, P.ikl, c, C}, nbl, 1, runs,
                shape_.idx_d);

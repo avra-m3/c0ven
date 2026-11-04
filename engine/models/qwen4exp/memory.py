@@ -106,7 +106,7 @@ def model_memory(
         kv_cell_host=kv_cell,
         draft_kv_host=numbers.DRAFT_KV_BYTES,
         checkpoint_bytes=state,
-        max_context=numbers.CONTEXT,
+        max_context=numbers.MAX_CONTEXT,
         ngram_bytes=sum(t.nbytes for t in table.tensors if split_of(t.name) is SplitKind.FILE),
         working_of=working_of,
     )

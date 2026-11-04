@@ -156,12 +156,25 @@ def test_ram_max_is_a_limit_of_its_own():
     assert "--context 131072" in str(exc.value)
 
 
+def test_past_the_trained_context_the_working_memory_grows():
+    """The prompt's scores and fp16 K and V, and the pooled keys, follow the context past 262,144 tokens."""
+    trained = plan(MODEL, plan_options(slots=1, context=262_144))
+    long = plan(MODEL, plan_options(slots=1, context=1_048_576))
+    assert long.working_per_card > trained.working_per_card
+    assert long.experts_cached < trained.experts_cached
+
+
+def test_the_core_s_working_figure_is_taken_as_it_is_past_the_trained_context():
+    p = plan(MODEL, plan_options(slots=1, context=1_048_576, working_per_card=2_000_000_000))
+    assert p.working_per_card == 2_000_000_000
+
+
 def test_a_limit_nothing_fits_names_a_smaller_file():
     with pytest.raises(PlanError, match="smaller model file"):
         plan(MODEL, plan_options(slots=1, context=4096, host_memory=2**30))
 
 
-@pytest.mark.parametrize("options", [plan_options(slots=0), plan_options(context=300_000), plan_options(slots=40)])
+@pytest.mark.parametrize("options", [plan_options(slots=0), plan_options(context=1_048_580), plan_options(slots=40)])
 def test_impossible_plans(options: PlanOptions):
     with pytest.raises(PlanError):
         plan(MODEL, options)

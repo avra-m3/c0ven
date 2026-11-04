@@ -353,6 +353,7 @@ class Model final : public engine::Model {
   StepPlan *head_plan_ = nullptr;  // one row: the prompt path's head
   CommitPlan *cplan_ = nullptr;    // a window's commit
   SlotRope *rope_ = nullptr;       // [slot] the decode step's rotation (layout.h)
+  float yarn_fs_ = 1.0f;           // 1 / s past the trained context, else 1 (yarn.h); K in the cache is rotated by it
   std::vector<std::vector<Image>> images_;        // [slot]
   std::vector<std::vector<ImageBlock>> blocks_;  // [slot] their blocks
   bool commit_pending_ = false;    // the last commit was executed and not yet waited for
