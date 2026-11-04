@@ -63,12 +63,12 @@ void Model::load_prompt(Card &card) {
   auto f32 = [&](uint64_t n) { return reinterpret_cast<float *>(dev(n * 4)); };
   auto u16 = [&](uint64_t n) { return reinterpret_cast<uint16_t *>(dev(n * 2)); };
   auto u32 = [&](uint64_t n) { return reinterpret_cast<uint32_t *>(dev(n * 4)); };
-  P.R = f32(T * Q_HC_DIM);
-  P.inj[0] = f32(T * Q_HC);
-  P.inj[1] = f32(T * Q_HC);
+  P.R = f32(T * shape_.hc_dim());
+  P.inj[0] = f32(T * shape_.hc);
+  P.inj[1] = f32(T * shape_.hc);
   P.lr = f32(T * kLriW);
-  P.rr = f32(T * Q_HC);
-  P.lrb = u16(T * Q_HC_LR);
+  P.rr = f32(T * shape_.hc);
+  P.lrb = u16(T * shape_.hc_lr);
   P.x16 = u16(T * Q_EMBD);
   P.xb = u16(T * Q_EMBD);
   P.ab = f32(T * 2 * card.nvh);
@@ -77,18 +77,18 @@ void Model::load_prompt(Card &card) {
   P.o16 = u16(T * ow);
   // Region A: the mix (n, nb, a), the experts (xg, hg, yg), or the PLE module (pk, N).
   {
-    uint64_t mix = align256(T * Q_HC_DIM * 2) * 2;
+    uint64_t mix = align256(T * shape_.hc_dim() * 2) * 2;
     uint64_t moe = align256(T * shape_.used * Q_EMBD * 2) * 2 + align256(T * shape_.used * card.ff * 2);
-    uint64_t ple = align256(T * Q_HC_DIM * 4) * 2;
+    uint64_t ple = align256(T * shape_.hc_dim() * 4) * 2;
     P.reg_bytes[0] = std::max({mix, moe, ple});
     uint8_t *r = P.reg[0] = dev(P.reg_bytes[0]);
     P.a = reinterpret_cast<uint16_t *>(r);
-    P.nb = reinterpret_cast<uint16_t *>(r + align256(T * Q_HC_DIM * 2));
+    P.nb = reinterpret_cast<uint16_t *>(r + align256(T * shape_.hc_dim() * 2));
     P.xg = reinterpret_cast<uint16_t *>(r);
     P.yg = reinterpret_cast<uint16_t *>(r + align256(T * shape_.used * Q_EMBD * 2));
     P.hg = reinterpret_cast<uint16_t *>(r + 2 * align256(T * shape_.used * Q_EMBD * 2));
     P.pk = reinterpret_cast<float *>(r);
-    P.N = reinterpret_cast<float *>(r + align256(T * Q_HC_DIM * 4));
+    P.N = reinterpret_cast<float *>(r + align256(T * shape_.hc_dim() * 4));
   }
   // Region B: DeltaNet (m, z, u, raw) or attention (Q, K, V, iq, scores, blocks, bscores, cells).
   {
@@ -146,7 +146,7 @@ void Model::load_prompt(Card &card) {
   P.recv[1] = u16(T * Q_EMBD);
   P.ub = u16(T * Q_EMBD);
   P.pv = f32(T * Q_EMBD);
-  P.gates = f32(T * Q_HC);
+  P.gates = f32(T * shape_.hc);
   uint64_t w16 = 0;
   for (auto &L : card.layers)
     for (const Mat *m : {&L.qkv, &L.z, &L.out, &L.q, &L.k, &L.v, &L.o, &L.sh_gate, &L.sh_up, &L.sh_down})
@@ -369,7 +369,7 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
       p1 = c == 0 ? mine : P.part;
     }
     if (next_norm)
-      L.launch(q4("p_hc_combine_norm"), {p0, p1, inj, next_norm, pp, P.R, P.rr, P.nb, r0, r1}, Q_HC, r1 - r0, 1,
+      L.launch(q4("p_hc_combine_norm"), {p0, p1, inj, next_norm, pp, P.R, P.rr, P.nb, r0, r1}, shape_.hc, r1 - r0, 1,
                256);
     else
       L.launch(q4("p_hc_combine"), {p0, p1, inj, pp, P.R, r0, r1}, Q_EMBD / 64, r1 - r0, 1, 64);
@@ -378,20 +378,21 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
   // block: 2 l + i, for the event that says this card's rows of x are in the other card's.
   auto hc_mix = [&](const Layer &Ly, uint32_t i, bool normed, uint32_t block) {
     const uint32_t rows = r1 - r0;
-    if (!normed) L.launch(q4("p_hc_norm"), {P.R, Ly.hc_norm[i], pp, P.rr, P.nb, r0, r1}, Q_HC, rows, 1, 256);
+    if (!normed) L.launch(q4("p_hc_norm"), {P.R, Ly.hc_norm[i], pp, P.rr, P.nb, r0, r1}, shape_.hc, rows, 1, 256);
     // Tiles of 4 tokens: faster with K or N short (docs/measurements/MEASUREMENTS.md#2026-10-15-prompt-gemm-tiles). From 1,024
     // rows one work-group takes all 324 columns, reading its tokens once (docs/measurements/MEASUREMENTS.md#2026-10-17-hc-lowrank).
-    const uint16_t *nb = P.nb + (size_t)r0 * Q_HC_DIM;
+    const uint16_t *nb = P.nb + (size_t)r0 * shape_.hc_dim();
     float *lr = P.lr + (size_t)r0 * kLriW;
     if (rows >= 1024)
-      gemm(true, Ly.hc_down[i], Q_HC_LR + Q_HC, Q_HC_DIM, nb, Q_HC_DIM, lr, kLriW, false, 0, one, nullptr, 4, 2,
-           nullptr, 11, nown, rows);
+      gemm(true, Ly.hc_down[i], shape_.hc_lr + shape_.hc, shape_.hc_dim(), nb, shape_.hc_dim(), lr, kLriW, false, 0, one,
+           nullptr, 4, 2, nullptr, 11, nown, rows);
     else
-      gemm(true, Ly.hc_down[i], Q_HC_LR + Q_HC, Q_HC_DIM, nb, Q_HC_DIM, lr, kLriW, false, 0, one, nullptr, 4, 1,
-           nullptr, 4, nown, rows);
-    L.launch(q4("p_hc_lr"), {P.lr, kLriW, pp, P.lrb, P.inj[i], r0, r1}, (Q_HC_LR + Q_HC + 63) / 64, rows, 1, 64);
-    gemm(true, Ly.hc_up[i], Q_HC_DIM, Q_HC_LR, P.lrb + (size_t)r0 * Q_HC_LR, Q_HC_LR, P.a + (size_t)r0 * Q_HC_DIM,
-         Q_HC_DIM, true, 0, one, nullptr, 4, 2, nullptr, 4, nown, rows);
+      gemm(true, Ly.hc_down[i], shape_.hc_lr + shape_.hc, shape_.hc_dim(), nb, shape_.hc_dim(), lr, kLriW, false, 0, one,
+           nullptr, 4, 1, nullptr, 4, nown, rows);
+    L.launch(q4("p_hc_lr"), {P.lr, kLriW, pp, P.lrb, P.inj[i], r0, r1}, (shape_.hc_lr + shape_.hc + 63) / 64, rows, 1,
+             64);
+    gemm(true, Ly.hc_up[i], shape_.hc_dim(), shape_.hc_lr, P.lrb + (size_t)r0 * shape_.hc_lr, shape_.hc_lr,
+         P.a + (size_t)r0 * shape_.hc_dim(), shape_.hc_dim(), true, 0, one, nullptr, 4, 2, nullptr, 4, nown, rows);
     const bool send = r1 - r0 < T;
     L.launch(q4("p_hc_mix"), {P.R, P.rr, Ly.hc_norm[i], P.a, pp, P.x16, P.xb, r0, r1, send ? peer->x16 : nullptr,
                               send ? peer->xb : nullptr},
@@ -399,7 +400,7 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
     if (send) L.wait({(*pevents_)[pev(kMix, block, 1 - c)]});
   };
 
-  L.launch(q4("p_hc_init"), {pembed_, pp, P.R}, Q_HC_DIM / 64, T, 1, 64);
+  L.launch(q4("p_hc_init"), {pembed_, pp, P.R}, shape_.hc_dim() / 64, T, 1, 64);
   for (uint32_t l = 0; l < shape_.layers; l++) {
     Layer &Ly = card.layers[l];
     HostLayer &hl = *host_layers_[l];
@@ -407,13 +408,13 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
       L.wait({(*pevents_)[pev(kNgram, 0, 0)]});
       // The rows as bf16, from host memory in one copy: a kernel reading them there is slow.
       L.copy(P.ub, pngram16_, (size_t)T * Q_EMBD * 2);
-      gemm(true, card.ple_k, Q_HC_DIM, Q_EMBD, P.ub, Q_EMBD, P.pk, Q_HC_DIM, false, 0, one);
+      gemm(true, card.ple_k, shape_.hc_dim(), Q_EMBD, P.ub, Q_EMBD, P.pk, shape_.hc_dim(), false, 0, one);
       gemm(true, card.ple_v, Q_EMBD, Q_EMBD, P.ub, Q_EMBD, P.pv, Q_EMBD, false, 0, one);
-      L.launch(q4("p_ple_gate"), {P.pk, P.R, card.ple_gk, card.ple_gq, pp, P.gates}, Q_HC, T, 1, 256);
-      L.launch(q4("p_ple_norm"), {P.pv, P.gates, card.ple_gc, pp, P.N}, Q_HC, T, 1, 256);
+      L.launch(q4("p_ple_gate"), {P.pk, P.R, card.ple_gk, card.ple_gq, pp, P.gates}, shape_.hc, T, 1, 256);
+      L.launch(q4("p_ple_norm"), {P.pv, P.gates, card.ple_gc, pp, P.N}, shape_.hc, T, 1, 256);
       L.launch(q4("p_ple_conv"), {P.N, P.pv, P.gates, card.ple_conv, card.ple_hist, card.ple_stride, runs_p, P.R},
-               Q_HC_DIM / 64, T, 1, 64);
-      L.launch(q4("p_ple_save"), {P.N, card.ple_hist, card.ple_stride, runs_p}, Q_HC_DIM / 64, 1, runs, 64);
+               shape_.hc_dim() / 64, T, 1, 64);
+      L.launch(q4("p_ple_save"), {P.N, card.ple_hist, card.ple_stride, runs_p}, shape_.hc_dim() / 64, 1, runs, 64);
       if (split) r0 = c * half, r1 = r0 + half, nown = prows_ + c;
     }
     hc_mix(Ly, 0, l >= 2, 2 * l);  // after layer 0 the PLE module stands between the combine and the norm
@@ -549,12 +550,12 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
     }
   }
   if (split) {  // each run's rows the head and the draft layer read, on both cards
-    L.launch(q4("p_hc_share"), {P.R, runs_p, r0, r1, peer->R}, Q_HC_DIM / 64, STEP_MAX_ROWS, runs, 64, 1, 1,
+    L.launch(q4("p_hc_share"), {P.R, runs_p, r0, r1, peer->R}, shape_.hc_dim() / 64, STEP_MAX_ROWS, runs, 64, 1, 1,
              (*pevents_)[pev(kLast, 0, c)]);
     L.wait({(*pevents_)[pev(kLast, 0, 1 - c)]});
   }
   // Each run's last row's head, as in the decode step: run r's in row r.
-  L.launch(q4("p_take_last"), {P.R, runs_p, card.R}, Q_HC_DIM / 64, 1, runs, 64);
+  L.launch(q4("p_take_last"), {P.R, runs_p, card.R}, shape_.hc_dim() / 64, 1, runs, 64);
   record_head(L, card, head_plan_, runs);
   L.close();
   ze::List &ref = *list;
