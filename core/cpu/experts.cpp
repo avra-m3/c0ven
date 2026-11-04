@@ -25,11 +25,10 @@ inline float swiglu_one(float g, float u, float limit) {
   }
   return g / (1.0f + std::exp(-g)) * u;
 }
-// compute_many's tasks: kRowsGU rows of gate or of up, and kRowsDown rows of down, small enough that one expert
-// spreads evenly over 16 workers. h is made kRowsH rows at a time, or a whole block of the down's dot-product type
-// when that is longer (h_rows), up to kMaxRowsH: QK_K, q8_K's 256.
-constexpr uint32_t kRowsGU = 16, kRowsH = 32, kRowsDown = 32, kMaxRowsH = 256;
-static_assert(kRowsH % kRowsGU == 0);
+// compute_many's tasks: kRowsH rows of gate and of up with their h, and kRowsDown rows of down. A task keeps its
+// floats on its own thread, so no cache line of them moves between workers. h is quantised kRowsH rows at a time, or
+// a whole block of the down's dot-product type when that is longer (h_rows), up to kMaxRowsH: QK_K, q8_K's 256.
+constexpr uint32_t kRowsH = 32, kRowsDown = 32, kMaxRowsH = 256;
 
 // Row r of a down with unequal parts (ExpertWeights::down_blocks), its blocks together again in this thread's buffer.
 const uint8_t *joined_row(const ExpertWeights &ew, uint32_t r, uint32_t E, uint32_t down_type) {
@@ -69,7 +68,8 @@ void down_row(const ggml_type_traits_cpu *dt, const ExpertWeights &ew, uint32_t 
 // (multirow.h); each job's sum has the bits down_row gives it.
 constexpr uint32_t kRowsTogether = 16;
 void down_rows(DotRows dr, const ggml_type_traits_cpu *dt, const ExpertWeights &ew, uint32_t r, uint32_t E, uint32_t F,
-               uint32_t down_type, const uint8_t *hq, size_t hq_bytes, const std::vector<uint32_t> &js, float *out) {
+               uint32_t down_type, const uint8_t *hq, size_t hq_bytes, const std::vector<uint32_t> &js, float *out,
+               uint32_t stride) {
   if (ew.down_blocks[0]) {
     const uint8_t *row = joined_row(ew, r, E, down_type);
     for (size_t j0 = 0; j0 < js.size(); j0 += kRowsTogether) {
@@ -78,7 +78,7 @@ void down_rows(DotRows dr, const ggml_type_traits_cpu *dt, const ExpertWeights &
       float v[kRowsTogether];
       for (uint32_t i = 0; i < R; i++) ys[i] = hq + js[j0 + i] * hq_bytes;
       dr((int)F, row, ys, (int)R, v);
-      for (uint32_t i = 0; i < R; i++) out[(size_t)js[j0 + i] * E + r] = v[i];
+      for (uint32_t i = 0; i < R; i++) out[(size_t)js[j0 + i] * stride] = v[i];
     }
     return;
   }
@@ -93,7 +93,7 @@ void down_rows(DotRows dr, const ggml_type_traits_cpu *dt, const ExpertWeights &
       dr((int)Fp, ew.down + ((size_t)p * E + r) * prow, ys, (int)R, v);
       for (uint32_t i = 0; i < R; i++) sum[i] = p == 0 ? v[i] : sum[i] + v[i];
     }
-    for (uint32_t i = 0; i < R; i++) out[(size_t)js[j0 + i] * E + r] = sum[i];
+    for (uint32_t i = 0; i < R; i++) out[(size_t)js[j0 + i] * stride] = sum[i];
   }
 }
 }
@@ -176,80 +176,93 @@ void CpuExperts::compute_many(const ExpertShape &s, const std::vector<Job> &jobs
     of[d].push_back(j);
   }
   const uint32_t nd = (uint32_t)distinct.size();
-  g_.resize((size_t)n * F);
-  u_.resize((size_t)n * F);
   hq_.resize((size_t)n * hq_bytes);
-  // h = silu(gate) * up for rows [r0, r1) of every job of expert d, quantised to the down's dot-product type in
-  // place: blocks of that type never straddle hr rows (a multiple of its block size), so h's blocks come out as
-  // quantising the whole row would make them.
-  const int64_t hblk = ggml_blck_size(dt->vec_dot_type);
-  const size_t hblk_bytes = ggml_type_size(dt->vec_dot_type);
-  const uint32_t hr = h_rows(s);
-  const bool fused = hr != 0;
-  auto swiglu = [&](uint32_t d, uint32_t r0, uint32_t r1) {
-    float h[kMaxRowsH];
-    for (uint32_t j : of[d]) {
-      for (uint32_t r = r0; r < r1; r++)
-        h[r - r0] = swiglu_one(g_[(size_t)j * F + r], u_[(size_t)j * F + r], s.swiglu_limit);
-      dq->from_float(h, hq_.data() + j * hq_bytes + (size_t)(r0 / hblk) * hblk_bytes, r1 - r0);
-    }
-  };
-  // Gate and up: tasks of kRowsGU rows of one matrix of one expert, for all its jobs, gate and up alternating. The
-  // last of the tasks over hr rows to finish computes their h.
-  const uint32_t ft = (F + kRowsGU - 1) / kRowsGU, ht = fused ? F / hr : 0, per_h = 2 * hr / kRowsGU;
-  const uint64_t ngu = (uint64_t)nd * 2 * ft;
-  std::vector<std::atomic<uint32_t>> pending(fused ? (size_t)nd * ht : 0);
-  // An expert that several jobs share decodes each weight row once for all of them, where the type allows.
+  // The types' dots of one weight row against several activations, where the type allows.
   const DotRows gr = dot_rows_for(s.gate_type), dr = dot_rows_for(s.down_type);
-  auto gate_up = [&](uint64_t task) {
-    uint32_t d = (uint32_t)(task / (2 * ft)), which = (uint32_t)(task % 2), t = (uint32_t)(task / 2 % ft);
-    const ExpertWeights &ew = jobs[of[d][0]].expert;
-    const uint8_t *m = which ? ew.up : ew.gate;
-    const uint32_t r0 = t * kRowsGU, r1 = std::min(F, (t + 1) * kRowsGU);
-    float *outs = which ? u_.data() : g_.data();
-    if (gr && of[d].size() > 1) {
-      for (size_t j0 = 0; j0 < of[d].size(); j0 += kRowsTogether) {
-        const uint32_t R = (uint32_t)std::min<size_t>(kRowsTogether, of[d].size() - j0);
+  // Rows [r0, r1) of matrix m against every job of expert d, into out, a job's rows kRowsH apart.
+  auto dots = [&](uint32_t d, const uint8_t *m, uint32_t r0, uint32_t r1, float *out) {
+    const std::vector<uint32_t> &js = of[d];
+    if (gr && js.size() > 1) {
+      for (size_t j0 = 0; j0 < js.size(); j0 += kRowsTogether) {
+        const uint32_t R = (uint32_t)std::min<size_t>(kRowsTogether, js.size() - j0);
         const void *ys[kRowsTogether];
         float v[kRowsTogether];
-        for (uint32_t i = 0; i < R; i++) ys[i] = xqm_.data() + jobs[of[d][j0 + i]].tok * xq_bytes;
+        for (uint32_t i = 0; i < R; i++) ys[i] = xqm_.data() + jobs[js[j0 + i]].tok * xq_bytes;
         for (uint32_t r = r0; r < r1; r++) {
           gr((int)E, m + r * grow, ys, (int)R, v);
-          for (uint32_t i = 0; i < R; i++) outs[(size_t)of[d][j0 + i] * F + r] = v[i];
+          for (uint32_t i = 0; i < R; i++) out[(j0 + i) * kRowsH + (r - r0)] = v[i];
         }
       }
     } else {
       for (uint32_t r = r0; r < r1; r++)
-        for (uint32_t j : of[d]) gt->vec_dot((int)E, outs + (size_t)j * F + r, 0, m + r * grow, 0, xqm_.data() + jobs[j].tok * xq_bytes, 0, 1);
+        for (size_t i = 0; i < js.size(); i++)
+          gt->vec_dot((int)E, out + i * kRowsH + (r - r0), 0, m + r * grow, 0, xqm_.data() + jobs[js[i]].tok * xq_bytes, 0, 1);
     }
-    if (!fused) return;
+  };
+  // h = silu(gate) * up, quantised to the down's dot-product type in place: blocks of that type never straddle hr
+  // rows (a multiple of its block size), so they come out as quantising the whole row would make them. With hr past
+  // kRowsH, or none, h waits in hf_ for the rest of its block or of its row.
+  const int64_t hblk = ggml_blck_size(dt->vec_dot_type);
+  const size_t hblk_bytes = ggml_type_size(dt->vec_dot_type);
+  const uint32_t hr = h_rows(s);
+  const uint32_t ft = (F + kRowsH - 1) / kRowsH;
+  const bool in_place = hr == kRowsH;
+  if (!in_place) hf_.resize((size_t)n * F);
+  const uint32_t ht = hr > kRowsH ? F / hr : 0, per_h = hr / kRowsH;
+  std::vector<std::atomic<uint32_t>> pending((size_t)nd * ht);
+  // One task: kRowsH rows of expert d's gate and up, for all its jobs, and their h. The last of the tasks over a block
+  // to finish quantises it.
+  auto gate_up = [&](uint64_t task) {
+    const uint32_t d = (uint32_t)(task / ft), r0 = (uint32_t)(task % ft) * kRowsH, r1 = std::min(F, r0 + kRowsH);
+    const std::vector<uint32_t> &js = of[d];
+    const ExpertWeights &ew = jobs[js[0]].expert;
+    const size_t R = js.size();
+    thread_local std::vector<float> gu;
+    gu.resize(2 * R * kRowsH);
+    float *g = gu.data(), *u = g + R * kRowsH;
+    dots(d, ew.gate, r0, r1, g);
+    dots(d, ew.up, r0, r1, u);
+    for (size_t i = 0; i < R; i++) {
+      float h[kRowsH];
+      for (uint32_t r = 0; r < r1 - r0; r++) h[r] = swiglu_one(g[i * kRowsH + r], u[i * kRowsH + r], s.swiglu_limit);
+      if (in_place)
+        dq->from_float(h, hq_.data() + js[i] * hq_bytes + (size_t)(r0 / hblk) * hblk_bytes, r1 - r0);
+      else
+        std::copy(h, h + (r1 - r0), hf_.data() + (size_t)js[i] * F + r0);
+    }
+    if (ht == 0) return;
     const uint32_t b = r0 / hr;
-    if (pending[(size_t)d * ht + b].fetch_add(1, std::memory_order_acq_rel) == per_h - 1)
-      swiglu(d, b * hr, (b + 1) * hr);
+    if (pending[(size_t)d * ht + b].fetch_add(1, std::memory_order_acq_rel) != per_h - 1) return;
+    for (uint32_t j : js)
+      dq->from_float(hf_.data() + (size_t)j * F + (size_t)b * hr, hq_.data() + j * hq_bytes + (size_t)(b * hr / hblk) * hblk_bytes, hr);
   };
   // Down: tasks of kRowsDown rows of every expert, each summing its rows of y over the jobs in order.
-  out_.resize((size_t)n * E);
   const uint32_t et = (E + kRowsDown - 1) / kRowsDown;
   auto down = [&](uint64_t t) {
     const uint32_t r0 = (uint32_t)t * kRowsDown, r1 = std::min(E, r0 + kRowsDown);
+    thread_local std::vector<float> outv;
+    outv.resize((size_t)n * kRowsDown);
+    float *out = outv.data();
     for (uint32_t d = 0; d < nd; d++) {
       const ExpertWeights &ew = jobs[of[d][0]].expert;
       if (dr && of[d].size() > 1) {
-        for (uint32_t r = r0; r < r1; r++) down_rows(dr, dt, ew, r, E, F, s.down_type, hq_.data(), hq_bytes, of[d], out_.data());
+        for (uint32_t r = r0; r < r1; r++)
+          down_rows(dr, dt, ew, r, E, F, s.down_type, hq_.data(), hq_bytes, of[d], out + (r - r0), kRowsDown);
         continue;
       }
       for (uint32_t r = r0; r < r1; r++)
         for (uint32_t j : of[d])
-          down_row(dt, ew, r, E, F, s.down_type, hq_.data() + j * hq_bytes, out_.data() + (size_t)j * E + r);
+          down_row(dt, ew, r, E, F, s.down_type, hq_.data() + j * hq_bytes, out + (size_t)j * kRowsDown + (r - r0));
     }
     for (uint32_t tk = 0; tk < ntok; tk++)
       for (uint32_t r = r0; r < r1; r++) y[tk * y_stride + r] = 0.0f;
     for (uint32_t j = 0; j < n; j++) {
       float *yt = y + jobs[j].tok * y_stride;
-      for (uint32_t r = r0; r < r1; r++) yt[r] += jobs[j].w * out_[(size_t)j * E + r];
+      for (uint32_t r = r0; r < r1; r++) yt[r] += jobs[j].w * out[(size_t)j * kRowsDown + (r - r0)];
     }
   };
-  if (fused) {
+  const uint64_t ngu = (uint64_t)nd * ft;
+  if (hr != 0) {
     // One pool job, so the workers wake once: the down tasks come after every gate and up task, and wait for them
     // to finish. The pool hands out tasks in order, so by then each of those is running on some thread.
     std::atomic<uint64_t> gu_done{0};
@@ -264,14 +277,9 @@ void CpuExperts::compute_many(const ExpertShape &s, const std::vector<Job> &jobs
     });
     return;
   }
+  // n_ff no multiple of h's rows: h whole, after every row's gate and up.
   pool_.run(ngu, gate_up);
-  pool_.run(nd, [&](uint64_t d) {
-    for (uint32_t j : of[d]) {
-      std::vector<float> h(F);
-      for (uint32_t r = 0; r < F; r++) h[r] = swiglu_one(g_[(size_t)j * F + r], u_[(size_t)j * F + r], s.swiglu_limit);
-      dq->from_float(h.data(), hq_.data() + j * hq_bytes, F);
-    }
-  });
+  pool_.run(n, [&](uint64_t j) { dq->from_float(hf_.data() + j * F, hq_.data() + j * hq_bytes, F); });
   pool_.run(et, down);
 }
 
