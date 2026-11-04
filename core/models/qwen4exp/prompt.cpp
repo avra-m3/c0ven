@@ -69,8 +69,8 @@ void Model::load_prompt(Card &card) {
   P.lr = f32(T * kLriW);
   P.rr = f32(T * shape_.hc);
   P.lrb = u16(T * shape_.hc_lr);
-  P.x16 = u16(T * Q_EMBD);
-  P.xb = u16(T * Q_EMBD);
+  P.x16 = u16(T * shape_.embd);
+  P.xb = u16(T * shape_.embd);
   P.ab = f32(T * 2 * card.nvh);
   P.gb = f32(T * 2 * card.nvh);
   const uint64_t ow = std::max(card.nvh * shape_.gdn_d, card.nq * shape_.att_key);
@@ -78,15 +78,15 @@ void Model::load_prompt(Card &card) {
   // Region A: the mix (n, nb, a), the experts (xg, hg, yg), or the PLE module (pk, N).
   {
     uint64_t mix = align256(T * shape_.hc_dim() * 2) * 2;
-    uint64_t moe = align256(T * shape_.used * Q_EMBD * 2) * 2 + align256(T * shape_.used * card.ff * 2);
+    uint64_t moe = align256(T * shape_.used * shape_.embd * 2) * 2 + align256(T * shape_.used * card.ff * 2);
     uint64_t ple = align256(T * shape_.hc_dim() * 4) * 2;
     P.reg_bytes[0] = std::max({mix, moe, ple});
     uint8_t *r = P.reg[0] = dev(P.reg_bytes[0]);
     P.a = reinterpret_cast<uint16_t *>(r);
     P.nb = reinterpret_cast<uint16_t *>(r + align256(T * shape_.hc_dim() * 2));
     P.xg = reinterpret_cast<uint16_t *>(r);
-    P.yg = reinterpret_cast<uint16_t *>(r + align256(T * shape_.used * Q_EMBD * 2));
-    P.hg = reinterpret_cast<uint16_t *>(r + 2 * align256(T * shape_.used * Q_EMBD * 2));
+    P.yg = reinterpret_cast<uint16_t *>(r + align256(T * shape_.used * shape_.embd * 2));
+    P.hg = reinterpret_cast<uint16_t *>(r + 2 * align256(T * shape_.used * shape_.embd * 2));
     P.pk = reinterpret_cast<float *>(r);
     P.N = reinterpret_cast<float *>(r + align256(T * shape_.hc_dim() * 4));
   }
@@ -143,12 +143,12 @@ void Model::load_prompt(Card &card) {
   P.shg = f32(T * card.ff);
   P.shu = f32(T * card.ff);
   P.shh = u16(T * card.ff);
-  P.s = f32(T * Q_EMBD);
-  P.part = u16(T * Q_EMBD);
-  P.recv[0] = u16(T * Q_EMBD);
-  P.recv[1] = u16(T * Q_EMBD);
-  P.ub = u16(T * Q_EMBD);
-  P.pv = f32(T * Q_EMBD);
+  P.s = f32(T * shape_.embd);
+  P.part = u16(T * shape_.embd);
+  P.recv[0] = u16(T * shape_.embd);
+  P.recv[1] = u16(T * shape_.embd);
+  P.ub = u16(T * shape_.embd);
+  P.pv = f32(T * shape_.embd);
   P.gates = f32(T * shape_.hc);
   uint64_t w16 = 0;
   for (auto &L : card.layers)
@@ -375,7 +375,7 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
       L.launch(q4("p_hc_combine_norm"), {p0, p1, inj, next_norm, pp, P.R, P.rr, P.nb, r0, r1}, shape_.hc, r1 - r0, 1,
                256);
     else
-      L.launch(q4("p_hc_combine"), {p0, p1, inj, pp, P.R, r0, r1}, Q_EMBD / 64, r1 - r0, 1, 64);
+      L.launch(q4("p_hc_combine"), {p0, p1, inj, pp, P.R, r0, r1}, shape_.embd / 64, r1 - r0, 1, 64);
   };
   // normed: the combine before it already did the norm.
   // block: 2 l + i, for the event that says this card's rows of x are in the other card's.
@@ -399,7 +399,7 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
     const bool send = r1 - r0 < T;
     L.launch(q4("p_hc_mix"), {P.R, P.rr, Ly.hc_norm[i], P.a, pp, P.x16, P.xb, r0, r1, send ? peer->x16 : nullptr,
                               send ? peer->xb : nullptr},
-             Q_EMBD / 256, rows, 1, 64, 1, 1, send ? (*pevents_)[pev(kMix, block, c)] : nullptr);
+             shape_.embd / 256, rows, 1, 64, 1, 1, send ? (*pevents_)[pev(kMix, block, c)] : nullptr);
     if (send) L.wait({(*pevents_)[pev(kMix, block, 1 - c)]});
   };
 
@@ -410,9 +410,9 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
     if (l == 1) {  // the PLE module
       L.wait({(*pevents_)[pev(kNgram, 0, 0)]});
       // The rows as bf16, from host memory in one copy: a kernel reading them there is slow.
-      L.copy(P.ub, pngram16_, (size_t)T * Q_EMBD * 2);
-      gemm(true, card.ple_k, shape_.hc_dim(), Q_EMBD, P.ub, Q_EMBD, P.pk, shape_.hc_dim(), false, 0, one);
-      gemm(true, card.ple_v, Q_EMBD, Q_EMBD, P.ub, Q_EMBD, P.pv, Q_EMBD, false, 0, one);
+      L.copy(P.ub, pngram16_, (size_t)T * shape_.embd * 2);
+      gemm(true, card.ple_k, shape_.hc_dim(), shape_.embd, P.ub, shape_.embd, P.pk, shape_.hc_dim(), false, 0, one);
+      gemm(true, card.ple_v, shape_.embd, shape_.embd, P.ub, shape_.embd, P.pv, shape_.embd, false, 0, one);
       L.launch(q4("p_ple_gate"), {P.pk, P.R, card.ple_gk, card.ple_gq, pp, P.gates}, shape_.hc, T, 1, 256);
       L.launch(q4("p_ple_norm"), {P.pv, P.gates, card.ple_gc, pp, P.N}, shape_.hc, T, 1, 256);
       L.launch(q4("p_ple_conv"), {P.N, P.pv, P.gates, card.ple_conv, card.ple_hist, card.ple_stride, runs_p, P.R},
@@ -426,9 +426,9 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
     auto sent = [&](uint32_t which) { return C > 1 ? (*pevents_)[pev(kEx, 2 * l + which, c)] : nullptr; };
     if (!Ly.attn) {
       const uint32_t nch = card.nch, nvo = card.nvh * shape_.gdn_d;
-      dense(Ly.qkv, P.x16, Q_EMBD, P.m, nch, false);
-      dense(Ly.z, P.x16, Q_EMBD, P.z, nvo, false);
-      gemm(true, Ly.ab, 2 * card.nvh, Q_EMBD, P.xb, Q_EMBD, P.ab, 2 * card.nvh, false, 0, one, nullptr, 4, 1);
+      dense(Ly.qkv, P.x16, shape_.embd, P.m, nch, false);
+      dense(Ly.z, P.x16, shape_.embd, P.z, nvo, false);
+      gemm(true, Ly.ab, 2 * card.nvh, shape_.embd, P.xb, shape_.embd, P.ab, 2 * card.nvh, false, 0, one, nullptr, 4, 1);
       L.launch(q4("p_gdn_conv"), {P.m, Ly.conv, Ly.conv_state, Ly.conv_stride, nch, runs_p, P.u}, (nch + 63) / 64, T,
                1, 64);
       L.launch(q4("p_gdn_conv_save"), {P.m, Ly.conv_state, Ly.conv_stride, nch, runs_p}, (nch + 63) / 64, 1, runs,
@@ -438,13 +438,13 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
       L.launch(kernel(c, "qwen4exp_gdn", "p_gdn_recur"),
                {P.u, nch, P.gb, Ly.S, Ly.S_stride, card.nkh, card.nvh, runs_p, P.raw}, card.nvh * 8, 1, runs, 64);
       L.launch(q4("p_gdn_out"), {P.raw, P.z, Ly.ssm_norm, card.nvh, pp, P.o16}, card.nvh, T, 1, shape_.gdn_d);
-      dense(Ly.out, P.o16, nvo, P.part, Q_EMBD, true, peer_part(0), sent(0));
+      dense(Ly.out, P.o16, nvo, P.part, shape_.embd, true, peer_part(0), sent(0));
     } else {
       const uint32_t nqo = card.nq * shape_.att_key;
-      dense(Ly.q, P.x16, Q_EMBD, P.Q, card.nq * 2 * shape_.att_key, false);
-      dense(Ly.k, P.x16, Q_EMBD, P.K, card.nkv * shape_.att_key, false);
-      dense(Ly.v, P.x16, Q_EMBD, P.V, card.nkv * shape_.att_key, false);
-      gemm(true, Ly.idx_w, (shape_.idx_h + 1) * shape_.idx_d, Q_EMBD, P.xb, Q_EMBD, P.iq,
+      dense(Ly.q, P.x16, shape_.embd, P.Q, card.nq * 2 * shape_.att_key, false);
+      dense(Ly.k, P.x16, shape_.embd, P.K, card.nkv * shape_.att_key, false);
+      dense(Ly.v, P.x16, shape_.embd, P.V, card.nkv * shape_.att_key, false);
+      gemm(true, Ly.idx_w, (shape_.idx_h + 1) * shape_.idx_d, shape_.embd, P.xb, shape_.embd, P.iq,
            (shape_.idx_h + 1) * shape_.idx_d, false, 0, one);
       L.launch(q4("p_attn_prep"), {P.Q, P.K, P.V, Ly.qn, Ly.kn, card.nq, card.nkv, Ly.kc, Ly.vc, card.ptab, npp_,
                                    runs_p, ppos_, pstride, P.qt, P.hp, kv_res_ ? P.kvst : nullptr,
@@ -493,13 +493,13 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
                  {P.qt, P.Q, P.kh, P.vh, card.nq, P.hp, card.nkv, P.cells, P.ncells, run(r), P.o16}, 1,
                  (T + xmx_rows - 1) / xmx_rows, 1, 16 * kAttXmxSubGroups);
       }
-      dense(Ly.o, P.o16, nqo, P.part, Q_EMBD, true, peer_part(0), sent(0));
+      dense(Ly.o, P.o16, nqo, P.part, shape_.embd, true, peer_part(0), sent(0));
     }
     exchange(l, 0, P.inj[0], Ly.hc_norm[1]);
 
     // The MoE block.
     hc_mix(Ly, 1, true, 2 * l + 1);
-    gemm(true, Ly.router, shape_.experts + 1, Q_EMBD, P.xb, Q_EMBD, P.rl, shape_.experts + 1, false, 0, one);
+    gemm(true, Ly.router, shape_.experts + 1, shape_.embd, P.xb, shape_.embd, P.rl, shape_.experts + 1, false, 0, one);
     L.launch(q4("p_router"), {P.rl, pp, P.ids, P.w}, (T + 3) / 4, 1, 1, 128);
     const uint32_t nasg = T * shape_.used;
     L.launch(q4("p_moe_count"), {P.ids, pp, P.cnt}, (nasg + 63) / 64, 1, 1, 64);
@@ -510,13 +510,13 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
              1, 1, 1, shape_.experts);
     L.launch(q4("p_moe_fill"), {P.ids, pp, P.base, P.cursor, P.inv}, (nasg + 63) / 64, 1, 1, 64);
     const uint32_t xsig = quant_pairs_sigma(Ly.gu_type), hsig = quant_pairs_sigma(Ly.down_type);
-    L.launch(q4("p_moe_scatter"), {P.x16, P.inv, pp, xsig, P.xg}, 1, T, 1, Q_EMBD / 8);
-    const uint32_t gbpr = Q_EMBD / quant_block_values(Ly.gu_type), dqk = quant_block_values(Ly.down_type);
+    L.launch(q4("p_moe_scatter"), {P.x16, P.inv, pp, xsig, P.xg}, 1, T, 1, shape_.embd / 8);
+    const uint32_t gbpr = shape_.embd / quant_block_values(Ly.gu_type), dqk = quant_block_values(Ly.down_type);
     std::string gm = std::string("qgemm_") + ggml_type_label(Ly.gu_type), dm = std::string("qgemm_") +
                                                                                 ggml_type_label(Ly.down_type);
     for (auto &ch : gm) ch = (char)std::tolower(ch);
     for (auto &ch : dm) ch = (char)std::tolower(ch);
-    const uint32_t E = Q_EMBD, ff = card.ff;
+    const uint32_t E = shape_.embd, ff = card.ff;
     uint8_t *stage = P.stage + (l % 2) * P.stage_slot;
     // The cached experts and the shared expert first: they give the staging its last moments. Each expert's rows of
     // hg and yg are its own, so the order changes no result.
@@ -527,10 +527,10 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
       L.launch(kernel(c, dm, "moe_down_t"), {Ly.cache, Ly.slot_bytes, Ly.down_off, P.tiles_c, P.ntiles_c, E, dbpr, zero,
                                              P.hg, ff, P.yg, card.grids}, E / 64, mt, 1, 64);
     }
-    dense(Ly.sh_gate, P.x16, Q_EMBD, P.shg, ff, false);
-    dense(Ly.sh_up, P.x16, Q_EMBD, P.shu, ff, false);
+    dense(Ly.sh_gate, P.x16, shape_.embd, P.shg, ff, false);
+    dense(Ly.sh_up, P.x16, shape_.embd, P.shu, ff, false);
     L.launch(q4("p_swiglu"), {P.shg, P.shu, ff, pp, P.shh}, (ff + 63) / 64, T, 1, 64);
-    dense(Ly.sh_down, P.shh, ff, P.s, Q_EMBD, false);
+    dense(Ly.sh_down, P.shh, ff, P.s, shape_.embd, false);
     L.wait({(*pevents_)[pev(kStaged, l, c)]});
     if (!hl.pieces.empty())
       L.launch(kernel(c, gm + "_file", "moe_gate_up_t"), {stage, hl.stg_bytes, P.tiles_s, P.ntiles_s, ff, gbpr,
@@ -543,14 +543,14 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
                                                        dbpr, b0, P.hg, ff, P.yg, card.grids}, E / 64, mt, 1, 64);
     }
     L.signal((*pevents_)[pev(kFree, l, c)]);
-    L.launch(q4("p_moe_combine"), {P.yg, P.inv, P.w, P.s, P.rl, pp, P.part, peer_part(1)}, Q_EMBD / 128, T, 1, 64, 1,
-             1, sent(1));
+    L.launch(q4("p_moe_combine"), {P.yg, P.inv, P.w, P.s, P.rl, pp, P.part, peer_part(1)},
+             shape_.embd / 128, T, 1, 64, 1, 1, sent(1));
     exchange(l, 1, P.inj[1], l >= 1 && l + 1 < shape_.layers ? card.layers[l + 1].hc_norm[0] : nullptr);
     // DFlash 2 reads each run's last rows of the layer's output (dflash.cpp), from the card that holds them.
     for (uint32_t k = 0; df_on_ && k < DF_LAYERS; k++) {
       if (l != kDfTargetLayers[k]) continue;
       const uint32_t f0 = split || c == 0 ? r0 : 0, f1 = split || c == 0 ? r1 : 0;
-      L.launch(kernel(c, "qwen4exp_dflash", "p_df_feat"), {P.R, runs_p, k, f0, f1, pfeat_}, Q_EMBD / 64,
+      L.launch(kernel(c, "qwen4exp_dflash", "p_df_feat"), {P.R, runs_p, k, f0, f1, pfeat_}, shape_.embd / 64,
                STEP_MAX_ROWS, runs, 64);
     }
   }
@@ -634,7 +634,8 @@ std::vector<std::vector<Candidate>> Model::prompt_runs(const PromptRun *runs, ui
       for (uint32_t k = 0; k < 3; k++) ppos[4 * e + k] = p[k];
     }
     pool_->run(q.n, [&](uint64_t t) {
-      to_float(te.data + (uint64_t)q.tokens[t] * te.row_bytes(), pembed_ + (at + t) * Q_EMBD, Q_EMBD);
+      const uint32_t E = shape_.embd;
+      to_float(te.data + (uint64_t)q.tokens[t] * te.row_bytes(), pembed_ + (at + t) * E, E);
     });
     place_images(q.slot, q.pos0, q.n, at);
     at += q.n;
@@ -686,9 +687,10 @@ std::vector<std::vector<Candidate>> Model::prompt_runs(const PromptRun *runs, ui
   const float *rows = ahead ? ahead_.rows.data() : pngram_;
   if (!ahead)
     for (uint32_t r = 0; r < nruns; r++)
-      ngram_->gather_many(runs[r].tokens, runs[r].n, runs[r].p1, runs[r].p2, pngram_ + (size_t)row0[r] * Q_EMBD);
+      ngram_->gather_many(runs[r].tokens, runs[r].n, runs[r].p1, runs[r].p2, pngram_ + (size_t)row0[r] * shape_.embd);
   pool_->run(n, [&](uint64_t t) {
-    for (uint32_t i = 0; i < Q_EMBD; i++) pngram16_[t * Q_EMBD + i] = bf16_bits(rows[t * Q_EMBD + i]);
+    const uint32_t E = shape_.embd;
+    for (uint32_t i = 0; i < E; i++) pngram16_[t * E + i] = bf16_bits(rows[t * E + i]);
   });
   ZE_CHECK(zeEventHostSignal((*pevents_)[pev(kNgram, 0, 0)]));
   // The next chunk's rows, on a thread of its own while the host waits for the cards; it ends before this call does,
@@ -707,7 +709,7 @@ std::vector<std::vector<Candidate>> Model::prompt_runs(const PromptRun *runs, ui
     ahead_.p1 = q0.tokens[n - 1];
     ahead_.p2 = n >= 2 ? q0.tokens[n - 2] : q0.p1;
     ahead_.tokens.assign(next, next + next_n);
-    ahead_.rows.resize((size_t)tmax_ * Q_EMBD);
+    ahead_.rows.resize((size_t)tmax_ * shape_.embd);
     gather_next = std::thread([this, &gathered] {
       try {  // a failed read is the next chunk's to report, when it reads its rows itself
         ngram_->gather_many(ahead_.tokens.data(), (uint32_t)ahead_.tokens.size(), ahead_.p1, ahead_.p2,

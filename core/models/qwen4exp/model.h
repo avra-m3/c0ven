@@ -105,7 +105,7 @@ class Model final : public engine::Model {
   uint32_t draft_max_default() const override { return df_on_ ? kDraftMaxCap : kDraftMaxLayer; }
   uint32_t draft_max_cap() const override { return kDraftMaxCap; }
   // For tests: card 0's features of the last decode step's row r (DF_FEAT bf16 values), and the last block pass's
-  // final normed rows (STEP_MAX_ROWS x Q_EMBD).
+  // final normed rows (STEP_MAX_ROWS x DF_EMBD).
   std::vector<uint16_t> df_features(uint32_t row);
   std::vector<float> df_hidden();
   // For tests: the last decode step's logits of row `row`, all the vocabulary's, from every card's share of the head.
@@ -368,7 +368,7 @@ class Model final : public engine::Model {
   bool df_on_ = false;
   DraftPlan *dfcplan_ = nullptr, *dfbplan_ = nullptr;
   float *dfembed_ = nullptr;
-  float *dfex_ = nullptr;  // the exchanges' partial sums, [2 DF_LAYERS][card][STEP_MAX_ROWS][Q_EMBD]
+  float *dfex_ = nullptr;  // the exchanges' partial sums, [2 DF_LAYERS][card][STEP_MAX_ROWS][DF_EMBD]
   uint32_t *dtop_idx_ = nullptr, *dtop_n_ = nullptr;
   float *dtop_val_ = nullptr;
   std::unique_ptr<ze::EventPool> devents_;
@@ -376,11 +376,11 @@ class Model final : public engine::Model {
   std::vector<uint32_t> dffirst_;  // [slot] the first position its ring holds
   float *embed_ = nullptr;   // the token's embedding row
   float *ngram_u_ = nullptr; // its n-gram rows
-  float *ex1_ = nullptr, *ex2_ = nullptr;  // [layer][card][2560] partial sums
+  float *ex1_ = nullptr, *ex2_ = nullptr;  // [layer][card][embd] partial sums
   MissJob *jobs_ = nullptr;      // [layer] card 0's record of the misses for the CPU (ADR-0011)
   uint32_t *ans_seq_ = nullptr;  // [layer], 64 bytes apart: the step the CPU answered last
   uint32_t *stuck_ = nullptr;    // card 0 gave up waiting for an answer
-  float *cpu_y_ = nullptr;   // [layer][2560] the CPU's sum for the misses
+  float *cpu_y_ = nullptr;   // [layer][embd] the CPU's sum for the misses
   uint32_t *top_idx_ = nullptr;  // [card][candidates]
   float *top_val_ = nullptr;
   uint32_t *top_n_ = nullptr;
