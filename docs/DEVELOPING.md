@@ -50,9 +50,9 @@ docker exec engine-dev bash -c 'cd /src/build && ENGINE_EXPECT_GPUS=2 ctest -L g
 | `gguf_test` | 1 | the GGUF reader against the census of the IQ3_S file |
 | `direct_test` | 1 | the loader's thread probe reads the largest shard, and gives 8 threads without reading a file under 1 GiB; no card, no model |
 | `mrope_test` | 1 | the M-RoPE positions an image gives a prompt's cells, against transformers' rule; no card |
-| `experts_test` | 1 | the CPU's expert products with and without the SwiGLU limit, against the formula on ggml's dot products, 1e-5; no card |
+| `experts_test` | 1 | the CPU's expert products with and without the SwiGLU limit, on both of `compute_many`'s paths, against the formula on ggml's dot products, 1e-5; no card |
 | `quant_test` | 1 | every quantised type's block size and fields against ggml's, the runs layout on random blocks, those blocks' values within the size of the files' weights, and ggml's CPU dot product against its dequantisation; no card |
-| `cpu_experts_test` | 1 | the CPU's expert path keeps its one pool job for every down type of the deepseek41 and Flash-Next files, and its results for several tokens at once equal one token's bit for bit, on random blocks; no card |
+| `cpu_experts_test` | 1 | the CPU's expert path keeps its one pool job for every down type of the deepseek41 and Flash-Next files, and its results for several tokens at once equal one token's bit for bit, on random blocks. On ggml's own blocks of the types in its second list, against ggml's dots row by row, bit for bit: the one-job path, seen in the pool jobs a run starts, the three-job path at a K that is no whole number of h's tasks, down read through unequal parts against the whole row, equal parts against one dot per part, a run repeated; no card, no model |
 | `ze_smoke_test` | 2 | a kernel runs on every card, and one card waits on another's event |
 | `matvec_test` | 3 | the weight products of every quantised type on random blocks, and of every type the file holds on its rows, against ggml's dequantisation, 1e-5 |
 | `moe_test` | 3 | the decode step's grouped expert products of `moe.cl` equal `matvec.cl`'s bit for bit, for every type `moe.cl` takes on random blocks and every one the file holds on its experts, and every group size |

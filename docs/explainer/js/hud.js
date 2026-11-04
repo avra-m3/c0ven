@@ -1,7 +1,8 @@
 // Everything on screen around the 3D view: stopwatch, choices, endings, reveal panel, labels. Also the list of floors
 // and moving between them, because a floor's reveal buttons need that.
-import { $, scene, stage, toScreen, up, view } from "./world.js";
+import { $, reduced, scene, showFloor, stage, toScreen, up, view } from "./world.js";
 import { sleep } from "./motion.js";
+import { parkCar, ride } from "./lift.js";
 
 export const floors = {};
 export const endings = {};
@@ -83,19 +84,25 @@ export function placeLabels(F) {
   }
 }
 
-// Moves to a floor behind a fade, resets it, and starts its narration.
+// Moves to a floor by lift, resets it, and starts its narration. Replaying a floor, or with reduced motion, it fades.
 export async function goFloor(n) {
   clearStage();
-  $("fade").classList.add("on");
-  await sleep(0.6);
-  view.floor = n;
-  const F = floors[n];
-  scene.fog.near = F.camera.fog[0]; scene.fog.far = F.camera.fog[1];
-  setFloorHud(n);
-  $("history").innerHTML = ""; ran.clear();
-  setClock(0, 0); showEndings();
-  F.enter();
-  $("fade").classList.remove("on");
-  await sleep(0.4);
+  const from = floors[view.floor], F = floors[n];
+  const enter = () => {
+    view.floor = n;
+    showFloor(n);
+    scene.fog.near = F.camera.fog[0]; scene.fog.far = F.camera.fog[1];
+    setFloorHud(n);
+    $("history").innerHTML = ""; ran.clear();
+    setClock(0, 0); showEndings();
+    F.enter();
+  };
+  if (from === F || reduced) {
+    $("fade").classList.add("on");
+    await sleep(0.6);
+    enter(); parkCar(F);
+    $("fade").classList.remove("on");
+    await sleep(0.4);
+  } else await ride(from, F, enter);
   F.start();
 }

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstring>
 #include <immintrin.h>
 #include <numeric>
 #include <stdexcept>
@@ -30,10 +31,25 @@ inline float swiglu_one(float g, float u, float limit) {
 constexpr uint32_t kRowsGU = 16, kRowsH = 32, kRowsDown = 32, kMaxRowsH = 256;
 static_assert(kRowsH % kRowsGU == 0);
 
+// Row r of a down with unequal parts (ExpertWeights::down_blocks), its blocks together again in this thread's buffer.
+const uint8_t *joined_row(const ExpertWeights &ew, uint32_t r, uint32_t E, uint32_t down_type) {
+  thread_local std::vector<uint8_t> row;
+  const size_t block = ggml_type_size((ggml_type)down_type);
+  const size_t first = ew.down_blocks[0] * block, second = ew.down_blocks[1] * block;
+  row.resize(first + second);
+  std::memcpy(row.data(), ew.down + r * first, first);
+  std::memcpy(row.data() + first, ew.down + E * first + r * second, second);
+  return row.data();
+}
+
 // Row r of an expert's down against h (quantised to the down's dot-product type), F values: in one dot, or with the
-// row stored in parts (ExpertWeights::down_parts) as one dot per part, added in order.
+// row stored in equal parts (ExpertWeights::down_parts) as one dot per part, added in order.
 void down_row(const ggml_type_traits_cpu *dt, const ExpertWeights &ew, uint32_t r, uint32_t E, uint32_t F,
               uint32_t down_type, const uint8_t *hq, float *out) {
+  if (ew.down_blocks[0]) {
+    dt->vec_dot((int)F, out, 0, joined_row(ew, r, E, down_type), 0, hq, 0, 1);
+    return;
+  }
   const uint32_t parts = ew.down_parts, Fp = F / parts;
   const size_t prow = ggml_row_size((ggml_type)down_type, Fp), hp = ggml_row_size(dt->vec_dot_type, Fp);
   if (parts == 1) {
@@ -54,6 +70,18 @@ void down_row(const ggml_type_traits_cpu *dt, const ExpertWeights &ew, uint32_t 
 constexpr uint32_t kRowsTogether = 16;
 void down_rows(DotRows dr, const ggml_type_traits_cpu *dt, const ExpertWeights &ew, uint32_t r, uint32_t E, uint32_t F,
                uint32_t down_type, const uint8_t *hq, size_t hq_bytes, const std::vector<uint32_t> &js, float *out) {
+  if (ew.down_blocks[0]) {
+    const uint8_t *row = joined_row(ew, r, E, down_type);
+    for (size_t j0 = 0; j0 < js.size(); j0 += kRowsTogether) {
+      const uint32_t R = (uint32_t)std::min<size_t>(kRowsTogether, js.size() - j0);
+      const void *ys[kRowsTogether];
+      float v[kRowsTogether];
+      for (uint32_t i = 0; i < R; i++) ys[i] = hq + js[j0 + i] * hq_bytes;
+      dr((int)F, row, ys, (int)R, v);
+      for (uint32_t i = 0; i < R; i++) out[(size_t)js[j0 + i] * E + r] = v[i];
+    }
+    return;
+  }
   const uint32_t parts = ew.down_parts, Fp = F / parts;
   const size_t prow = ggml_row_size((ggml_type)down_type, Fp), hp = ggml_row_size(dt->vec_dot_type, Fp);
   for (size_t j0 = 0; j0 < js.size(); j0 += kRowsTogether) {

@@ -88,7 +88,9 @@ flowchart TB
 
 The front end starts the engine process as its child and talks to it in token ids, one line per message over a pipe
 ([`protocol.py`](../protocol.py)). Every line about a request carries its id. If the engine dies, every request in
-flight gets an error and the next request starts it again. A fault on the cards cannot take down the API
+flight gets an error and the next request starts it again. An engine that fails sends `ERR -` and exits with no
+teardown, because a queue on the cards may never finish and the driver's calls would wait on it; the kernel frees the
+cards. A child that has not exited 10 s after `ERR -` is killed. A fault on the cards cannot take down the API
 ([ADR-0022](adr/0022-two-processes-python-and-cpp.md)).
 
 One engine process drives both cards. Host memory that both cards read must come from one Level Zero context that
@@ -620,6 +622,10 @@ The workers compute each missed expert whole, from its place in the arena, with 
 dot-product type ([MODEL_LAYER.md, section 6](spec/MODEL_LAYER.md#6-numerics-on-llamacpps-cpu-backend)).
 For IQ2_S, IQ3_XXS, IQ3_S and IQ4_NL, a weight row that several rows need is decoded once for up to four of them,
 in ggml's AVX2 steps, so each sum keeps ggml's bits ([ADR-0040](adr/0040-multi-row-dots-for-the-cpus-misses.md)).
+One job runs gate, up, h and down when h's tasks hold whole blocks of the down type's dot-product type: 32 rows, or
+that type's block when it is larger, and K of down is a whole number of them. A down stored in two equal parts takes
+one dot per part. A down stored in parts of unequal width takes one dot over each row's parts joined again, so it has
+the bits of the file's whole row.
 
 The workers sleep between jobs. Workers that kept polling made decode slower on the shared host
 ([the CPU miss path's record](measurements/MEASUREMENTS.md#2026-10-15-cpu-miss-path)).
