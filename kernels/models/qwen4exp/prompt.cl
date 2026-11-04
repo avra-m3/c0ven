@@ -701,7 +701,7 @@ __kernel void p_kv16(__global const uchar *kc, __global const uchar *vc, __globa
 // ---------------------------------------------------------------------------------------------------------------
 // The MoE block
 
-// The router per row, as layer.cl's, by one sub-group of 32 per row: rl[t] holds the 512 router logits then the
+// The router per row, as layer.cl's, by one sub-group of 32 per row: rl[t] holds the Q_EXPERTS router logits then the
 // shared expert's gate. Writes ids[t] and w[t] (Q_USED each). The softmax's sum adds the sub-group's sums of each 32
 // logits in order. Ties in the top 10 go to the lower expert, -0 and +0 being equal. Groups (ceil(T / 4)), 128.
 __attribute__((intel_reqd_sub_group_size(32)))
@@ -817,7 +817,7 @@ __kernel void p_swiglu(__global const float *g, __global const float *u, uint ff
 }
 
 // This card's partial sum of the block for row t: the routed experts' outputs y (fp16, in expert order, found through
-// inv) weighted in rank order, then the shared expert's s gated by sigma(rl[t][512]); as fp16 into out, and into out2
+// inv) weighted in rank order, then the shared expert's s gated by sigma(rl[t][Q_EXPERTS]); as fp16 into out, and into out2
 // when set (the other card's buffer). Two values a work-item, so that a sub-group's store is 64 bytes, which the other
 // card takes at full rate (docs/measurements/MEASUREMENTS.md#2026-10-15-prompt-exchange-stores). Groups (Q_EMBD / 128, T), 64.
 __kernel void p_moe_combine(__global const half *y, __global const uint *inv, __global const float *w,

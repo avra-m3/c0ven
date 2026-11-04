@@ -30,7 +30,7 @@
 #define Q_IDX_CELLS (Q_IDX_TOPK + Q_IDX_BLOCK - 1)  // llama.cpp keeps min(n_kv, 2,051) cells
 #define Q_IDX_BLOCKS (Q_IDX_TOPK / Q_IDX_BLOCK)       // 512
 
-#define Q_EXPERTS 512
+// Q_EXPERTS is a build option of the modules that route experts (kernels/models/qwen4exp/CMakeLists.txt, ADR-0063).
 #define Q_USED 10
 
 #define Q_PLE_DIL 3                 // the PLE conv's dilation (the n-gram size)
