@@ -32,7 +32,3 @@ DRAFT_KV_BYTES = 35_651_584
 """The draft layer's ring of 32,768 cells."""
 RESIDENT_CELLS = 32_768
 """K and V cells kept in VRAM per sequence when KV streams (spec/STRATA_MEMORY.md, section 5)."""
-
-# Per card, outside the layers' weights (MEMORY_BUDGET.md, "Per card, for the tensor split").
-WORKING_PER_CARD = 1_600_663_296
-"""*Estimate*: working buffers per card."""

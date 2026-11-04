@@ -348,7 +348,7 @@ the plan's figures and the core's, and sends it in INFO as `fit_*` facts. The co
 layer on each card as its memory allows, after leaving `reserve_bytes` (512 MiB) free
 ([ADR-0027](adr/0027-the-c-abi-as-the-core-was-optimised.md), item 3). It reports the memory it had left for them
 (`engine_info.expert_budget`). The plan's working memory per card, everything outside the weights, the draft layer,
-the sequences' reserve and the experts, is an estimate until a load shows the core's: with `ENGINE_CACHE_DIR` set, the core's
+the sequences' reserve and the experts, is an estimate from the slots, the context, the KV pool and the drafter until a load shows the core's: with `ENGINE_CACHE_DIR` set, the core's
 figure is kept for each model file, version and set of options, and the next start plans with it.
 
 A model with an SSD tier holds its experts in VRAM, the arena and the SSD: its arena takes what the host can spare, and

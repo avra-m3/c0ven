@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from itertools import pairwise
 from pathlib import Path
@@ -38,7 +38,7 @@ class ModelMemory:
     draft_per_card: int
     working_per_card: int
     """*Estimate*: each card's memory outside the weights, the draft layer, the sequences' reserve and the expert
-    cache, which the plan takes unless PlanOptions.working_per_card gives the core's figure."""
+    cache that no option changes. PlanOptions.working_per_card, the core's figure, replaces this and `working_of`."""
     layers: int
     experts: int
     expert_bytes: int
@@ -59,6 +59,8 @@ class ModelMemory:
     max_context: int
     ngram_bytes: int
     """The n-gram table, which stays in the file unless the plan holds it in RAM."""
+    working_of: Callable[[PlanOptions, int], int] | None = None
+    """*Estimate*: what the options add to `working_per_card`, given them and the KV pool in tokens; None: nothing."""
     card_weights: tuple[int, ...] = ()
     """Each card's weights, bytes, where the cards differ, in place of `weights_per_card`; empty: all hold that."""
     layer_expert_bytes: tuple[int, ...] = ()
@@ -480,7 +482,12 @@ def _plan(m: ModelMemory, o: PlanOptions) -> MemoryPlan:
     if vram is None:
         raise PlanError("no card was read and --card-memory is not set")
     draft = m.draft_per_card if o.draft else 0
-    working = o.working_per_card if o.working_per_card is not None else m.working_per_card
+    pages_per_slot = -(-o.context // PAGE_CELLS)
+    pages = -(-o.kv_tokens // PAGE_CELLS) if o.kv_tokens else o.slots * pages_per_slot + o.cached_prefix_pages
+    if o.working_per_card is not None:
+        working = o.working_per_card
+    else:
+        working = m.working_per_card + (m.working_of(o, pages * PAGE_CELLS) if m.working_of else 0)
     weights = m.weights
     per_sequence = reserve_per_sequence(m, o.context)
     reserve = o.slots * per_sequence
@@ -493,10 +500,8 @@ def _plan(m: ModelMemory, o: PlanOptions) -> MemoryPlan:
             f"{max(weights) / GIB:.2f}, the draft layer {draft / GIB:.2f}, working memory "
             f"{working / GIB:.2f}{staging} and {o.slots} x {o.context:,} positions {reserve / GIB:.2f}."
         )
-    pages_per_slot = -(-o.context // PAGE_CELLS)
     if 0 < o.kv_tokens < o.context:
         raise PlanError(f"a KV pool of {o.kv_tokens:,} tokens holds no sequence of {o.context:,}")
-    pages = -(-o.kv_tokens // PAGE_CELLS) if o.kv_tokens else o.slots * pages_per_slot + o.cached_prefix_pages
     # The host holds every page's K and V (the core's kv_host), and each slot's draft ring.
     streamed = pages * PAGE_CELLS * m.kv_cell_host + o.slots * m.draft_kv_host
     checkpoints = o.checkpoints * m.checkpoint_bytes
