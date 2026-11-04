@@ -14,7 +14,8 @@ check them, how to lay them out, and how to point the engine at them.
 
 At load the engine reads the model's sizes from the file ([ADR-0062](adr/0062-a-models-shape-comes-from-its-file.md)).
 It stops, naming each problem, if a size that is still fixed at build time differs, if the sizes do not fit together, or
-if they do not divide equally between the cards. ISTA-DASLab's Coder file, with 256 experts a layer, is refused this way.
+if they do not divide equally between the cards. The kernels are built for 512 and 256 experts a layer, so a file of
+another count stops the same way ([ADR-0063](adr/0063-a-kernel-module-for-each-expert-count.md)).
 
 ## The model directory
 

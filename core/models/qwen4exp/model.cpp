@@ -137,6 +137,8 @@ Model::Model(const std::string &path, const Options &opt) : opt_(opt), gguf_(pat
   if (ncards_ != 1 && ncards_ != 2) throw std::runtime_error("the engine runs on one or two cards");
   if (const auto bad = split_mismatches(shape_, gguf_.tensors(), ncards_); !bad.empty())
     throw std::runtime_error(path + ": this file does not split over " + std::to_string(ncards_) + " cards: " + bad[0]);
+  layer_module_ = expert_module("qwen4exp", shape_.experts);
+  prompt_module_ = expert_module("qwen4exp_prompt", shape_.experts);
   // The copy engines read an anonymous arena through a userptr binding of each copy's source (ADR-0035, item 2), which
   // needs no shared system USM. Out of fault mode (ADR-0037) the cards report none: 0x0 here.
   for (uint32_t c = 0; c < ncards_ && opt_.anon_arena; c++)
@@ -1108,7 +1110,7 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
   ze::List &L = *list;
   const uint32_t c = card.c, C = ncards_;
   auto common = [&](const char *name) { return kernel(c, "common", name); };
-  auto q4 = [&](const char *name) { return kernel(c, "qwen4exp", name); };
+  auto q4 = [&](const char *name) { return kernel(c, layer_module_, name); };
   const float one = 1.0f, quarter = 0.25f;
   const uint32_t zero = 0, mode_silu = 1;
   // The kernels read the plan from the card's copy: a word in host memory makes each launch slower
@@ -1339,7 +1341,7 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
 void Model::record_commit(Card &card) {
   card.commit = std::make_unique<ze::List>(*rt_, card.c, ze::List::regular);
   ze::List &L = *card.commit;
-  auto q4 = [&](const char *name) { return kernel(card.c, "qwen4exp", name); };
+  auto q4 = [&](const char *name) { return kernel(card.c, layer_module_, name); };
   for (auto &Ly : card.layers) {
     if (Ly.attn) continue;
     L.launch(q4("gdn_conv_commit"), {Ly.wm, Ly.conv_state, Ly.conv_stride, card.nch, cplan_}, (card.nch + 63) / 64, 1, 1,
@@ -1379,7 +1381,7 @@ void Model::wait_commit() {
 void Model::record_head(ze::List &L, Card &card, const StepPlan *plan, uint32_t W) {
   const uint32_t c = card.c;
   auto common = [&](const char *name) { return kernel(c, "common", name); };
-  auto q4 = [&](const char *name) { return kernel(c, "qwen4exp", name); };
+  auto q4 = [&](const char *name) { return kernel(c, layer_module_, name); };
   const float one = 1.0f, quarter = 0.25f;
   const uint32_t zero = 0, mode_silu = 1, gs = Q_EMBD;
   uint16_t *no_bf16 = nullptr;

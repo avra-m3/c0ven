@@ -304,7 +304,7 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
     L.trace(P.trace[key], cap);
   }
   const uint32_t c = card.c, C = ncards_;
-  auto q4 = [&](const char *name) { return kernel(c, "qwen4exp_prompt", name); };
+  auto q4 = [&](const char *name) { return kernel(c, prompt_module_, name); };
   const PromptPlan *pp = pplan_;
   // The runs' plans and positions, for the kernels that follow a sequence: each runs once for all of them, by row or
   // with a group a run (z, `runs` of them); p_kv16 and the long runs' attention once a run, as kh and vh hold one.

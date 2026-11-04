@@ -59,8 +59,6 @@ class ModelMemory:
     max_context: int
     ngram_bytes: int
     """The n-gram table, which stays in the file unless the plan holds it in RAM."""
-    reference_vram: int
-    """One test-machine card's memory, bytes: the plan's card when none is read (the mock and the reference)."""
     card_weights: tuple[int, ...] = ()
     """Each card's weights, bytes, where the cards differ, in place of `weights_per_card`; empty: all hold that."""
     layer_expert_bytes: tuple[int, ...] = ()
@@ -103,7 +101,8 @@ class PlanOptions:
     cards: int = 2
     """Cards the engine runs on: the tensor split's two, or one holding every weight whole."""
     usable_vram: int | None = None
-    """The smallest card's memory, bytes, as Level Zero reports it; None: the model's reference card."""
+    """The smallest card's memory, bytes, as Level Zero reports it, or the mock card's (api/mock.py) where no card is
+    read. None: not known, which `plan` refuses."""
     draft: bool = True
     """The draft layer is loaded, and takes its share of each card."""
     working_per_card: int | None = None
@@ -478,7 +477,9 @@ def _plan(m: ModelMemory, o: PlanOptions) -> MemoryPlan:
         raise PlanError("at least one slot")
     if not 0 < o.context <= m.max_context:
         raise PlanError(f"context {o.context} outside 1..{m.max_context}")
-    vram = o.usable_vram if o.usable_vram is not None else m.reference_vram
+    vram = o.usable_vram
+    if vram is None:
+        raise PlanError("no card was read and --card-memory is not set")
     draft = m.draft_per_card if o.draft else 0
     working = o.working_per_card if o.working_per_card is not None else m.working_per_card
     weights = m.weights
