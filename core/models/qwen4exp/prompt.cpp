@@ -73,7 +73,7 @@ void Model::load_prompt(Card &card) {
   P.xb = u16(T * Q_EMBD);
   P.ab = f32(T * 2 * card.nvh);
   P.gb = f32(T * 2 * card.nvh);
-  const uint64_t ow = std::max(card.nvh * Q_GDN_D, card.nq * Q_ATT_D);
+  const uint64_t ow = std::max(card.nvh * shape_.gdn_d, card.nq * Q_ATT_D);
   P.o16 = u16(T * ow);
   // Region A: the mix (n, nb, a), the experts (xg, hg, yg), or the PLE module (pk, N).
   {
@@ -94,7 +94,8 @@ void Model::load_prompt(Card &card) {
   {
     // The scores of this card's blocks only, as p_idx_score writes them: rows nbl apart.
     const uint64_t nbl = (opt_.max_ctx / Q_IDX_BLOCK + ncards_ - 1) / ncards_;
-    uint64_t gdn[] = {T * card.nch * 4, T * card.nvh * Q_GDN_D * 4, T * card.nch * 4, T * card.nvh * Q_GDN_D * 4};
+    uint64_t gdn[] = {T * card.nch * 4, T * card.nvh * shape_.gdn_d * 4, T * card.nch * 4,
+                      T * card.nvh * shape_.gdn_d * 4};
     uint64_t att[] = {T * card.nq * 2 * Q_ATT_D * 4, T * card.nkv * Q_ATT_D * 4, T * card.nkv * Q_ATT_D * 4,
                       T * (Q_IDX_H + 1) * Q_IDX_D * 4, T * nbl * 4, T * (Q_IDX_BLOCKS + 1) * 4,
                       T * (Q_IDX_BLOCKS + 1) * 4, T * Q_IDX_CELLS * 4};
@@ -422,7 +423,7 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
     auto peer_part = [&](uint32_t which) { return C > 1 ? peer->recv[(2 * l + which) % 2] : nullptr; };
     auto sent = [&](uint32_t which) { return C > 1 ? (*pevents_)[pev(kEx, 2 * l + which, c)] : nullptr; };
     if (!Ly.attn) {
-      const uint32_t nch = card.nch, nvo = card.nvh * Q_GDN_D;
+      const uint32_t nch = card.nch, nvo = card.nvh * shape_.gdn_d;
       dense(Ly.qkv, P.x16, Q_EMBD, P.m, nch, false);
       dense(Ly.z, P.x16, Q_EMBD, P.z, nvo, false);
       gemm(true, Ly.ab, 2 * card.nvh, Q_EMBD, P.xb, Q_EMBD, P.ab, 2 * card.nvh, false, 0, one, nullptr, 4, 1);
@@ -430,11 +431,11 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
                1, 64);
       L.launch(q4("p_gdn_conv_save"), {P.m, Ly.conv_state, Ly.conv_stride, nch, runs_p}, (nch + 63) / 64, 1, runs,
                64);
-      L.launch(q4("p_gdn_l2norm"), {P.u, nch, pp}, 2 * card.nkh, T, 1, Q_GDN_D);
+      L.launch(q4("p_gdn_l2norm"), {P.u, nch, pp}, 2 * card.nkh, T, 1, shape_.gdn_d);
       L.launch(q4("p_gdn_gates"), {P.ab, Ly.A, Ly.dt, card.nvh, pp, P.gb}, 1, T, 1, 64);
       L.launch(kernel(c, "qwen4exp_gdn", "p_gdn_recur"),
                {P.u, nch, P.gb, Ly.S, Ly.S_stride, card.nkh, card.nvh, runs_p, P.raw}, card.nvh * 8, 1, runs, 64);
-      L.launch(q4("p_gdn_out"), {P.raw, P.z, Ly.ssm_norm, card.nvh, pp, P.o16}, card.nvh, T, 1, Q_GDN_D);
+      L.launch(q4("p_gdn_out"), {P.raw, P.z, Ly.ssm_norm, card.nvh, pp, P.o16}, card.nvh, T, 1, shape_.gdn_d);
       dense(Ly.out, P.o16, nvo, P.part, Q_EMBD, true, peer_part(0), sent(0));
     } else {
       const uint32_t nqo = card.nq * Q_ATT_D;

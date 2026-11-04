@@ -30,6 +30,7 @@ struct Shape {
   bool attn(uint32_t l) const { return (l + 1) % attn_interval == 0; }  // else a Gated DeltaNet layer
   uint32_t attn_layers() const { return layers / attn_interval; }
   uint32_t hc_dim() const { return hc * embd; }
+  uint32_t ple_hist() const { return gdn_conv ? ple_dil * (gdn_conv - 1) : 0; }  // positions of history
 };
 
 // The file's sizes, from GgufModel::metadata() and tensors(). Throws when a key or output.weight is missing, a value

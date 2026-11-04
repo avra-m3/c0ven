@@ -165,6 +165,10 @@ int main() {
     EXPECT(shape_mismatches(s, t).empty(), "24 layers: '%s'", shape_mismatches(s, t).at(0).c_str());
     EXPECT(s.layers == 24 && s.vocab == 1000, "the file's sizes");
     EXPECT(s.attn(3) && !s.attn(4) && s.attn(23) && s.attn_layers() == 6, "which layers are attention");
+    EXPECT(s.ple_hist() == Q_PLE_HIST, "positions of PLE history");
+    auto no_conv = s;
+    no_conv.gdn_conv = 0;
+    EXPECT(no_conv.ple_hist() == 0, "a convolution size of 0 does not wrap");
   }
 
   // Rules the sizes have to keep.
