@@ -14,22 +14,9 @@
 
 #define Q_EMBD 2560
 #define Q_HC_DIM (Q_HC * Q_EMBD)    // 10,240
-#define Q_EPS 1e-6f
 
-#define Q_GDN_D 128                 // head size
-#define Q_GDN_CONV 4
-
-#define Q_ATT_H 24                  // query heads
-#define Q_ATT_KV 2                  // KV heads; query head h reads KV head h / 12
-#define Q_ATT_D 256
 #define Q_ATT_SLOTS 16  // p_attn_xmx's query slots a KV head: its 12 heads, rounded up to 8 (prompt_attn.cl)
-#define Q_ROT 64                    // rotated dimensions per head, NeoX pairs (i, i + 32)
-#define Q_ROPE_BASE 10000000.0f
 
-#define Q_IDX_H 4                   // indexer query heads
-#define Q_IDX_D 128
-#define Q_IDX_BLOCK 4               // positions per pooled key
-#define Q_IDX_TOPK 2048
 #define Q_IDX_CELLS (Q_IDX_TOPK + Q_IDX_BLOCK - 1)  // llama.cpp keeps min(n_kv, 2,051) cells
 #define Q_IDX_BLOCKS (Q_IDX_TOPK / Q_IDX_BLOCK)       // 512
 
@@ -101,7 +88,9 @@ SHARED_ASSERT(sizeof(SlotRope) == 32, "SlotRope layout");
 // raw and pooled keys live on card p % C at local page p / C, so logical page i maps only to a page with
 // p % C == i % C. The draft layer's KV is not paged: its kernels get no table, and slot s's logical page i is page
 // s npp + i of its own pool.
-SHARED_ASSERT(KV_PAGE_CELLS == Q_IDX_BLOCK, "a page is one indexer block");
+#ifdef __OPENCL_C_VERSION__
+SHARED_ASSERT(KV_PAGE_CELLS == Q_IDX_BLOCK, "a page is one indexer block");  // shape.cpp's static_assert checks this
+#endif
 #define KV_NO_PAGE 0xffffffffu
 
 // A cell's index in the pool, from the page holding it and its position in the sequence.
