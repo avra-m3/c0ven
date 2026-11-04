@@ -170,16 +170,17 @@ void Model::load_mtp(Card &card) {
     M.hc_down[i] = dev16(down);
     M.hc_up[i] = dev16(up_rows(tensor(p + "input_mix_weight_up.weight", (size_t)shape_.hc_dim() * shape_.hc_lr)));
   }
-  M.q = dev16(rows(tensor("mtp.layers.0.self_attn.q_proj.weight", (size_t)Q_ATT_H * 2 * Q_ATT_D * E), E,
-                   (size_t)2 * Q_ATT_D * q0, (size_t)2 * Q_ATT_D * card.nq));
-  M.k = dev16(rows(tensor("mtp.layers.0.self_attn.k_proj.weight", (size_t)Q_ATT_KV * Q_ATT_D * E), E,
-                   (size_t)Q_ATT_D * kv0, (size_t)Q_ATT_D * card.nkv));
-  M.v = dev16(rows(tensor("mtp.layers.0.self_attn.v_proj.weight", (size_t)Q_ATT_KV * Q_ATT_D * E), E,
-                   (size_t)Q_ATT_D * kv0, (size_t)Q_ATT_D * card.nkv));
-  M.o = dev16(cols(tensor("mtp.layers.0.self_attn.o_proj.weight", (size_t)E * Q_ATT_H * Q_ATT_D), E, Q_ATT_H * Q_ATT_D,
-                   (size_t)Q_ATT_D * q0, (size_t)Q_ATT_D * card.nq));
-  M.qn = norm("mtp.layers.0.self_attn.q_norm.weight", Q_ATT_D, 1.0f);
-  M.kn = norm("mtp.layers.0.self_attn.k_norm.weight", Q_ATT_D, 1.0f);
+  M.q = dev16(rows(tensor("mtp.layers.0.self_attn.q_proj.weight", (size_t)shape_.att_h * 2 * shape_.att_key * E), E,
+                   (size_t)2 * shape_.att_key * q0, (size_t)2 * shape_.att_key * card.nq));
+  M.k = dev16(rows(tensor("mtp.layers.0.self_attn.k_proj.weight", (size_t)shape_.att_kv * shape_.att_key * E), E,
+                   (size_t)shape_.att_key * kv0, (size_t)shape_.att_key * card.nkv));
+  M.v = dev16(rows(tensor("mtp.layers.0.self_attn.v_proj.weight", (size_t)shape_.att_kv * shape_.att_key * E), E,
+                   (size_t)shape_.att_key * kv0, (size_t)shape_.att_key * card.nkv));
+  M.o = dev16(cols(tensor("mtp.layers.0.self_attn.o_proj.weight", (size_t)E * shape_.att_h * shape_.att_key), E,
+                   shape_.att_h * shape_.att_key,
+                   (size_t)shape_.att_key * q0, (size_t)shape_.att_key * card.nq));
+  M.qn = norm("mtp.layers.0.self_attn.q_norm.weight", shape_.att_key, 1.0f);
+  M.kn = norm("mtp.layers.0.self_attn.k_norm.weight", shape_.att_key, 1.0f);
   {
     auto r = tensor("mtp.layers.0.mlp.gate.weight", (size_t)kMtpExperts * E);
     auto g = tensor("mtp.layers.0.mlp.shared_expert_gate.weight", E);
@@ -303,7 +304,7 @@ void Model::load_mtp(Card &card) {
       }
     }
   }
-  M.kv_stride = (uint64_t)opt_.max_ctx * card.nkv * KV_HEAD_BYTES;
+  M.kv_stride = (uint64_t)opt_.max_ctx * card.nkv * shape_.kv_head_bytes();
   M.kc = upload<uint8_t>(card, nullptr, opt_.slots * M.kv_stride);
   M.vc = upload<uint8_t>(card, nullptr, opt_.slots * M.kv_stride);
   constexpr size_t W = STEP_MAX_ROWS;
@@ -382,23 +383,24 @@ void Model::record_mtp(Card &card, uint32_t W, uint32_t Wr, bool chain) {
   L.launch(q4("mtp_sum"), {M.hs, M.e, pl, M.R}, shape_.hc_dim() / 64, W, 1, 64);
   // Attention, densely over its own cells: every row's K and V into its cell, then the rest's rows attend.
   hc_mix(M.hc_norm[0], M.hc_down[0], M.hc_up[0], card.inj[0], lw, pl, W);
-  bf16mv(M.q, card.nq * 2 * Q_ATT_D, E, card.xbf16, nrows, card.Q);
-  bf16mv(M.k, card.nkv * Q_ATT_D, E, card.xbf16, nrows, card.Kt);
-  bf16mv(M.v, card.nkv * Q_ATT_D, E, card.xbf16, nrows, card.Vt);
+  bf16mv(M.q, card.nq * 2 * shape_.att_key, E, card.xbf16, nrows, card.Q);
+  bf16mv(M.k, card.nkv * shape_.att_key, E, card.xbf16, nrows, card.Kt);
+  bf16mv(M.v, card.nkv * shape_.att_key, E, card.xbf16, nrows, card.Vt);
   // The draft layer's KV is not paged: no table, and each slot's own run of pages (layout.h).
   const uint32_t *no_table = nullptr, mnpp = opt_.max_ctx / KV_PAGE_CELLS;
   const uint8_t *no_kv = nullptr;  // the draft layer's KV is not streamed
   L.launch(q4("attn_prep"), {card.Q, card.Kt, card.Vt, M.qn, M.kn, card.nq, card.nkv, M.kc, M.vc, no_table, mnpp, pl,
-                             rope_, no_kv, no_kv, no_table}, card.nq + card.nkv, W, 1, Q_ATT_D);
+                             rope_, no_kv, no_kv, no_table}, card.nq + card.nkv, W, 1, shape_.att_key);
   if (Wr > 0) {
     L.launch(q4("mtp_cells"), {M.first, pr, card.cells, card.ncells}, Wr, 1, 1, 256);
     L.launch(q4("attn_split"), {card.Q, M.kc, M.vc, no_table, mnpp, card.nq, card.nkv, card.cells, card.ncells, pr,
-                                card.att, no_table}, card.nkv, Wr, kAttSplits, Q_ATT_D);
+                                card.att, no_table}, card.nkv, Wr, kAttSplits, shape_.att_key);
     uint8_t *no_a8 = nullptr;
-    L.launch(q4("attn_merge"), {card.Q, card.nq, card.ncells, pr, card.att, card.o, no_a8}, card.nq, Wr, 1, Q_ATT_D);
+    L.launch(q4("attn_merge"), {card.Q, card.nq, card.ncells, pr, card.att, card.o, no_a8}, card.nq, Wr, 1,
+             shape_.att_key);
     float *p1 = mex1_ + (size_t)c * STEP_MAX_ROWS * E;
-    to_bf16(card.o, card.nq * Q_ATT_D, nrest, card.xb16, Wr);
-    bf16mv(M.o, E, card.nq * Q_ATT_D, card.xb16, nrest, p1, (*mevents_)[0 * C + c]);
+    to_bf16(card.o, card.nq * shape_.att_key, nrest, card.xb16, Wr);
+    bf16mv(M.o, E, card.nq * shape_.att_key, card.xb16, nrest, p1, (*mevents_)[0 * C + c]);
     exchange(0, mex1_, card.inj[0] + shape_.hc_lr);
     // The MoE block: every expert on the cards.
     hc_mix(M.hc_norm[1], M.hc_down[1], M.hc_up[1], card.inj[1], lw, pr, Wr);
