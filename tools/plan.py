@@ -13,6 +13,7 @@ import argparse
 from pathlib import Path
 
 import protocol
+from engine.api.mock import CARD_MEMORY
 from engine.memory_plan import PlanError, PlanOptions
 from engine.process import architecture, model_module
 
@@ -34,7 +35,11 @@ def main(argv: list[str] | None = None) -> int:
     arch = args.arch or (architecture(args.model) if args.model is not None else ARCH)
     setup = model_module(arch)
     options = PlanOptions(
-        slots=args.slots, context=args.context, checkpoints=args.checkpoints, kv_tokens=args.kv_tokens
+        usable_vram=CARD_MEMORY,
+        slots=args.slots,
+        context=args.context,
+        checkpoints=args.checkpoints,
+        kv_tokens=args.kv_tokens,
     )
     try:
         draft = setup.draft_dir(args.model) if args.model is not None else None

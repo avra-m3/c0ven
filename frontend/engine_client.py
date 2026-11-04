@@ -33,6 +33,10 @@ LINE_LIMIT = 16 * 2**20
 """The longest line read: a 262K-token prompt is ~2 MB of ids as text."""
 
 
+FAILED_EXIT_S = 10.0
+"""How long a child that sent ERR - has to exit before it is killed. Its requests get their errors at its exit."""
+
+
 class EngineUnavailable(RuntimeError):
     pass
 
@@ -258,6 +262,13 @@ class EngineClient:
                 if isinstance(event, protocol.Error) and rid is None:
                     log.error("the engine failed: %s", event.message)
                     self._control.put_nowait(event)
+                    try:
+                        async with asyncio.timeout(FAILED_EXIT_S):
+                            await process.wait()
+                    except TimeoutError:
+                        log.error("the engine did not exit after it failed; killing it")
+                        with contextlib.suppress(ProcessLookupError):
+                            process.kill()
                     break
                 if isinstance(event, protocol.StatsReport):
                     self._stats.put_nowait(event)
