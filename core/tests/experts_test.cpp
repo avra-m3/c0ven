@@ -1,7 +1,8 @@
 // Level 1 (docs/TESTING.md): CpuExperts' SwiGLU limit (ExpertShape::swiglu_limit) against the formula written out
 // here, applied to ggml's dot products of the same weights. compute and compute_many, the latter with h made in step
-// with gate and up (Q8_0 down) and after them (Q4_K down), with an expert that several tokens share. With the limit 0
-// the result is the plain product. Skips (77) on a CPU without the features the pinned ggml build uses.
+// with gate and up (Q8_0 and Q4_K down) and after them (F32 down at K 100), with an expert that several tokens share.
+// With the limit 0 the result is the plain product. Skips (77) on a CPU without the features the pinned ggml build
+// uses.
 #include <algorithm>
 #include <cmath>
 #include <random>
@@ -84,10 +85,18 @@ int main() {
   std::mt19937 rng(11);
   std::normal_distribution<float> normal(0.0f, 1.0f);
   // Gate and up values with a standard deviation of about 8, so a limit of 10 clamps a fair share of them.
-  const uint32_t E = 256, F = 256, NEXP = 3, NTOK = 3;
+  const uint32_t E = 256, NEXP = 3, NTOK = 3;
   const float LIMIT = 10.0f;
   int failures = 0;
-  for (ggml_type down_type : {GGML_TYPE_Q8_0, GGML_TYPE_Q4_K}) {
+  // pool_jobs tells compute_many's paths apart: 1 with h made in step with gate and up, 3 with h after them.
+  const struct {
+    ggml_type down_type;
+    uint32_t F;
+    uint64_t pool_jobs;
+  } kCases[] = {{GGML_TYPE_Q8_0, 256, 1}, {GGML_TYPE_Q4_K, 256, 1}, {GGML_TYPE_F32, 100, 3}};
+  for (const auto &c : kCases) {
+    const ggml_type down_type = c.down_type;
+    const uint32_t F = c.F;
     std::vector<Expert> experts(NEXP);
     for (auto &ex : experts) {
       std::vector<float> f((size_t)F * E);
@@ -126,7 +135,10 @@ int main() {
                     t, e, ok ? "ok" : "FAIL");
       }
       std::vector<float> y((size_t)NTOK * E);
+      const uint64_t runs_before = pool.runs_started();
       cpu.compute_many(s, jobs, NTOK, x.data(), E, y.data(), E);
+      EXPECT(pool.runs_started() - runs_before == c.pool_jobs, "down %s: compute_many ran %llu pool jobs",
+             ggml_type_name(down_type), (unsigned long long)(pool.runs_started() - runs_before));
       for (uint32_t t = 0; t < NTOK; t++) {
         std::vector<float> got(y.begin() + t * E, y.begin() + (t + 1) * E);
         double e = rel_error(got, want[t]);

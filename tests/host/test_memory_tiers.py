@@ -14,6 +14,7 @@ from engine.memory_plan import GIB, SSD_TIER_HEADROOM, ModelMemory, PlanError, P
 from engine.models.qwen4exp.memory import model_memory
 from engine.models.qwen4exp.tensors import from_tsv
 from engine.process import report
+from tests.helpers import plan_options
 
 MIB = 2**20
 TABLE = from_tsv()
@@ -21,7 +22,7 @@ TABLE = from_tsv()
 # qwen4exp's plan for each set of options, as literals: (options, the plan's fields). A change here changes Flash-Next.
 GOLDEN = [
     (
-        PlanOptions(),
+        plan_options(),
         {
             "cards": 2,
             "usable_vram": 24385683456,
@@ -43,7 +44,7 @@ GOLDEN = [
         },
     ),
     (
-        PlanOptions(slots=1, context=32768),
+        plan_options(slots=1, context=32768),
         {
             "cards": 2,
             "usable_vram": 24385683456,
@@ -65,7 +66,7 @@ GOLDEN = [
         },
     ),
     (
-        PlanOptions(slots=4, context=32768),
+        plan_options(slots=4, context=32768),
         {
             "cards": 2,
             "usable_vram": 24385683456,
@@ -87,7 +88,7 @@ GOLDEN = [
         },
     ),
     (
-        PlanOptions(slots=4, context=262144),
+        plan_options(slots=4, context=262144),
         {
             "cards": 2,
             "usable_vram": 24385683456,
@@ -109,7 +110,7 @@ GOLDEN = [
         },
     ),
     (
-        PlanOptions(slots=2, context=65536, draft=False),
+        plan_options(slots=2, context=65536, draft=False),
         {
             "cards": 2,
             "usable_vram": 24385683456,
@@ -131,7 +132,7 @@ GOLDEN = [
         },
     ),
     (
-        PlanOptions(slots=4, context=32768, kv_tokens=262144),
+        plan_options(slots=4, context=32768, kv_tokens=262144),
         {
             "cards": 2,
             "usable_vram": 24385683456,
@@ -153,7 +154,7 @@ GOLDEN = [
         },
     ),
     (
-        PlanOptions(slots=1, context=32768, cards=1),
+        plan_options(slots=1, context=32768, cards=1),
         {
             "cards": 1,
             "usable_vram": 24385683456,
@@ -175,7 +176,7 @@ GOLDEN = [
         },
     ),
     (
-        PlanOptions(slots=1, context=262144, usable_vram=34359738368),
+        plan_options(slots=1, context=262144, usable_vram=34359738368),
         {
             "cards": 2,
             "usable_vram": 34359738368,
@@ -197,7 +198,7 @@ GOLDEN = [
         },
     ),
     (
-        PlanOptions(slots=1, context=32768, ngram_in_ram=True, host_memory=68719476736, ram_max=51539607552),
+        plan_options(slots=1, context=32768, ngram_in_ram=True, host_memory=68719476736, ram_max=51539607552),
         {
             "cards": 2,
             "usable_vram": 24385683456,
@@ -219,7 +220,7 @@ GOLDEN = [
         },
     ),
     (
-        PlanOptions(slots=1, context=32768, working_per_card=1073741824, checkpoints=0),
+        plan_options(slots=1, context=32768, working_per_card=1073741824, checkpoints=0),
         {
             "cards": 2,
             "usable_vram": 24385683456,
@@ -291,11 +292,11 @@ def test_qwen4exps_plan_is_what_it_was(options: PlanOptions, expected: dict[str,
 
 
 def test_qwen4exps_plan_rows_are_what_they_were():
-    assert plan(model_memory(TABLE), PlanOptions()).rows() == GOLDEN_ROWS
+    assert plan(model_memory(TABLE), plan_options()).rows() == GOLDEN_ROWS
 
 
 def test_qwen4exps_fit_report_is_what_it_was():
-    p = plan(model_memory(TABLE), PlanOptions(host_memory=64 * GIB))
+    p = plan(model_memory(TABLE), plan_options(host_memory=64 * GIB))
     the_host = Host(
         mem_total=90 * GIB,
         mem_available=64 * GIB,
@@ -360,7 +361,6 @@ def three_tiers(**more: object) -> ModelMemory:
         "checkpoint_bytes": 0,
         "max_context": 4096,
         "ngram_bytes": 0,
-        "reference_vram": 4 * GIB,
         "layer_expert_bytes": (8 * MIB, 8 * MIB, 12 * MIB, 12 * MIB),
         "ssd_tier": True,
         "engram_cache": 256 * MIB,
@@ -373,7 +373,7 @@ def three_tiers(**more: object) -> ModelMemory:
 
 def options(host_gib: float | None) -> PlanOptions:
     limit = None if host_gib is None else round(host_gib * GIB)
-    return PlanOptions(context=4096, checkpoints=0, host_working=GIB, host_memory=limit)
+    return plan_options(usable_vram=4 * GIB, context=4096, checkpoints=0, host_working=GIB, host_memory=limit)
 
 
 def test_three_tiers_from_what_the_host_has():
@@ -405,7 +405,9 @@ def test_the_arena_is_capped_by_what_is_left_to_hold():
 def test_the_streamed_kv_and_checkpoints_come_out_of_the_arena():
     """512 MiB of KV (1,024 pages of 4 cells, 128 KiB a cell) and 512 MiB of checkpoints, on top of the host above."""
     m = three_tiers(kv_cell_host=128 * 1024, checkpoint_bytes=256 * MIB)
-    o = PlanOptions(context=4096, checkpoints=2, host_working=GIB, host_memory=(24 + 1 + 1 + 1 + 1) * GIB)
+    o = plan_options(
+        usable_vram=4 * GIB, context=4096, checkpoints=2, host_working=GIB, host_memory=(24 + 1 + 1 + 1 + 1) * GIB
+    )
     p = plan(m, o)
     assert p.streamed_kv_bytes + p.checkpoint_bytes == GIB
     assert p.arena_bytes == 1016 * MIB
@@ -427,12 +429,16 @@ def test_a_host_short_of_the_memory_outside_the_arena_is_still_refused():
 
 
 def test_the_ram_max_limit_sizes_the_arena():
-    o = PlanOptions(context=4096, checkpoints=0, host_working=GIB, host_memory=100 * GIB, ram_max=27 * GIB)
+    o = plan_options(
+        usable_vram=4 * GIB, context=4096, checkpoints=0, host_working=GIB, host_memory=100 * GIB, ram_max=27 * GIB
+    )
     assert plan(three_tiers(), o).arena_bytes == 1016 * MIB
 
 
 def test_the_ngram_table_in_ram_comes_out_of_the_arena():
-    o = PlanOptions(context=4096, checkpoints=0, host_working=GIB, host_memory=27 * GIB, ngram_in_ram=True)
+    o = plan_options(
+        usable_vram=4 * GIB, context=4096, checkpoints=0, host_working=GIB, host_memory=27 * GIB, ngram_in_ram=True
+    )
     assert plan(three_tiers(ngram_bytes=GIB), o).arena_bytes == 0
 
 
