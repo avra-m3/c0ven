@@ -6,6 +6,7 @@ import io
 import json
 import subprocess
 import sys
+import textwrap
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -21,7 +22,7 @@ from engine.api.reference import ReferenceEngine
 from engine.process import SwapWatch, architecture, cache_dir, make_engine, model_module, read_cost, serve
 from engine.scheduler import SchedulerOptions, every_16k
 from engine.timing import CostModel
-from tests.helpers import open_config, write_gguf
+from tests.helpers import open_config, plan_options, write_gguf
 
 
 def run_engine(lines: list[str], *args: str) -> list[protocol.Event]:
@@ -403,11 +404,11 @@ def test_the_fit_report_is_in_the_info_line():
 
 
 def test_the_core_far_from_the_plan_is_noted():
-    from engine.memory_plan import PlanOptions, plan  # noqa: PLC0415
+    from engine.memory_plan import plan  # noqa: PLC0415
     from engine.models.qwen4exp.memory import model_memory  # noqa: PLC0415
     from engine.models.qwen4exp.tensors import from_tsv  # noqa: PLC0415
 
-    p = plan(model_memory(from_tsv()), PlanOptions())
+    p = plan(model_memory(from_tsv()), plan_options())
     assert fit.card_notes(p, p.experts_per_layer + 3) == []
     assert "the core caches" in fit.card_notes(p, p.experts_per_layer + 60)[0]
     assert fit.card_notes(p, p.experts_per_layer, p.working_per_card + 2**20) == []
@@ -418,13 +419,13 @@ def test_the_whole_fit_report_after_a_load(tmp_path: Path):
     import dataclasses  # noqa: PLC0415
 
     from engine import host  # noqa: PLC0415
-    from engine.memory_plan import PlanOptions, plan  # noqa: PLC0415
+    from engine.memory_plan import plan  # noqa: PLC0415
     from engine.models.qwen4exp.memory import model_memory  # noqa: PLC0415
     from engine.models.qwen4exp.tensors import from_tsv  # noqa: PLC0415
     from engine.process import report  # noqa: PLC0415
     from tests.helpers import open_config as config  # noqa: PLC0415
 
-    p = plan(model_memory(from_tsv()), PlanOptions())
+    p = plan(model_memory(from_tsv()), plan_options())
     card = host.Card("B60", "0000:03:00.0", 24 * 2**30, 0xE211, (20 << 22) | (1 << 14), 20, 5, 8, -1)
     facts = dataclasses.replace(MockEngine().open(config()), host_read_bytes_per_s=40e9)
     rows, _ = report(host.read(tmp_path, affinity={0, 1}), [card, card], p, 2, facts)
@@ -488,6 +489,68 @@ def test_the_cost_model_is_kept_at_a_sleep(tmp_path: Path):
     )
     assert status == 0
     assert read_cost(file) is not None
+
+
+class FailsAtSubmit(MockEngine):
+    """A core whose plan failed, as when a list times out."""
+
+    closed = False
+
+    def submit(self, plan: StepPlan) -> None:
+        raise RuntimeError("card 0 did not finish a list in 60 s")
+
+    def close(self) -> None:
+        self.closed = True
+        super().close()
+
+
+def test_a_failed_engine_says_so_and_does_not_close_the_core():
+    engine = FailsAtSubmit()
+    out = io.StringIO()
+    stdin = cast("TextIO", lines_apart([protocol.Gen(1, 4, tuple(range(3, 40))).encode()], 0.0, 30.0))
+    status = serve(engine, open_config(), rule=every_16k, options=SchedulerOptions(), stdin=stdin, stdout=out)
+    assert status == 1
+    assert not engine.closed
+    last = protocol.parse_event(out.getvalue().splitlines()[-1])
+    assert isinstance(last, protocol.Error)
+    assert last.rid is None
+    assert "did not finish a list" in last.message
+
+
+# The engine's own entry point, with a core that fails its first plan, and whose close and exit-time teardown would
+# both wait for as long as the test does: the failed process has to skip both.
+STUCK_ENGINE = """
+    import atexit, runpy, sys, time
+    from engine import process
+    from engine.api.mock import MockEngine
+
+    class Stuck(MockEngine):
+        def submit(self, plan):
+            raise RuntimeError("card 0 did not finish a list in 60 s")
+        def close(self):
+            time.sleep(600)
+
+    process.make_engine = lambda *args: Stuck()
+    atexit.register(time.sleep, 600)
+    sys.argv = ["engine", "--backend", "mock", "--arch", "qwen4exp"]
+    runpy.run_module("engine", run_name="__main__")
+"""
+
+
+def test_a_failed_engine_exits_without_waiting_on_its_teardown():
+    argv = [sys.executable, "-c", textwrap.dedent(STUCK_ENGINE)]
+    p = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    assert p.stdin is not None
+    assert p.stdout is not None
+    try:
+        p.stdin.write(protocol.Gen(1, 4, tuple(range(3, 40))).encode() + "\n")
+        p.stdin.flush()
+        assert p.wait(timeout=30) == 1
+        events = [protocol.parse_event(line) for line in p.stdout]
+    finally:
+        p.kill()
+    assert isinstance(events[-1], protocol.Error)
+    assert "did not finish a list" in events[-1].message
 
 
 def test_a_cost_file_that_does_not_read_is_left_for_the_estimates(tmp_path: Path):

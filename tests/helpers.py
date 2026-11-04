@@ -7,12 +7,15 @@ import asyncio
 from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import gguf
 from tokenizers import Tokenizer, pre_tokenizers
 
 import protocol
 from engine.api.interface import EngineFacts, OpenConfig
+from engine.api.mock import CARD_MEMORY
+from engine.memory_plan import PlanOptions
 from frontend.engine_client import EngineUnavailable
 from frontend.images import PromptImage
 from frontend.model import Model
@@ -97,6 +100,11 @@ def write_gguf(path: Path, arch: str, template: str = "") -> None:
 def tiny_model(tokenizer: Tokenizer) -> Model:
     stop = frozenset(i for t in ("<|im_end|>", "<|endoftext|>") if (i := tokenizer.token_to_id(t)) is not None)
     return Model("tiny", tokenizer, ChatTemplate(TINY_TEMPLATE), stop, protocol.Settings(), "tiny.gguf")
+
+
+def plan_options(*, usable_vram: int = CARD_MEMORY, **given: Any) -> PlanOptions:
+    """PlanOptions for the mock card, or the size given."""
+    return PlanOptions(usable_vram=usable_vram, **given)
 
 
 def open_config(slots: int = 2, context: int = 4096, pages: int | None = None, checkpoints: int = 4) -> OpenConfig:

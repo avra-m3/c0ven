@@ -10,7 +10,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="style.css">
 </head>
-<body>
+<body class="at-start">
 <div id="stage"></div>
 <div id="fade"></div>
 
@@ -67,12 +67,18 @@
 
 <div class="tags" id="tags" hidden></div>
 
+<div class="ride-skip" id="rideSkip">Click or press Space to hurry the lift</div>
+
 <div class="start" id="start">
   <div class="start-card">
     <span class="k">Meridian Words Ltd. · Night shift</span>
     <h1>Meridian Words</h1>
-    <p>A 48-floor building that writes one word at a time. Three floors are open. Sound on for the narrator; captions are always shown.</p>
-    <div class="floors" id="floors"></div>
+    <p>A 48-floor tower that writes one word at a time. Tonight you carry them up. Sound on for the narrator; captions are always shown.</p>
+    <div class="directory">
+      <span class="ph">Directory</span>
+      <div class="floors" id="floors"></div>
+      <div class="closed"><i>04&ndash;48</i>Closed for refurbishment</div>
+    </div>
   </div>
 </div>
 
