@@ -11,11 +11,13 @@
 namespace engine {
 
 // One expert's three matrices in the file's layout: gate and up are rows x K, down is K_out x rows. With down_parts
-// of 2, down is stored as two regions one after the other, the first half of every row's blocks and then the second
-// (each card stages only its own region for a prompt); the CPU dots the halves and adds them.
+// of 2, down is two regions, the first part of every row's blocks and then the second (a card stages only its own for
+// a prompt). down_blocks zero means equal parts, and the CPU adds one dot per part. Otherwise it holds each part's
+// width in blocks, summing to a whole row, and the CPU dots each row joined again, with the bits of the file's row.
 struct ExpertWeights {
   const uint8_t *gate = nullptr, *up = nullptr, *down = nullptr;
   uint32_t down_parts = 1;
+  uint16_t down_blocks[2] = {0, 0};
 };
 
 struct ExpertShape {

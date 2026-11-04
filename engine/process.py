@@ -56,6 +56,9 @@ GATHER_S = 0.002
 """After a GEN reaches an idle engine, the loop waits this long for the next command before it plans, so requests
 sent together read their prompts in one plan."""
 
+FAILED_WRITE_S = 5.0
+"""How long a failed engine waits for its last lines to reach the pipe before it exits anyway."""
+
 VMSTAT_KEYS = ("pswpout", "compact_stall")
 """What a load is checked by: pages the host swapped out, and the times an allocation stalled to compact memory
 (ADR-0032)."""
@@ -475,18 +478,21 @@ def serve(
         swap_watch.stop()
         if state is not State.ASLEEP:  # asleep, it was written at the sleep
             write_cost(cost_file, scheduler.cost)
-        try:
-            engine.close()
-        except EngineError:
-            log.exception("close failed")
+        # After a failure a queue on the cards may never finish, and closing would wait on it. The process is ending,
+        # so the kernel frees the cards.
+        if status == 0:
+            try:
+                engine.close()
+            except EngineError:
+                log.exception("close failed")
         events.put(None)
-        writer.join()
+        writer.join(FAILED_WRITE_S if status else None)
     return status
 
 
 def card_memory(reported: list[int], limit_gib: float | None) -> int | None:
     """The memory the plan gives each card: the smallest card's, or `--card-memory` when that is less (the core keeps
-    to it through card_reserve). None: the model's reference card (no cards were read and no limit is set)."""
+    to it through card_reserve). None: no cards were read and no limit is set."""
     limit = round(limit_gib * GIB) if limit_gib is not None else None
     sizes = [*reported, *([limit] if limit is not None else [])]
     return min(sizes) if sizes else None
@@ -520,9 +526,14 @@ def main(argv: list[str] | None = None) -> int:
             print(protocol.Error(None, f"cards: {exc}").encode(), flush=True)
             return 1
     used = cards[:2]
+    card_size = card_memory([c.memory for c in used], args.card_memory)
+    if card_size is None and not native:
+        from engine.api.mock import CARD_MEMORY  # noqa: PLC0415
+
+        card_size = CARD_MEMORY
     options = PlanOptions(
         cards=len(used) if used else 2,
-        usable_vram=card_memory([c.memory for c in used], args.card_memory),
+        usable_vram=card_size,
         slots=args.slots,
         context=args.context,
         checkpoints=args.checkpoints,
