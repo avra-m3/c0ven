@@ -269,6 +269,7 @@ experts were not read.
 | The plan's first estimate of working memory per card against the core's, IQ3_S, 15 loads on one and two cards, 1-4 slots, context 4,096-262,144, MTP, DFlash and no drafter | within 0.04 GiB; 3.36 against 3.37 GiB at 1 slot and 262,144 tokens, where the fixed 1.49 GiB was 1.88 GiB short | <a id="2026-11-04-working-memory-estimate"></a>[2026-11-04](#2026-11-04-working-memory-estimate) |
 | What the core holds per card with no context and no KV pool, reserve included | 2.26 GiB on two cards (2.23-2.29), 1.75 GiB on one (1.74-1.76); the same at 20 GiB of card memory and on UD-IQ4_XS | [2026-11-04](#2026-11-04-working-memory-estimate) |
 | A first load at 1 slot and 262,144 tokens, then a 255k prompt, same check | the estimate: n-gram table in the file, first token 119.41 s, no pages swapped out; the fixed 1.49 GiB: table in RAM, stopped at 21.9 GiB free, 240,394 pages swapped out | [2026-11-04](#2026-11-04-working-memory-estimate) |
+| The plan's experts a layer with the prompt path's staging, against the core's "at least" count, IQ3_S, 5 first loads on one and two cards | 338 against 337, 302 against 302, 151 against 151, 110 against 110, 124 against 124; the plan's arena within 0.10 GiB of the core's | [2026-11-04](#2026-11-04-working-memory-estimate) |
 
 ### Prompts
 
