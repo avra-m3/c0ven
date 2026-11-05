@@ -44,7 +44,7 @@ typedef struct {
   uint64_t reserve_bytes;      /* device memory per card the core does not count on; default 1 GiB */
   uint32_t prompt_chunk;       /* tokens per prompt pass at most, a multiple of 64; default 4352; with the flag, 0
                                   turns the prompt path off */
-  uint32_t checkpoints;        /* slot checkpoints held in host memory, each a slot's fixed state; default 2 */
+  uint32_t checkpoints;        /* slot checkpoints held in host memory, each a slot's fixed state; 0: none */
   const char *routing_profile; /* the profile that chooses the cached experts; null: the engine's own */
   const char *mtp_dir;         /* the draft (MTP) layer's tensors; null: no drafting */
   uint32_t draft_max;          /* drafts per round at most, 1-7; default 3 */
