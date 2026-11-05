@@ -31,8 +31,8 @@ or the cards write host memory much faster or slower.
 ## Why
 
 - First token on one card, against the windows: long-gen 0.80 → 0.75 s, gpqa-1 1.25 → 1.21 s, edit-py 1.60 → 1.53 s,
-  doc-4k-qa 2.69 → 2.64 s, doc-32k 21.45 → 21.29 s; on two cards, a 255,017-token prompt's 118.9 → 118.0 s. Decode per
-  window is level or better on every request but one, 0.4% slower there
+  doc-4k-qa 2.69 → 2.64 s; doc-32k, read after a short prompt only, 21.32 → 21.25 s. Decode per window is level or
+  better on every request but one, 0.4% slower there
   ([MEASUREMENTS.md](../measurements/MEASUREMENTS.md#2026-11-05-last-rows-in-the-chunk)).
 - Host memory, not the card's: the cards' memory holds experts, and 118 MB is about one expert a layer.
 - Whole lines: a lane of the recurrence holds one column, so its stores down the column, 4 bytes each, cost a marked
