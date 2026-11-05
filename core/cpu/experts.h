@@ -55,7 +55,7 @@ class CpuExperts {
  private:
   Pool &pool_;
   std::vector<uint8_t> xq_, hq_;
-  std::vector<float> g_, u_, out_;
+  std::vector<float> g_, u_, out_, hf_;
   std::vector<uint8_t> xqm_;
 };
 
