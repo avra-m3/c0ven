@@ -603,8 +603,11 @@ and a request behind that round would wait for it.
 
 The prompt path reads up to 4,352 tokens in one pass on both cards, from up to four sequences at once. The products
 run on the cards' matrix units (XMX). Each card's copy engine streams the experts the card does not cache from the
-arena, two layers ahead, so the CPU computes nothing for a prompt. That streaming is most of a short chunk's time, and
-prompts read in one chunk share it ([ADR-0017](adr/0017-scheduling-several-requests.md), item 2). An image's encoder
+arena, two layers ahead. That streaming is most of a short chunk's time, and prompts read in one chunk share it
+([ADR-0017](adr/0017-scheduling-several-requests.md), item 2). On one card, in a chunk of 1,024 rows or fewer, the CPU
+computes the uncached experts that three rows or fewer picked, in place of copying them
+([ADR-0066](adr/0066-on-one-card-the-cpu-computes-a-short-chunks-rarest-experts.md)); otherwise it computes nothing for a
+prompt. An image's encoder
 runs just before the chunk that holds the image's tokens. Its weights stream through the prompt path's staging slots,
 so it holds no VRAM of its own ([ADR-0031](adr/0031-images-through-the-prompt-path.md)).
 [DEVELOPING.md](DEVELOPING.md#how-a-prompt-chunk-runs) gives the kernels.

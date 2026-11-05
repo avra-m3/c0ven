@@ -143,13 +143,13 @@ consecutive tokens of up to four sequences (`Model::prompt_runs`):
 - A run of up to 8 rows (`PROMPT_SHORT_RUN`) attends as the decode step does, from the 8-bit cache over the cells the
   indexer chose (`p_attn_rows`), with no fp16 copy. The core adds writing slots' next tokens to a chunk with runs to
   spare, as runs of one row ([ADR-0053](adr/0053-writers-rows-ride-in-a-prompt-chunk.md)): they get a token from the
-  chunk instead of waiting for it, and the CPU computes none of their experts, since the chunk stages every expert.
+  chunk instead of waiting for it, and their experts come with the chunk's.
 - Products run on the XMX units: BF16 weights directly, quantised dense weights dequantised to fp16 just before
   their product ([`kernels/gemm.cl`](../kernels/gemm.cl), [`kernels/quant/qgemm.cl`](../kernels/quant/qgemm.cl)).
   The experts' assignments are grouped by expert on the card, and each expert's tile of up to 64 rows is computed
   with its weights decoded on the fly.
-- Each card stages the experts it does not cache into a staging buffer on the card, two layers' worth in turn, so
-  the CPU computes nothing for a prompt. For a chunk of more than 1,024 rows a list recorded at load on the card's
+- Each card stages the experts it does not cache into a staging buffer on the card, two layers' worth in turn. For a
+  chunk of more than 1,024 rows a list recorded at load on the card's
   copy engine copies every uncached expert from the arena. For a chunk of 1,024 rows or fewer a thread per card
   writes them through the CPU's mapping of the buffer (`fetch_experts`): each layer's uncached experts, hottest first
   by the swap counts, until the layer's router has run, then the rest the router picked. The chunk's list waits for
@@ -159,6 +159,11 @@ consecutive tokens of up to four sequences (`Model::prompt_runs`):
   copies through an immediate list, which the runtime makes from the anonymous arena with the CPU
   ([measurements/LEVEL_ZERO.md](measurements/LEVEL_ZERO.md) row 31;
   [the record](measurements/MEASUREMENTS.md#2026-10-21-short-chunk-fetch)).
+- On one card, in those chunks, an uncached expert that three rows or fewer picked is not staged (`kCpuRows`):
+  `p_moe_scan` gives it no tiles and `rare_experts`, on the engine thread and the workers, computes it. The chunk's list
+  copies each layer's `xg` to host memory, and waits before the staged products until the CPU has written its rows of
+  `yg` through its mapping of the region
+  ([ADR-0066](adr/0066-on-one-card-the-cpu-computes-a-short-chunks-rarest-experts.md)).
 - The cards exchange fp16 partial sums. The kernel that makes a card's partial sum also writes it into the other
   card's memory while it computes, 64 bytes per store. Stores of 32 bytes or less cross at a tenth of the rate
   ([the record](measurements/MEASUREMENTS.md#2026-10-15-prompt-exchange-stores)).
