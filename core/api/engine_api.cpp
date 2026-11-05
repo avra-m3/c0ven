@@ -1310,6 +1310,14 @@ engine_status engine_open(const engine_config *config, engine_info *info, engine
                                      : e->model->draft_max_default();
     if (config->draft_min_p > 0) e->draft_min_p = config->draft_min_p;
     e->swaps = opt.adapt_swaps;
+    // The rounds until one chooses nothing, before any request: a load's first round can record the prompt path's copy
+    // list again, and a request behind that round would wait for it.
+    if (e->swaps) {
+      do {
+        e->model->swap_round(64, false);
+        while (!e->model->swaps_ready()) std::this_thread::sleep_for(kIdleStep);
+      } while (!e->model->swaps_settled());
+    }
     e->t_open = now_ns();
     e->stats.experts_cached = e->model->experts_cached();
     e->stats.experts_floor = e->model->experts_floor();

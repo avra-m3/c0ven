@@ -35,8 +35,8 @@ depends on the host and is not read.
    and the fit report gives the rate.
 5. **The loader's thread count is the fastest of 4, 8 and 16** on a 256 MiB read of the model file, kept in
    `ENGINE_MTP_CACHE_DIR` beside the draft layer's cache. `ENGINE_LOADER_THREADS` sets it.
-6. **The n-gram table is read into RAM when the host has room for it**: with the table beside the plan, a quarter of
-   the host's memory, at least 8 GiB, stays free. Otherwise it stays in the file
+6. **The n-gram table is read into RAM when the host has room for it**: with the table beside the plan, half of the
+   host's memory, at least 8 GiB, stays free. Otherwise it stays in the file
    ([ADR-0015](0015-ngram-table-on-the-ssd.md)). `--ngram-ram on|off` forces either.
 7. **A plan that does not fit is refused before the load.** The message names the figure that does not fit and gives
    options that do. `--ram-max` sets a host memory limit of the user's own.
