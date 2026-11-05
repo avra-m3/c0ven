@@ -19,11 +19,8 @@ SYSTEM = 8_678
 ASSISTANT = 74_455
 NEWLINE = 198
 
-# Per sequence, the engine's 8-bit KV (Q8_0, 32 values in 34 B; ADR-0008; MEMORY_BUDGET.md, "Per sequence").
-KV_CELL_BYTES_PER_LAYER = 1_088
-"""K and V of one attention layer, per token."""
-INDEXER_CELL_BYTES_PER_LAYER = 136
-"""The indexer's keys of one attention layer, per token."""
+# Per sequence (MEMORY_BUDGET.md, "Per sequence"). K and V and the indexer's keys come from the tensor table
+# (memory.py).
 DELTANET_STATE_BYTES = 3_268_608
 """One DeltaNet layer's state (spec/MODEL_LAYER.md, 2.7)."""
 PLE_HISTORY_BYTES = 368_640

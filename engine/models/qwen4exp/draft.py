@@ -32,7 +32,7 @@ _UNUSED = ".indexer."
 DFLASH_RING = 2112
 """K and V cells a slot keeps per DFlash 2 layer (core/models/qwen4exp/layout.h, DF_RING)."""
 Q8_BLOCK = (32, 34)
-"""The MTP layer's K and V on the cards: 34 bytes per 32 values."""
+"""The 8-bit K and V and indexer keys on the cards, the MTP layer's too: 34 bytes per 32 values (layout.h, Q8_BLOCK)."""
 IQ4_NL_BLOCK = (32, 18)
 """The MTP layer's experts on the cards: 18 bytes per 32 values."""
 
