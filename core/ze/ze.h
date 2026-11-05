@@ -26,7 +26,7 @@ struct Card {
   ze_device_handle_t device = nullptr;
   std::string name;
   std::string pci;                 // bus address, "0000:03:00.0"
-  uint64_t memory = 0;             // device-local memory, bytes
+  uint64_t memory = 0;             // device-local memory, bytes: the physical size where the driver reports it
   uint64_t max_alloc = 0;          // maxMemAllocSize
   uint32_t compute_ordinal = 0;    // command queue group with compute
   uint32_t copy_ordinal = UINT32_MAX;  // a copy-only group, if the card has one

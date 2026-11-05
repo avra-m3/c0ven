@@ -199,8 +199,8 @@ class EngineFacts:
 
 IMAGE_PATCH_BYTES = 768
 
-CORE_RESERVE = 512 * 2**20
-"""The device memory the core leaves free on each card by default (engine_config.reserve_bytes)."""
+CORE_RESERVE = 2**30
+"""The device memory per card the core does not count on, by default (engine_config.reserve_bytes)."""
 """One frame of a patch: 16 x 16 pixels, 8-bit RGB, channel, row, column (spec/MODEL_VISION.md, section 2.2)."""
 
 
