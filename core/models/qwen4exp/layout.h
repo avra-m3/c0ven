@@ -1,5 +1,5 @@
-// qwen4exp's sizes, and the layout of its per-sequence state and KV cache: the one definition, read by the core and
-// by the kernels (C++20 and OpenCL C). The model is docs/spec/MODEL_LAYER.md and MODEL_IO.md; how a layer is split
+// The layout of qwen4exp's per-sequence state and KV cache, and the records the core and the kernels share (C++20 and
+// OpenCL C). The model is docs/spec/MODEL_LAYER.md and MODEL_IO.md; how a layer is split
 // between the cards is docs/DESIGN.md, section 5.
 #ifndef QWEN4EXP_LAYOUT_H
 #define QWEN4EXP_LAYOUT_H
@@ -7,39 +7,27 @@
 #include "step.h"
 #include "types.h"
 
-#define Q_EMBD 2560
-#define Q_HC 4                      // residual streams
+// The kernels see the sizes in kernel_sizes.h. Model code in the core does not, and reads them from Shape (ADR-0064).
+#ifdef __OPENCL_C_VERSION__
+#include "kernel_sizes.h"
+#endif
+
 #define Q_HC_DIM (Q_HC * Q_EMBD)    // 10,240
-#define Q_HC_LR 320
-#define Q_EPS 1e-6f
 
-#define Q_GDN_D 128                 // head size
-#define Q_GDN_CONV 4
-
-#define Q_ATT_H 24                  // query heads
-#define Q_ATT_KV 2                  // KV heads; query head h reads KV head h / 12
-#define Q_ATT_D 256
 #define Q_ATT_SLOTS 16  // p_attn_xmx's query slots a KV head: its 12 heads, rounded up to 8 (prompt_attn.cl)
-#define Q_ROT 64                    // rotated dimensions per head, NeoX pairs (i, i + 32)
-#define Q_ROPE_BASE 10000000.0f
 
-#define Q_IDX_H 4                   // indexer query heads
-#define Q_IDX_D 128
-#define Q_IDX_BLOCK 4               // positions per pooled key
-#define Q_IDX_TOPK 2048
 #define Q_IDX_CELLS (Q_IDX_TOPK + Q_IDX_BLOCK - 1)  // llama.cpp keeps min(n_kv, 2,051) cells
 #define Q_IDX_BLOCKS (Q_IDX_TOPK / Q_IDX_BLOCK)       // 512
 
-#define Q_EXPERTS 512
-#define Q_USED 10
+// Q_EXPERTS is a build option of the modules that route experts (kernels/models/qwen4exp/CMakeLists.txt, ADR-0063).
 
-#define Q_PLE_DIL 3                 // the PLE conv's dilation (the n-gram size)
 #define Q_PLE_HIST (Q_PLE_DIL * (Q_GDN_CONV - 1))  // 9 positions of history
 
 // The DFlash 2 drafter (docs/MODEL_FILES.md, "The DFlash 2 drafter"): Qwen3-shaped layers that read the main
 // model's hidden states at five layers. Its norms take no +1.
+#define DF_EMBD 2560                  // its hidden size; the main file's embedding must equal it
 #define DF_LAYERS 5
-#define DF_FEAT (DF_LAYERS * Q_EMBD)  // 12,800: the five layers' means of the streams, one after another
+#define DF_FEAT (DF_LAYERS * DF_EMBD)  // 12,800: the five layers' means of the streams, one after another
 #define DF_H 32                       // query heads
 #define DF_KV 8                       // KV heads; query head h reads KV head h / 4
 #define DF_D 128
@@ -51,19 +39,34 @@
 #define DF_ROPE_BASE 10000.0f
 #define DF_EPS 1e-6f
 #define DF_MASK 248077                // the token of a block's rows after its first
+#ifdef __OPENCL_C_VERSION__
+#if Q_EMBD != DF_EMBD
+#error "dflash.cl mixes the main model's embedding with the drafter's hidden size"
+#endif
+#endif
 
 // The decode step's doorbell with the CPU (ADR-0011): the reader does a system-scope acquire fence, then a volatile
 // load. Card 0 writes one record per layer in host memory, its step last; the CPU computes the misses and answers by
 // its own flag. A layer with no miss is skipped by both.
+#define MISS_USED 10    // the experts a record holds: its layout does not follow the file
+#define MISS_EMBD 2560  // the values of the block's input it holds, the same way
+#ifdef __OPENCL_C_VERSION__
+#if Q_USED > MISS_USED
+#error "a MissJob holds fewer experts than the kernels route"
+#endif
+#if Q_EMBD > MISS_EMBD
+#error "a MissJob holds fewer values than the kernels' embedding"
+#endif
+#endif
 typedef struct {
   u32 seq;                 // the step, written last, behind a release fence
   u32 nmiss;               // experts not on the cards
-  i32 ids[Q_USED];         // the misses' ids, then their weights
-  float w[Q_USED];
-  i32 all[Q_USED];         // every routed expert's id, for the swaps' counts
-  float x[Q_EMBD];         // the MoE block's input
+  i32 ids[MISS_USED];      // the misses' ids, then their weights
+  float w[MISS_USED];
+  i32 all[MISS_USED];      // every routed expert's id, for the swaps' counts
+  float x[MISS_EMBD];      // the MoE block's input
 } MissJob;
-SHARED_ASSERT(sizeof(MissJob) == 128 + 4 * Q_EMBD, "MissJob layout");
+SHARED_ASSERT(sizeof(MissJob) == 8 + 12 * MISS_USED + 4 * MISS_EMBD, "MissJob layout");
 
 // A slot's rotation in a decode step (docs/spec/MODEL_VISION.md, section 4.2). With images in the prompt a position is
 // three numbers (time, height, width) and no longer the cell: a decode row at cell c turns by c - delta on all three.
@@ -93,7 +96,9 @@ SHARED_ASSERT(sizeof(SlotRope) == 32, "SlotRope layout");
 // raw and pooled keys live on card p % C at local page p / C, so logical page i maps only to a page with
 // p % C == i % C. The draft layer's KV is not paged: its kernels get no table, and slot s's logical page i is page
 // s npp + i of its own pool.
-SHARED_ASSERT(KV_PAGE_CELLS == Q_IDX_BLOCK, "a page is one indexer block");
+#ifdef __OPENCL_C_VERSION__
+SHARED_ASSERT(KV_PAGE_CELLS == Q_IDX_BLOCK, "a page is one indexer block");  // shape.cpp's static_assert checks this
+#endif
 #define KV_NO_PAGE 0xffffffffu
 
 // A cell's index in the pool, from the page holding it and its position in the sequence.

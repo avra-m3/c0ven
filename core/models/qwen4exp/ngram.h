@@ -33,10 +33,10 @@ class Ngram {
   // there is none).
   std::array<uint64_t, 16> rows(int32_t t, int32_t p1, int32_t p2) const;
 
-  // u: 16 x 160 = 2,560 values, row h at u[160 h], dequantised from IQ4_NL.
+  // u: 16 rows of the table's width w, the file's embedding, row h at u[w h], dequantised from IQ4_NL.
   void gather(int32_t t, int32_t p1, int32_t p2, float *u);
 
-  // The same for n consecutive tokens (p1 and p2 precede tokens[0]): u[i * 2,560 ...] for token i. Each distinct row
+  // The same for n consecutive tokens (p1 and p2 precede tokens[0]): u[i * 16 w ...] for token i. Each distinct row
   // is read once.
   void gather_many(const int32_t *tokens, uint32_t n, int32_t p1, int32_t p2, float *u);
 
@@ -59,7 +59,7 @@ class Ngram {
   uint64_t vocab_[16], offset_[16];
   int64_t reset_;
   int fd_ = -1;
-  uint64_t data_offset_ = 0, row_bytes_ = 0;
+  uint64_t data_offset_ = 0, row_bytes_ = 0, row_values_ = 0;
   uint32_t type_ = 0;
   // The cache: direct-mapped, row id % slots; touched only by the calling thread.
   uint32_t slots_ = 0;

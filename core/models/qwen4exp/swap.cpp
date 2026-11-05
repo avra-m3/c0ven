@@ -233,11 +233,11 @@ void Model::start_round(std::vector<float> use, uint32_t max_swaps) {
       Layer &L = card.layers[w.l];
       const ExpertWeights &x = host_layers_[w.l]->weights[w.in];
       const uint32_t f0 = card.c * card.ff, dqk = quant_block_values(d.type);
-      const uint64_t gbpr = Q_EMBD / quant_block_values(g.type), part = ed / x.down_parts;
+      const uint64_t gbpr = shape_.embd / quant_block_values(g.type), part = ed / x.down_parts;
       uint8_t *buf = swap_buf_ + ((i / (ncards_ + 1)) * ncards_ + k) * slot_max;
       to_runs(g.type, {{x.gate, g.row_bytes(), f0, card.ff, 0, gbpr}}, buf);
       to_runs(g.type, {{x.up, g.row_bytes(), f0, card.ff, 0, gbpr}}, buf + L.up_off);
-      to_runs(d.type, {{x.down + card.c * part, d.row_bytes() / x.down_parts, 0, Q_EMBD, 0, card.ff / dqk}},
+      to_runs(d.type, {{x.down + card.c * part, d.row_bytes() / x.down_parts, 0, shape_.embd, 0, card.ff / dqk}},
               buf + L.down_off);
     });
     // The file's pages the round read, back to the host: a long session's swaps would otherwise refill the page
@@ -262,7 +262,7 @@ void Model::fill_piece(uint32_t l, uint32_t e, uint8_t *piece) {
   const uint64_t eg = g.bytes / shape_.experts, ed = d.bytes / shape_.experts;
   std::memcpy(piece, g.data + e * eg, eg);
   std::memcpy(piece + eg, u.data + e * eg, eg);
-  write_down(piece + 2 * eg, d.data + e * ed, Q_EMBD, d.row_bytes(), host_layers_[l]->down_parts);
+  write_down(piece + 2 * eg, d.data + e * ed, shape_.embd, d.row_bytes(), host_layers_[l]->down_parts);
 }
 
 void Model::release_expert(uint32_t l, uint32_t e) {

@@ -5,6 +5,7 @@
 #include <stdexcept>
 #include <variant>
 
+#include "models/qwen4exp/kernel_sizes.h"
 #include "models/qwen4exp/layout.h"
 #include "quant.h"
 
@@ -37,6 +38,11 @@ const std::vector<int64_t> &ints_of(const std::map<std::string, GgufValue> &meta
   if (!v) throw std::runtime_error("GGUF key is not an integer array: qwen4exp." + key);
   return *v;
 }
+
+static_assert(KV_PAGE_CELLS == Q_IDX_BLOCK, "a page is one indexer block");
+
+// The counts kernels/models/qwen4exp/CMakeLists.txt builds modules for.
+constexpr uint32_t kBuiltExperts = 512, kBuiltExpertsSmall = 256;
 
 std::string shape_text(const std::vector<uint64_t> &shape) {
   std::string s;
@@ -106,7 +112,6 @@ std::vector<std::string> shape_mismatches(const Shape &s, const std::map<std::st
       {"attention.indexer.key_length", s.idx_d, Q_IDX_D},
       {"attention.indexer.top_k", s.idx_topk, Q_IDX_TOPK},
       {"the largest of attention.compress_ratios", s.idx_block, Q_IDX_BLOCK},
-      {"expert_count", s.experts, Q_EXPERTS},
       {"expert_used_count", s.used, Q_USED},
       {"ple.ngram_size", s.ple_dil, Q_PLE_DIL},
   };
@@ -114,6 +119,8 @@ std::vector<std::string> shape_mismatches(const Shape &s, const std::map<std::st
     if (f.file != f.built)
       bad.push_back(std::string(f.name) + " is " + std::to_string(f.file) + ", this build has " +
                     std::to_string(f.built));
+  if (s.experts != kBuiltExperts && s.experts != kBuiltExpertsSmall)
+    bad.push_back("expert_count is " + std::to_string(s.experts) + ", this build has kernels for 512 and 256");
   if (s.rope_base != Q_ROPE_BASE) bad.push_back("rope.freq_base differs from this build's");
   if (s.eps != Q_EPS) bad.push_back("attention.layer_norm_rms_epsilon differs from this build's");
 
@@ -172,6 +179,10 @@ std::vector<std::string> shape_mismatches(const Shape &s, const std::map<std::st
         bad.push_back(name + " is " + shape_text(it->second.shape) + ", expected " + shape_text(w.shape));
     }
   return bad;
+}
+
+std::string expert_module(const std::string &base, uint32_t experts) {
+  return experts == kBuiltExperts ? base : base + "_e" + std::to_string(experts);
 }
 
 std::vector<std::string> split_mismatches(const Shape &s, const std::map<std::string, GgufTensor> &tensors, uint32_t n) {

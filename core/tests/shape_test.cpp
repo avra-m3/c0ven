@@ -6,12 +6,14 @@
 #include <string>
 #include <vector>
 
+#include "models/qwen4exp/kernel_sizes.h"
 #include "models/qwen4exp/layout.h"
 #include "models/qwen4exp/shape.h"
 #include "test_util.h"
 
 using engine::GgufTensor;
 using engine::GgufValue;
+using engine::qwen4exp::expert_module;
 using engine::qwen4exp::read_shape;
 using engine::qwen4exp::shape_mismatches;
 using engine::qwen4exp::split_mismatches;
@@ -22,7 +24,7 @@ using Meta = std::map<std::string, GgufValue>;
 using Tensors = std::map<std::string, GgufTensor>;
 
 // IQ3_S's sizes that layout.h no longer holds.
-constexpr uint32_t kLayers = 48, kKeyHeads = 16, kValueHeads = 48, kFF = 640, kVocab = 248320;
+constexpr uint32_t kLayers = 48, kKeyHeads = 16, kValueHeads = 48, kFF = 640, kVocab = 248320, kExperts = 512;
 
 // The compress ratios of a file of this many layers: the indexer's block on every fourth layer.
 std::vector<int64_t> ratios_for(uint32_t layers) {
@@ -56,7 +58,7 @@ Meta good_meta() {
   set("attention.indexer.top_k", (int64_t)Q_IDX_TOPK);
   set("attention.compress_ratios", ratios_for(kLayers));
   set("full_attention_interval", (int64_t)4);
-  set("expert_count", (int64_t)Q_EXPERTS);
+  set("expert_count", (int64_t)kExperts);
   set("expert_used_count", (int64_t)Q_USED);
   set("expert_feed_forward_length", (int64_t)kFF);
   set("expert_shared_feed_forward_length", (int64_t)kFF);
@@ -107,16 +109,21 @@ std::string read_error(const Meta &m, const Tensors &t) {
 
 int main() {
   const Meta good = good_meta();
-  const Tensors tensors = tensors_for(Q_EXPERTS);
+  const Tensors tensors = tensors_for(kExperts);
   EXPECT(mismatches(good, tensors).empty(), "a file of this build's shape: '%s'",
          mismatches(good, tensors).at(0).c_str());
 
-  // ISTA-DASLab's Coder: half the experts, in the metadata and the tensors alike.
+  // ISTA-DASLab's Coder: half the experts, in the metadata and the tensors alike. Other counts have no kernels.
   {
     Meta m = good;
     m["qwen4exp.expert_count"] = (int64_t)256;
-    const auto bad = mismatches(m, tensors_for(256));
-    EXPECT(bad.size() == 1 && names(bad, "expert_count is 256, this build has 512"), "a file of 256 experts");
+    EXPECT(mismatches(m, tensors_for(256)).empty(), "a file of 256 experts");
+    m["qwen4exp.expert_count"] = (int64_t)128;
+    const auto bad = mismatches(m, tensors_for(128));
+    EXPECT(bad.size() == 1 && names(bad, "expert_count is 128, this build has kernels for 512 and 256"),
+           "a file of 128 experts");
+    EXPECT(expert_module("qwen4exp", 512) == "qwen4exp", "the 512 module's name");
+    EXPECT(expert_module("qwen4exp_prompt", 256) == "qwen4exp_prompt_e256", "the 256 module's name");
   }
 
   // Metadata that does not describe the tensors.
@@ -152,12 +159,21 @@ int main() {
     Meta m = good;
     m["qwen4exp.block_count"] = (int64_t)24;
     m["qwen4exp.attention.compress_ratios"] = ratios_for(24);
-    Tensors t = tensors_for(Q_EXPERTS, 24);
+    Tensors t = tensors_for(kExperts, 24);
     t["output.weight"].shape[1] = 1000;
     const auto s = read_shape(m, t);
     EXPECT(shape_mismatches(s, t).empty(), "24 layers: '%s'", shape_mismatches(s, t).at(0).c_str());
     EXPECT(s.layers == 24 && s.vocab == 1000, "the file's sizes");
     EXPECT(s.attn(3) && !s.attn(4) && s.attn(23) && s.attn_layers() == 6, "which layers are attention");
+    EXPECT(s.ple_hist() == Q_PLE_HIST, "positions of PLE history");
+    EXPECT(s.kv_head_bytes() == KV_HEAD_BYTES, "a KV head's bytes in a cell");
+    EXPECT(s.idx_key_bytes() == IDX_KEY_BYTES, "an indexer key's bytes in a cell");
+    EXPECT(s.idx_cells() == Q_IDX_CELLS && s.idx_blocks() == Q_IDX_BLOCKS, "the indexer's cells and blocks");
+    EXPECT(s.att_splits() == (Q_IDX_CELLS + 63) / 64, "attn_split's parts");
+    EXPECT(s.idx_cand() == 2 * (Q_IDX_BLOCKS + 1) + 2, "words per row of the indexer's candidates");
+    auto no_conv = s;
+    no_conv.gdn_conv = 0;
+    EXPECT(no_conv.ple_hist() == 0, "a convolution size of 0 does not wrap");
   }
 
   // Rules the sizes have to keep.
@@ -190,6 +206,9 @@ int main() {
     m = good;
     std::get<std::vector<int64_t>>(m["qwen4exp.attention.compress_ratios"]).pop_back();
     EXPECT(names(mismatches(m, tensors), "has 47 values for 48 layers"), "a ratio short");
+    m = good;
+    m["qwen4exp.attention.compress_ratios"] = std::vector<int64_t>(kLayers, 0);
+    EXPECT(names(mismatches(m, tensors), "compress_ratios is 0"), "no layer with a ratio");
   }
 
   // Sharing between cards.

@@ -1,8 +1,11 @@
-// The router's top 10 (docs/spec/MODEL_LAYER.md, 4.2) by one sub-group of RT_SG lanes for a row of 512 logits, lane
+// The router's top 10 (docs/spec/MODEL_LAYER.md, 4.2) by one sub-group of RT_SG lanes for a row of Q_EXPERTS logits, lane
 // holding experts lane + RT_SG j: layer.cl's with sub-groups of 16, prompt.cl's with 32. The includer defines RT_SG.
 #ifndef KERNELS_QWEN4EXP_ROUTE_H
 #define KERNELS_QWEN4EXP_ROUTE_H
 
+#if Q_EXPERTS % RT_SG
+#error "a row of logits must fill the sub-group's lanes"
+#endif
 #define RT_PER (Q_EXPERTS / RT_SG)
 #define RT_CAND (2 * RT_SG)       // the candidates rt_top ranks in registers
 #define RT_SLM (RT_CAND + RT_SG)  // rt_top's local memory: the candidates, then a spare entry per lane

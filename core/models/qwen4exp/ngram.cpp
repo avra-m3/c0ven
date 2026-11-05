@@ -35,6 +35,10 @@ Ngram::Ngram(const GgufModel &model, uint32_t cache_rows, unsigned readers, bool
   const GgufTensor &t = model.tensor("per_layer_token_embd.weight");
   type_ = t.type;
   row_bytes_ = t.row_bytes();
+  row_values_ = t.shape[0];
+  // The 16 literal is the hash's (rows); a row's width is the file's, and gather's caller sized u for one embedding.
+  if (row_values_ * 16 != (uint64_t)model.get_int("qwen4exp.embedding_length"))
+    throw std::runtime_error("the n-gram table's rows do not make one embedding");
   data_offset_ = t.offset;
   if (row_bytes_ > kPage) throw std::runtime_error("n-gram rows larger than a page");
   // ADR-0015: the table is read past the page cache; a filesystem that refuses O_DIRECT stops the engine.
@@ -161,8 +165,9 @@ void Ngram::fill(const std::vector<uint64_t> &ids, uint32_t n, float *u) {
   // Dequantise, then keep the new rows (a later row in the same slot replaces an earlier one). A decode step's few
   // rows are dequantised here: waking the readers would take longer (docs/measurements/MEASUREMENTS.md#2026-10-16-host-glue).
   auto to_float = ggml_get_type_traits((ggml_type)type_)->to_float;
+  const uint64_t w = row_values_;
   auto dequantise = [&](uint64_t i) {
-    for (int h = 0; h < 16; h++) to_float(where[i * 16 + h], u + i * 2560 + 160 * h, 160);
+    for (uint64_t h = 0; h < 16; h++) to_float(where[i * 16 + h], u + (i * 16 + h) * w, w);
   };
   if (n <= 8) {
     for (uint32_t i = 0; i < n; i++) dequantise(i);
