@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from engine.api.interface import CORE_RESERVE
+from engine.api.mock import CARD_MEMORY
 from engine.memory_plan import (
     PlanError,
     PlanOptions,
@@ -225,6 +227,8 @@ def test_the_working_memory_is_the_models_estimate_unless_the_options_give_one()
     assert given.free_per_card == plan(MODEL, plan_options()).free_per_card - 2**30
 
 
+MEASURED_RESERVE = 512 * 2**20
+"""The core's reserve when the figures below were measured, on c0ven 212daad and 05cab3e, with cards of CARD_MEMORY."""
 DFLASH_SHAPES = {f"layers.{n}.self_attn.k_proj.weight": (1024, 2560) for n in range(5)}
 
 
@@ -248,10 +252,12 @@ DFLASH_SHAPES = {f"layers.{n}.self_attn.k_proj.weight": (1024, 2560) for n in ra
 def test_the_working_memory_estimate_is_what_the_core_reported(
     *, cards: int, slots: int, context: int, kv_tokens: int, drafter: str | None, core_gib: float
 ):
-    """The core's figure from a load of each set of options. 0.04 GiB is about 1 expert a layer."""
+    """The core's figure from a load of each set of options, taken with its reserve at 512 MiB. 0.04 GiB is about 1
+    expert a layer."""
     model = model_memory(TABLE, cards, DFLASH_SHAPES if drafter == "dflash" else None)
     options = plan_options(cards=cards, slots=slots, context=context, kv_tokens=kv_tokens, draft=drafter is not None)
-    assert plan(model, options).working_per_card / 2**30 == pytest.approx(core_gib, abs=0.04)
+    planned = plan(model, options).working_per_card - (CORE_RESERVE - MEASURED_RESERVE)
+    assert planned / 2**30 == pytest.approx(core_gib, abs=0.04)
 
 
 @pytest.mark.parametrize(
@@ -266,8 +272,15 @@ def test_the_working_memory_estimate_is_what_the_core_reported(
 def test_the_plans_experts_are_the_cores_before_it_lends_kv_memory(
     *, cards: int, slots: int, context: int, draft: bool, core_experts: int
 ):
-    """The core's "at least" count a layer, from a load of each set of options, with its 2 layers of staging."""
-    options = plan_options(cards=cards, slots=slots, context=context, draft=draft)
+    """The core's "at least" count a layer, from a load of each set of options, with its 2 layers of staging. The
+    card's memory is the size the core read then, past its reserve then."""
+    options = plan_options(
+        cards=cards,
+        slots=slots,
+        context=context,
+        draft=draft,
+        usable_vram=CARD_MEMORY + CORE_RESERVE - MEASURED_RESERVE,
+    )
     assert plan(model_memory(TABLE, cards), options).experts_cached // 48 == pytest.approx(core_experts, abs=2)
 
 
