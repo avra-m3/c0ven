@@ -201,7 +201,8 @@ void Model::record_prompt_copy(Card &card) {
     // On one card the CPU also computes the rarest experts, and writes their rows of yg the same way.
     if (opt_.rare_on_cpu && ncards_ == 1 && P.stage_cpu && P.reg0_cpu) {
       const uint64_t bytes = (uint64_t)std::min(tmax_, kFetchRows) * shape_.used * shape_.embd * 2;
-      P.xg_host = static_cast<uint16_t *>(rt_->alloc_host(bytes));
+      if (!xg_host_) xg_host_ = static_cast<uint16_t *>(rt_->alloc_host(bytes));
+      P.xg_host = xg_host_;
       P.yg_cpu = P.reg0_cpu + (reinterpret_cast<uint8_t *>(P.yg) - P.reg[0]);
       uint8_t *yg = reinterpret_cast<uint8_t *>(P.yg);
       for (uint64_t off = 0; off < bytes; off += piece) P.fetch->copy(yg + off, hl.pieces[0], std::min(piece, bytes - off));

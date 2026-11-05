@@ -337,6 +337,7 @@ class Model final : public engine::Model {
   uint32_t kv_pages_ = 0;  // pages in the pool
   uint32_t kv_res_ = 0;    // streamed (Options::kv_resident): the ring of resident K and V pages a layer on each
                            // card, at most; 0: every page resident
+  uint16_t *xg_host_ = nullptr;  // the inputs of what the CPU computes in a short chunk; kept across sleeps
   std::vector<uint8_t *> kv_host_;  // the host copies of K and V, [card][attention layer][K, V]; kept across sleeps
   std::vector<uint32_t> kvs_to_;    // [slot] the position its pages are claimed through (kvs_claim), 0: not settled
   uint32_t ring_level_ = 0;         // the ring's size on the cards (kst[4])
