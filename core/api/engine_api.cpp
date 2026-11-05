@@ -1272,6 +1272,7 @@ engine_status engine_open(const engine_config *config, engine_info *info, engine
     opt.kv_pages = config->kv_pages;
     opt.kv_resident = config->kv_resident_cells;
     opt.adapt_swaps = (config->flags & ENGINE_CONFIG_SWAPS) != 0;
+    opt.rare_on_cpu = opt.adapt_swaps;  // both change a request's rounding; --deterministic turns both off
     opt.share_kv = (config->flags & ENGINE_CONFIG_SHARE_KV) != 0;
     opt.ngram_in_ram = (config->flags & ENGINE_CONFIG_NGRAM_RAM) != 0;
     auto e = std::make_unique<engine_ctx>();

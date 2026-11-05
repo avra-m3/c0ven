@@ -47,5 +47,8 @@ or two cards should do the same.
 
 - A short chunk's results differ in rounding from a chunk computed wholly on the card. Which drafts a request tries can
   change with it, so decode moves a little either way by request: in the measured set from -3% to +2%.
+- Which experts the CPU computes depends on what shares the chunk, so a prompt's numbers read with others differ in
+  rounding from the same prompt read alone. `--deterministic` turns this off, as it does swaps, and `pack_test`, which
+  asks for an exact match, runs with it off.
 - The workers run during a short chunk on one card.
 - A chunk's list holds one more copy and one more wait a layer on one card, and the event pool two more kinds.

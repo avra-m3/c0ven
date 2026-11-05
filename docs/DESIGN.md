@@ -588,7 +588,8 @@ every 4th plan. While several slots write, a round follows every 16th plan. When
 cards (section 6), a round also moves blocks between them: to the pool when the pages backed above those in use run
 low, and back to the cache, with the most used uncached experts, when many are free. A swap changes which experts the CPU computes, and so their rounding. Tokens repeat
 exactly from run to run only with `--deterministic`, which turns swaps off
-([ADR-0029](adr/0029-the-engine-process-drafts-and-swaps.md)).
+([ADR-0029](adr/0029-the-engine-process-drafts-and-swaps.md)), and the CPU's part in a short chunk
+([ADR-0066](adr/0066-on-one-card-the-cpu-computes-a-short-chunks-rarest-experts.md)).
 A round holds the engine thread only to append the halves' copies, switch the maps and wait for the cards' copies,
 about 3 ms; the swap thread chooses the next round's swaps and builds their halves from the arena behind the steps
 ([the record](measurements/MEASUREMENTS.md#2026-10-20-swap-round-behind-the-steps)).
