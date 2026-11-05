@@ -130,7 +130,7 @@ Model::Model(const std::string &path, const Options &opt) : opt_(opt), gguf_(pat
     throw std::runtime_error(path + ": this build cannot run a file of this shape: " + why);
   }
   if (!opt_.routing_profile) opt_.routing_profile = ENGINE_QWEN4EXP_ROUTING_PROFILE;
-  if (opt_.max_ctx % Q_IDX_BLOCK) throw std::runtime_error("max_ctx must be a multiple of 4");
+  if (opt_.max_ctx % shape_.idx_block) throw std::runtime_error("max_ctx must be a multiple of 4");
   rt_ = std::make_unique<ze::Runtime>(1);
   lib_ = std::make_unique<ze::Library>(*rt_);
   ncards_ = std::min(opt_.max_cards, rt_->ncards());
@@ -149,8 +149,10 @@ Model::Model(const std::string &path, const Options &opt) : opt_(opt), gguf_(pat
   if (opt_.kv_resident) {
     const uint64_t r = (uint64_t)opt_.slots * ((opt_.kv_resident + KV_PAGE_CELLS - 1) / KV_PAGE_CELLS);
     kv_res_ = r < kv_pages_ ? (uint32_t)r : 0;  // a pool no larger than the resident pages is not streamed
-    if (kv_res_ && kv_res_ <= kKvsMaxMiss)
-      throw std::runtime_error("kv_resident must leave more than " + std::to_string(kKvsMaxMiss * KV_PAGE_CELLS / opt_.slots) + " cells a slot resident");
+    if (kv_res_ && kv_res_ <= kvs_max_miss(shape_))
+      throw std::runtime_error("kv_resident must leave more than " +
+                               std::to_string(kvs_max_miss(shape_) * KV_PAGE_CELLS / opt_.slots) +
+                               " cells a slot resident");
   }
   // Sharing moves experts in and out of the cache, so it needs the swaps, and a cache the engine sizes.
   share_ = opt_.share_kv && opt_.adapt_swaps && opt_.experts_per_layer < 0;
@@ -166,18 +168,19 @@ Model::Model(const std::string &path, const Options &opt) : opt_(opt), gguf_(pat
 
   plan_ = static_cast<StepPlan *>(rt_->alloc_host(sizeof(StepPlan)));
   std::memset(plan_, 0, sizeof(StepPlan));
-  embed_ = static_cast<float *>(rt_->alloc_host(STEP_MAX_ROWS * Q_EMBD * 4));
-  ngram_u_ = static_cast<float *>(rt_->alloc_host(STEP_MAX_ROWS * Q_EMBD * 4));
-  ex1_ = static_cast<float *>(rt_->alloc_host((size_t)shape_.layers * ncards_ * STEP_MAX_ROWS * Q_EMBD * 4));
-  ex2_ = static_cast<float *>(rt_->alloc_host((size_t)shape_.layers * ncards_ * STEP_MAX_ROWS * Q_EMBD * 4));
+  embed_ = static_cast<float *>(rt_->alloc_host(STEP_MAX_ROWS * shape_.embd * 4));
+  ngram_u_ = static_cast<float *>(rt_->alloc_host(STEP_MAX_ROWS * shape_.embd * 4));
+  ex1_ = static_cast<float *>(rt_->alloc_host((size_t)shape_.layers * ncards_ * STEP_MAX_ROWS * shape_.embd * 4));
+  ex2_ = static_cast<float *>(rt_->alloc_host((size_t)shape_.layers * ncards_ * STEP_MAX_ROWS * shape_.embd * 4));
   jobs_ = static_cast<MissJob *>(rt_->alloc_host((size_t)shape_.layers * STEP_MAX_ROWS * sizeof(MissJob)));
   std::memset(jobs_, 0, (size_t)shape_.layers * STEP_MAX_ROWS * sizeof(MissJob));
   ans_seq_ = static_cast<uint32_t *>(rt_->alloc_host((size_t)shape_.layers * 64));
   std::memset(ans_seq_, 0, (size_t)shape_.layers * 64);
   stuck_ = static_cast<uint32_t *>(rt_->alloc_host(64));
   *stuck_ = 0;
-  cpu_y_ = static_cast<float *>(rt_->alloc_host((size_t)shape_.layers * STEP_MAX_ROWS * Q_EMBD * 4));
-  icand_ = static_cast<uint32_t *>(rt_->alloc_host((size_t)shape_.attn_layers() * ncards_ * STEP_MAX_ROWS * kIdxCand * 4));
+  cpu_y_ = static_cast<float *>(rt_->alloc_host((size_t)shape_.layers * STEP_MAX_ROWS * shape_.embd * 4));
+  icand_ = static_cast<uint32_t *>(
+      rt_->alloc_host((size_t)shape_.attn_layers() * ncards_ * STEP_MAX_ROWS * shape_.idx_cand() * 4));
   top_idx_ = static_cast<uint32_t *>(rt_->alloc_host((size_t)ncards_ * STEP_MAX_ROWS * opt_.candidates * 4));
   top_val_ = static_cast<float *>(rt_->alloc_host((size_t)ncards_ * STEP_MAX_ROWS * opt_.candidates * 4));
   top_n_ = static_cast<uint32_t *>(rt_->alloc_host(ncards_ * STEP_MAX_ROWS * 4));
@@ -204,10 +207,10 @@ Model::Model(const std::string &path, const Options &opt) : opt_(opt), gguf_(pat
     std::memset(prows_, 0, 2 * 4);
     ppos_ = static_cast<uint32_t *>(rt_->alloc_host((size_t)PROMPT_MAX_RUNS * ppos_run() * 4));
     std::memset(ppos_, 0, (size_t)PROMPT_MAX_RUNS * ppos_run() * 4);
-    pembed_ = static_cast<float *>(rt_->alloc_host((size_t)tmax_ * Q_EMBD * 4));
-    pngram_ = static_cast<float *>(rt_->alloc_host((size_t)tmax_ * Q_EMBD * 4));
-    pngram16_ = static_cast<uint16_t *>(rt_->alloc_host((size_t)tmax_ * Q_EMBD * 2));
-    std::memset(pngram16_, 0, (size_t)tmax_ * Q_EMBD * 2);
+    pembed_ = static_cast<float *>(rt_->alloc_host((size_t)tmax_ * shape_.embd * 4));
+    pngram_ = static_cast<float *>(rt_->alloc_host((size_t)tmax_ * shape_.embd * 4));
+    pngram16_ = static_cast<uint16_t *>(rt_->alloc_host((size_t)tmax_ * shape_.embd * 2));
+    std::memset(pngram16_, 0, (size_t)tmax_ * shape_.embd * 2);
   }
   if (!opt_.mtp_dir.empty() && !init_dflash()) {
     mtp_on_ = true;
@@ -215,9 +218,9 @@ Model::Model(const std::string &path, const Options &opt) : opt_(opt), gguf_(pat
     std::memset(mplan_, 0, sizeof(StepPlan));
     mrest_ = static_cast<StepPlan *>(rt_->alloc_host(sizeof(StepPlan)));
     std::memset(mrest_, 0, sizeof(StepPlan));
-    membed_ = static_cast<float *>(rt_->alloc_host(STEP_MAX_ROWS * Q_EMBD * 4));
-    mex1_ = static_cast<float *>(rt_->alloc_host((size_t)ncards_ * STEP_MAX_ROWS * Q_EMBD * 4));
-    mex2_ = static_cast<float *>(rt_->alloc_host((size_t)ncards_ * STEP_MAX_ROWS * Q_EMBD * 4));
+    membed_ = static_cast<float *>(rt_->alloc_host(STEP_MAX_ROWS * shape_.embd * 4));
+    mex1_ = static_cast<float *>(rt_->alloc_host((size_t)ncards_ * STEP_MAX_ROWS * shape_.embd * 4));
+    mex2_ = static_cast<float *>(rt_->alloc_host((size_t)ncards_ * STEP_MAX_ROWS * shape_.embd * 4));
     mtop_idx_ = static_cast<uint32_t *>(rt_->alloc_host((size_t)ncards_ * STEP_MAX_ROWS * opt_.candidates * 4));
     mtop_val_ = static_cast<float *>(rt_->alloc_host((size_t)ncards_ * STEP_MAX_ROWS * opt_.candidates * 4));
     mtop_n_ = static_cast<uint32_t *>(rt_->alloc_host(ncards_ * STEP_MAX_ROWS * 4));
@@ -611,18 +614,18 @@ void Model::load_card(Card &card) {
     v.insert(v.end(), w.begin(), w.end());
     return up16(v);
   };
-  // The hyper-connections' up projections, rows reordered from stream-major (s * 2560 + i) to value-major
+  // The hyper-connections' up projections, rows reordered from stream-major (s * embd + i) to value-major
   // (i * 4 + s), so the 4 streams of a value sit in 4 neighbouring rows: the prompt path sums them inside its product
   // (gemm_hcmix), and the decode step's hc_mix reads them so.
   auto hc_up_rows = [&](const std::string &name) {
     const GgufTensor &t = src(name);
     const std::vector<uint16_t> w = bf16_values(t);
     const uint64_t K = t.shape[0];
-    const uint32_t hc = shape_.hc;
+    const uint32_t hc = shape_.hc, E = shape_.embd;
     std::vector<uint16_t> v(w.size());
     for (uint32_t st = 0; st < hc; st++)
-      for (uint32_t i = 0; i < Q_EMBD; i++)
-        std::memcpy(&v[((uint64_t)i * hc + st) * K], &w[((uint64_t)st * Q_EMBD + i) * K], K * 2);
+      for (uint32_t i = 0; i < E; i++)
+        std::memcpy(&v[((uint64_t)i * hc + st) * K], &w[((uint64_t)st * E + i) * K], K * 2);
     return up16(v);
   };
   auto gather_f32 = [&](const std::string &name, const Ranges &idx, uint32_t width) {
@@ -665,7 +668,7 @@ void Model::load_card(Card &card) {
     if (!L.attn) {
       L.qkv = mat(card, src(blk(l, "attn_qkv.weight")), qkv_rows);
       L.z = mat(card, src(blk(l, "attn_gate.weight")), z_rows);
-      L.out = mat(card, src(blk(l, "ssm_out.weight")), {{0, Q_EMBD}}, out_cols);
+      L.out = mat(card, src(blk(l, "ssm_out.weight")), {{0, shape_.embd}}, out_cols);
       {
         std::vector<uint16_t> v;
         for (const char *n : {"ssm_alpha.weight", "ssm_beta.weight"}) {
@@ -693,7 +696,7 @@ void Model::load_card(Card &card) {
       L.q = mat(card, src(blk(l, "attn_q.weight")), {{2 * shape_.att_key * q0, 2 * shape_.att_key * card.nq}});
       L.k = mat(card, src(blk(l, "attn_k.weight")), {{shape_.att_key * kv0, shape_.att_key * card.nkv}});
       L.v = mat(card, src(blk(l, "attn_v.weight")), {{shape_.att_key * kv0, shape_.att_key * card.nkv}});
-      L.o = mat(card, src(blk(l, "attn_output.weight")), {{0, Q_EMBD}},
+      L.o = mat(card, src(blk(l, "attn_output.weight")), {{0, shape_.embd}},
                 {{shape_.att_key * q0, shape_.att_key * card.nq}});
       L.qn = f32(blk(l, "attn_q_norm.weight"));
       L.kn = f32(blk(l, "attn_k_norm.weight"));
@@ -711,8 +714,8 @@ void Model::load_card(Card &card) {
         uint32_t R0 = kv_res_;
         if (share_) {
           const uint32_t x = 4 * L.idx;
-          L.kc = kv_region(card, x, page_bytes, 1, kv_res_, kKvsMaxMiss + 1);
-          L.vc = kv_region(card, x + 1, page_bytes, 1, kv_res_, kKvsMaxMiss + 1);
+          L.kc = kv_region(card, x, page_bytes, 1, kv_res_, kvs_max_miss(shape_) + 1);
+          L.vc = kv_region(card, x + 1, page_bytes, 1, kv_res_, kvs_max_miss(shape_) + 1);
           R0 = kv_pages_of(x, 0);
         } else {
           L.kc = upload<uint8_t>(card, nullptr, kv_res_ * page_bytes);
@@ -736,7 +739,7 @@ void Model::load_card(Card &card) {
         // not as referenced last step (CLOCK's second chance), which would leave it no victim.
         std::array<uint32_t, 8> kst0{0, 1, 0, 0, R0, 0, 0, 0};
         L.kst = upload<uint32_t>(card, kst0.data(), 32);
-        L.miss = upload<uint32_t>(card, nullptr, (size_t)2 * kKvsMaxMiss * 4);
+        L.miss = upload<uint32_t>(card, nullptr, (size_t)2 * kvs_max_miss(shape_) * 4);
       }
       if (share_) {  // backed as pages come into use (kv_share.cpp)
         const uint32_t x = 4 * L.idx;
@@ -744,21 +747,21 @@ void Model::load_card(Card &card) {
           L.kc = kv_region(card, x, page_bytes, 1);
           L.vc = kv_region(card, x + 1, page_bytes, 1);
         }
-        L.raw = kv_region(card, x + 2, KV_PAGE_CELLS * IDX_KEY_BYTES, C);
-        L.pooled = reinterpret_cast<float *>(kv_region(card, x + 3, Q_IDX_D * 4, C));
+        L.raw = kv_region(card, x + 2, KV_PAGE_CELLS * shape_.idx_key_bytes(), C);
+        L.pooled = reinterpret_cast<float *>(kv_region(card, x + 3, shape_.idx_d * 4, C));
       } else {
         if (!kv_res_) {
           L.kc = upload<uint8_t>(card, nullptr, cells * card.nkv * shape_.kv_head_bytes());
           L.vc = upload<uint8_t>(card, nullptr, cells * card.nkv * shape_.kv_head_bytes());
         }
-        L.raw = upload<uint8_t>(card, nullptr, own * KV_PAGE_CELLS * IDX_KEY_BYTES);
-        L.pooled = upload<float>(card, nullptr, own * Q_IDX_D * 4);
+        L.raw = upload<uint8_t>(card, nullptr, own * KV_PAGE_CELLS * shape_.idx_key_bytes());
+        L.pooled = upload<float>(card, nullptr, own * shape_.idx_d * 4);
       }
     }
     L.router = bf16_pair(blk(l, "ffn_gate_inp.weight"), blk(l, "ffn_gate_inp_shexp.weight"));
     L.sh_gate = mat(card, src(blk(l, "ffn_gate_shexp.weight")), {{f0, card.ff}});
     L.sh_up = mat(card, src(blk(l, "ffn_up_shexp.weight")), {{f0, card.ff}});
-    L.sh_down = mat(card, src(blk(l, "ffn_down_shexp.weight")), {{0, Q_EMBD}}, {{f0, card.ff}});
+    L.sh_down = mat(card, src(blk(l, "ffn_down_shexp.weight")), {{0, shape_.embd}}, {{f0, card.ff}});
     unstage();
   }
 
@@ -788,20 +791,20 @@ void Model::load_card(Card &card) {
   // The decode step's buffers, for STEP_MAX_ROWS rows.
   constexpr size_t W = STEP_MAX_ROWS;
   auto fbuf = [&](size_t n) { return upload<float>(card, nullptr, W * n * 4); };
-  const uint32_t nb_max = opt_.max_ctx / Q_IDX_BLOCK;
+  const uint32_t nb_max = opt_.max_ctx / shape_.idx_block;
   card.R = fbuf(shape_.hc_dim());
   card.n = fbuf(shape_.hc_dim());
   card.plan = upload<StepPlan>(card, nullptr, sizeof(StepPlan));
   card.xb16 = upload<uint16_t>(card, nullptr, (size_t)STEP_MAX_ROWS * shape_.hc_dim() * 2);
   card.lrb16 = upload<uint16_t>(card, nullptr, (size_t)STEP_MAX_ROWS * shape_.hc_lr * 2);
-  card.xbf16 = upload<uint16_t>(card, nullptr, (size_t)STEP_MAX_ROWS * Q_EMBD * 2);
-  card.ngb16 = upload<uint16_t>(card, nullptr, (size_t)STEP_MAX_ROWS * Q_EMBD * 2);
+  card.xbf16 = upload<uint16_t>(card, nullptr, (size_t)STEP_MAX_ROWS * shape_.embd * 2);
+  card.ngb16 = upload<uint16_t>(card, nullptr, (size_t)STEP_MAX_ROWS * shape_.embd * 2);
   card.lr = fbuf(shape_.hc_lr + shape_.hc);  // the down product's 320 values, then its 4 inject rows
   card.a = fbuf(shape_.hc_dim());
   // the inject values are this + shape_.hc_lr (the down product writes both)
   card.inj[0] = fbuf(shape_.hc_lr + shape_.hc);
   card.inj[1] = fbuf(shape_.hc_lr + shape_.hc);
-  card.x = fbuf(Q_EMBD);
+  card.x = fbuf(shape_.embd);
   card.m = fbuf(card.nch);
   card.z = fbuf(card.nvh * shape_.gdn_d);
   card.ab = fbuf(2 * card.nvh);
@@ -812,39 +815,39 @@ void Model::load_card(Card &card) {
   card.Q = fbuf(card.nq * 2 * shape_.att_key);
   card.Kt = fbuf(card.nkv * shape_.att_key);
   card.Vt = fbuf(card.nkv * shape_.att_key);
-  card.idxq = fbuf(Q_IDX_H * Q_IDX_D + Q_IDX_D);
+  card.idxq = fbuf(shape_.idx_h * shape_.idx_d + shape_.idx_d);
   card.scores = fbuf(nb_max);
-  card.bscores = fbuf(Q_IDX_BLOCKS + 1);
-  card.att = fbuf((size_t)STEP_MAX_ROWS * card.nq * kAttSplits * (shape_.att_key + 2));
-  card.blocks = upload<uint32_t>(card, nullptr, W * (Q_IDX_BLOCKS + 1) * 4);
-  card.cells = upload<uint32_t>(card, nullptr, W * Q_IDX_CELLS * 4);
+  card.bscores = fbuf(shape_.idx_blocks() + 1);
+  card.att = fbuf((size_t)STEP_MAX_ROWS * card.nq * shape_.att_splits() * (shape_.att_key + 2));
+  card.blocks = upload<uint32_t>(card, nullptr, W * (shape_.idx_blocks() + 1) * 4);
+  card.cells = upload<uint32_t>(card, nullptr, W * shape_.idx_cells() * 4);
   card.ncells = upload<uint32_t>(card, nullptr, W * 4);
   card.rl = fbuf(std::max(shape_.experts, kMtpExperts) + 1);  // the main layers' routers and the draft layer's
   card.w = fbuf(shape_.used);
   card.ids = upload<int32_t>(card, nullptr, W * shape_.used * 4);
-  card.merged = fbuf(2 * (Q_IDX_BLOCKS + 1));
-  card.icand = upload<uint32_t>(card, nullptr, W * kIdxCand * 4);
+  card.merged = fbuf(2 * (shape_.idx_blocks() + 1));
+  card.icand = upload<uint32_t>(card, nullptr, W * shape_.idx_cand() * 4);
   card.slots = upload<int32_t>(card, nullptr, W * shape_.used * 4);
   card.nmiss = upload<uint32_t>(card, nullptr, shape_.layers * W * 4);
   card.groups = reinterpret_cast<MoeGroup *>(upload<uint8_t>(card, nullptr, W * shape_.used * sizeof(MoeGroup)));
   card.ngroups = upload<uint32_t>(card, nullptr, 4);
   card.h = fbuf((size_t)shape_.used * card.ff);
-  card.y = fbuf((size_t)shape_.used * Q_EMBD);
+  card.y = fbuf((size_t)shape_.used * shape_.embd);
   card.shg = fbuf(card.ff);
   card.shu = fbuf(card.ff);
   card.shh = fbuf(card.ff);
-  card.s = fbuf(Q_EMBD);
+  card.s = fbuf(shape_.embd);
   card.pk = fbuf(shape_.hc_dim());
-  card.pv = fbuf(Q_EMBD);
+  card.pv = fbuf(shape_.embd);
   card.gates = fbuf(shape_.hc);
   card.N = fbuf(shape_.hc_dim());
   card.logits = fbuf(card.vocab_n);
-  card.xa8 = upload<uint8_t>(card, nullptr, W * a8_bytes(Q_EMBD));
+  card.xa8 = upload<uint8_t>(card, nullptr, W * a8_bytes(shape_.embd));
   card.oa8 = upload<uint8_t>(card, nullptr, W * a8_bytes(std::max(card.nvh * shape_.gdn_d, card.nq * shape_.att_key)));
   card.ha8 = upload<uint8_t>(card, nullptr, W * shape_.used * a8_bytes(card.ff));
   card.sha8 = upload<uint8_t>(card, nullptr, W * a8_bytes(card.ff));
-  card.yo = fbuf(Q_EMBD);
-  if (ncards_ > 1) card.xp = upload<float>(card, nullptr, (size_t)2 * ncards_ * STEP_MAX_ROWS * Q_EMBD * 4);
+  card.yo = fbuf(shape_.embd);
+  if (ncards_ > 1) card.xp = upload<float>(card, nullptr, (size_t)2 * ncards_ * STEP_MAX_ROWS * shape_.embd * 4);
 }
 
 // Which experts the cards cache, and the arena of the others for the CPU. Each card holds half of every cached
@@ -857,8 +860,8 @@ void Model::load_experts(bool first) {
   for (uint32_t l = 0; l < shape_.layers; l++) {
     const GgufTensor &g = gguf_.tensor(blk(l, "ffn_gate_exps.weight")), &d = gguf_.tensor(blk(l, "ffn_down_exps.weight"));
     Card &c0 = *cards_[0];
-    uint64_t gb = runs_bytes(g.type, (uint64_t)c0.ff * (Q_EMBD / quant_block_values(g.type)));
-    uint64_t db = runs_bytes(d.type, (uint64_t)Q_EMBD * (c0.ff / quant_block_values(d.type)));
+    uint64_t gb = runs_bytes(g.type, (uint64_t)c0.ff * (shape_.embd / quant_block_values(g.type)));
+    uint64_t db = runs_bytes(d.type, (uint64_t)shape_.embd * (c0.ff / quant_block_values(d.type)));
     for (auto &card : cards_) {
       Layer &L = card->layers[l];
       L.gu_type = g.type;
@@ -985,14 +988,15 @@ void Model::load_experts(bool first) {
     HostLayer &hl = *host_layers_[B.l];
     const uint32_t cached = B.first < count[B.l] ? std::min<uint32_t>(B.count, count[B.l] - B.first) : 0;
     const uint32_t gt = hl.shape.gate_type, dt = hl.shape.down_type, dqk = quant_block_values(dt);
-    const uint64_t gbpr = Q_EMBD / quant_block_values(gt), grb = hl.gate_row_bytes, drb = hl.down_bytes / Q_EMBD;
+    const uint64_t gbpr = shape_.embd / quant_block_values(gt), grb = hl.gate_row_bytes;
+    const uint64_t drb = hl.down_bytes / shape_.embd;
     pool_->run((uint64_t)cached * ncards_ + (B.count - cached), [&](uint64_t j) {
       if (j >= (uint64_t)cached * ncards_) {  // an arena expert: its three matrices into its piece
         const uint32_t i = cached + (uint32_t)(j - (uint64_t)cached * ncards_), e = order[B.l][B.first + i];
         uint8_t *p = hl.arena[e];
         std::memcpy(p, x.at[i].gate, hl.gate_bytes);
         std::memcpy(p + hl.gate_bytes, x.at[i].up, hl.gate_bytes);
-        write_down(p + 2 * hl.gate_bytes, x.at[i].down, Q_EMBD, drb, hl.down_parts);
+        write_down(p + 2 * hl.gate_bytes, x.at[i].down, shape_.embd, drb, hl.down_parts);
         return;
       }
       const uint32_t c = (uint32_t)(j / cached), i = (uint32_t)(j % cached);
@@ -1002,7 +1006,7 @@ void Model::load_experts(bool first) {
       uint8_t *slot = runs[c].data() + i * L.slot_bytes;
       to_runs(gt, {{x.at[i].gate, grb, f0, card.ff, 0, gbpr}}, slot);
       to_runs(gt, {{x.at[i].up, grb, f0, card.ff, 0, gbpr}}, slot + L.up_off);
-      to_runs(dt, {{x.at[i].down, drb, 0, Q_EMBD, f0 / dqk, card.ff / dqk}}, slot + L.down_off);
+      to_runs(dt, {{x.at[i].down, drb, 0, shape_.embd, f0 / dqk, card.ff / dqk}}, slot + L.down_off);
     });
     if (!cached) return;
     for (auto &card : cards_) {
@@ -1039,7 +1043,7 @@ std::unique_ptr<Model::HostLayer> Model::host_layer(uint32_t l, uint64_t n, cons
                                                     uint64_t stg_bytes, uint32_t positions) {
   auto hl = std::make_unique<HostLayer>();
   const GgufTensor &g = gguf_.tensor(blk(l, "ffn_gate_exps.weight")), &d = gguf_.tensor(blk(l, "ffn_down_exps.weight"));
-  hl->shape = {g.type, d.type, Q_EMBD, shape_.ff};
+  hl->shape = {g.type, d.type, shape_.embd, shape_.ff};
   hl->slot_of.assign(shape_.experts, -1);
   hl->stage_of.assign(shape_.experts, -1);
   // The n experts the profile routes to most (ties to the lower id), or the first n without one.
@@ -1166,17 +1170,18 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
       L.launch(q4("hc_combine_norm"), {partials, C, rows_apart, inj, lw, next_norm, plan, card.R, card.n, card.xb16},
                shape_.hc, W, 1, 256);
     else
-      L.launch(q4("hc_combine"), {partials, C, rows_apart, inj, lw, plan, card.R}, Q_EMBD / 64, W, 1, 64);
+      L.launch(q4("hc_combine"), {partials, C, rows_apart, inj, lw, plan, card.R}, shape_.embd / 64, W, 1, 64);
   };
-  const size_t ex_layer = (size_t)C * STEP_MAX_ROWS * Q_EMBD;  // floats per layer in ex1_ and ex2_
+  const size_t ex_layer = (size_t)C * STEP_MAX_ROWS * shape_.embd;  // floats per layer in ex1_ and ex2_
   // The mixer's out product, this card's partial sums into ex1_; from 2 rows via card memory and one copy to host
   // (docs/measurements/MEASUREMENTS.md#2026-10-16-out-products-host-writes). With two cards, 2 rows or more exchange card to card
   // (ADR-0030, docs/measurements/MEASUREMENTS.md#2026-10-16-peer-exchange): a card's block of xp is copied to the same block of the
   // other's, and the combine reads both in card order, so the sums match. k: 0 the mixer's exchange, 1 the MoE's.
   const bool peer = C > 1 && W > 1;
-  auto xp_block = [&](const Card &to, uint32_t k) { return to.xp + ((size_t)k * C + c) * STEP_MAX_ROWS * Q_EMBD; };
+  auto xp_block = [&](const Card &to, uint32_t k) { return to.xp + ((size_t)k * C + c) * STEP_MAX_ROWS * shape_.embd; };
   auto send_peer = [&](uint32_t k, uint32_t layer, uint32_t base) {
-    L.copy(xp_block(*cards_[1 - c], k), xp_block(card, k), (size_t)W * Q_EMBD * 4, (*events_)[ev(layer, base + c)]);
+    L.copy(xp_block(*cards_[1 - c], k), xp_block(card, k), (size_t)W * shape_.embd * 4,
+           (*events_)[ev(layer, base + c)]);
   };
   auto out_product = [&](const Mat &m, float *p1, uint32_t layer) {
     if (W == 1) {
@@ -1189,7 +1194,7 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
       return;
     }
     matvec(L, card, m, card.oa8, card.yo, W);
-    L.copy(p1, card.yo, (size_t)W * Q_EMBD * 4, (*events_)[ev(layer, c)]);
+    L.copy(p1, card.yo, (size_t)W * shape_.embd * 4, (*events_)[ev(layer, c)]);
   };
 
   L.launch(q4("hc_init"), {embed_, plan, card.R}, shape_.hc_dim() / 64, W, 1, 64);
@@ -1198,21 +1203,22 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
     Layer &Ly = card.layers[l];
     if (l == 1) {  // the PLE module (MODEL_IO.md, 1.3), after the host has read the rows (ADR-0015)
       L.wait({(*events_)[ngram_ev()]});
-      L.launch(common("to_bf16_rows"), {ngram_u_, Q_EMBD, Q_EMBD, nrows, card.ngb16}, Q_EMBD / 64, W, 1, 64);
-      bf16mv(card.ple_k, shape_.hc_dim(), Q_EMBD, card.ngb16, card.pk);
-      bf16mv(card.ple_v, Q_EMBD, Q_EMBD, card.ngb16, card.pv);
+      L.launch(common("to_bf16_rows"), {ngram_u_, shape_.embd, shape_.embd, nrows, card.ngb16}, shape_.embd / 64, W,
+               1, 64);
+      bf16mv(card.ple_k, shape_.hc_dim(), shape_.embd, card.ngb16, card.pk);
+      bf16mv(card.ple_v, shape_.embd, shape_.embd, card.ngb16, card.pv);
       L.launch(q4("ple_gate"), {card.pk, card.R, card.ple_gk, card.ple_gq, plan, card.gates}, shape_.hc, W, 1, 256);
       L.launch(q4("ple_norm"), {card.pv, card.gates, card.ple_gc, plan, card.N}, shape_.hc, W, 1, 256);
       L.launch(q4("ple_conv"), {card.N, card.pv, card.gates, card.ple_conv, card.ple_hist, card.ple_stride, plan, card.R},
                shape_.hc_dim() / 64, 1, 1, 64);
     }
     hc_mix(Ly.hc_norm[0], Ly.hc_down[0], Ly.hc_up[0], card.inj[0], normed);
-    float *p1 = ex1_ + l * ex_layer + (size_t)c * STEP_MAX_ROWS * Q_EMBD;
+    float *p1 = ex1_ + l * ex_layer + (size_t)c * STEP_MAX_ROWS * shape_.embd;
     if (!Ly.attn) {
       L.together(true);
       matvec(L, card, Ly.qkv, card.xa8, card.m, W);
       matvec(L, card, Ly.z, card.xa8, card.z, W);
-      bf16mv(Ly.ab, 2 * card.nvh, Q_EMBD, card.xbf16, card.ab);
+      bf16mv(Ly.ab, 2 * card.nvh, shape_.embd, card.xbf16, card.ab);
       L.together(false);
       // u, the gates and m stay in the layer's own buffers, for a window's commit.
       L.launch(q4("gdn_conv"), {card.m, Ly.conv, Ly.conv_state, Ly.conv_stride, card.nch, 2 * card.nkh, plan, Ly.wu,
@@ -1226,25 +1232,25 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
       matvec(L, card, Ly.q, card.xa8, card.Q, W);
       matvec(L, card, Ly.k, card.xa8, card.Kt, W);
       matvec(L, card, Ly.v, card.xa8, card.Vt, W);
-      bf16mv(Ly.idx_w, Q_IDX_H * Q_IDX_D + Q_IDX_D, Q_EMBD, card.xbf16, card.idxq);
+      bf16mv(Ly.idx_w, shape_.idx_h * shape_.idx_d + shape_.idx_d, shape_.embd, card.xbf16, card.idxq);
       L.together(false);
       L.together(true);
       L.launch(q4("attn_prep"), {card.Q, card.Kt, card.Vt, Ly.qn, Ly.kn, card.nq, card.nkv, Ly.kc, Ly.vc, card.ptab,
                                  npp_, plan, rope_, Ly.khost, Ly.vhost, Ly.where}, card.nq + card.nkv, W, 1,
                shape_.att_key);
       // The indexer, split by position: each card scores its own blocks and sends its best; both merge the same.
-      L.launch(q4("idx_prep"), {card.idxq, Ly.iqn, Ly.raw, card.ptab, npp_, plan, rope_, c, C}, Q_IDX_H + 1, W, 1,
-               Q_IDX_D);
+      L.launch(q4("idx_prep"), {card.idxq, Ly.iqn, Ly.raw, card.ptab, npp_, plan, rope_, c, C}, shape_.idx_h + 1, W, 1,
+               shape_.idx_d);
       L.together(false);
-      L.launch(q4("idx_pool"), {Ly.raw, card.ptab, npp_, Ly.ikn, Ly.pooled, plan, rope_, c, C}, W, 1, 1, Q_IDX_D);
-      uint32_t nbl = (opt_.max_ctx / Q_IDX_BLOCK + C - 1) / C;
+      L.launch(q4("idx_pool"), {Ly.raw, card.ptab, npp_, Ly.ikn, Ly.pooled, plan, rope_, c, C}, W, 1, 1, shape_.idx_d);
+      uint32_t nbl = (opt_.max_ctx / shape_.idx_block + C - 1) / C;
       L.launch(q4("idx_score"), {card.idxq, Ly.pooled, card.ptab, npp_, nbl, plan, card.scores, c, C},
                (nbl + 63) / 64, W, 1, 64);
       // This card's list goes to its own memory, then in one copy to host memory: faster than the kernel writing
       // host memory a pair at a time.
-      uint32_t *cand = icand_ + (size_t)Ly.idx * C * STEP_MAX_ROWS * kIdxCand;
+      uint32_t *cand = icand_ + (size_t)Ly.idx * C * STEP_MAX_ROWS * shape_.idx_cand();
       L.launch(q4("idx_cand"), {card.scores, nbl, plan, card.blocks, card.bscores, card.icand, c, C}, W, 1, 1, 1024);
-      L.copy(cand + (size_t)c * STEP_MAX_ROWS * kIdxCand, card.icand, (size_t)W * kIdxCand * 4,
+      L.copy(cand + (size_t)c * STEP_MAX_ROWS * shape_.idx_cand(), card.icand, (size_t)W * shape_.idx_cand() * 4,
              (*events_)[idx_ev(Ly.idx, c)]);
       if (C > 1) L.wait({(*events_)[idx_ev(Ly.idx, 1 - c)]});
       const uint32_t rows_apart_c = STEP_MAX_ROWS;
@@ -1252,12 +1258,12 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
                                  card.ncells}, W, 1, 1, 1024);
       if (kv_res_ && kvs) {  // streamed: every page the rows read gets a resident copy before the attention reads it
         L.launch(q4("kvs_claim"), {card.ptab, npp_, kv_pages_, card.cells, card.ncells, plan, Ly.where, Ly.spage,
-                                   Ly.ref, Ly.mark, Ly.kst, kKvsAhead, Ly.miss, kKvsMaxMiss}, 1, 1, 1, 1024);
-        L.launch(q4("kvs_gather"), {Ly.khost, Ly.vhost, Ly.kc, Ly.vc, card.nkv, Ly.kst, Ly.miss, kKvsMaxMiss}, 1024,
-                 1, 1, 64);
+                                   Ly.ref, Ly.mark, Ly.kst, kKvsAhead, Ly.miss, kvs_max_miss(shape_)}, 1, 1, 1, 1024);
+        L.launch(q4("kvs_gather"), {Ly.khost, Ly.vhost, Ly.kc, Ly.vc, card.nkv, Ly.kst, Ly.miss, kvs_max_miss(shape_)},
+                 1024, 1, 1, 64);
       }
       L.launch(q4("attn_split"), {card.Q, Ly.kc, Ly.vc, card.ptab, npp_, card.nq, card.nkv, card.cells, card.ncells,
-                                  plan, card.att, Ly.where}, card.nkv, W, kAttSplits, shape_.att_key);
+                                  plan, card.att, Ly.where}, card.nkv, W, shape_.att_splits(), shape_.att_key);
       L.launch(q4("attn_merge"), {card.Q, card.nq, card.ncells, plan, card.att, card.o, card.oa8}, card.nq, W, 1,
                shape_.att_key);
       out_product(Ly.o, p1, l);
@@ -1270,7 +1276,7 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
     MissJob *jobs = c == 0 ? jobs_ + (size_t)l * STEP_MAX_ROWS : nullptr;
     uint32_t *nmiss = card.nmiss + l * STEP_MAX_ROWS;
     L.together(true);
-    bf16mv(Ly.router, shape_.experts + 1, Q_EMBD, card.xbf16, card.rl);
+    bf16mv(Ly.router, shape_.experts + 1, shape_.embd, card.xbf16, card.rl);
     matvec(L, card, Ly.sh_gate, card.xa8, card.shg, W);
     matvec(L, card, Ly.sh_up, card.xa8, card.shu, W);
     L.together(false);
@@ -1290,8 +1296,8 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
       // (docs/measurements/MEASUREMENTS.md#2026-10-14-decode-expert-kernels).
       std::string gm = moe_module(Ly.gu_type, W, false), dm = moe_module(Ly.down_type, W, true);
       uint32_t rpw = gm.empty() ? 4 : MOE_WG_ROWS, lx = gm.empty() ? 64 : kSgSize * MOE_WG_ROWS / MOE_GU_ROWS(W);
-      uint32_t gbpr = Q_EMBD / quant_block_values(Ly.gu_type);
-      uint32_t K = Q_EMBD, xs = (uint32_t)a8_bytes(Q_EMBD), per = shape_.used;
+      uint32_t gbpr = shape_.embd / quant_block_values(Ly.gu_type);
+      uint32_t K = shape_.embd, xs = (uint32_t)a8_bytes(shape_.embd), per = shape_.used;
       L.together(true);
       // moe.cl's also writes h as a8.
       if (gm.empty())
@@ -1312,32 +1318,32 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
       uint32_t dbpr = card.ff / quant_block_values(Ly.down_type);
       uint32_t stride = (uint32_t)a8_bytes(card.ff);
       L.launch(kernel(c, dm.empty() ? mv_module(Ly.down_type, 4) : dm, "moe_down_g"),
-               {Ly.cache, Ly.slot_bytes, card.groups, card.ngroups, (uint32_t)Q_EMBD, dbpr, Ly.down_off, card.ha8, card.ff,
+               {Ly.cache, Ly.slot_bytes, card.groups, card.ngroups, shape_.embd, dbpr, Ly.down_off, card.ha8, card.ff,
                 stride, card.y, card.grids},
-               (Q_EMBD + drpw - 1) / drpw, W * shape_.used, 1, dlx);
+               (shape_.embd + drpw - 1) / drpw, W * shape_.used, 1, dlx);
     } else {
       matvec(L, card, Ly.sh_down, card.sha8, card.s, W);
     }
     if (c == 0) L.launch(q4("cpu_wait"), {nmiss, ans_seq_ + 16 * l, plan, stuck_}, 1, 1, 1, 1);
-    float *p2 = ex2_ + l * ex_layer + (size_t)c * STEP_MAX_ROWS * Q_EMBD;
-    const float *cpu = c == 0 ? cpu_y_ + (size_t)l * STEP_MAX_ROWS * Q_EMBD : nullptr;
+    float *p2 = ex2_ + l * ex_layer + (size_t)c * STEP_MAX_ROWS * shape_.embd;
+    const float *cpu = c == 0 ? cpu_y_ + (size_t)l * STEP_MAX_ROWS * shape_.embd : nullptr;
     if (peer) {
       L.launch(q4("moe_combine"), {card.y, card.w, card.slots, card.s, card.rl, cpu, nmiss, plan, xp_block(card, 1)},
-               Q_EMBD / 64, W, 1, 64);
+               shape_.embd / 64, W, 1, 64);
       send_peer(1, l, C);
     } else {
-      L.launch(q4("moe_combine"), {card.y, card.w, card.slots, card.s, card.rl, cpu, nmiss, plan, p2}, Q_EMBD / 64, W,
-               1, 64, 1, 1, (*events_)[ev(l, C + c)]);
+      L.launch(q4("moe_combine"), {card.y, card.w, card.slots, card.s, card.rl, cpu, nmiss, plan, p2},
+               shape_.embd / 64, W, 1, 64, 1, 1, (*events_)[ev(l, C + c)]);
     }
     // The next layer's first norm with this combine, but before layer 1, whose PLE module changes R first.
     normed = l + 1 < shape_.layers && l + 1 != 1;
-    exchange(peer ? card.xp + (size_t)C * STEP_MAX_ROWS * Q_EMBD : ex2_ + l * ex_layer, l, C,
+    exchange(peer ? card.xp + (size_t)C * STEP_MAX_ROWS * shape_.embd : ex2_ + l * ex_layer, l, C,
              card.inj[1] + shape_.hc_lr,
              normed ? card.layers[l + 1].hc_norm[0] : nullptr);
     // DFlash 2 reads the layer's output (dflash.cpp).
     for (uint32_t k = 0; df_on_ && k < DF_LAYERS; k++)
       if (l == kDfTargetLayers[k])
-        L.launch(kernel(c, "qwen4exp_dflash", "df_feat"), {card.R, k, plan, card.df->feat}, Q_EMBD / 64, W, 1, 64);
+        L.launch(kernel(c, "qwen4exp_dflash", "df_feat"), {card.R, k, plan, card.df->feat}, shape_.embd / 64, W, 1, 64);
   }
   record_head(L, card, plan, W);
   L.close();
@@ -1390,7 +1396,7 @@ void Model::record_head(ze::List &L, Card &card, const StepPlan *plan, uint32_t 
   auto common = [&](const char *name) { return kernel(c, "common", name); };
   auto q4 = [&](const char *name) { return kernel(c, layer_module_, name); };
   const float one = 1.0f, quarter = 0.25f;
-  const uint32_t zero = 0, mode_silu = 1, gs = Q_EMBD;
+  const uint32_t zero = 0, mode_silu = 1, gs = shape_.embd;
   uint16_t *no_bf16 = nullptr;
   L.launch(q4("rms_norm"), {card.R, card.out_norm, plan, card.n, no_bf16}, shape_.hc, W, 1, 256);
   {
@@ -1402,8 +1408,8 @@ void Model::record_head(ze::List &L, Card &card, const StepPlan *plan, uint32_t 
                                      shape_.hc_dim(), zero, one, lpr},
              (shape_.hc_dim() + 64 / lpr - 1) / (64 / lpr), 1, 1, 64);
   }
-  L.launch(q4("hc_mix"), {card.n, card.a, plan, card.x}, Q_EMBD / 64, W, 1, 64);
-  uint32_t units = Q_EMBD / 32 * W;
+  L.launch(q4("hc_mix"), {card.n, card.a, plan, card.x}, shape_.embd / 64, W, 1, 64);
+  uint32_t units = shape_.embd / 32 * W;
   L.launch(common("quantize_a8"), {card.x, gs, gs, W, card.xa8}, (units + 3) / 4, 1, 1, 64);
   matvec(L, card, card.head, card.xa8, card.logits, W);
   uint32_t *ti = top_idx_ + (size_t)c * STEP_MAX_ROWS * opt_.candidates;
@@ -1462,8 +1468,9 @@ std::vector<std::vector<Candidate>> Model::step(const StepIn *rows, uint32_t n, 
   // Streamed: the claim runs unless every row's pages are claimed already (kvs_to_), which only the rows that read
   // every cell (a context within the indexer's width) can be.
   bool kvs = false;
+  const uint32_t idx_cells = shape_.idx_cells();
   for (uint32_t r = 0; kv_res_ && r < n && !kvs; r++)
-    kvs = rows[r].pos + 1 > Q_IDX_CELLS || kvs_to_[rows[r].slot] <= rows[r].pos;
+    kvs = rows[r].pos + 1 > idx_cells || kvs_to_[rows[r].slot] <= rows[r].pos;
   const uint32_t key = kv_res_ && !kvs ? W + kKvsSkipList : W;
   last_width_ = key;
   plan_->nrows = n;
@@ -1471,9 +1478,10 @@ std::vector<std::vector<Candidate>> Model::step(const StepIn *rows, uint32_t n, 
   plan_->step++;
   const GgufTensor &te = gguf_.tensor("token_embd.weight");
   auto to_float = ggml_get_type_traits((ggml_type)te.type)->to_float;
+  const uint32_t E = shape_.embd;  // a local: the plan's writes below may alias a member
   for (uint32_t r = 0; r < n; r++) {
     plan_->rows[r] = {rows[r].slot, rows[r].pos, (uint32_t)rows[r].token, STEP_ROW_LOGITS};
-    to_float(te.data + (uint64_t)rows[r].token * te.row_bytes(), embed_ + (size_t)r * Q_EMBD, Q_EMBD);
+    to_float(te.data + (uint64_t)rows[r].token * te.row_bytes(), embed_ + (size_t)r * E, E);
     bool first = true;  // the slot's first row of the step sets its rotation
     for (uint32_t q = 0; q < r; q++) first = first && rows[q].slot != rows[r].slot;
     if (first) set_rope(rows[r].slot, rows[r].pos, true);
@@ -1490,7 +1498,7 @@ std::vector<std::vector<Candidate>> Model::step(const StepIn *rows, uint32_t n, 
 
   stats_ = {};
   std::vector<CpuExperts::Job> jobs;
-  std::vector<float> xs((size_t)n * Q_EMBD);
+  std::vector<float> xs((size_t)n * E);
   const uint32_t step = plan_->step;
   for (uint32_t l = 0; l < shape_.layers; l++) {
     // The layer's records (ADR-0011): spin until card 0 publishes each row's for this step; then all the rows'
@@ -1509,13 +1517,13 @@ std::vector<std::vector<Candidate>> Model::step(const StepIn *rows, uint32_t n, 
       const uint32_t nm = J.nmiss;
       if (opt_.adapt_swaps) note_routing(l, J.all, shape_.used, prompt ? kPromptRouting : 1.0f);
       if (nm == 0) continue;  // the skip
-      std::memcpy(xs.data() + (size_t)r * Q_EMBD, J.x, Q_EMBD * 4);
+      std::memcpy(xs.data() + (size_t)r * E, J.x, E * 4);
       for (uint32_t k = 0; k < nm; k++) jobs.push_back({hl.weights[J.ids[k]], r, J.w[k]});
     }
     if (jobs.empty()) continue;
     stats_.misses += (uint32_t)jobs.size();
     stats_.layers_missed++;
-    cpu_->compute_many(hl.shape, jobs, n, xs.data(), Q_EMBD, cpu_y_ + (size_t)l * STEP_MAX_ROWS * Q_EMBD, Q_EMBD);
+    cpu_->compute_many(hl.shape, jobs, n, xs.data(), E, cpu_y_ + (size_t)l * STEP_MAX_ROWS * E, E);
     std::atomic_ref<uint32_t>(ans_seq_[16 * l]).store(step, std::memory_order_release);
   }
   for (auto &card : cards_) card->lists.at(key)->synchronize();
@@ -1526,7 +1534,7 @@ std::vector<std::vector<Candidate>> Model::step(const StepIn *rows, uint32_t n, 
     std::fill(kvs_to_.begin(), kvs_to_.end(), 0);
     for (uint32_t r = 0; r < n; r++) {
       uint32_t &to = kvs_to_[rows[r].slot];
-      if (rows[r].pos + 1 <= Q_IDX_CELLS)
+      if (rows[r].pos + 1 <= idx_cells)
         to = std::max(to, std::min(npp_ * KV_PAGE_CELLS, (rows[r].pos / KV_PAGE_CELLS + 1 + kKvsAhead) * KV_PAGE_CELLS));
     }
   }

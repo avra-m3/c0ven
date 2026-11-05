@@ -117,7 +117,7 @@ static std::vector<uint16_t> mtp_tensor(const std::string &dir, const std::strin
 uint64_t Model::mtp_bytes() const {
   // Per card: each expert's half, IQ4_NL (18 bytes per 32 values), gate, up and down.
   const uint64_t ff = shape_.ff / ncards_;
-  return (uint64_t)kMtpExperts * (2 * align256(ff * (Q_EMBD / 32) * 18) + align256(Q_EMBD * (ff / 32) * 18));
+  return (uint64_t)kMtpExperts * (2 * align256(ff * (shape_.embd / 32) * 18) + align256(shape_.embd * (ff / 32) * 18));
 }
 
 void Model::load_mtp(Card &card) {
@@ -125,7 +125,7 @@ void Model::load_mtp(Card &card) {
   mtp_type_ = QT_IQ4_NL;
   card.mtp = std::make_unique<MtpCard>();
   MtpCard &M = *card.mtp;
-  const uint32_t c = card.c, C = ncards_, E = Q_EMBD, ff = card.ff, f0 = c * ff;
+  const uint32_t c = card.c, C = ncards_, E = shape_.embd, ff = card.ff, f0 = c * ff;
   const uint32_t q0 = c * card.nq, kv0 = c * card.nkv;
   auto dev16 = [&](const std::vector<uint16_t> &v) { return upload<uint16_t>(card, v.data(), v.size() * 2); };
   auto devf = [&](const std::vector<float> &v) { return upload<float>(card, v.data(), v.size() * 4); };
@@ -333,7 +333,7 @@ void Model::record_mtp(Card &card, uint32_t W, uint32_t Wr, bool chain) {
   MtpCard &M = *card.mtp;
   auto list = std::make_unique<ze::List>(*rt_, card.c, ze::List::regular);
   ze::List &L = *list;
-  const uint32_t c = card.c, C = ncards_, E = Q_EMBD;
+  const uint32_t c = card.c, C = ncards_, E = shape_.embd;
   auto common = [&](const char *name) { return kernel(c, "common", name); };
   auto q4 = [&](const char *name) { return kernel(c, "qwen4exp", name); };  // built for kMtpExperts
   // The kernels read the plans from the card's copies, as the decode step's do.
@@ -394,7 +394,7 @@ void Model::record_mtp(Card &card, uint32_t W, uint32_t Wr, bool chain) {
   if (Wr > 0) {
     L.launch(q4("mtp_cells"), {M.first, pr, card.cells, card.ncells}, Wr, 1, 1, 256);
     L.launch(q4("attn_split"), {card.Q, M.kc, M.vc, no_table, mnpp, card.nq, card.nkv, card.cells, card.ncells, pr,
-                                card.att, no_table}, card.nkv, Wr, kAttSplits, shape_.att_key);
+                                card.att, no_table}, card.nkv, Wr, shape_.att_splits(), shape_.att_key);
     uint8_t *no_a8 = nullptr;
     L.launch(q4("attn_merge"), {card.Q, card.nq, card.ncells, pr, card.att, card.o, no_a8}, card.nq, Wr, 1,
              shape_.att_key);
@@ -462,9 +462,10 @@ std::vector<std::vector<Candidate>> Model::run_mtp(const StepIn *rows, uint32_t 
   mplan_->pad = src_rows;
   const GgufTensor &te = gguf_.tensor("token_embd.weight");
   auto to_float = ggml_get_type_traits((ggml_type)te.type)->to_float;
+  const uint32_t E = shape_.embd;  // a local: the plan's writes below may alias a member
   for (uint32_t r = 0; r < n; r++) {
     mplan_->rows[r] = {rows[r].slot, rows[r].pos, (uint32_t)rows[r].token, STEP_ROW_LOGITS};
-    to_float(te.data + (uint64_t)rows[r].token * te.row_bytes(), membed_ + (size_t)r * Q_EMBD, Q_EMBD);
+    to_float(te.data + (uint64_t)rows[r].token * te.row_bytes(), membed_ + (size_t)r * E, E);
     // The draft layer's rows may sit on an image's tokens at the end of a prompt chunk: it only drafts, so they turn
     // by the offset before the image. The slot's earliest row sets it.
     bool first = true;

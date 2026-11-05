@@ -29,13 +29,11 @@ inline constexpr uint32_t kHcSplitRows = 2048;
 inline constexpr uint32_t kFetchRows = 1024;
 // p_idx_score_xmx's work-group (prompt_attn.cl): IDX_XMX_ROWS rows by IDX_XMX_SG sub-groups of 16 IDX_XMX_TB blocks.
 inline constexpr uint32_t kIdxXmxRows = 16, kIdxXmxSg = 4, kIdxXmxBlocks = 16 * 2 * kIdxXmxSg;
-inline constexpr uint32_t kAttSplits = (Q_IDX_CELLS + 63) / 64;  // attn_split's ATT_SPLITS
-inline constexpr uint32_t kIdxCand = 2 * (Q_IDX_BLOCKS + 1) + 2;  // words per row of the indexer's candidates
 // The streamed pool (kvs_claim): the logical pages a claim takes past each row's, so the steps that open them need
 // no claim; the pages a step's rows can claim at most, its miss list; and what a width's list without the claim adds
 // to its key (Model::record).
 inline constexpr uint32_t kKvsAhead = 32;
-inline constexpr uint32_t kKvsMaxMiss = STEP_MAX_ROWS * (Q_IDX_BLOCKS + 2 + kKvsAhead);
+inline uint32_t kvs_max_miss(const Shape &s) { return STEP_MAX_ROWS * (s.idx_blocks() + 2 + kKvsAhead); }
 inline constexpr uint32_t kKvsSkipList = 16;
 inline constexpr uint32_t kMvKsRows = 512;  // dense products of up to this many rows split K (matvec_ks)
 // The decode step's widths, each with its own lists: a step runs the smallest of at least its rows, and its products
@@ -189,7 +187,7 @@ struct Model::DfCard {
     float *in_norm = nullptr, *post_norm = nullptr, *qn = nullptr, *kn = nullptr;
     uint16_t *q = nullptr, *k = nullptr, *v = nullptr, *o = nullptr, *gate = nullptr, *up = nullptr,
              *down = nullptr;
-    float *abase = nullptr, *mbase = nullptr;  // the convolutions' fixed taps, [set][tap][Q_EMBD]
+    float *abase = nullptr, *mbase = nullptr;  // the convolutions' fixed taps, [set][tap][DF_EMBD]
     uint16_t *akp = nullptr, *mkp = nullptr;   // their dynamic taps' projections, DF_KP rows
     float *rk = nullptr, *rv = nullptr;        // the ring: [slot][DF_RING][nkv][DF_D], a cell at position % DF_RING
   };
@@ -229,13 +227,13 @@ struct Model::Card {
   float *rl, *w, *h, *y, *shg, *shu, *shh, *s, *pk, *pv, *gates, *N, *logits;
   int32_t *ids, *slots;
   float *merged;  // a row's merged indexer candidates' scores
-  uint32_t *icand;  // [row][kIdxCand]: this card's indexer candidates, before one copy takes them to icand_
+  uint32_t *icand;  // [row][Shape::idx_cand()]: this card's indexer candidates, before one copy takes them to icand_
   uint32_t *nmiss;  // [layer][row] experts the row's token routes to that the cards do not hold
   MoeGroup *groups;  // the step's cached experts grouped, and how many groups
   uint32_t *ngroups;
   uint8_t *xa8, *oa8, *ha8, *sha8;
   float *yo = nullptr;  // a window's out product (ssm_out, attn_output), before one copy takes it to ex1_
-  // A window's partial sums with two cards (ADR-0030): [exchange 0 mixer, 1 MoE][card][STEP_MAX_ROWS][Q_EMBD]. Each
+  // A window's partial sums with two cards (ADR-0030): [exchange 0 mixer, 1 MoE][card][STEP_MAX_ROWS][embd]. Each
   // card writes its own block here and one copy places it in the other card's.
   float *xp = nullptr;
   StepPlan *plan = nullptr;  // the step plan, copied from host memory by the decode step's first command
