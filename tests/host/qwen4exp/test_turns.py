@@ -6,6 +6,9 @@ from pathlib import Path
 from engine.models.qwen4exp import numbers
 from engine.models.qwen4exp.turns import checkpoint_positions
 
+USER = 846
+"""The token after `<|im_start|>` in a user turn. The checkpoint rule does not look for it."""
+
 PROMPTS = {
     row["id"]: tuple(row["tokens"])
     for row in map(json.loads, (Path(__file__).resolve().parents[3] / "reference" / "prompts.jsonl").open())
@@ -36,7 +39,7 @@ def test_long_prompts_every_16k():
 
 def test_a_long_system_prompt_is_kept():
     system = (numbers.IM_START, numbers.SYSTEM, numbers.NEWLINE, *([5] * 3000), numbers.IM_END, numbers.NEWLINE)
-    p = (*system, numbers.IM_START, numbers.USER, numbers.NEWLINE, 7, numbers.IM_END, numbers.NEWLINE)
+    p = (*system, numbers.IM_START, USER, numbers.NEWLINE, 7, numbers.IM_END, numbers.NEWLINE)
     assert (len(system), True) in checkpoint_positions(p)
     short = (numbers.IM_START, numbers.SYSTEM, numbers.NEWLINE, 5, numbers.IM_END, numbers.NEWLINE, 9)
     assert checkpoint_positions(short) == []

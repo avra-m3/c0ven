@@ -13,6 +13,7 @@
 
 #include "ggml.h"
 #include "load/gguf.h"
+#include "models/qwen4exp/kernel_sizes.h"
 #include "models/qwen4exp/layout.h"
 #include "models/qwen4exp/model.h"
 #include "test_util.h"

@@ -851,7 +851,7 @@ static inline int route(uint r, __global const float *rl, __global const int *sl
   return slot;
 }
 
-// The router (4.2), a sub-group per row so nothing waits on a work-group barrier: softmax over the 512 logits (rl rows
+// The router (4.2), a sub-group per row so nothing waits on a work-group barrier: softmax over the Q_EXPERTS logits (rl rows
 // hold them, then the shared expert's gate), the 10 largest, weights renormalised, into ids, w and slots at r * Q_USED
 // (slot_map: an int per expert, negative when not cached), the uncached count into nmiss[r]. With jobs (card 0), row
 // r's MissJob gets the misses and x when there are any, then the step's number. Groups (width), 16.
