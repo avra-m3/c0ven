@@ -144,13 +144,16 @@ class SeqState:
                 seq.source = None
 
     def checkpoint(self, slot: int, position: int, kept: bool) -> Checkpoint | None:
-        """Record a checkpoint of the slot's state after `position` prompt tokens. None if an equal one exists."""
+        """Record a checkpoint of the slot's state after `position` prompt tokens. None if an equal one exists, or if
+        the pool has no room: a later prompt then reads these tokens again."""
         seq = self.sequences[slot]
         tokens = seq.prompt[:position]
         existing = self.checkpoints.find(tokens)
         if existing is not None:
             existing.kept = existing.kept or kept
             self.checkpoints.touch(existing)
+            return None
+        if not self.checkpoints.has_room():
             return None
         ck, evicted = self.checkpoints.add(tokens, tuple(seq.pages[: pages_for(position)]), kept)
         self.drops.extend(evicted)
