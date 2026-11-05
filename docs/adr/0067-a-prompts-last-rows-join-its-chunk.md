@@ -24,20 +24,23 @@ or the cards write host memory much faster or slower.
    would take, and at least 9 rows come before the mark, so the state's history is the chunk's own.
 3. The chunk's kernels write the state at the mark to host memory as they pass it: one checkpoint's size per card,
    allocated at load when the engine keeps checkpoints, and kept across sleeps. The recurrence writes it in whole
-   lines.
+   lines, in a kernel of its own that only a marked chunk's list runs; other chunks run the recurrence as before.
 4. `engine_checkpoint` with a mark waits for that chunk only, not for the plans queued behind it, and copies the state
    with the card's copy engine.
 
 ## Why
 
-- First token on one card, against the windows: long-gen 0.81 → 0.76 s, gpqa-1 1.25 → 1.19 s, edit-py 1.58 → 1.50 s,
-  doc-4k-qa 2.69 → 2.65 s, doc-32k 21.45 → 21.35 s. Decode per window is level or better on every request but one,
-  0.5% slower there ([MEASUREMENTS.md](../measurements/MEASUREMENTS.md#2026-11-05-last-rows-in-the-chunk)).
+- First token on one card, against the windows: long-gen 0.80 → 0.75 s, gpqa-1 1.25 → 1.21 s, edit-py 1.60 → 1.53 s,
+  doc-4k-qa 2.69 → 2.64 s, doc-32k 21.45 → 21.29 s; on two cards, a 255,017-token prompt's 118.9 → 118.0 s. Decode per
+  window is level or better on every request but one, 0.4% slower there
+  ([MEASUREMENTS.md](../measurements/MEASUREMENTS.md#2026-11-05-last-rows-in-the-chunk)).
 - Host memory, not the card's: the cards' memory holds experts, and 118 MB is about one expert a layer.
 - Whole lines: a lane of the recurrence holds one column, so its stores down the column, 4 bytes each, cost a marked
   chunk 200-1,100 ms in host memory. Turned through local memory, the stores are whole lines and cost a few ms.
 - From inside the recurrence's loop, once: the same loop split in two stretches at the mark made every chunk about 2%
   slower, marked or not.
+- A kernel of its own: the check for the mark at each row made the recurrence 3% slower in every chunk, 215 to 222 ms
+  in a 4,352-row chunk on one card.
 - The copy engine: a CPU copy out of this memory took 22-44 ms, against 4.5 ms for a checkpoint copied from a card.
 
 ## Options not chosen
@@ -51,5 +54,6 @@ or the cards write host memory much faster or slower.
 
 - A prompt's first token and its last rows come from the prompt path, not the decode path, so the first token's
   candidates differ in rounding from those of the same prompt restored at the checkpoint.
-- The engine pins 118 MB more host memory a card when it keeps checkpoints.
+- The engine pins 118 MB more host memory a card when it keeps checkpoints, and records one more prompt list for
+  each chunk size at load, for a chunk with a mark.
 - Prompts read with others, or beside a writer, still read their last rows as windows.
