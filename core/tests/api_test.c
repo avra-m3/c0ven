@@ -166,6 +166,7 @@ int main(int argc, char **argv) {
   cfg.model_path = argv[1];
   cfg.max_ctx = 1024;
   cfg.slots = 2;
+  cfg.checkpoints = 2;
   engine_info info;
   engine_ctx *e = NULL;
   engine_status st = engine_open(&cfg, &info, &e);
@@ -467,6 +468,18 @@ int main(int argc, char **argv) {
   CHECK(engine_release(e, 0) == ENGINE_OK, "release");
   printf("adaptive swaps, after a sleep and a wake: the first 16 tokens\n");
   engine_close(e);
+
+  /* No checkpoints: a request still runs, and taking one is refused. */
+  cfg.checkpoints = 0;
+  CHECK(engine_open(&cfg, &info, &e) == ENGINE_OK, "open without checkpoints: %s", engine_last_error(NULL));
+  CHECK(info.checkpoints == 0, "%u checkpoints", info.checkpoints);
+  CHECK(admit(e, 0, &s, prompt, np) == ENGINE_OK, "admit");
+  CHECK(run(e, 0, &s, out, 64) == 48, "without checkpoints: the tokens");
+  CHECK(engine_checkpoint(e, 0, 0) == ENGINE_BAD_ARGUMENT, "a checkpoint with none in the pool must be refused");
+  CHECK(engine_release(e, 0) == ENGINE_OK, "release");
+  engine_close(e);
+  cfg.checkpoints = 2;
+  printf("no checkpoints: the tokens, and a checkpoint refused\n");
 
   /* The KV pool and the cache sharing memory, on a pool larger than its fixed part: slot 0's pages, then slot 1's
    * too, take memory from the cache; with slot 1's free again, the rounds give it back. */

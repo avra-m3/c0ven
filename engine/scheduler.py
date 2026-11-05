@@ -308,7 +308,12 @@ class Scheduler:
             r.slot = seq.slot
             r.next_pos = r.done_pos = r.reused = seq.start
             r.t_admit = self.clock()
-            r.marks = sorted((p, k) for p, k in self.rule(r.prompt) if seq.start < p < len(r.prompt))
+            # A mark cuts the prompt's spans and makes requests sharing the prefix wait, so a pool of none has no marks.
+            r.marks = (
+                sorted((p, k) for p, k in self.rule(r.prompt) if seq.start < p < len(r.prompt))
+                if self.state.checkpoints.size
+                else []
+            )
             self.by_slot[seq.slot] = r
             if admission.checkpoint is not None:
                 self.engine.restore(seq.slot, admission.checkpoint.id)
