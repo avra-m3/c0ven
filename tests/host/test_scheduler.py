@@ -357,6 +357,22 @@ def test_checkpoints_are_evicted_without_breaking_requests():
     assert len(run.scheduler.state.checkpoints) <= 2
 
 
+def test_a_mark_with_every_checkpoint_unanswered_is_skipped():
+    run = make(open_config(slots=3, checkpoints=2), rule=marks_at(8))
+    for rid in range(3):
+        run.add(rid, prompt(24, start=rid * 50 + 3), 2)
+    run.add(3, (*prompt(8, start=103), 9, 9), 2)  # waits on the prefix whose checkpoint is the one skipped
+    run.tick()
+    assert [c[0] for c in run.engine.calls] == ["checkpoint", "checkpoint"]
+    run.until_idle()
+    assert run.errors() == []
+    assert [len(run.tokens(rid)) for rid in range(4)] == [2, 2, 2, 2]
+    assert run.done(3).reused == 0
+    run.add(4, prompt(24, start=53), 2)
+    run.until_idle()
+    assert run.done(4).reused == 8, "the checkpoints that were taken still serve"
+
+
 def test_admission_waits_for_pages():
     run = make(open_config(slots=2, context=64, pages=12))
     run.add(1, prompt(20), 20)
