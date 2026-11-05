@@ -17,9 +17,23 @@ POOLED_KEY_PER_TOKEN = 128
 """One attention layer's pooled indexer key per pool token, all cards (model.cpp, `L.pooled`)."""
 SPLIT_KEY_PER_TOKEN = 128
 """The pooled keys split into fp16 for the prompt path, per pool token, all cards (prompt.cpp, `P.ikh`, `P.ikl`)."""
+STAGED_LAYERS = 2
+"""The layers of experts not cached that the prompt path stages on each card (model.cpp, `staging`)."""
+STAGE_ALIGN = 256
+"""The alignment of each matrix in staging (model.cpp, `align256`)."""
 WORKING_BY_CARDS = {1: 1_342_177_280, 2: 1_889_785_610}
 """*Estimate*: what the core holds on each card with no context and no KV pool, past its reserve, by the number of
 cards, from the fit in MEASUREMENTS.md. The two are measured, not computed: no rule from one to the other held."""
+
+
+def _stage_bytes(table: TensorTable, layer: int, cards: int) -> int:
+    """What one expert of the layer takes in a card's prompt staging: its gate, up and down, each aligned."""
+
+    def size(name: str) -> int:
+        nbytes = table.by_name()[f"blk.{layer}.ffn_{name}_exps.weight"].nbytes // table.experts_per_layer // cards
+        return -(-nbytes // STAGE_ALIGN) * STAGE_ALIGN
+
+    return 2 * size("gate") + size("down")
 
 
 def model_memory(
@@ -56,6 +70,7 @@ def model_memory(
 
     return ModelMemory(
         cards=cards,
+        staging_per_uncached=STAGED_LAYERS * max(_stage_bytes(table, layer, cards) for layer in range(table.layers)),
         weights_per_card=sum(bytes_per_card(t, cards) for t in table.tensors),
         draft_per_card=draft_per_card(shapes, cards),
         working_per_card=CORE_RESERVE + WORKING_BY_CARDS[cards],

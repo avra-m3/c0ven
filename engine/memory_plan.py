@@ -74,6 +74,9 @@ class ModelMemory:
     """The ring decode's SSD reads fill, host bytes."""
     prompt_staging_per_card: int = 0
     """Each card's prompt staging slots, bytes, taken before the experts."""
+    staging_per_uncached: int = 0
+    """Each card's prompt staging for one expert a layer it does not cache, bytes. The core takes it from what the
+    experts have, so fewer cached experts cost more of it; `free_per_card` stays the memory before it."""
     prompt_host_ring: int = 0
     """The ring prompts stage SSD-tier experts through, host bytes, taken before the arena."""
     routes_per_row: int = 0
@@ -508,13 +511,23 @@ def _plan(m: ModelMemory, o: PlanOptions) -> MemoryPlan:
     checkpoints = o.checkpoints * m.checkpoint_bytes
     on_cards: tuple[tuple[int, ...], ...] = ()
     tiers: Tiers | None = None
+    staging_per_card = 0
     if m.layer_expert_bytes or m.ssd_tier:
         on_cards, tiers = _layer_experts(m, o, card_free, streamed + checkpoints)
         cached = sum(tiers.vram)
         arena = tiers.bytes_of(tiers.arena)
     else:
         share = -(-m.expert_bytes // m.cards)
-        cached = min(m.experts, free // share)
+        stage = m.staging_per_uncached
+        in_layer = m.experts // m.layers
+        if free < in_layer * stage:
+            raise PlanError(
+                f"the cards are {in_layer * stage - free:,} B short of the prompt path's staging: "
+                f"{in_layer * stage / GIB:.2f} GiB with no expert cached, and {free / GIB:.2f} GiB is free."
+            )
+        # n experts a layer take n x layers x share + (in_layer - n) x stage.
+        cached = min(m.experts, (free - in_layer * stage) * m.layers // (share * m.layers - stage))
+        staging_per_card = (m.experts - cached) * stage // m.layers
         arena = (m.experts - cached) * m.expert_bytes
     return MemoryPlan(
         options=o,
@@ -542,5 +555,5 @@ def _plan(m: ModelMemory, o: PlanOptions) -> MemoryPlan:
         engram_cache_bytes=m.engram_cache,
         ssd_staging_bytes=m.ssd_staging_ring,
         prompt_host_ring_bytes=m.prompt_host_ring,
-        prompt_staging_per_card=m.prompt_staging_per_card,
+        prompt_staging_per_card=m.prompt_staging_per_card + staging_per_card,
     )

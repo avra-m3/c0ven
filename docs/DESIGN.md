@@ -350,6 +350,8 @@ layer on each card as its memory allows, after leaving `reserve_bytes` (512 MiB)
 (`engine_info.expert_budget`). The plan's working memory per card, everything outside the weights, the draft layer,
 the sequences' reserve and the experts, is an estimate from the slots, the context, the KV pool and the drafter until a load shows the core's: with `ENGINE_CACHE_DIR` set, the core's
 figure is kept for each model file, version and set of options, and the next start plans with it.
+The plan also takes the prompt path's staging from what the experts have, as the core does, and so gives the count the
+core starts from. The core then lends spare KV blocks to the cache, so its final count is higher.
 
 A model with an SSD tier holds its experts in VRAM, the arena and the SSD: its arena takes what the host can spare, and
 an arena that does not fit is a normal plan

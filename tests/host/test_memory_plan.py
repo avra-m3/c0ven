@@ -56,7 +56,9 @@ def test_experts_with_every_weight_halved(slots: int, context: int, cached: int)
     halves = (
         TABLE.bytes_of(Category.DENSE) + TABLE.bytes_of(Category.PLE) + TABLE.bytes_of(Category.EMBEDDING)
     ) // 2 + TABLE.bytes_of(Category.HEAD) // 2
-    model = replace(MODEL, weights_per_card=halves, working_per_card=1_600_663_296, working_of=None)
+    model = replace(
+        MODEL, weights_per_card=halves, working_per_card=1_600_663_296, working_of=None, staging_per_uncached=0
+    )
     p = plan(model, plan_options(slots=slots, context=context))
     assert p.experts_cached == cached
 
@@ -68,7 +70,7 @@ def test_the_split_rules_keep_some_weights_whole():
     assert MODEL.weights_per_card > 2_257_086_720
     assert p.experts_cached < 18_757
     assert p.free_per_card == 24_385_683_456 - MODEL.weights_per_card - 831_015_936 - p.working_per_card - 504_664_064
-    assert p.experts_cached == p.free_per_card // (MODEL.expert_bytes // 2)
+    assert p.experts_cached // 48 * (MODEL.expert_bytes // 2) * 48 + p.prompt_staging_per_card <= p.free_per_card
 
 
 def test_the_draft_layer_as_the_core_stores_it():
@@ -250,6 +252,23 @@ def test_the_working_memory_estimate_is_what_the_core_reported(
     model = model_memory(TABLE, cards, DFLASH_SHAPES if drafter == "dflash" else None)
     options = plan_options(cards=cards, slots=slots, context=context, kv_tokens=kv_tokens, draft=drafter is not None)
     assert plan(model, options).working_per_card / 2**30 == pytest.approx(core_gib, abs=0.04)
+
+
+@pytest.mark.parametrize(
+    ("cards", "slots", "context", "draft", "core_experts"),
+    [
+        (2, 1, 262_144, True, 337),
+        (1, 1, 65_536, False, 151),
+        (1, 1, 262_144, True, 110),
+        (1, 2, 65_536, True, 124),
+    ],
+)
+def test_the_plans_experts_are_the_cores_before_it_lends_kv_memory(
+    *, cards: int, slots: int, context: int, draft: bool, core_experts: int
+):
+    """The core's "at least" count a layer, from a load of each set of options, with its 2 layers of staging."""
+    options = plan_options(cards=cards, slots=slots, context=context, draft=draft)
+    assert plan(model_memory(TABLE, cards), options).experts_cached // 48 == pytest.approx(core_experts, abs=2)
 
 
 def test_the_working_memory_estimate_does_not_depend_on_the_card_or_the_model_file():
