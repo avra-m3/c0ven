@@ -230,6 +230,7 @@ experts were not read.
 | Reading the model file with `O_DIRECT` | 6.49-6.64 GB/s with 8 threads of 1 MiB, on a quiet host | <a id="2026-10-16-load-read-rates"></a>[2026-10-16](#2026-10-16-load-read-rates) |
 | Rearranging experts into the cards' layout (`to_runs`, 16 threads) | 12.26-13.04 GB/s | [2026-10-16](#2026-10-16-load-read-rates) |
 | Gathering doc-4k-qa's 66,544 n-gram rows with an empty page cache | 37.6 ms; 256 threads 31.2 ms against 33.6 ms with 128; Linux AIO 76.9-84.8 ms; `io_uring` is refused in the container | <a id="2026-10-15-ngram-gather"></a>[2026-10-15](#2026-10-15-ngram-gather) |
+| The n-gram table in RAM with 22 GiB of the host's 90 GiB left free, against in the file, a first load on two cards, 1 slot at 262,144, a 255,017-token prompt | first token 230.83 (220.45-233.38) → 119.49 (119.30-119.53) s; pages the host moved 4.32-5.65 M → 0; pages swapped out 68,655-250,153 → 0; engines failed 2 of 4 → 0 of 4 | <a id="2026-11-04-ngram-room"></a>[2026-11-04](#2026-11-04-ngram-room) |
 
 ## The engine
 
