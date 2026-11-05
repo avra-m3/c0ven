@@ -41,6 +41,16 @@ void Model::save_slot(uint32_t slot, uint8_t *dst) {
   }
 }
 
+void Model::save_mark(uint8_t *dst) {
+  if (!opt_.marks) throw std::runtime_error("no mark: the model was opened without marks");
+  // On a copy engine's list of its own, beside the engine thread's steps: a CPU copy out of this memory is slow.
+  for (auto &card : cards_) {
+    card->pc->mark_copy->copy(dst, card->pc->mark, card->pc->mark_bytes);
+    dst += card->pc->mark_bytes;
+  }
+  for (auto &card : cards_) card->pc->mark_copy->synchronize();
+}
+
 void Model::load_slot(uint32_t slot, const uint8_t *src) {
   if (slot >= opt_.slots) throw std::runtime_error("slot out of range");
   wait_commit();

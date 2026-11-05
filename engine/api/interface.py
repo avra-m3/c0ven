@@ -190,6 +190,7 @@ class EngineFacts:
     expert_budget: tuple[int, ...] = ()
     """Per card, the device memory the core had left for the expert cache at load; empty without cards."""
     fetch_rows: int = 0
+    prompt_chunk: int = 4352
     """The most rows a prompt chunk may have and still fetch only the uncached experts its router picks; a longer one
     copies every uncached expert. 0: every chunk is staged one way."""
     decode_weight: int = 0
@@ -274,6 +275,10 @@ class PromptSpan:
     count: int
     last: bool
     """The span ends the prompt: the cards sample the slot's first token and it joins decode."""
+    mark: int = 0
+    """Rows of the span after which the slot's next checkpoint takes its state; 0: the span's end. The span is then the
+    plan's only one, read whole as one chunk, and has more than the plan's window_rows rows and at least MARK_MIN_ROWS
+    before the mark."""
 
 
 @dataclass(frozen=True, slots=True)

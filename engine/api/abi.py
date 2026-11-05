@@ -25,7 +25,7 @@ import ctypes
 from dataclasses import dataclass
 from enum import IntEnum
 
-ABI_VERSION = 18
+ABI_VERSION = 19
 
 MAX_STOP = 8
 MAX_STEP_SLOTS = 8
@@ -154,6 +154,7 @@ class CPromptPiece(ctypes.Structure):
     _fields_ = (
         ("slot", ctypes.c_uint32),
         ("tokens", ctypes.c_uint32),
+        ("mark", ctypes.c_uint32),
     )
 
 

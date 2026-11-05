@@ -20,7 +20,7 @@ extern "C" {
 #define ENGINE_API
 #endif
 
-#define ENGINE_API_VERSION 18
+#define ENGINE_API_VERSION 19
 
 typedef enum {
   ENGINE_OK = 0,
@@ -154,6 +154,10 @@ typedef struct {
 typedef struct {
   uint32_t slot;
   uint32_t tokens;             /* prompt tokens to read now, at most prompt_chunk; 0: as many as remain, up to it */
+  uint32_t mark;               /* the first piece of a chunk, read whole as a chunk: the next engine_checkpoint of the
+                                  slot takes its state after this many of the tokens, at least the state's history
+                                  (9 rows on qwen4exp) and fewer than tokens, and returns once this chunk has ended.
+                                  0: none */
 } engine_prompt_piece;
 
 typedef struct {

@@ -276,8 +276,9 @@ __kernel void p_gdn_conv(__global const float *m, __global const float *w, __glo
 }
 
 // The state keeps m at position p in slot p % 3: the chunk's last three rows go in. Groups ceil(nch / 64), 64.
+// Also what the state holds after the chunk's mark, if any, from the first run's rows (Model::PromptRun::mark).
 __kernel void p_gdn_conv_save(__global const float *m, __global float *state, ulong slot_stride, uint nch,
-                              __global const PromptPlan *runs) {
+                              __global const PromptPlan *runs, __global float *mark_state, __global const uint *mark) {
   RUN_OF_GROUP()
   uint ch = get_global_id(0);
   if (ch >= nch) return;
@@ -285,6 +286,8 @@ __kernel void p_gdn_conv_save(__global const float *m, __global float *state, ul
   __global float *st = state + pp->slot * slot_stride;
   m += (ulong)pp->row0 * nch;
   for (uint t = n > 3 ? n - 3 : 0; t < n; t++) st[((pp->pos0 + t) % 3) * nch + ch] = m[(ulong)t * nch + ch];
+  const uint at = ri == 0 ? *mark : 0;
+  for (uint t = at ? at - 3 : 0; t < at; t++) mark_state[((pp->pos0 + t) % 3) * nch + ch] = m[(ulong)t * nch + ch];
 }
 
 // L2 norm of the q and k heads of each row, in place. Groups (2 nkh, T), 128.
@@ -907,9 +910,10 @@ __kernel void p_ple_conv(__global const float *N, __global const float *v, __glo
   R[(ulong)t * Q_HC_DIM + ch] += gates[t * Q_HC + ch / Q_EMBD] * v[(ulong)t * Q_EMBD + ch % Q_EMBD] + silu(acc);
 }
 
-// The history keeps N at position p in slot p % 9: the chunk's last nine rows go in. Groups Q_HC_DIM / 64, 64.
+// The history keeps N at position p in slot p % 9: the chunk's last nine rows go in, and the nine before the chunk's
+// mark, if any, to mark_hist. Groups Q_HC_DIM / 64, 64.
 __kernel void p_ple_save(__global const float *N, __global float *hist, ulong slot_stride,
-                         __global const PromptPlan *runs) {
+                         __global const PromptPlan *runs, __global float *mark_hist, __global const uint *mark) {
   RUN_OF_GROUP()
   uint ch = get_global_id(0);
   uint n = pp->n;
@@ -917,4 +921,7 @@ __kernel void p_ple_save(__global const float *N, __global float *hist, ulong sl
   N += (ulong)pp->row0 * Q_HC_DIM;
   for (uint t = n > Q_PLE_HIST ? n - Q_PLE_HIST : 0; t < n; t++)
     h[((pp->pos0 + t) % Q_PLE_HIST) * Q_HC_DIM + ch] = N[(ulong)t * Q_HC_DIM + ch];
+  const uint at = ri == 0 ? *mark : 0;
+  for (uint t = at ? at - Q_PLE_HIST : 0; t < at; t++)
+    mark_hist[((pp->pos0 + t) % Q_PLE_HIST) * Q_HC_DIM + ch] = N[(ulong)t * Q_HC_DIM + ch];
 }

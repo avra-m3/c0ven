@@ -30,6 +30,8 @@ struct Options {
   uint32_t candidates = 64;                 // logits returned per step, the largest
   uint32_t prompt_chunk = 4352;             // tokens per prompt pass at most, a multiple of 64; 0: one token per
                                             // step
+  bool marks = true;                        // prompt chunks can keep the state at a mark (PromptRun::mark), in host
+                                            // memory of one slot's state's size a card
   bool trace = false;                       // the model times every kernel of its lists
   bool profile_routing = false;             // the prompt path counts each expert's rows
   bool adapt_swaps = false;                 // count the routing, for Model::swap_round
@@ -218,6 +220,9 @@ class Model {
     const int32_t *tokens;
     uint32_t n;
     int32_t p1, p2, p3 = kNoToken;
+    // The first run only: the chunk also keeps the sequence's fixed state as it stands after this many rows, for
+    // save_mark, until the next chunk with a mark. Between the state's history (9 rows on qwen4exp) and n - 1; 0: none.
+    uint32_t mark = 0;
   };
   // Runs of 1 to PROMPT_MAX_RUNS sequences, each of them once, in one pass, at most prompt_chunk() rows. Returns each
   // run's last token's largest logits. next: with one run, the tokens of the chunk expected to follow (next_n of them),
@@ -236,6 +241,8 @@ class Model {
   // (the block must be host memory every card reaches: alloc_pinned).
   virtual uint64_t slot_state_bytes() = 0;
   virtual void save_slot(uint32_t slot, uint8_t *dst) = 0;
+  // What save_slot would have saved at the last chunk's mark (PromptRun::mark). Any thread, once that chunk has ended.
+  virtual void save_mark(uint8_t *dst) = 0;
   virtual void load_slot(uint32_t slot, const uint8_t *src) = 0;
   virtual void *alloc_pinned(size_t bytes) = 0;
   virtual void free_pinned(void *p) = 0;

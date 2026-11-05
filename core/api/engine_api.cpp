@@ -69,6 +69,9 @@ struct Slot {
   std::vector<SlotImage> images;
   bool stalled = false;         // STALLED was sent, and no page has been mapped since
   uint32_t windows_end = UINT32_MAX;  // where the last prompt piece read as decode windows ended
+  // A plan queued has a piece with a mark (engine_prompt_piece); where that chunk's mark fell, once it has run.
+  bool mark_wanted = false;
+  uint32_t mark_at = 0;
   engine::Lookup lookup;        // the slot's own tokens, for drafts from earlier runs of them
   engine::DraftOdds odds;
   bool lookup_round = false;    // drafts holds the lookup's drafts
@@ -474,7 +477,7 @@ struct engine_ctx {
 
   // A prompt piece as read from its slot before it runs.
   struct Piece {
-    uint32_t slot = 0, pos0 = 0, n = 0;
+    uint32_t slot = 0, pos0 = 0, n = 0, mark = 0;
     std::vector<int32_t> toks, next;  // next: the slot's piece expected after this one, for its n-gram rows
     int32_t p1 = kNoToken, p2 = kNoToken, p3 = kNoToken;  // the tokens before pos0, p1 the nearest
     bool windowed = false, restart = false;
@@ -508,6 +511,9 @@ struct engine_ctx {
       image |= im.first < pos0 + n && im.first + (im.grid_h / 2) * (im.grid_w / 2) > pos0;
     pi.windowed = n <= window && !image;
     pi.restart = sl.windows_end != pos0;
+    pi.mark = pc.mark;
+    if (pc.mark && (pi.windowed || n != pc.tokens))
+      throw std::runtime_error("a piece with a mark is read whole, as a chunk");
     // The piece expected next, of the same size, so its n-gram rows are read while this one runs. A short one is
     // read as windows, which gather their own rows.
     const uint32_t nn = std::min(left - n, pc.tokens ? std::min(pc.tokens, info.prompt_chunk) : info.prompt_chunk);
@@ -574,7 +580,7 @@ struct engine_ctx {
     std::vector<engine::Model::PromptRun> runs;
     uint32_t n = 0, wrote = 0;
     for (const Piece &pi : pieces) {
-      runs.push_back({pi.slot, pi.pos0, pi.toks.data(), pi.n, pi.p1, pi.p2, pi.p3});
+      runs.push_back({pi.slot, pi.pos0, pi.toks.data(), pi.n, pi.p1, pi.p2, pi.p3, pi.mark});
       n += pi.n;
       wrote += pi.writer;
     }
@@ -590,6 +596,12 @@ struct engine_ctx {
       stats.prompt_chunks++;
       stats.prompt_rows += n - wrote;
       stats.prompt_ns += t1 - t0;
+      if (first.mark) {
+        Slot &sl = slots[first.slot];
+        sl.mark_at = first.pos0 + first.mark;
+        sl.mark_wanted = false;
+        idle_cv.notify_all();
+      }
     }
     for (uint32_t r = 0, end = 0; r < pieces.size(); r++) {
       end += pieces[r].n;
@@ -1270,6 +1282,7 @@ engine_status engine_open(const engine_config *config, engine_info *info, engine
     if (config->mtp_dir) opt.mtp_dir = config->mtp_dir;
     if (config->vision_path) opt.vision_path = config->vision_path;
     opt.kv_pages = config->kv_pages;
+    opt.marks = config->checkpoints > 0;
     opt.kv_resident = config->kv_resident_cells;
     opt.adapt_swaps = (config->flags & ENGINE_CONFIG_SWAPS) != 0;
     opt.share_kv = (config->flags & ENGINE_CONFIG_SHARE_KV) != 0;
@@ -1455,6 +1468,9 @@ engine_status engine_submit(engine_ctx *e, const engine_step_plan *plan) {
       after[c.slot]++;
   }
   e->queued_mapped = std::move(after);
+  for (uint32_t i = 0; i < plan->npieces && i < ENGINE_MAX_PROMPT_PIECES; i++)
+    if (plan->pieces[i].mark && plan->pieces[i].slot < e->slots.size())
+      e->slots[plan->pieces[i].slot].mark_wanted = true;
   e->plans.push_back({*plan, std::vector<engine_page_change>(plan->pages, plan->pages + plan->npages)});
   e->plans.back().plan.pages = nullptr;
   e->cv.notify_all();
@@ -1485,18 +1501,37 @@ engine_status engine_checkpoint(engine_ctx *e, uint32_t slot, uint32_t id) {
   std::unique_lock<std::mutex> lk(e->mu);
   if (slot >= e->slots.size() || id >= e->checkpoints.size()) return ENGINE_BAD_ARGUMENT;
   if (e->sleeping()) return ENGINE_ERROR;
-  e->drain(lk);
   Slot &sl = e->slots[slot];
+  // A mark is there once its chunk ends, whatever the plans behind it do; the first token need not wait for them.
+  const bool marked = sl.mark_wanted || sl.mark_at;
+  if (marked)
+    e->idle_cv.wait(lk, [&] { return !sl.mark_wanted || (e->plans.empty() && !e->running); });
+  else
+    e->drain(lk);
   if (!sl.used) return ENGINE_BAD_ARGUMENT;
+  if (marked && !sl.mark_at) {
+    e->error = "the chunk with a checkpoint's mark did not run";
+    return ENGINE_ERROR;
+  }
   Checkpoint &ck = e->checkpoints[id];
+  const uint32_t at = marked ? sl.mark_at : sl.fed;
+  sl.mark_at = 0;
   try {
-    e->model->save_slot(slot, ck.data);
+    if (marked) {
+      lk.unlock();  // only this thread plans the next mark
+      e->model->save_mark(ck.data);
+      lk.lock();
+    } else {
+      e->model->save_slot(slot, ck.data);
+    }
   } catch (const std::exception &ex) {
+    if (!lk.owns_lock()) lk.lock();
     e->error = ex.what();
     return ENGINE_ERROR;
   }
-  ck.tokens.assign(sl.tokens.begin(), sl.tokens.begin() + sl.fed);
-  ck.images = images_before(sl.images, sl.fed);
+  const std::vector<int32_t> &tokens = marked ? sl.prompt : sl.tokens;  // the engine thread may not have added them yet
+  ck.tokens.assign(tokens.begin(), tokens.begin() + at);
+  ck.images = images_before(sl.images, at);
   ck.full = true;
   e->stats.checkpoints_taken++;
   return ENGINE_OK;
@@ -1685,7 +1720,8 @@ uint32_t engine_abi_layout(engine_abi_row *table, uint32_t cap) {
       SIZE(engine_settings),
       ROW(engine_page_change, slot), ROW(engine_page_change, logical), ROW(engine_page_change, page),
       ROW(engine_page_change, source), ROW(engine_page_change, cells), SIZE(engine_page_change),
-      ROW(engine_prompt_piece, slot), ROW(engine_prompt_piece, tokens), SIZE(engine_prompt_piece),
+      ROW(engine_prompt_piece, slot), ROW(engine_prompt_piece, tokens), ROW(engine_prompt_piece, mark),
+      SIZE(engine_prompt_piece),
       ROW(engine_step_plan, nslots), ROW(engine_step_plan, slots), ROW(engine_step_plan, npieces),
       ROW(engine_step_plan, pieces), ROW(engine_step_plan, npages), ROW(engine_step_plan, pages),
       ROW(engine_step_plan, kv_free), ROW(engine_step_plan, window_rows), SIZE(engine_step_plan),

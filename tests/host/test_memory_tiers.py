@@ -255,9 +255,9 @@ GOLDEN_ROWS = [
     ("host arena", "12,077,852,800 B (11.25 GiB)"),
     ("streamed KV", "3,458,203,648 B (3.22 GiB)"),
     ("checkpoints", "8 x 118,038,528 B"),
-    ("pinned host memory", "16,480,364,672 B (15.35 GiB)"),
+    ("pinned host memory", "16,598,403,200 B (15.46 GiB)"),
     ("n-gram table", "28,800,138,240 B (26.82 GiB), read from the file"),
-    ("host memory with working set (estimate)", "19,701,590,144 B (18.35 GiB)"),
+    ("host memory with working set (estimate)", "19,819,628,672 B (18.46 GiB)"),
     ("KV pages", "65,536 of 4 cells"),
 ]
 
@@ -266,11 +266,11 @@ GOLDEN_FIT = {
     "fit_card1": "Arc_Pro_B60,22.71GiB,IP_20.1.0,20_Xe_cores,PCIe_4.0_x8/22.71GiB/-",
     "fit_experts": "-/389/389",
     "fit_working": "-/1.49GiB/1.49GiB",
-    "fit_mem_available": "64.00GiB/18.35GiB/1.00GiB",
+    "fit_mem_available": "64.00GiB/18.46GiB/1.00GiB",
     "fit_memory_max": "-/-/-",
     "fit_ram_max": "-/-/-",
     "fit_arena": "-/11.25GiB/13.00GiB",
-    "fit_pinned": "-/15.35GiB/-",
+    "fit_pinned": "-/15.46GiB/-",
     "fit_swap": "8.00GiB,cgroup:-/-/-",
     "fit_memlock": "unlimited/-/-",
     "fit_cpu": "Test_CPU,32_CPUs,16_cores,quota:none/16_workers_by_cores/16_workers",
@@ -403,14 +403,16 @@ def test_the_arena_is_capped_by_what_is_left_to_hold():
 
 
 def test_the_streamed_kv_and_checkpoints_come_out_of_the_arena():
-    """512 MiB of KV (1,024 pages of 4 cells, 128 KiB a cell) and 512 MiB of checkpoints, on top of the host above."""
+    """512 MiB of KV (1,024 pages of 4 cells, 128 KiB a cell), 512 MiB of checkpoints and the 256 MiB of a chunk's mark,
+    on top of the host above."""
     m = three_tiers(kv_cell_host=128 * 1024, checkpoint_bytes=256 * MIB)
     o = plan_options(
         usable_vram=4 * GIB, context=4096, checkpoints=2, host_working=GIB, host_memory=(24 + 1 + 1 + 1 + 1) * GIB
     )
     p = plan(m, o)
     assert p.streamed_kv_bytes + p.checkpoint_bytes == GIB
-    assert p.arena_bytes == 1016 * MIB
+    assert p.mark_bytes == 256 * MIB
+    assert p.arena_bytes == 768 * MIB
 
 
 @pytest.mark.parametrize("host_gib", [24 + 2, 3.0, 2.0, None])

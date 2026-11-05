@@ -59,6 +59,11 @@ def every_16k(prompt: tuple[int, ...]) -> list[tuple[int, bool]]:
     return [(p, False) for p in range(EVERY, len(prompt), EVERY)]
 
 
+MARK_MIN_ROWS = 9
+"""Rows a chunk reads before a mark inside it, so the state at the mark comes from the chunk alone: the longest of the
+rings a checkpoint keeps (engine_prompt_piece.mark)."""
+
+
 class EngineFailed(RuntimeError):
     """The core reported an error of the engine as a whole."""
 
@@ -372,6 +377,7 @@ class Scheduler:
         elif self.owed_ms > 0 or self.prompt_step_open:
             return []  # a span can be done before its step: the next prompt step waits for the decode it owes
         o = self.options
+        alone = not writing and len(candidates) == 1
         candidates.sort(key=lambda r: (r.passes < o.max_passes, r.remaining, r.arrived))
         budget = o.chunk_rows
         window = plan.window_rows
@@ -406,22 +412,33 @@ class Scheduler:
             rows = min(rows, fits)
             if rows <= 0:
                 break
+            mark = self._mark_inside(r, rows, min(budget, fits, self.facts.prompt_chunk), window) if alone else 0
+            if mark:
+                rows = r.remaining
             self.state.grow(r.slot, r.next_pos + rows)
             if pages_for(r.next_pos + rows) > len(seq.pages):
                 raise AssertionError("prompt span without its pages")
             last = r.next_pos + rows == len(r.prompt)
             if last:
                 self._grow_ahead(r, len(r.prompt))  # its first tokens decode without waiting for a plan
-            plan.prompt.append(PromptSpan(r.slot, r.next_pos, rows, last))
+            plan.prompt.append(PromptSpan(r.slot, r.next_pos, rows, last, mark))
             r.next_pos += rows
             budget -= rows
             chosen.add(r.rid)
-            if r.marks and r.marks[0][0] == r.next_pos:
+            if r.marks and (mark or r.marks[0][0] == r.next_pos):
                 position, kept = r.marks.pop(0)
                 marks.append((r, position, kept))
         for r in candidates:
             r.passes = 0 if r.rid in chosen else r.passes + 1
         return marks
+
+    def _mark_inside(self, r: Request, rows: int, room: int, window: int) -> int:
+        """The rows before a prompt's last checkpoint, when the piece that stops there can read on to the prompt's end
+        in one chunk and take the checkpoint's state in passing; else 0. Those last rows would go as decode windows,
+        slower than the chunk by far (ADR-0067)."""
+        if len(r.marks) != 1 or r.marks[0][0] - r.next_pos != rows:
+            return 0
+        return rows if rows >= MARK_MIN_ROWS and window < r.remaining <= room else 0
 
     # Events.
 

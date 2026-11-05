@@ -241,7 +241,12 @@ The rules ([ADR-0033](adr/0033-paged-kv-kept-by-python.md)):
   keep each conversation's checkpoints spread back from its end
   ([ADR-0051](adr/0051-checkpoints-stay-spread-back-from-each-conversations-end.md)); otherwise, and to make room, the least recently used. When every checkpoint is unanswered or being restored, there is nothing
   to evict and the new one is not taken: a later prompt reads those tokens again. `engine_checkpoint` and
-  `engine_restore` wait for every queued plan to run.
+  `engine_restore` wait for every queued plan to run, but for a checkpoint with a mark, below.
+- A prompt read alone, with nobody writing, reads the rows after its last checkpoint in the chunk that reaches it, when
+  they fit and the prompt has more rows than a decode window would take. The piece carries a mark: the kernels write
+  the state as it stands after that many rows to host memory as they pass it (one checkpoint's size, 118,038,528 B,
+  allocated when the engine keeps checkpoints and kept across sleeps). `engine_checkpoint` then waits only for that chunk, and copies from there
+  ([ADR-0067](adr/0067-a-prompts-last-rows-join-its-chunk.md)).
 - A window of drafts runs the DeltaNet state forward for every row. The core then keeps the state of the accepted
   rows only. The KV cells of rejected rows are overwritten when those positions come again
   ([MODEL_LAYER.md, 2.8](spec/MODEL_LAYER.md#28-what-must-be-saved-to-roll-back-rejected-draft-tokens)).

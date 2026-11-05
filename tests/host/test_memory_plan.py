@@ -106,12 +106,14 @@ def test_host_side():
 
 def test_the_checkpoints_are_pinned_at_the_cores_size():
     """A checkpoint is a slot's running state only, at any context; the KV of its positions stays in its pages
-    (ADR-0033). The checkpoints are in the pinned total."""
+    (ADR-0033). The checkpoints, and the state at a chunk's mark of one checkpoint's size (ADR-0067), are in the pinned
+    total."""
     p = plan(MODEL, plan_options(slots=1, context=262_144, checkpoints=8))
     assert p.checkpoint_bytes == 8 * 118_038_528
-    assert p.pinned_bytes == p.arena_bytes + p.streamed_kv_bytes + 8 * 118_038_528
+    assert p.mark_bytes == 118_038_528
+    assert p.pinned_bytes == p.arena_bytes + p.streamed_kv_bytes + 9 * 118_038_528
     none = plan(MODEL, plan_options(slots=1, context=262_144, checkpoints=0))
-    assert none.pinned_bytes == p.pinned_bytes - 8 * 118_038_528
+    assert none.pinned_bytes == p.pinned_bytes - 9 * 118_038_528
 
 
 @pytest.mark.parametrize("slots", [1, 2, 4, 8])

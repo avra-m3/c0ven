@@ -139,6 +139,33 @@ int main(int argc, char **argv) {
     failures += bad != 0;
   }
   {
+    // A mark inside a chunk keeps the state of the rows before it read alone. Restored, the rows after it give what
+    // the prompt gives read whole.
+    std::vector<uint8_t *> state(2);
+    const uint64_t bytes = model.slot_state_bytes();
+    for (auto &p : state) p = static_cast<uint8_t *>(model.alloc_pinned(bytes));
+    model.reset_slot(1);
+    model.prompt(1, 0, seqs[1].data(), CUT, kNoToken, kNoToken);
+    model.save_slot(1, state[0]);
+    model.reset_slot(1);
+    auto whole = run(1, 0);
+    whole.mark = CUT;
+    auto cand = model.prompt_runs(&whole, 1);
+    model.save_mark(state[1]);
+    const bool kept = std::memcmp(state[0], state[1], bytes) == 0;
+    const uint32_t read = differ(decode(1, cand[0]), alone[1]);
+    model.reset_slot(1);
+    model.load_slot(1, state[1]);
+    auto after = run(1, CUT);
+    const uint32_t restored =
+        differ(decode(1, model.prompt(after.slot, after.pos0, after.tokens, after.n, after.p1, after.p2)), alone_cut);
+    std::printf("a mark at row %u: state %s the rows before it read alone; %u of %u candidate lists differ read whole, "
+                "%u restored at the mark\n",
+                CUT, kept ? "equals" : "differs from", read, D + 1, restored);
+    failures += !kept || read != 0 || restored != 0;
+    for (auto p : state) model.free_pinned(p);
+  }
+  {
     // Slot 1: gpqa-2 with an image's block of 64 tokens (16 x 16 patches of fixed pseudo-random pixels) at index 24.
     // Slots 2 and 3: the deep prompts, cut where their run ends.
     qwen4exp::Image im;

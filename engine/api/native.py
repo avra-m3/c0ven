@@ -326,6 +326,8 @@ class _Slot:
     prompt_len: int
     fed: int = 0
     """Prompt positions queued so far as pieces, or restored."""
+    marked: int = 0
+    """Where the last queued span's mark falls, until a checkpoint takes it."""
     spans: deque[tuple[int, int]] = field(default_factory=deque)
     """Each queued span's end position and row count, until the core reports it read."""
     decoding: bool = False
@@ -442,6 +444,7 @@ class NativeEngine:
             timing_fd=-1,
             version=f"core-abi{info.api_version}",
             image_tokens_max=int(info.image_tokens_max),
+            prompt_chunk=int(info.prompt_chunk),
             host_read_bytes_per_s=float(info.host_read_bytes_per_s),
             loader_threads=int(info.loader_threads),
             loader_bytes_per_s=float(info.loader_bytes_per_s),
@@ -520,7 +523,7 @@ class NativeEngine:
             s = self._slot(slot)
             if not s.finished:
                 self._finish(slot, s, FinishReason.CANCELLED)
-        pieces: list[tuple[int, int]] = []
+        pieces: list[tuple[int, int, int]] = []
         joining: list[_Slot] = []
         chunk = self.info.prompt_chunk
         for span in plan.prompt:
@@ -532,8 +535,11 @@ class NativeEngine:
             end = span.first + span.count
             if span.count <= 0 or end > s.prompt_len or span.last != (end == s.prompt_len):
                 raise EngineError(ErrorCode.INVALID_ARGUMENT, f"span {span.first}+{span.count} of {s.prompt_len}")
+            if span.mark and not 0 < span.mark < span.count <= chunk:
+                raise EngineError(ErrorCode.INVALID_ARGUMENT, f"mark {span.mark} in a span of {span.count}")
             for first in range(span.first, end, chunk):
-                pieces.append((span.slot, min(chunk, end - first)))
+                pieces.append((span.slot, min(chunk, end - first), span.mark))
+            s.marked = span.first + span.mark if span.mark else 0
             s.fed = end
             s.spans.append((end, span.count))
             if span.last:
@@ -551,7 +557,8 @@ class NativeEngine:
     def checkpoint(self, slot: int, checkpoint_id: int) -> None:
         s = self._slot(slot)
         self._core.checkpoint(slot, checkpoint_id)
-        self._checkpoint_len[checkpoint_id] = s.fed
+        self._checkpoint_len[checkpoint_id] = s.marked or s.fed
+        s.marked = 0
         self._events.append(Event(EventKind.CHECKPOINT_DONE, slot, self._done, checkpoint_id))
 
     def restore(self, slot: int, checkpoint_id: int) -> None:
@@ -624,16 +631,17 @@ class NativeEngine:
         self._events.append(Event(EventKind.FINISHED, slot, self._done, reason))
 
     def _queue(
-        self, pieces: Sequence[tuple[int, int]], decode: Sequence[int], pages: Sequence[abi.CPageChange] = ()
+        self, pieces: Sequence[tuple[int, int, int]], decode: Sequence[int], pages: Sequence[abi.CPageChange] = ()
     ) -> None:
         c = abi.CStepPlan()
         array = (abi.CPageChange * len(pages))(*pages)  # submit copies it
         c.npages = len(pages)
         c.pages = ctypes.cast(array, ctypes.POINTER(abi.CPageChange))
         c.npieces = len(pieces)
-        for i, (slot, tokens) in enumerate(pieces):
+        for i, (slot, tokens, mark) in enumerate(pieces):
             c.pieces[i].slot = slot
             c.pieces[i].tokens = tokens
+            c.pieces[i].mark = mark
         c.nslots = len(decode)
         for i, slot in enumerate(decode):
             c.slots[i] = slot
@@ -644,8 +652,8 @@ class NativeEngine:
             self._collect(pump=False)
         self._submitted += 1
         self._queued[self._submitted] = _Queued(
-            frozenset(decode) | {slot for slot, _ in pieces} | {p.slot for p in pages},
-            sum(t for _, t in pieces),
+            frozenset(decode) | {slot for slot, _, _ in pieces} | {p.slot for p in pages},
+            sum(t for _, t, _ in pieces),
             len(decode),
             self._window_rows or WINDOW_ROWS,
         )

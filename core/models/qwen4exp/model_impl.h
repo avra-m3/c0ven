@@ -136,6 +136,7 @@ struct Model::Layer {
   float *conv_state = nullptr, *S = nullptr;
   float *wu = nullptr, *wgb = nullptr, *wm = nullptr;  // a step's u, gates and m, kept for a window's commit
   uint64_t conv_stride = 0, S_stride = 0;  // floats per slot
+  float *conv_mark = nullptr, *S_mark = nullptr;  // the state at a chunk's mark, in PromptCard::mark
   // The KV cache's pool of pages (layout.h): K and V of every page; the indexer's raw and pooled keys of this card's
   // pages only, at local page p / C.
   uint8_t *kc = nullptr, *vc = nullptr, *raw = nullptr;
@@ -269,6 +270,10 @@ struct Model::HostLayer {
 
 // The prompt path's buffers on one card (prompt.cpp). Rows are tokens, up to the largest chunk.
 struct Model::PromptCard {
+  uint8_t *mark = nullptr;  // the state at a chunk's mark: Model::mark_host_, this card's
+  uint64_t mark_bytes = 0;
+  float *ple_mark = nullptr;
+  std::unique_ptr<ze::List> mark_copy;  // save_mark's, on the copy engine
   float *R = nullptr, *inj[2] = {}, *lr = nullptr, *ab = nullptr, *gb = nullptr;
   uint16_t *lrb = nullptr, *x16 = nullptr, *xb = nullptr, *o16 = nullptr;
   // The hyper-connection mix, the experts and the PLE module use one region in turn.

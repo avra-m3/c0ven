@@ -58,6 +58,23 @@ void Model::load_prompt(Card &card) {
   const uint16_t zero16 = 0;
   card.pc = std::make_unique<PromptCard>();
   PromptCard &P = *card.pc;
+  // The state at a chunk's mark, laid out as save_slot lays a slot's (state.cpp), in host memory: the kernels write it
+  // once a marked chunk, and it takes nothing from the expert cache.
+  if (opt_.marks) {
+    P.mark_bytes = card.ple_stride * 4;
+    for (auto &L : card.layers)
+      if (!L.attn) P.mark_bytes += (L.conv_stride + L.S_stride) * 4;
+    if (!mark_host_[card.c]) mark_host_[card.c] = static_cast<uint8_t *>(rt_->alloc_host(P.mark_bytes));
+    P.mark = mark_host_[card.c];
+    P.mark_copy = std::make_unique<ze::List>(*rt_, card.c, ze::List::immediate, true);
+    uint8_t *at = P.mark;
+    for (auto &L : card.layers) {
+      if (L.attn) continue;
+      L.conv_mark = reinterpret_cast<float *>(at), at += L.conv_stride * 4;
+      L.S_mark = reinterpret_cast<float *>(at), at += L.S_stride * 4;
+    }
+    P.ple_mark = reinterpret_cast<float *>(at);
+  }
   const uint64_t T = tmax_;
   auto dev = [&](uint64_t bytes) { return static_cast<uint8_t *>(rt_->alloc_device(card.c, std::max<uint64_t>(bytes, 256))); };
   auto f32 = [&](uint64_t n) { return reinterpret_cast<float *>(dev(n * 4)); };
@@ -417,7 +434,8 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
       L.launch(q4("p_ple_norm"), {P.pv, P.gates, card.ple_gc, pp, P.N}, shape_.hc, T, 1, 256);
       L.launch(q4("p_ple_conv"), {P.N, P.pv, P.gates, card.ple_conv, card.ple_hist, card.ple_stride, runs_p, P.R},
                shape_.hc_dim() / 64, T, 1, 64);
-      L.launch(q4("p_ple_save"), {P.N, card.ple_hist, card.ple_stride, runs_p}, shape_.hc_dim() / 64, 1, runs, 64);
+      L.launch(q4("p_ple_save"), {P.N, card.ple_hist, card.ple_stride, runs_p, P.ple_mark, pmark()},
+               shape_.hc_dim() / 64, 1, runs, 64);
       if (split) r0 = c * half, r1 = r0 + half, nown = prows_ + c;
     }
     hc_mix(Ly, 0, l >= 2, 2 * l);  // after layer 0 the PLE module stands between the combine and the norm
@@ -431,12 +449,13 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
       gemm(true, Ly.ab, 2 * card.nvh, shape_.embd, P.xb, shape_.embd, P.ab, 2 * card.nvh, false, 0, one, nullptr, 4, 1);
       L.launch(q4("p_gdn_conv"), {P.m, Ly.conv, Ly.conv_state, Ly.conv_stride, nch, runs_p, P.u}, (nch + 63) / 64, T,
                1, 64);
-      L.launch(q4("p_gdn_conv_save"), {P.m, Ly.conv_state, Ly.conv_stride, nch, runs_p}, (nch + 63) / 64, 1, runs,
-               64);
+      L.launch(q4("p_gdn_conv_save"), {P.m, Ly.conv_state, Ly.conv_stride, nch, runs_p, Ly.conv_mark, pmark()},
+               (nch + 63) / 64, 1, runs, 64);
       L.launch(q4("p_gdn_l2norm"), {P.u, nch, pp}, 2 * card.nkh, T, 1, shape_.gdn_d);
       L.launch(q4("p_gdn_gates"), {P.ab, Ly.A, Ly.dt, card.nvh, pp, P.gb}, 1, T, 1, 64);
       L.launch(kernel(c, "qwen4exp_gdn", "p_gdn_recur"),
-               {P.u, nch, P.gb, Ly.S, Ly.S_stride, card.nkh, card.nvh, runs_p, P.raw}, card.nvh * 8, 1, runs, 64);
+               {P.u, nch, P.gb, Ly.S, Ly.S_stride, card.nkh, card.nvh, runs_p, P.raw, Ly.S_mark, pmark()},
+               card.nvh * 8, 1, runs, 64);
       L.launch(q4("p_gdn_out"), {P.raw, P.z, Ly.ssm_norm, card.nvh, pp, P.o16}, card.nvh, T, 1, shape_.gdn_d);
       dense(Ly.out, P.o16, nvo, P.part, shape_.embd, true, peer_part(0), sent(0));
     } else {
@@ -586,6 +605,8 @@ std::vector<std::vector<Candidate>> Model::prompt_runs(const PromptRun *runs, ui
     if (q.pos0 + q.n > opt_.max_ctx) throw std::runtime_error("prompt past the context");
     for (uint32_t k = 0; k < r; k++)
       if (runs[k].slot == q.slot) throw std::runtime_error("a prompt chunk takes one run a sequence");
+    if (q.mark && (!opt_.marks || r > 0 || q.mark < shape_.ple_hist() || q.mark >= q.n))
+      throw std::runtime_error("a prompt chunk's mark is in its first run, past the state's history");
     n += q.n;
   }
   if (n > tmax_) throw std::runtime_error("prompt chunk out of range");
@@ -613,6 +634,7 @@ std::vector<std::vector<Candidate>> Model::prompt_runs(const PromptRun *runs, ui
 
   ++plan_->step;
   pplan_[0] = {n, runs[0].pos0, runs[0].slot, 0};
+  pplan_[1 + PROMPT_MAX_RUNS].n = runs[0].mark;
   prows_[0] = std::min(n, T / 2), prows_[1] = n - prows_[0];  // each card's rows when they split (prompt_list)
   head_plan_->nrows = nruns;
   const GgufTensor &te = gguf_.tensor("token_embd.weight");

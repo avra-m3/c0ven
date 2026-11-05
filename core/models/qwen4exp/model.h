@@ -137,6 +137,7 @@ class Model final : public engine::Model {
   // A slot's fixed state (state.cpp): the DeltaNet layers' and the PLE history.
   uint64_t slot_state_bytes() override;
   void save_slot(uint32_t slot, uint8_t *dst) override;
+  void save_mark(uint8_t *dst) override;
   void load_slot(uint32_t slot, const uint8_t *src) override;
   void *alloc_pinned(size_t bytes) override;
   void free_pinned(void *p) override;
@@ -334,6 +335,7 @@ class Model final : public engine::Model {
   uint32_t kv_pages_ = 0;  // pages in the pool
   uint32_t kv_res_ = 0;    // streamed (Options::kv_resident): the ring of resident K and V pages a layer on each
                            // card, at most; 0: every page resident
+  std::vector<uint8_t *> mark_host_;  // [card] the state at a chunk's mark (PromptRun::mark); kept across sleeps
   std::vector<uint8_t *> kv_host_;  // the host copies of K and V, [card][attention layer][K, V]; kept across sleeps
   std::vector<uint32_t> kvs_to_;    // [slot] the position its pages are claimed through (kvs_claim), 0: not settled
   uint32_t ring_level_ = 0;         // the ring's size on the cards (kst[4])
@@ -448,7 +450,8 @@ class Model final : public engine::Model {
   int arena_lock_errno_ = 0;            // why mlock2 failed for a piece; 0: every piece is locked
   uint32_t tmax_ = 0;
   uint32_t last_width_ = 1;  // the width of the last decode step
-  PromptPlan *pplan_ = nullptr;  // the chunk's plan, then its runs' (PROMPT_MAX_RUNS, n 0 when unused)
+  PromptPlan *pplan_ = nullptr;  // the chunk's plan, then its runs' (PROMPT_MAX_RUNS, n 0 when unused), then the mark
+  const uint32_t *pmark() const { return &pplan_[1 + PROMPT_MAX_RUNS].n; }  // PromptRun::mark, for the kernels
   uint32_t *prows_ = nullptr;  // each card's count of the chunk's rows when the hyper-connections split them
   uint32_t *ppos_ = nullptr;  // the runs' positions (step.h), ppos_run() values apart
   uint32_t ppos_run() const { return (tmax_ + shape_.idx_block) * 4; }

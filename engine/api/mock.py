@@ -84,6 +84,8 @@ class _Slot:
     generated: int = 0
     steps: int = 0
     """Decode steps that processed one of its own tokens."""
+    marked: _Checkpoint | None = None
+    """The state at the last span's mark, until a checkpoint takes it."""
 
 
 @dataclass(slots=True)
@@ -284,7 +286,8 @@ class MockEngine:
         match op.kind:
             case "checkpoint":
                 s = self._slot(op.slot)
-                self._checkpoints[op.checkpoint] = _Checkpoint(s.state, tuple(s.tokens))
+                self._checkpoints[op.checkpoint] = s.marked or _Checkpoint(s.state, tuple(s.tokens))
+                s.marked = None
                 self._emit(EventKind.CHECKPOINT_DONE, op.slot, op.checkpoint)
             case "restore":
                 s = self._slot(op.slot)
@@ -393,7 +396,7 @@ class MockEngine:
                 self._emit(EventKind.ERROR, fault.slot, ErrorCode.INVALID_ARGUMENT)
             for span in plan.prompt:
                 try:
-                    rows += self._run_span(span.slot, span.first, span.count, span.last)
+                    rows += self._run_span(span.slot, span.first, span.count, span.last, span.mark)
                 except PlanFault as fault:
                     self._emit(EventKind.ERROR, fault.slot, ErrorCode.INVALID_ARGUMENT)
             window = plan.window_rows or WINDOW_ROWS
@@ -435,7 +438,7 @@ class MockEngine:
         self._timing.append((time.monotonic_ns(), t_ns, self._step, rows))
         self._emit(EventKind.STEP_DONE, NO_SLOT, decoded, rows, t_ns, c=chunks)
 
-    def _run_span(self, slot: int, first: int, count: int, last: bool) -> int:
+    def _run_span(self, slot: int, first: int, count: int, last: bool, mark: int = 0) -> int:
         s = self._slot(slot)
         if s.decoding or s.finished:
             raise PlanFault(slot, "prompt span for a slot past its prompt")
@@ -448,6 +451,8 @@ class MockEngine:
         for position in range(first, first + count):
             if not self._write(slot, s, s.prompt[position]):
                 raise PlanFault(slot, f"prompt position {position} has no page")
+            if mark and position == first + mark - 1:
+                s.marked = _Checkpoint(s.state, tuple(s.tokens))
         self._verify(slot, s)
         self._emit(EventKind.PROMPT_DONE, slot, len(s.tokens), count)
         if last:

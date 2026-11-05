@@ -213,6 +213,8 @@ class MemoryPlan:
     arena_bytes: int
     streamed_kv_bytes: int
     checkpoint_bytes: int
+    mark_bytes: int
+    """The state at a chunk's mark, one checkpoint's size, when checkpoints are kept."""
     pages: int
     kv_resident_cells: int
     ngram_bytes: int
@@ -238,7 +240,7 @@ class MemoryPlan:
     @property
     def pinned_bytes(self) -> int:
         """Everything `open` pins in host memory, which a wake pins again after a sleep but for the arena."""
-        return self.arena_bytes + self.streamed_kv_bytes + self.checkpoint_bytes
+        return self.arena_bytes + self.streamed_kv_bytes + self.checkpoint_bytes + self.mark_bytes
 
     @property
     def experts_per_layer(self) -> int:
@@ -501,10 +503,11 @@ def _plan(m: ModelMemory, o: PlanOptions) -> MemoryPlan:
     # The host holds every page's K and V (the core's kv_host), and each slot's draft ring.
     streamed = pages * PAGE_CELLS * m.kv_cell_host + o.slots * m.draft_kv_host
     checkpoints = o.checkpoints * m.checkpoint_bytes
+    mark = m.checkpoint_bytes if o.checkpoints else 0
     on_cards: tuple[tuple[int, ...], ...] = ()
     tiers: Tiers | None = None
     if m.layer_expert_bytes or m.ssd_tier:
-        on_cards, tiers = _layer_experts(m, o, card_free, streamed + checkpoints)
+        on_cards, tiers = _layer_experts(m, o, card_free, streamed + checkpoints + mark)
         cached = sum(tiers.vram)
         arena = tiers.bytes_of(tiers.arena)
     else:
@@ -527,6 +530,7 @@ def _plan(m: ModelMemory, o: PlanOptions) -> MemoryPlan:
         arena_bytes=arena,
         streamed_kv_bytes=streamed,
         checkpoint_bytes=checkpoints,
+        mark_bytes=mark,
         pages=pages,
         kv_resident_cells=min(o.context, m.resident_cells),
         ngram_bytes=m.ngram_bytes,

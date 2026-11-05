@@ -199,13 +199,14 @@ Model::Model(const std::string &path, const Options &opt) : opt_(opt), gguf_(pat
   slot_gen_.assign(opt_.slots, 0);
   kvs_to_.assign(opt_.slots, 0);
 
+  mark_host_.assign(ncards_, nullptr);
   tmax_ = std::min(opt_.prompt_chunk, opt_.max_ctx / 64 * 64);
   kv_margin_ = std::max<uint32_t>(2048, 2 * tmax_ / KV_PAGE_CELLS);  // two prompt chunks, or 8,192 positions
   if (tmax_) {
     if (opt_.prompt_chunk % 64) throw std::runtime_error("prompt_chunk must be a multiple of 64");
     pevents_ = std::make_unique<ze::EventPool>(*rt_, 7 * shape_.layers * ncards_ + 1 + shape_.attn_layers() * ncards_ + ncards_);
-    pplan_ = static_cast<PromptPlan *>(rt_->alloc_host((1 + PROMPT_MAX_RUNS) * sizeof(PromptPlan)));
-    std::memset(pplan_, 0, (1 + PROMPT_MAX_RUNS) * sizeof(PromptPlan));
+    pplan_ = static_cast<PromptPlan *>(rt_->alloc_host((2 + PROMPT_MAX_RUNS) * sizeof(PromptPlan)));
+    std::memset(pplan_, 0, (2 + PROMPT_MAX_RUNS) * sizeof(PromptPlan));
     prows_ = static_cast<uint32_t *>(rt_->alloc_host(2 * 4));
     std::memset(prows_, 0, 2 * 4);
     ppos_ = static_cast<uint32_t *>(rt_->alloc_host((size_t)PROMPT_MAX_RUNS * ppos_run() * 4));

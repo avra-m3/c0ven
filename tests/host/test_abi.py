@@ -34,7 +34,7 @@ def test_sizes_from_the_header():
     assert ctypes.sizeof(abi.CSettings) == 80
     assert ctypes.sizeof(abi.CPageChange) == 20
     assert (
-        ctypes.sizeof(abi.CStepPlan) == 4 + 4 * abi.MAX_STEP_SLOTS + 4 + 8 * abi.MAX_PROMPT_PIECES + 4 + 4 + 8 + 4 + 4
+        ctypes.sizeof(abi.CStepPlan) == 4 + 4 * abi.MAX_STEP_SLOTS + 4 + 12 * abi.MAX_PROMPT_PIECES + 4 + 4 + 8 + 4 + 4
     )
     assert ctypes.sizeof(abi.CEvent) == 16
     assert ctypes.sizeof(abi.CTiming) == 32

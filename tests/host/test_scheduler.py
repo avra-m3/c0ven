@@ -8,7 +8,7 @@ from dataclasses import dataclass, field, replace
 import pytest
 
 import protocol
-from engine.api.interface import Event, EventKind, OpenConfig, StepPlan
+from engine.api.interface import WINDOW_ROWS, Event, EventKind, OpenConfig, StepPlan
 from engine.api.mock import MockEngine, Script
 from engine.scheduler import CheckpointRule, Phase, Scheduler, SchedulerOptions, every_16k
 from tests.helpers import facts_of, open_config
@@ -346,6 +346,76 @@ def test_prompt_spans_end_at_checkpoints():
     spans = [(s.first, s.count) for p in run.engine.plans for s in p.prompt]
     assert spans == [(0, 100), (100, 2900), (3000, 2000)]
     assert [c[0] for c in run.engine.calls] == ["checkpoint", "checkpoint"]
+
+
+def test_a_lone_prompt_reads_past_its_last_mark():
+    """The piece stopping at the prompt's last checkpoint reads on to the prompt's end; the checkpoint holds the state
+    at the mark, whatever has been written since."""
+    shared = prompt(300)
+    tail = (777, 778, 779)
+    fresh = make()
+    fresh.add(2, shared + tail, 6, temperature=0.0)
+    fresh.until_idle()
+
+    run = make(rule=marks_at(100, 300))
+    run.add(1, (*shared, 5, 6), 3)
+    run.until_idle()
+    spans = [(s.first, s.count, s.mark) for p in run.engine.plans for s in p.prompt]
+    assert spans == [(0, 100, 0), (100, 202, 200)]
+    assert [c[0] for c in run.engine.calls] == ["checkpoint", "checkpoint"]
+    run.add(2, shared + tail, 6, temperature=0.0)
+    run.until_idle()
+    assert run.errors() == []
+    assert protocol.Resume(2, 300) in run.events
+    assert run.done(2).reused == 300
+    assert run.tokens(2) == fresh.tokens(2)
+
+
+@pytest.mark.parametrize(
+    ("mark", "length", "spans"),
+    [
+        (8, 300, [(0, 8, 0), (8, 292, 0)]),  # too few rows before the mark for the state's history
+        (WINDOW_ROWS - 3, WINDOW_ROWS, [(0, WINDOW_ROWS - 3, 0), (WINDOW_ROWS - 3, 3, 0)]),  # windows' rows in all
+        (3000, 5000, [(0, 3000, 0), (3000, 2000, 0)]),  # past one chunk
+    ],
+)
+def test_a_mark_stays_a_span_end_when_the_chunk_cannot_take_it(
+    mark: int, length: int, spans: list[tuple[int, int, int]]
+):
+    run = make(open_config(context=8192), rule=marks_at(mark))
+    run.add(1, prompt(length), 1)
+    run.until_idle()
+    assert [(s.first, s.count, s.mark) for p in run.engine.plans for s in p.prompt] == spans
+
+
+def test_a_mark_stays_a_span_end_beside_other_requests():
+    """The chunk's last rows would hold a writer for longer, and another prompt could have its turn first."""
+    together = make(open_config(slots=2), rule=marks_at(200))
+    together.add(1, prompt(205), 1)
+    together.add(2, prompt(400, start=50), 1)
+    together.until_idle()
+    assert together.errors() == []
+    assert not [s for p in together.engine.plans for s in p.prompt if s.mark]
+
+    beside = make(open_config(slots=2), rule=marks_at(200))
+    beside.add(1, prompt(20, start=50), 100)
+    beside.tick(4)
+    beside.add(2, prompt(205), 1)
+    beside.until_idle()
+    assert beside.errors() == []
+    assert not [s for p in beside.engine.plans for s in p.prompt if s.mark]
+
+
+def test_a_mark_with_its_checkpoint_skipped_leaves_the_next_request_alone():
+    run = make(open_config(slots=1, checkpoints=1), rule=marks_at(200))
+    run.add(1, prompt(205), 1)
+    run.until_idle()
+    run.add(2, prompt(205, start=50), 1)
+    run.until_idle()
+    run.add(3, prompt(205), 1)
+    run.until_idle()
+    assert run.errors() == []
+    assert [len(run.tokens(rid)) for rid in (1, 2, 3)] == [1, 1, 1]
 
 
 def test_checkpoints_are_evicted_without_breaking_requests():

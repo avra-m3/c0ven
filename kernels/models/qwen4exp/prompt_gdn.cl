@@ -12,13 +12,17 @@
 
 // Groups (nvh * 8): work-group g takes columns 16 (g % 8) .. + 15 of local value head g / 8; GR x 16 work-items.
 // u rows hold [q | k | v] (nch values), gb rows g[nvh] then beta[nvh]. raw[t][lv][c] receives the head's output
-// before its norm, scaled by 1/sqrt(128).
+// before its norm, scaled by 1/sqrt(128). The state after the chunk's mark, if any, also goes to S_mark
+// (Model::PromptRun::mark).
 REQD_SG __kernel void p_gdn_recur(__global const float *u, uint nch, __global const float *gb,
                                   __global float *S, ulong slot_stride, uint nkh, uint nvh,
-                                  __global const PromptPlan *runs, __global float *raw) {
+                                  __global const PromptPlan *runs, __global float *raw, __global float *S_mark,
+                                  __global const uint *mark) {
   __global const PromptPlan *pp = runs + get_group_id(2);  // one launch for all the chunk's runs
   // [token % 2][S k or S q][sub-group][lane]
   __local float part[2][2][GR][16];
+  // A sub-group's 16 rows of its 16 columns, turned so that each store to S_mark is one whole line of a column.
+  __local float turn[GR][16][17];
   const uint lv = get_group_id(0) / 8, cb = get_group_id(0) % 8, lane = sg_lane(), r = sg_id();
   const uint c = 16 * cb + lane, kh = lv % nkh, i0 = GROWS * r;
   __global float *s_col = S + pp->slot * slot_stride + ((ulong)lv * Q_GDN_D + c) * Q_GDN_D + i0;
@@ -51,6 +55,7 @@ REQD_SG __kernel void p_gdn_recur(__global const float *u, uint nch, __global co
   __attribute__((opencl_unroll_hint)) for (uint i = 0; i < GROWS; i++)
     sk += s[i] * dn * sub_group_broadcast(kn[i / 16], i % 16);
   part[0][0][r][lane] = sk;
+  const uint at = get_group_id(2) == 0 ? *mark : 0;
   for (uint t = 0; t < n; t++) {
     float qc[GROWS / 16], kc[GROWS / 16], vc = vn, decay = dn, beta = bn;
     for (uint b = 0; b < GROWS / 16; b++) qc[b] = qn[b], kc[b] = kn[b];
@@ -74,6 +79,16 @@ REQD_SG __kernel void p_gdn_recur(__global const float *u, uint nch, __global co
     }
     cur[1][r][lane] = out;
     alt[0][r][lane] = skn;
+    // S_mark is in host memory, where a lane's stores down its own column would cross the bus 4 bytes at a time.
+    if (t + 1 == at) {
+      __global float *s_mark = S_mark + ((ulong)lv * Q_GDN_D + 16 * cb) * Q_GDN_D + i0 + lane;
+      for (uint b = 0; b < GROWS / 16; b++) {
+        for (uint i = 0; i < 16; i++) turn[r][i][lane] = s[16 * b + i];
+        barrier(CLK_LOCAL_MEM_FENCE);
+        for (uint j = 0; j < 16; j++) s_mark[(ulong)j * Q_GDN_D + 16 * b] = turn[r][lane][j];
+        barrier(CLK_LOCAL_MEM_FENCE);
+      }
+    }
   }
   barrier(CLK_LOCAL_MEM_FENCE);
   __local float (*last)[GR][16] = part[(n - 1) % 2];
