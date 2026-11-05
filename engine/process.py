@@ -208,7 +208,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=("auto", "on", "off"),
         default="auto",
         help="the n-gram table in RAM; auto: when the host has room for it beside the plan, with"
-        " a quarter of its memory, at least 8 GiB, left free",
+        " half of its memory, at least 8 GiB, left free",
     )
     p.add_argument(
         "--card-memory",

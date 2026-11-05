@@ -24,7 +24,7 @@ struct Options {
   uint32_t kv_resident = 0;                 // K and V cells per slot kept in VRAM, the rest in host memory (ADR-0008
                                             // item 3); 0: every cell
   uint32_t max_cards = 2;                   // 1 runs the whole model on card 0
-  uint64_t reserve_bytes = 512ull << 20;    // device memory left free on each card, beyond what the engine counts
+  uint64_t reserve_bytes = 1ull << 30;      // device memory the engine does not count on: the driver's own, and some free
   int32_t experts_per_layer = -1;           // experts cached per layer; -1: as many as fit
   unsigned cpu_threads = 16;                // the CPU's expert workers, with the host thread
   uint32_t candidates = 64;                 // logits returned per step, the largest

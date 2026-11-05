@@ -331,7 +331,7 @@ No card is kept busy to hold its clock up. In decode both cards stay at 2,400 MH
 | --- | --- |
 | Each card's VRAM (`zeMemAllocDevice`) | The card's half of every layer's weights and of each cached expert, its KV pages and state heads, its buffers and recorded lists |
 | Pinned host memory (`zeMemAllocHost`) | Each card's K and V of every KV page. What both cards or the CPU read: step plans, the misses' jobs and answers, the one-row exchanges, the step's n-gram rows, the cards' candidates, the checkpoints, the image encoder's weights |
-| The expert arena: the engine's own memory, from `mmap` in 1 GiB pieces with huge pages | Every expert no card caches, each in one place. The CPU reads it for misses and copies from it for short prompt chunks, and the copy engines read it in place for longer chunks and swaps. The driver cannot move this memory under the host's reclaim, and it counts against the engine's cgroup ([ADR-0035](adr/0035-the-arena-in-the-engines-own-memory.md); [known limits](../README.md#known-limits)) |
+| The expert arena: the engine's own memory, from `mmap` in 1 GiB pieces, in huge pages while the host keeps free 2 MiB blocks | Every expert no card caches, each in one place. The CPU reads it for misses and copies from it for short prompt chunks, and the copy engines read it in place for longer chunks and swaps. The driver cannot move this memory under the host's reclaim, and it counts against the engine's cgroup ([ADR-0035](adr/0035-the-arena-in-the-engines-own-memory.md); [known limits](../README.md#known-limits)) |
 | RAM | The n-gram rows already read, in a cache; or the whole n-gram table, when the host has room for it ([ADR-0057](adr/0057-the-engine-reads-the-host-it-runs-on.md)) |
 | The SSD | The n-gram table, 28.8 GB, read with `O_DIRECT` past the page cache ([ADR-0015](adr/0015-ngram-table-on-the-ssd.md)), unless it is in RAM |
 
@@ -345,8 +345,8 @@ before load that the options fit the host, and gives the core its page count. Th
 cgroup's `memory.max` and `--ram-max`, or the engine refuses to load and prints options that fit
 ([ADR-0057](adr/0057-the-engine-reads-the-host-it-runs-on.md)). Each load prints a fit report, the values read beside
 the plan's figures and the core's, and sends it in INFO as `fit_*` facts. The core fits as many experts per
-layer on each card as its memory allows, after leaving `reserve_bytes` (512 MiB) free
-([ADR-0027](adr/0027-the-c-abi-as-the-core-was-optimised.md), item 3). It reports the memory it had left for them
+layer on each card as its physical memory allows, after setting aside `reserve_bytes` (1 GiB) for the driver's own use
+and some free ([ADR-0027](adr/0027-the-c-abi-as-the-core-was-optimised.md), item 3). It reports the memory it had left for them
 (`engine_info.expert_budget`). The plan's working memory per card, everything outside the weights, the draft layer,
 the sequences' reserve and the experts, is an estimate until a load shows the core's: with `ENGINE_CACHE_DIR` set, the core's
 figure is kept for each model file, version and set of options, and the next start plans with it.
@@ -593,6 +593,8 @@ about 3 ms; the swap thread chooses the next round's swaps and builds their halv
 Once no plan has come for 100 ms, the engine thread keeps running rounds on the counts as they stand, without decaying
 them, one each time the swap thread is done, until a round chooses nothing: the cache catches up with the routing,
 and the KV pool and the cache settle, while nothing waits. A plan that comes waits at most for the round in hand.
+A load ends with the same rounds, before any request: its first round can record the prompt path's copy list again,
+and a request behind that round would wait for it.
 `engine_stats.idle_rounds` counts these rounds.
 
 ### A prompt chunk
