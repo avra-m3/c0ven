@@ -315,7 +315,7 @@ Both cards route every token in full, so both know its misses. Card 0 alone hand
 host memory, each with one writer ([ADR-0011](adr/0011-cpu-gpu-signalling.md)). The CPU computes each missed expert
 whole, in place in the arena, and card 0 adds the answer to its partial sum. A decode step copies no expert onto the
 cards. The prompt path and swaps do, through the copy engines (section 9), and a prompt chunk of 1,024 rows or fewer
-through copies the runtime makes with the CPU ([DEVELOPING.md](DEVELOPING.md#how-a-prompt-chunk-runs)).
+through the CPU's writes to a mapping of the staging buffer ([DEVELOPING.md](DEVELOPING.md#how-a-prompt-chunk-runs)).
 
 The weights are the only large data, about 5.1 GB read per decode token, half on each card
 ([measurements/MEMORY_BUDGET.md](measurements/MEMORY_BUDGET.md#what-one-decode-token-reads-computed)). They never move during decode: each

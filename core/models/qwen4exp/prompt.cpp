@@ -254,10 +254,12 @@ void Model::fetch_experts(uint32_t c, const std::vector<std::vector<uint32_t>> &
     const uint32_t *cnt = P.routed + (size_t)l * shape_.experts;
     for (uint32_t e : hl.uncached)
       if (cnt[e] && !done[e]) one(hl, slot, e);
-    if (P.stage_cpu)
+    if (P.stage_cpu) {
       _mm_sfence();
-    else
+      (void)*(volatile uint8_t *)(P.stage_cpu);  // returns once the writes before it have reached the card
+    } else {
       F.synchronize();
+    }
     ZE_CHECK(zeEventHostSignal((*pevents_)[pev(kStaged, l, c)]));
   }
 }

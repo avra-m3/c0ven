@@ -188,6 +188,7 @@ void *Runtime::alloc_device_mapped(uint32_t card, size_t bytes, uint8_t *&cpu, s
   ze_external_memory_export_fd_t fd = {ZE_STRUCTURE_TYPE_EXTERNAL_MEMORY_EXPORT_FD, nullptr,
                                        ZE_EXTERNAL_MEMORY_TYPE_FLAG_DMA_BUF, -1};
   ze_memory_allocation_properties_t props = {ZE_STRUCTURE_TYPE_MEMORY_ALLOCATION_PROPERTIES, &fd};
+  // The runtime keeps this descriptor and closes it when the memory is freed.
   if (zeMemGetAllocProperties(ctx_, p, &props, nullptr) == ZE_RESULT_SUCCESS && fd.fd >= 0) {
     void *m = mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd.fd, 0);
     if (m != MAP_FAILED) {
