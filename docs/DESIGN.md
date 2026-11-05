@@ -593,6 +593,8 @@ about 3 ms; the swap thread chooses the next round's swaps and builds their halv
 Once no plan has come for 100 ms, the engine thread keeps running rounds on the counts as they stand, without decaying
 them, one each time the swap thread is done, until a round chooses nothing: the cache catches up with the routing,
 and the KV pool and the cache settle, while nothing waits. A plan that comes waits at most for the round in hand.
+A load ends with the same rounds, before any request: its first round can record the prompt path's copy list again,
+and a request behind that round would wait for it.
 `engine_stats.idle_rounds` counts these rounds.
 
 ### A prompt chunk
