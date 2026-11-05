@@ -298,11 +298,13 @@ void Model::load_cards(bool first) {
     vision_slots();
     // Every chunk size's lists now, so no request waits for one to be recorded. The engine reads a short prompt piece
     // as decode windows, so a chunk of several runs is seldom under 256 rows; a smaller one's lists are recorded when
-    // first used.
+    // first used. A chunk with a mark is one run.
     for (uint32_t T = 64;; T = std::min(2 * T, tmax_)) {
-      for (auto &card : cards_) prompt_list(*card, T, 1);
+      for (auto &card : cards_) prompt_list(*card, T, 1, false);
+      if (opt_.marks)
+        for (auto &card : cards_) prompt_list(*card, T, 1, true);
       if (T >= 256)
-        for (auto &card : cards_) prompt_list(*card, T, PROMPT_MAX_RUNS);
+        for (auto &card : cards_) prompt_list(*card, T, PROMPT_MAX_RUNS, false);
       if (T == tmax_) break;
     }
   }

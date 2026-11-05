@@ -236,7 +236,8 @@ class Model final : public engine::Model {
   // A short chunk's staging on card c, on its own thread: each layer's uncached experts in order (hottest first)
   // until the router's counts are in, then the rest it routes to.
   void fetch_experts(uint32_t c, const std::vector<std::vector<uint32_t>> &order);
-  ze::List &prompt_list(Card &card, uint32_t T, uint32_t runs);
+  ze::List &prompt_list(Card &card, uint32_t T, uint32_t runs, bool marked);
+  static uint32_t list_key(uint32_t T, uint32_t runs, bool marked) { return (marked ? 1u << 31 : 0) | runs << 16 | T; }
   uint32_t pev(uint32_t kind, uint32_t layer, uint32_t c) const;
   Mat mat(Card &card, const GgufTensor &t, const std::vector<std::pair<uint64_t, uint64_t>> &rows,
           const std::vector<std::pair<uint64_t, uint64_t>> &cols = {});

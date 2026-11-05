@@ -312,10 +312,11 @@ std::unique_ptr<ze::List> Model::prompt_copies(Card &card, const Staging &st, ui
   return list;
 }
 
-// The list for chunks of up to T rows in up to `runs` runs (1 or PROMPT_MAX_RUNS).
-ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
+// The list for chunks of up to T rows in up to `runs` runs (1 or PROMPT_MAX_RUNS), with a mark (PromptRun::mark) or
+// not.
+ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs, bool marked) {
   PromptCard &P = *card.pc;
-  const uint32_t key = runs << 16 | T;
+  const uint32_t key = list_key(T, runs, marked);
   auto it = P.lists.find(key);
   if (it != P.lists.end()) return *it->second;
   auto list = std::make_unique<ze::List>(*rt_, card.c, ze::List::regular);
@@ -453,9 +454,13 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
                (nch + 63) / 64, 1, runs, 64);
       L.launch(q4("p_gdn_l2norm"), {P.u, nch, pp}, 2 * card.nkh, T, 1, shape_.gdn_d);
       L.launch(q4("p_gdn_gates"), {P.ab, Ly.A, Ly.dt, card.nvh, pp, P.gb}, 1, T, 1, 64);
-      L.launch(kernel(c, "qwen4exp_gdn", "p_gdn_recur"),
-               {P.u, nch, P.gb, Ly.S, Ly.S_stride, card.nkh, card.nvh, runs_p, P.raw, Ly.S_mark, pmark()},
-               card.nvh * 8, 1, runs, 64);
+      if (marked)
+        L.launch(kernel(c, "qwen4exp_gdn", "p_gdn_recur_mark"),
+                 {P.u, nch, P.gb, Ly.S, Ly.S_stride, card.nkh, card.nvh, runs_p, P.raw, Ly.S_mark, pmark()},
+                 card.nvh * 8, 1, runs, 64);
+      else
+        L.launch(kernel(c, "qwen4exp_gdn", "p_gdn_recur"),
+                 {P.u, nch, P.gb, Ly.S, Ly.S_stride, card.nkh, card.nvh, runs_p, P.raw}, card.nvh * 8, 1, runs, 64);
       L.launch(q4("p_gdn_out"), {P.raw, P.z, Ly.ssm_norm, card.nvh, pp, P.o16}, card.nvh, T, 1, shape_.gdn_d);
       dense(Ly.out, P.o16, nvo, P.part, shape_.embd, true, peer_part(0), sent(0));
     } else {
@@ -628,8 +633,8 @@ std::vector<std::vector<Candidate>> Model::prompt_runs(const PromptRun *runs, ui
   const bool fetch = T <= kFetchRows && cards_[0]->pc->fetch;
   std::vector<ze::List *> lists;
   for (auto &card : cards_) {
-    lists.push_back(&prompt_list(*card, T, R));
-    card->pc->last = R << 16 | T;
+    lists.push_back(&prompt_list(*card, T, R, runs[0].mark != 0));
+    card->pc->last = list_key(T, R, runs[0].mark != 0);
   }
 
   ++plan_->step;
