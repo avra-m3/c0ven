@@ -28,7 +28,8 @@ arena out.
 ## Decision
 
 1. **The arena is the engine's own anonymous memory** (`Options::anon_arena`, on by default): 1 GiB pieces from
-   `mmap`, 2 MiB aligned, with `MADV_HUGEPAGE`. `false` keeps the driver's memory, for A/B runs.
+   `mmap`, 2 MiB aligned, with `MADV_HUGEPAGE` while the host keeps 5 GiB of free 2 MiB blocks and
+   `MADV_NOHUGEPAGE` past that (amended 2026-11-04; see Consequences). `false` keeps the driver's memory, for A/B runs.
 2. **The copy engines read it in place,** through the runtime's binding of each copy's source: no import and no
    second copy. The prompt path records its copy list once, at load, and a swap keeps every staging slot's arena
    piece, so no binding is made or undone after load.
@@ -58,9 +59,12 @@ record).
 - Where the cgroup has swap, the host may swap out experts left unread for minutes. Reading one back costs
   milliseconds, not seconds (*estimate*: the SSD's time for 2 MB). Not measured.
 - The copy engines read through userptr bindings, which the kernel invalidates when it moves or reclaims the
-  arena's pages. Prompts under the host's reclaim with this arena are not measured. xe can fail under heavy host
-  memory pressure ([stalls record](../measurements/MEASUREMENTS.md#2026-10-14-decode-stalls)); it did not fail in the
-  runs above, one of them under the host's reclaim.
+  arena's pages. xe can fail under heavy host memory pressure
+  ([stalls record](../measurements/MEASUREMENTS.md#2026-10-14-decode-stalls)); it did not fail in the runs above, one
+  of them under the host's reclaim.
+- An arena that takes every free 2 MiB block leaves the host compacting and reclaiming. The card stops while each
+  moved page is bound again, so the arena leaves those blocks alone past a limit
+  ([the record](../measurements/MEASUREMENTS.md#2026-11-04-arena-keeps-free-huge-blocks)).
 - Asleep, the engine keeps the arena as [ADR-0032](0032-sleep-the-front-end-stays-the-engine-keeps-the-arena.md)
   item 2 says; it is now the child's own memory.
 - [DESIGN.md, section 6](../DESIGN.md#6-memory) describes the arena as this ADR has it.
