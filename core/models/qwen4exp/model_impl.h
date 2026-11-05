@@ -29,7 +29,7 @@ inline constexpr uint32_t kHcSplitRows = 2048;
 inline constexpr uint32_t kFetchRows = 1024;
 // In such a chunk on one card, an uncached expert that this many rows or fewer picked is computed by the CPU instead of
 // copied to the card (prompt.cpp, rare_experts; docs/measurements/MEASUREMENTS.md#2026-11-05-rare-experts-on-the-cpu).
-inline constexpr uint32_t kCpuRows = 2;
+inline constexpr uint32_t kCpuRows = 3;
 // p_idx_score_xmx's work-group (prompt_attn.cl): IDX_XMX_ROWS rows by IDX_XMX_SG sub-groups of 16 IDX_XMX_TB blocks.
 inline constexpr uint32_t kIdxXmxRows = 16, kIdxXmxSg = 4, kIdxXmxBlocks = 16 * 2 * kIdxXmxSg;
 // The streamed pool (kvs_claim): the logical pages a claim takes past each row's, so the steps that open them need
