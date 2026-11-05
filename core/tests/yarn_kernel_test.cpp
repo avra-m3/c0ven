@@ -8,6 +8,7 @@
 #include <random>
 #include <vector>
 
+#include "models/qwen4exp/kernel_sizes.h"
 #include "models/qwen4exp/layout.h"
 #include "step.h"
 #include "test_util.h"
