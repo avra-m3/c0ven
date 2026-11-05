@@ -11,7 +11,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <fstream>
+#include <sstream>
 #include <stdexcept>
+#include <string>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <thread>
@@ -384,6 +387,24 @@ void Model::wake() {
   info_.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
 }
 
+// The host's free memory in blocks of 2 MiB or more, from /proc/buddyinfo: a line per zone, then the free blocks of
+// each order. All the memory there could be if the file cannot be read.
+static uint64_t free_huge_blocks() {
+  std::ifstream f("/proc/buddyinfo");
+  if (!f) return UINT64_MAX;
+  uint64_t bytes = 0;
+  const int huge_order = 9;
+  for (std::string line; std::getline(f, line);) {
+    std::istringstream words(line);
+    std::string node, id, zone, name;
+    words >> node >> id >> zone >> name;
+    uint64_t count;
+    for (int order = 0; words >> count; order++)
+      if (order >= huge_order) bytes += count * (4096ull << order);
+  }
+  return bytes;
+}
+
 // need bytes of the arena, in pieces of 1 GiB, as small pieces are slower to allocate and to read
 // (docs/measurements/MEASUREMENTS.md#2026-10-13-design-inputs). With Options::anon_arena (the default, ADR-0035) a piece is the
 // process's own memory, 2 MiB aligned for huge pages, which the driver cannot take from the CPU; without it, the
@@ -409,8 +430,14 @@ uint8_t *Model::arena_piece(uint64_t need) {
         if (!arena_lock_errno_) arena_lock_errno_ = e;
       }
       arena_at_ = reinterpret_cast<uint8_t *>((reinterpret_cast<uintptr_t>(m) + huge - 1) & ~(huge - 1));
-      anon_pieces_.push_back({m, bytes, arena_at_, 0});
-      madvise(arena_at_, kArenaPiece, MADV_HUGEPAGE);
+      // The pieces that may take huge pages: settled at the first piece, before any is filled.
+      if (anon_pieces_.empty()) {
+        const uint64_t blocks = free_huge_blocks();
+        huge_pieces_ = blocks > kKeepFreeHuge ? (blocks - kKeepFreeHuge) / kArenaPiece : 0;
+      }
+      const bool in_huge = anon_pieces_.size() < huge_pieces_;
+      anon_pieces_.push_back({m, bytes, arena_at_, 0, in_huge});
+      madvise(arena_at_, kArenaPiece, in_huge ? MADV_HUGEPAGE : MADV_NOHUGEPAGE);
     } else {
       arena_at_ = static_cast<uint8_t *>(rt_->alloc_host(kArenaPiece));
     }
@@ -423,16 +450,16 @@ uint8_t *Model::arena_piece(uint64_t need) {
   return p;
 }
 
-// Each piece's filled part in huge pages before any list binds it (record_prompt_copy). Compaction moves small pages,
-// locked ones too while vm.compact_unevictable_allowed is 1, but not huge ones, and khugepaged would collapse the
-// small ones later, under the bindings. Best effort: a range the kernel cannot collapse now stays in small pages.
+// Each huge piece's filled part in huge pages before any list binds it (record_prompt_copy). Compaction moves small
+// pages, locked ones too while vm.compact_unevictable_allowed is 1, but not huge ones, and khugepaged would collapse
+// the small ones later, under the bindings. Best effort: a range the kernel cannot collapse now stays in small pages.
 void Model::settle_arena() {
   const uint64_t huge = 2ull << 20;
   const auto t0 = std::chrono::steady_clock::now();
   uint64_t ranges = 0, collapsed = 0;
   for (const AnonPiece &a : anon_pieces_)
     for (uint64_t o = 0; o + huge <= a.used; o += huge, ranges++)
-      if (madvise(a.at + o, huge, MADV_COLLAPSE) == 0) collapsed++;
+      if (a.in_huge && madvise(a.at + o, huge, MADV_COLLAPSE) == 0) collapsed++;
   const std::string lock = arena_lock_errno_ ? std::string("not locked (mlock2: ") + std::strerror(arena_lock_errno_) +
                                                    "), so the kernel may swap it out"
                                              : "locked in memory";

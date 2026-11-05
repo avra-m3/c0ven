@@ -436,8 +436,15 @@ class Model final : public engine::Model {
     size_t map_bytes;
     uint8_t *at;       // the piece: 2 MiB aligned, kArenaPiece bytes
     uint64_t used;     // bytes of it arena_piece has handed out
+    bool in_huge;      // it may take huge pages (kKeepFreeHuge)
   };
   std::vector<AnonPiece> anon_pieces_;  // Options::anon_arena
+  // The host's free 2 MiB blocks the arena leaves alone. A host with too few of them in its free memory compacts and
+  // reclaims without end, and each small arena page that moves stops the card while its binding is made again. So
+  // the pieces past this limit stay in small pages: those come from the host's broken-up free memory first, and
+  // nothing moves them while the host has blocks to spare.
+  static constexpr uint64_t kKeepFreeHuge = 5ull << 30;
+  uint64_t huge_pieces_ = 0;
   int arena_lock_errno_ = 0;            // why mlock2 failed for a piece; 0: every piece is locked
   uint32_t tmax_ = 0;
   uint32_t last_width_ = 1;  // the width of the last decode step

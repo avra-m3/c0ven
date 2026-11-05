@@ -18,10 +18,9 @@ Pool::~Pool() {
 }
 
 void Pool::drain(Job &job) {
-  for (uint64_t i; (i = job.next.fetch_add(1)) < job.n;) {
-    (*job.fn)(i);
-    job.done.fetch_add(1, std::memory_order_release);
-  }
+  uint64_t ran = 0;
+  for (uint64_t i; (i = job.next.fetch_add(1, std::memory_order_relaxed)) < job.n; ran++) (*job.fn)(i);
+  if (ran) job.done.fetch_add(ran, std::memory_order_release);
 }
 
 void Pool::work() {
