@@ -143,6 +143,22 @@ def _conversation(s: SeqState, system: int, turns: int, turn: int, first: int) -
     return tuple(hist)
 
 
+def test_a_pool_with_nothing_to_evict_refuses_and_changes_nothing():
+    s = SeqState(slots=1, pages=16, checkpoints=1)
+    a = s.plan_admission((1, 2, 3, 4), 2)
+    assert a is not None
+    seq = s.admit(a, (1, 2, 3, 4), 2)
+    s.grow(seq.slot, 4)
+    held = s.checkpoint(seq.slot, 2, kept=True)
+    assert held is not None
+    assert not held.ready
+    assert s.checkpoint(seq.slot, 3, kept=True) is None
+    assert s.drops == []
+    assert list(s.checkpoints) == [held]
+    assert held.kept, "the refused one demotes no kept checkpoint"
+    assert not CheckpointPool(0, s.pool).has_room()
+
+
 def test_checkpoints_stay_spread_back_from_the_end():
     s = SeqState(slots=1, pages=1024, checkpoints=8)
     last = _conversation(s, system=96, turns=200, turn=10, first=0)

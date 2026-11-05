@@ -7,7 +7,8 @@ item 4).
 
 A new checkpoint past the pool's size drops one that keeps each conversation's checkpoints spread back from its end,
 the newest of each last (`spread_victim`, ADR-0051). Room is made least recently used first. A kept checkpoint (the
-end of a long system prompt, ADR-0017 item 6) goes only when no other is left to evict.
+end of a long system prompt, ADR-0017 item 6) goes only when no other is left to evict. A full pool whose checkpoints
+are all unanswered or being restored has no room: `add` needs `has_room` first.
 """
 
 from __future__ import annotations
@@ -77,6 +78,10 @@ class CheckpointPool:
     def touch(self, ck: Checkpoint) -> None:
         ck.used = next(self._clock)
 
+    def has_room(self) -> bool:
+        """Whether `add` can take a new checkpoint: an id is free, or a checkpoint can be evicted for one."""
+        return bool(self._free) or self.victim() is not None
+
     def add(self, tokens: tuple[int, ...], pages: tuple[int, ...], kept: bool) -> tuple[Checkpoint, list[int]]:
         """A new checkpoint holding a reference on each of `pages`, and the ids of any evicted to make room."""
         evicted: list[int] = []
@@ -86,7 +91,7 @@ class CheckpointPool:
         if not self._free:
             victim = self.spread_victim(tokens)
             if victim is None:
-                raise RuntimeError("every checkpoint is in use")
+                raise RuntimeError("every checkpoint is in use: call has_room first")
             evicted.append(victim.id)
             self.remove(victim.id)
         ck = Checkpoint(self._free.pop(), tokens, pages, kept)
