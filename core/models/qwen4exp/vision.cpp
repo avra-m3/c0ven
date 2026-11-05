@@ -19,7 +19,7 @@ namespace {
 
 constexpr uint32_t kVD = 1152, kVFF = 4304, kVFFP = 4320, kVLayers = 27, kVHeads = 16, kVHdp = 80, kVPatch = 768;
 constexpr uint32_t kVQkvW = kVHeads * kVHdp;  // fp16 values per row of q, k and v (vision.cl's V_QKV_W)
-constexpr uint32_t kMerge = 4 * kVD, kVOut = Q_EMBD;
+constexpr uint32_t kMerge = 4 * kVD, kVOut = 2560;  // the encoder's output, its own size
 constexpr uint32_t kStages = kVLayers + 2;  // the layers, then the merger's mm.0 and mm.2
 constexpr uint32_t kTokensMax = 4096;       // section 4.3
 constexpr uint32_t kFramesMax = 2;          // a pair of video frames (section 6)
@@ -121,7 +121,7 @@ std::array<uint32_t, 3> Model::position(uint32_t slot, uint32_t cell) const {
 void Model::set_rope(uint32_t slot, uint32_t cell, bool check) {
   const auto &blocks = blocks_[slot];
   if (check && mrope_image_at(blocks, cell)) throw std::runtime_error("an image's tokens go through the prompt path");
-  const uint32_t blk = cell / Q_IDX_BLOCK * Q_IDX_BLOCK;
+  const uint32_t blk = cell / shape_.idx_block * shape_.idx_block;
   const auto p = mrope_position(blocks, blk);
   rope_[slot] = {mrope_delta(blocks, cell), blk, p[0], p[1], p[2], {0, 0, 0}};
 }
@@ -130,6 +130,9 @@ void Model::set_rope(uint32_t slot, uint32_t cell, bool check) {
 // image); always: each card's side, which a sleep frees (ADR-0032).
 void Model::load_vision(bool first) {
   if (opt_.vision_path.empty()) return;
+  if (shape_.embd != kVOut)
+    throw std::runtime_error("the vision encoder writes rows of " + std::to_string(kVOut) +
+                             " values; the model's are " + std::to_string(shape_.embd));
   if (!tmax_) throw std::runtime_error("images need the prompt path (prompt_chunk)");
   if (first) vgguf_ = std::make_unique<GgufModel>(opt_.vision_path);
   const GgufModel &g = *vgguf_;
@@ -385,7 +388,7 @@ void Model::place_images(uint32_t slot, uint32_t pos0, uint32_t n, uint32_t row0
       venc_gen_ = slot_gen_[slot];
       venc_index_ = i;
     }
-    std::memcpy(pembed_ + (size_t)(row0 + lo - pos0) * Q_EMBD, venc_ + (size_t)(lo - b.first) * kVOut,
+    std::memcpy(pembed_ + (size_t)(row0 + lo - pos0) * shape_.embd, venc_ + (size_t)(lo - b.first) * kVOut,
                 (size_t)(hi - lo) * kVOut * 4);
   }
 }

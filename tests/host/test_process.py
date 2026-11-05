@@ -22,7 +22,7 @@ from engine.api.reference import ReferenceEngine
 from engine.process import SwapWatch, architecture, cache_dir, make_engine, model_module, read_cost, serve
 from engine.scheduler import SchedulerOptions, every_16k
 from engine.timing import CostModel
-from tests.helpers import open_config, write_gguf
+from tests.helpers import open_config, plan_options, write_gguf
 
 
 def run_engine(lines: list[str], *args: str) -> list[protocol.Event]:
@@ -404,11 +404,11 @@ def test_the_fit_report_is_in_the_info_line():
 
 
 def test_the_core_far_from_the_plan_is_noted():
-    from engine.memory_plan import PlanOptions, plan  # noqa: PLC0415
+    from engine.memory_plan import plan  # noqa: PLC0415
     from engine.models.qwen4exp.memory import model_memory  # noqa: PLC0415
     from engine.models.qwen4exp.tensors import from_tsv  # noqa: PLC0415
 
-    p = plan(model_memory(from_tsv()), PlanOptions())
+    p = plan(model_memory(from_tsv()), plan_options())
     assert fit.card_notes(p, p.experts_per_layer + 3) == []
     assert "the core caches" in fit.card_notes(p, p.experts_per_layer + 60)[0]
     assert fit.card_notes(p, p.experts_per_layer, p.working_per_card + 2**20) == []
@@ -419,13 +419,13 @@ def test_the_whole_fit_report_after_a_load(tmp_path: Path):
     import dataclasses  # noqa: PLC0415
 
     from engine import host  # noqa: PLC0415
-    from engine.memory_plan import PlanOptions, plan  # noqa: PLC0415
+    from engine.memory_plan import plan  # noqa: PLC0415
     from engine.models.qwen4exp.memory import model_memory  # noqa: PLC0415
     from engine.models.qwen4exp.tensors import from_tsv  # noqa: PLC0415
     from engine.process import report  # noqa: PLC0415
     from tests.helpers import open_config as config  # noqa: PLC0415
 
-    p = plan(model_memory(from_tsv()), PlanOptions())
+    p = plan(model_memory(from_tsv()), plan_options())
     card = host.Card("B60", "0000:03:00.0", 24 * 2**30, 0xE211, (20 << 22) | (1 << 14), 20, 5, 8, -1)
     facts = dataclasses.replace(MockEngine().open(config()), host_read_bytes_per_s=40e9)
     rows, _ = report(host.read(tmp_path, affinity={0, 1}), [card, card], p, 2, facts)

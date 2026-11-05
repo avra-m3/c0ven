@@ -105,7 +105,7 @@ class Model final : public engine::Model {
   uint32_t draft_max_default() const override { return df_on_ ? kDraftMaxCap : kDraftMaxLayer; }
   uint32_t draft_max_cap() const override { return kDraftMaxCap; }
   // For tests: card 0's features of the last decode step's row r (DF_FEAT bf16 values), and the last block pass's
-  // final normed rows (STEP_MAX_ROWS x Q_EMBD).
+  // final normed rows (STEP_MAX_ROWS x DF_EMBD).
   std::vector<uint16_t> df_features(uint32_t row);
   std::vector<float> df_hidden();
   // For tests: the last decode step's logits of row `row`, all the vocabulary's, from every card's share of the head.
@@ -319,7 +319,8 @@ class Model final : public engine::Model {
 
   Options opt_;
   GgufModel gguf_;
-  Shape shape_;  // the file's sizes; any layout.h still holds are equal to it once the constructor has checked them
+  Shape shape_;  // the file's sizes; those still fixed at build time equal it once the constructor has checked them
+  std::string layer_module_, prompt_module_;  // the kernels built for shape_.experts
   std::unique_ptr<ze::Runtime> rt_;
   std::unique_ptr<ze::Library> lib_;
   std::unique_ptr<ze::EventPool> events_;
@@ -367,7 +368,7 @@ class Model final : public engine::Model {
   bool df_on_ = false;
   DraftPlan *dfcplan_ = nullptr, *dfbplan_ = nullptr;
   float *dfembed_ = nullptr;
-  float *dfex_ = nullptr;  // the exchanges' partial sums, [2 DF_LAYERS][card][STEP_MAX_ROWS][Q_EMBD]
+  float *dfex_ = nullptr;  // the exchanges' partial sums, [2 DF_LAYERS][card][STEP_MAX_ROWS][DF_EMBD]
   uint32_t *dtop_idx_ = nullptr, *dtop_n_ = nullptr;
   float *dtop_val_ = nullptr;
   std::unique_ptr<ze::EventPool> devents_;
@@ -375,15 +376,15 @@ class Model final : public engine::Model {
   std::vector<uint32_t> dffirst_;  // [slot] the first position its ring holds
   float *embed_ = nullptr;   // the token's embedding row
   float *ngram_u_ = nullptr; // its n-gram rows
-  float *ex1_ = nullptr, *ex2_ = nullptr;  // [layer][card][2560] partial sums
+  float *ex1_ = nullptr, *ex2_ = nullptr;  // [layer][card][embd] partial sums
   MissJob *jobs_ = nullptr;      // [layer] card 0's record of the misses for the CPU (ADR-0011)
   uint32_t *ans_seq_ = nullptr;  // [layer], 64 bytes apart: the step the CPU answered last
   uint32_t *stuck_ = nullptr;    // card 0 gave up waiting for an answer
-  float *cpu_y_ = nullptr;   // [layer][2560] the CPU's sum for the misses
+  float *cpu_y_ = nullptr;   // [layer][embd] the CPU's sum for the misses
   uint32_t *top_idx_ = nullptr;  // [card][candidates]
   float *top_val_ = nullptr;
   uint32_t *top_n_ = nullptr;
-  uint32_t *icand_ = nullptr;  // [attention layer][card][row][kIdxCand]: the indexer's candidates
+  uint32_t *icand_ = nullptr;  // [attention layer][card][row][Shape::idx_cand()]: the indexer's candidates
   std::vector<float> use_;  // [layer][expert] decayed routing counts, with Options::adapt_swaps
   uint64_t swaps_ = 0;
   std::vector<SwapPlan> swap_next_;  // chosen by the last round, applied by the next
@@ -450,7 +451,7 @@ class Model final : public engine::Model {
   PromptPlan *pplan_ = nullptr;  // the chunk's plan, then its runs' (PROMPT_MAX_RUNS, n 0 when unused)
   uint32_t *prows_ = nullptr;  // each card's count of the chunk's rows when the hyper-connections split them
   uint32_t *ppos_ = nullptr;  // the runs' positions (step.h), ppos_run() values apart
-  uint32_t ppos_run() const { return (tmax_ + Q_IDX_BLOCK) * 4; }
+  uint32_t ppos_run() const { return (tmax_ + shape_.idx_block) * 4; }
   float *pembed_ = nullptr, *pngram_ = nullptr;
   uint16_t *pngram16_ = nullptr;  // the n-gram rows as bf16, for the cards
   // The next chunk's n-gram rows, read during this chunk (prompt's next), and which chunk they are for.
