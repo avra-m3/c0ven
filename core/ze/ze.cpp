@@ -2,6 +2,7 @@
 
 #include "library.h"
 
+#include <sys/mman.h>
 #include <sys/stat.h>
 
 #include <atomic>
@@ -112,6 +113,7 @@ Runtime::Runtime(uint32_t min_cards) {
 
 Runtime::~Runtime() {
   if (queue_stuck) return;
+  for (auto &[p, m] : cpu_maps_) munmap(m.first, m.second);
   for (auto &[va, bytes] : mapped_) zeVirtualMemUnmap(ctx_, va, bytes);
   for (auto &[b, info] : blocks_) zePhysicalMemDestroy(ctx_, b);
   for (auto &[va, info] : ranges_) zeVirtualMemFree(ctx_, va, info.second);
@@ -172,6 +174,37 @@ void *Runtime::alloc_device(uint32_t card, size_t bytes, size_t align) {
   return p;
 }
 
+void *Runtime::alloc_device_mapped(uint32_t card, size_t bytes, uint8_t *&cpu, size_t align) {
+  cpu = nullptr;
+  ze_external_memory_export_desc_t ex = {ZE_STRUCTURE_TYPE_EXTERNAL_MEMORY_EXPORT_DESC, nullptr,
+                                         ZE_EXTERNAL_MEMORY_TYPE_FLAG_DMA_BUF};
+  ze_device_mem_alloc_desc_t d = {ZE_STRUCTURE_TYPE_DEVICE_MEM_ALLOC_DESC};
+  d.pNext = &ex;
+  void *p = nullptr;
+  if (zeMemAllocDevice(ctx_, &d, bytes ? bytes : 1, align, cards_.at(card).device, &p) != ZE_RESULT_SUCCESS)
+    return alloc_device(card, bytes, align);
+  allocs_[p] = {(int)card, bytes};
+  device_bytes_[card] += bytes;
+  ze_external_memory_export_fd_t fd = {ZE_STRUCTURE_TYPE_EXTERNAL_MEMORY_EXPORT_FD, nullptr,
+                                       ZE_EXTERNAL_MEMORY_TYPE_FLAG_DMA_BUF, -1};
+  ze_memory_allocation_properties_t props = {ZE_STRUCTURE_TYPE_MEMORY_ALLOCATION_PROPERTIES, &fd};
+  if (zeMemGetAllocProperties(ctx_, p, &props, nullptr) == ZE_RESULT_SUCCESS && fd.fd >= 0) {
+    void *m = mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd.fd, 0);
+    if (m != MAP_FAILED) {
+      cpu = static_cast<uint8_t *>(m);
+      cpu_maps_[p] = {m, bytes};
+    }
+  }
+  return p;
+}
+
+void Runtime::unmap_cpu(void *p) {
+  auto m = cpu_maps_.find(p);
+  if (m == cpu_maps_.end()) return;
+  munmap(m->second.first, m->second.second);
+  cpu_maps_.erase(m);
+}
+
 void *Runtime::alloc_host(size_t bytes, size_t align) {
   ze_host_mem_alloc_desc_t d = {ZE_STRUCTURE_TYPE_HOST_MEM_ALLOC_DESC};
   void *p = nullptr;
@@ -188,6 +221,7 @@ void *Runtime::alloc_host(size_t bytes, size_t align) {
 void Runtime::free(void *p) {
   auto it = allocs_.find(p);
   if (it == allocs_.end()) throw std::runtime_error("free of memory the runtime did not allocate");
+  unmap_cpu(p);
   if (it->second.first < 0)
     host_bytes_ -= it->second.second;
   else
@@ -224,6 +258,7 @@ void Runtime::free_card(uint32_t card) {
       ++it;
       continue;
     }
+    unmap_cpu(it->first);
     ZE_CHECK(zeMemFree(ctx_, it->first));
     device_bytes_[card] -= it->second.second;
     it = allocs_.erase(it);

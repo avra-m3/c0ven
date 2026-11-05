@@ -3,6 +3,8 @@
 // chunk size (the powers of two from 64, and prompt_chunk) at load, one for a run and one for several; the kernels
 // read the plans (PromptPlan) in host memory, so a list serves every chunk up to its size. The kernels that follow a
 // sequence run once for all the runs, but for p_kv16 and the long runs' attention, once a run. The cards exchange fp16 partial sums twice per layer (ADR-0030).
+#include <immintrin.h>
+
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -174,7 +176,7 @@ void Model::load_prompt(Card &card) {
 void Model::record_prompt_copy(Card &card) {
   PromptCard &P = *card.pc;
   for (auto &hl : host_layers_) P.stage_slot = std::max<uint64_t>(P.stage_slot, hl->pieces.size() * hl->stg_bytes);
-  if (P.stage_slot) P.stage = static_cast<uint8_t *>(rt_->alloc_device(card.c, 2 * P.stage_slot));
+  if (P.stage_slot) P.stage = static_cast<uint8_t *>(rt_->alloc_device_mapped(card.c, 2 * P.stage_slot, P.stage_cpu));
   for (uint32_t l = 0; l < shape_.layers; l++)
     P.stage_map.push_back(upload<int32_t>(card, host_layers_[l]->stage_of.data(), shape_.experts * 4));
   P.copy = prompt_copies(card, staging_now(), copy_count_);
@@ -188,6 +190,11 @@ void Model::record_prompt_copy(Card &card) {
     for (uint64_t off = 0; off < 2 * P.stage_slot; off += piece)
       P.fetch->copy(P.stage + off, hl.pieces[0], std::min(piece, 2 * P.stage_slot - off));
     P.fetch->synchronize();
+    // Once more through the mapping, now the card holds the buffer: the first write to each page takes a fault.
+    if (P.stage_cpu) {
+      for (uint64_t off = 0; off < 2 * P.stage_slot; off += 4096) *(volatile uint8_t *)(P.stage_cpu + off) = 0;
+      _mm_sfence();
+    }
   }
 }
 
@@ -205,14 +212,22 @@ void Model::fetch_experts(uint32_t c, const std::vector<std::vector<uint32_t>> &
   PromptCard &P = *card.pc;
   ze::List &F = *P.fetch;
   const uint64_t f0 = (uint64_t)c * card.ff;
-  // Expert e of layer l into its staging position: the same three copies as prompt_copies' for a run of one. From
-  // the anonymous arena the runtime makes these copies with the CPU and returns when they are done
+  // Expert e of layer l into its staging position: the same three copies as prompt_copies' for a run of one, written
+  // through the CPU's mapping of the buffer (docs/measurements/MEASUREMENTS.md#2026-11-05-staging-through-a-mapping).
+  // Without one, from the anonymous arena the runtime makes these copies with the CPU and returns when they are done
   // (docs/measurements/MEASUREMENTS.md#2026-10-21-short-chunk-fetch).
   auto one = [&](const HostLayer &hl, uint8_t *slot, uint32_t e) {
     const ExpertWeights &w = hl.weights[e];
     const uint64_t half = card.ff * hl.gate_row_bytes, dpart = hl.down_bytes / hl.down_parts;
     const uint64_t d0 = hl.down_parts > 1 ? c * dpart : 0;
     uint8_t *dst = slot + (uint64_t)hl.stage_of[e] * hl.stg_bytes;
+    if (P.stage_cpu) {
+      uint8_t *to = P.stage_cpu + (dst - P.stage);
+      std::memcpy(to, w.gate + f0 * hl.gate_row_bytes, half);
+      std::memcpy(to + hl.stg_up_off, w.up + f0 * hl.gate_row_bytes, half);
+      std::memcpy(to + hl.stg_down_off, w.down + d0, dpart);
+      return;
+    }
     F.copy(dst, w.gate + f0 * hl.gate_row_bytes, half);
     F.copy(dst + hl.stg_up_off, w.up + f0 * hl.gate_row_bytes, half);
     F.copy(dst + hl.stg_down_off, w.down + d0, dpart);
@@ -239,7 +254,10 @@ void Model::fetch_experts(uint32_t c, const std::vector<std::vector<uint32_t>> &
     const uint32_t *cnt = P.routed + (size_t)l * shape_.experts;
     for (uint32_t e : hl.uncached)
       if (cnt[e] && !done[e]) one(hl, slot, e);
-    F.synchronize();
+    if (P.stage_cpu)
+      _mm_sfence();
+    else
+      F.synchronize();
     ZE_CHECK(zeEventHostSignal((*pevents_)[pev(kStaged, l, c)]));
   }
 }
