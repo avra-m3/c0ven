@@ -224,6 +224,9 @@ rows above unless labelled; the two cards are the same.
 | Working memory | 1,600,663,296 | *estimate* |
 | Left for the reserve and the experts | 19,696,917,504 | |
 
+This table keeps its first estimate of working memory. The plan now works it out from the slots, the context, the KV pool
+and the drafter: `model_memory` in `engine/models/qwen4exp/memory.py`, about 3.4 GiB at one slot and 262,144 tokens.
+
 ### The reserve per sequence, per card
 
 | Context | K and V (one head, at most 32,768 cells) | Indexer keys (half the blocks) | Recurrent state (half the heads) | Draft KV (half) | Per sequence |
