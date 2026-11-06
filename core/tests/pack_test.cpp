@@ -80,6 +80,7 @@ int main(int argc, char **argv) {
   opt.slots = S;
   opt.max_ctx = 16384;
   opt.vision_path = vision;
+  opt.rare_on_cpu = false;  // an exact match needs the card to compute every expert, whatever shares the chunk
   qwen4exp::Model model(path, opt);
   auto run = [&](uint32_t s, uint32_t from) {
     const auto &q = seqs[s];

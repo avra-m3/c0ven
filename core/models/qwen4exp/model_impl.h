@@ -27,6 +27,9 @@ inline constexpr uint32_t kHcSplitRows = 2048;
 // The largest prompt chunk whose uncached experts are fetched as its router picks them (prompt.cpp, fetch_experts)
 // instead of all staged by the recorded copy list.
 inline constexpr uint32_t kFetchRows = 1024;
+// In such a chunk on one card, an uncached expert that this many rows or fewer picked is computed by the CPU instead of
+// copied to the card (prompt.cpp, rare_experts; docs/measurements/MEASUREMENTS.md#2026-11-05-rare-experts-on-the-cpu).
+inline constexpr uint32_t kCpuRows = 3;
 // p_idx_score_xmx's work-group (prompt_attn.cl): IDX_XMX_ROWS rows by IDX_XMX_SG sub-groups of 16 IDX_XMX_TB blocks.
 inline constexpr uint32_t kIdxXmxRows = 16, kIdxXmxSg = 4, kIdxXmxBlocks = 16 * 2 * kIdxXmxSg;
 // The streamed pool (kvs_claim): the logical pages a claim takes past each row's, so the steps that open them need
@@ -312,12 +315,17 @@ struct Model::PromptCard {
   // (p_moe_count's), copied to host memory as the router finishes: [layer][expert].
   std::unique_ptr<ze::List> fetch;
   uint32_t *routed = nullptr;
+  // The same chunks on one card: each layer's xg copied to host memory for the CPU, and the CPU's mapping of yg for its
+  // results. Null where the CPU computes no expert of a chunk.
+  uint16_t *xg_host = nullptr;
+  uint8_t *yg_cpu = nullptr;
   std::map<uint32_t, std::unique_ptr<ze::List>> lists;  // per chunk size recorded
   std::map<uint32_t, uint64_t *> trace;                 // per chunk size, with Options::trace
   uint32_t last = 0;                                     // the chunk size run last
   // Regions A and B, free between chunks: the image encoder's activations live there (vision.cpp).
   uint8_t *reg[2] = {};
   uint64_t reg_bytes[2] = {};
+  uint8_t *reg0_cpu = nullptr;  // region A, for the CPU's writes on one card; null where it could not be mapped
 };
 
 // The image encoder on one card (vision.cpp). The small f32 tensors stay on the card; the 16-bit weights come from
