@@ -553,6 +553,35 @@ def test_a_failed_engine_exits_without_waiting_on_its_teardown():
     assert "did not finish a list" in events[-1].message
 
 
+# The engine's own entry point with a core that serves and closes: the clean stop has to run the exit-time teardown,
+# where the driver stops its copy loops.
+CLEAN_ENGINE = """
+    import atexit, runpy, sys
+    from engine import process
+    from engine.api.mock import MockEngine
+
+    mark = sys.argv[1]
+    atexit.register(lambda: open(mark, "w").write("torn down"))
+    process.make_engine = lambda *args: MockEngine()
+    sys.argv = ["engine", "--backend", "mock", "--arch", "qwen4exp"]
+    runpy.run_module("engine", run_name="__main__")
+"""
+
+
+def test_a_clean_stop_exits_through_the_teardown(tmp_path: Path):
+    mark = tmp_path / "mark"
+    argv = [sys.executable, "-c", textwrap.dedent(CLEAN_ENGINE), str(mark)]
+    p = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    try:
+        assert p.stdin is not None
+        p.stdin.write(protocol.Quit().encode() + "\n")
+        p.stdin.flush()
+        assert p.wait(timeout=30) == 0
+    finally:
+        p.kill()
+    assert mark.read_text() == "torn down"
+
+
 def test_a_cost_file_that_does_not_read_is_left_for_the_estimates(tmp_path: Path):
     assert read_cost(None) is None
     assert read_cost(tmp_path / "none.json") is None
