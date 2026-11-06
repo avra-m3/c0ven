@@ -37,6 +37,10 @@ ze_result_t init() {
   // compute-runtime reads these keys only with NEOReadDebugKeys set. A value already in the environment wins.
   setenv("NEOReadDebugKeys", "1", 0);
   setenv("NEO_EnableRecoverablePageFaults", "0", 0);
+  // The driver keeps its submission ring running while the cards are idle, so they do not fall asleep between
+  // requests: the first token after a second idle comes about 5 ms sooner, after 10 s about 13 ms
+  // (docs/measurements/MEASUREMENTS.md#2026-11-06-submission-ring-after-idle).
+  setenv("NEO_EnableDirectSubmissionController", "0", 0);
   return zeInit(0);
 }
 
