@@ -20,14 +20,13 @@ using Ranges = std::vector<std::pair<uint64_t, uint64_t>>;  // [start, start + c
 inline constexpr uint32_t kMtpExperts = 512;  // the draft layer's checkpoint has its own count (docs/MODEL_FILES.md)
 inline constexpr uint32_t kSgSize = 16;  // the kernels' SG_SIZE
 inline constexpr uint32_t kAttXmxSubGroups = 16;  // p_attn_xmx's sub-groups a work-group (prompt_attn.cl)
-inline constexpr uint32_t kIdxScoreRows = 8;  // prompt.cl's IDX_SCORE_ROWS
 // The fewest rows of a prompt chunk at which the two cards split the hyper-connections
 // (docs/measurements/MEASUREMENTS.md#2026-10-17-hc-split).
 inline constexpr uint32_t kHcSplitRows = 2048;
 // The largest prompt chunk whose uncached experts are fetched as its router picks them (prompt.cpp, fetch_experts)
 // instead of all staged by the recorded copy list.
 inline constexpr uint32_t kFetchRows = 1024;
-// p_idx_score_xmx's work-group (prompt_attn.cl): IDX_XMX_ROWS rows by IDX_XMX_SG sub-groups of 16 IDX_XMX_TB blocks.
+// p_idx_score_xmx's work-group (prompt_attn.cl): IDX_XMX_ROWS rows by kIdxXmxSg sub-groups of 16 IDX_XMX_TB blocks.
 inline constexpr uint32_t kIdxXmxRows = 16, kIdxXmxSg = 4, kIdxXmxBlocks = 16 * 2 * kIdxXmxSg;
 // The streamed pool (kvs_claim): the logical pages a claim takes past each row's, so the steps that open them need
 // no claim; the pages a step's rows can claim at most, its miss list; and what a width's list without the claim adds

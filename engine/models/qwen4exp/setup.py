@@ -25,8 +25,6 @@ __all__ = ["checkpoint_positions", "draft_dir", "memory_plan", "open_config", "v
 CPU_WORKERS = 16
 """One per core of the test machine's 7945HX (DESIGN.md, section 9): the count when the host is not read (the mock and
 the reference)."""
-NGRAM_CACHE_ROWS = 1 << 20
-TIMING_RECORDS = 1 << 16
 
 
 def memory_plan(table: TensorTable, options: PlanOptions, draft: Path | None = None) -> MemoryPlan:
@@ -84,11 +82,7 @@ def open_config(
         checkpoints=options.checkpoints,
         kv_resident_cells=mp.kv_resident_cells,
         experts_cached=mp.experts_cached,
-        arena_bytes=mp.arena_bytes,
-        working_bytes=mp.working_per_card,
         cpu_workers=int(os.environ.get("ENGINE_CPU_WORKERS", cpu_workers)),
-        ngram_cache_rows=NGRAM_CACHE_ROWS,
-        timing_records=TIMING_RECORDS,
         eos_ids=numbers.EOS_IDS,
         vocab_size=table.vocab,
         deterministic=deterministic,

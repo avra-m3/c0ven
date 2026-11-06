@@ -94,7 +94,7 @@ void Model::load_prompt(Card &card) {
   }
   // Region B: DeltaNet (m, z, u, raw) or attention (Q, K, V, iq, scores, blocks, bscores, cells).
   {
-    // The scores of this card's blocks only, as p_idx_score writes them: rows nbl apart.
+    // The scores of this card's blocks only, as p_idx_score_xmx writes them: rows nbl apart.
     const uint64_t nbl = (opt_.max_ctx / shape_.idx_block + ncards_ - 1) / ncards_;
     uint64_t gdn[] = {T * card.nch * 4, T * card.nvh * shape_.gdn_d * 4, T * card.nch * 4,
                       T * card.nvh * shape_.gdn_d * 4};
