@@ -1,5 +1,5 @@
-// The lift's sounds, made in the browser: its bell, doors and motor, and the music in the car. They follow the page's
-// sound button and start only after a click.
+// The building's sounds, made in the browser: the lift's bell, doors, motor and music, and the PA, fax and stamp. They
+// follow the page's sound button and start only after a click.
 import { $ } from "./world.js";
 
 const LEVEL = 0.7;
@@ -86,6 +86,45 @@ export function doorSound(seconds, opening) {
   for (const o of [wheel, motor]) { o.start(t); o.stop(end); }
   thump(t, 130, 0.14); burst(t, 1800, 0.12, 0.03);
   thump(end, opening ? 95 : 80, opening ? 0.16 : 0.34); burst(end, 950, opening ? 0.08 : 0.2, 0.1);
+}
+
+// The PA reading out a name: a click, then a buzz of speech through a horn, a syllable at a time. hoarse (0 to 1)
+// lowers it and takes its body away.
+export function paCall(seconds, hoarse = 0) {
+  if (!ctx || !on()) return;
+  const t = ctx.currentTime, o = ctx.createOscillator(), horn = filter("bandpass", 1150 - 250 * hoarse, 1.5), g = gainOf(0);
+  o.type = "sawtooth";
+  const syllables = 3, beat = seconds * 0.85 / syllables;
+  o.frequency.setValueAtTime(148 - 42 * hoarse, t);
+  for (let k = 0; k < syllables; k++) {
+    const a = t + k * beat;
+    o.frequency.linearRampToValueAtTime((158 - 46 * hoarse) * (k % 2 ? 0.92 : 1.06), a + beat * 0.5);
+    g.gain.setValueAtTime(0, a); g.gain.linearRampToValueAtTime(0.11 * (1 - 0.5 * hoarse), a + 0.02); g.gain.setValueAtTime(0.11 * (1 - 0.5 * hoarse), a + beat * 0.6); g.gain.linearRampToValueAtTime(0, a + beat * 0.92);
+  }
+  o.connect(horn); horn.connect(g); play(g);
+  o.start(t); o.stop(t + seconds);
+  burst(t, 2400, 0.04, 0.02);
+}
+// The fax machine's two-tone ring.
+export function faxRing() {
+  if (!ctx || !on()) return;
+  const t = ctx.currentTime;
+  for (let k = 0; k < 4; k++) {
+    const o = ctx.createOscillator(), g = gainOf(0), a = t + k * 0.11;
+    o.type = "square"; o.frequency.value = k % 2 ? 1180 : 1480;
+    g.gain.setValueAtTime(0, a); g.gain.linearRampToValueAtTime(0.022, a + 0.01); g.gain.setValueAtTime(0.022, a + 0.09); g.gain.linearRampToValueAtTime(0, a + 0.105);
+    o.connect(g); play(g); o.start(a); o.stop(a + 0.11);
+  }
+}
+// A rubber stamp coming down on a desk.
+export function stampSound() {
+  if (!ctx || !on()) return;
+  thump(ctx.currentTime, 110, 0.3); burst(ctx.currentTime, 700, 0.1, 0.05);
+}
+// A sheet of paper going across a desk.
+export function flick() {
+  if (!ctx || !on()) return;
+  burst(ctx.currentTime, 3200, 0.018, 0.05);
 }
 
 // The motor: a low hum that swells with the car's speed. level is 0 to 1.

@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from engine.api.interface import CORE_RESERVE
+from engine.api.mock import CARD_MEMORY
 from engine.memory_plan import (
     PlanError,
     PlanOptions,
@@ -18,10 +20,9 @@ from engine.memory_plan import (
     working_file,
     write_working,
 )
-from engine.models.qwen4exp import numbers
 from engine.models.qwen4exp.draft import draft_per_card, read_shapes
 from engine.models.qwen4exp.memory import model_memory
-from engine.models.qwen4exp.tensors import Category, TensorTable, from_tsv
+from engine.models.qwen4exp.tensors import TSV_UD_IQ4_XS, Category, TensorTable, from_tsv
 from tests.helpers import plan_options
 
 TABLE = from_tsv()
@@ -60,11 +61,14 @@ def test_reserve_per_sequence(context: int, expected: int):
     [(1, 32_768, 18_940), (2, 32_768, 18_629), (4, 32_768, 18_009), (1, 262_144, 18_757), (4, 262_144, 17_277)],
 )
 def test_experts_with_every_weight_halved(slots: int, context: int, cached: int):
-    """MEMORY_BUDGET.md halves every weight outside the experts; with its figure the plan gives its counts."""
+    """MEMORY_BUDGET.md halves every weight outside the experts; with its figures the plan gives its counts."""
     halves = (
         TABLE.bytes_of(Category.DENSE) + TABLE.bytes_of(Category.PLE) + TABLE.bytes_of(Category.EMBEDDING)
     ) // 2 + TABLE.bytes_of(Category.HEAD) // 2
-    p = plan(replace(MODEL, weights_per_card=halves), plan_options(slots=slots, context=context))
+    model = replace(
+        MODEL, weights_per_card=halves, working_per_card=1_600_663_296, working_of=None, staging_per_uncached=0
+    )
+    p = plan(model, plan_options(slots=slots, context=context))
     assert p.experts_cached == cached
 
 
@@ -74,8 +78,8 @@ def test_the_split_rules_keep_some_weights_whole():
     p = plan(MODEL, plan_options(slots=1, context=262_144))
     assert MODEL.weights_per_card > 2_257_086_720
     assert p.experts_cached < 18_757
-    assert p.free_per_card == 24_385_683_456 - MODEL.weights_per_card - 831_015_936 - 1_600_663_296 - 504_664_064
-    assert p.experts_cached == p.free_per_card // (MODEL.expert_bytes // 2)
+    assert p.free_per_card == 24_385_683_456 - MODEL.weights_per_card - 831_015_936 - p.working_per_card - 504_664_064
+    assert p.experts_cached // 48 * (MODEL.expert_bytes // 2) * 48 + p.prompt_staging_per_card <= p.free_per_card
 
 
 def test_the_draft_layer_as_the_core_stores_it():
@@ -223,11 +227,75 @@ def test_the_ngram_table_moves_into_ram_only_with_room_to_spare():
 
 
 def test_the_working_memory_is_the_models_estimate_unless_the_options_give_one():
-    assert MODEL.working_per_card == numbers.WORKING_PER_CARD
-    assert plan(MODEL, plan_options()).working_per_card == numbers.WORKING_PER_CARD
-    given = plan(MODEL, plan_options(working_per_card=numbers.WORKING_PER_CARD + 2**30))
-    assert given.working_per_card == numbers.WORKING_PER_CARD + 2**30
+    estimate = plan(MODEL, plan_options()).working_per_card
+    assert estimate > MODEL.working_per_card
+    given = plan(MODEL, plan_options(working_per_card=estimate + 2**30))
+    assert given.working_per_card == estimate + 2**30
     assert given.free_per_card == plan(MODEL, plan_options()).free_per_card - 2**30
+
+
+MEASURED_RESERVE = 512 * 2**20
+"""The core's reserve when the figures below were measured, on c0ven 212daad and 05cab3e, with cards of CARD_MEMORY."""
+DFLASH_SHAPES = {f"layers.{n}.self_attn.k_proj.weight": (1024, 2560) for n in range(5)}
+
+
+@pytest.mark.parametrize(
+    ("cards", "slots", "context", "kv_tokens", "drafter", "core_gib"),
+    [
+        (2, 1, 262_144, 0, "mtp", 3.37),
+        (2, 4, 262_144, 524_288, "mtp", 3.48),
+        (2, 1, 65_536, 0, "mtp", 2.53),
+        (2, 4, 65_536, 0, "mtp", 2.70),
+        (2, 1, 262_144, 0, "dflash", 3.28),
+        (2, 4, 262_144, 524_288, "dflash", 3.12),
+        (2, 1, 262_144, 0, None, 3.23),
+        (2, 2, 131_072, 524_288, None, 3.21),
+        (2, 1, 4_096, 0, None, 2.29),
+        (1, 1, 65_536, 0, None, 2.22),
+        (1, 1, 262_144, 0, "mtp", 3.95),
+        (1, 2, 65_536, 0, "mtp", 2.40),
+    ],
+)
+def test_the_working_memory_estimate_is_what_the_core_reported(
+    *, cards: int, slots: int, context: int, kv_tokens: int, drafter: str | None, core_gib: float
+):
+    """The core's figure from a load of each set of options, taken with its reserve at 512 MiB. 0.04 GiB is about 1
+    expert a layer."""
+    model = model_memory(TABLE, cards, DFLASH_SHAPES if drafter == "dflash" else None)
+    options = plan_options(cards=cards, slots=slots, context=context, kv_tokens=kv_tokens, draft=drafter is not None)
+    planned = plan(model, options).working_per_card - (CORE_RESERVE - MEASURED_RESERVE)
+    assert planned / 2**30 == pytest.approx(core_gib, abs=0.04)
+
+
+@pytest.mark.parametrize(
+    ("cards", "slots", "context", "draft", "core_experts"),
+    [
+        (2, 1, 262_144, True, 337),
+        (1, 1, 65_536, False, 151),
+        (1, 1, 262_144, True, 110),
+        (1, 2, 65_536, True, 124),
+    ],
+)
+def test_the_plans_experts_are_the_cores_before_it_lends_kv_memory(
+    *, cards: int, slots: int, context: int, draft: bool, core_experts: int
+):
+    """The core's "at least" count a layer, from a load of each set of options, with its 2 layers of staging. The
+    card's memory is the size the core read then, past its reserve then."""
+    options = plan_options(
+        cards=cards,
+        slots=slots,
+        context=context,
+        draft=draft,
+        usable_vram=CARD_MEMORY + CORE_RESERVE - MEASURED_RESERVE,
+    )
+    assert plan(model_memory(TABLE, cards), options).experts_cached // 48 == pytest.approx(core_experts, abs=2)
+
+
+def test_the_working_memory_estimate_does_not_depend_on_the_card_or_the_model_file():
+    """Loads at --card-memory 20 and of UD-IQ4_XS report the same figure as IQ3_S on the whole card."""
+    p = plan(MODEL, plan_options())
+    assert plan(MODEL, plan_options(usable_vram=20 * 2**30)).working_per_card == p.working_per_card
+    assert plan(model_memory(from_tsv(TSV_UD_IQ4_XS)), plan_options()).working_per_card == p.working_per_card
 
 
 def test_the_cores_expert_budget_gives_its_working_memory():
