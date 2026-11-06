@@ -51,7 +51,7 @@ static inline float rope(__local const float *x, uint d, uint pos) {
 // from the chunk's first block).
 static inline float rope_at(__local const float *x, uint d, __global const uint *ppos, uint e) {
   uint i = d % (Q_ROT / 2), m = i % 3;
-  return rope(x, d, ppos[4 * e + ((m == 1) ? 1 : (m == 2 && i < 30) ? 2 : 0)]);
+  return rope(x, d, ppos[4 * e + ((m == 1 && i < 3 * Q_ROPE_SEC_H) ? 1 : (m == 2 && i < 3 * Q_ROPE_SEC_W) ? 2 : 0)]);
 }
 
 // The table's entry for chunk row t.
@@ -147,7 +147,7 @@ __kernel void p_hc_lr(__global const float *lri, uint lri_w, __global const Prom
   if (i >= Q_HC_LR + Q_HC) return;
   float v = lri[(ulong)t * lri_w + i];
   if (i < Q_HC_LR) {
-    v *= 0.25f;
+    v *= Q_HC_MEAN;
     lrb[(ulong)t * Q_HC_LR + i] = f32_to_bf16(v / (1.0f + exp(-v)));
   } else {
     inj[t * Q_HC + i - Q_HC_LR] = v;
@@ -174,7 +174,7 @@ REQD_SG __kernel void p_hc_mix(__global const float *R, __global const float *rr
       float n = R[base + s * Q_EMBD + i] * rr[t * Q_HC + s] * gamma[s * Q_EMBD + i];
       acc += n * sigmoid(vload_half(base + i * Q_HC + s, a));
     }
-    acc *= 0.25f;
+    acc *= Q_HC_MEAN;
     h[k] = as_ushort(convert_half(acc));
     b[k] = f32_to_bf16(acc);
   }
@@ -197,7 +197,7 @@ __kernel void p_hc_combine(__global const half *p0, __global const half *p1, __g
   float y = vload_half(at, p0);
   if (p1) y += vload_half(at, p1);
   for (uint s = 0; s < Q_HC; s++)
-    R[(ulong)t * Q_HC_DIM + s * Q_EMBD + i] += 2.0f * sigmoid(inj[t * Q_HC + s] * 0.25f) * y;
+    R[(ulong)t * Q_HC_DIM + s * Q_EMBD + i] += 2.0f * sigmoid(inj[t * Q_HC + s] * Q_HC_MEAN) * y;
 }
 
 // p_hc_combine, then p_hc_norm of the block that follows (gamma), in one pass over R: one work-group per row and
@@ -208,7 +208,7 @@ __kernel void p_hc_combine_norm(__global const half *p0, __global const half *p1
   __local float red[64];
   uint s = get_group_id(0), t = r0 + get_group_id(1), lid = get_local_id(0);
   OWN_ROW_OR_RETURN(t)
-  const float g = 2.0f * sigmoid(inj[t * Q_HC + s] * 0.25f);
+  const float g = 2.0f * sigmoid(inj[t * Q_HC + s] * Q_HC_MEAN);
   const ulong base = (ulong)t * Q_HC_DIM + (ulong)s * Q_EMBD;
   float v[Q_EMBD / 256];
   float ss = 0.0f;
@@ -263,19 +263,17 @@ __kernel void p_gdn_conv(__global const float *m, __global const float *w, __glo
   if (ch >= nch) return;
   uint pos = pp->pos0 + t;
   __global const float *st = state + pp->slot * slot_stride;
-  float mv[4];
-  for (uint d = 1; d <= 3; d++)
-    mv[3 - d] = t >= d ? m[(ulong)(t - d) * nch + ch] : st[((pos + 3 - d) % 3) * nch + ch];
-  mv[3] = m[(ulong)t * nch + ch];
+  float mv[Q_GDN_CONV];
+  for (uint d = 1; d <= Q_GDN_HIST; d++)
+    mv[Q_GDN_HIST - d] = t >= d ? m[(ulong)(t - d) * nch + ch] : st[((pos + Q_GDN_HIST - d) % Q_GDN_HIST) * nch + ch];
+  mv[Q_GDN_HIST] = m[(ulong)t * nch + ch];
   __global const float *k = w + ch * Q_GDN_CONV;
   float acc = k[0] * mv[0];
-  acc += k[1] * mv[1];
-  acc += k[2] * mv[2];
-  acc += k[3] * mv[3];
+  for (uint j = 1; j < Q_GDN_CONV; j++) acc += k[j] * mv[j];
   u[(ulong)t * nch + ch] = silu(acc);
 }
 
-// The state keeps m at position p in slot p % 3: the chunk's last three rows go in. Groups ceil(nch / 64), 64.
+// The state keeps m at position p in slot p % Q_GDN_HIST: the chunk's last Q_GDN_HIST rows go in. Groups ceil(nch / 64), 64.
 __kernel void p_gdn_conv_save(__global const float *m, __global float *state, ulong slot_stride, uint nch,
                               __global const PromptPlan *runs) {
   RUN_OF_GROUP()
@@ -284,7 +282,8 @@ __kernel void p_gdn_conv_save(__global const float *m, __global float *state, ul
   uint n = pp->n;
   __global float *st = state + pp->slot * slot_stride;
   m += (ulong)pp->row0 * nch;
-  for (uint t = n > 3 ? n - 3 : 0; t < n; t++) st[((pp->pos0 + t) % 3) * nch + ch] = m[(ulong)t * nch + ch];
+  for (uint t = n > Q_GDN_HIST ? n - Q_GDN_HIST : 0; t < n; t++)
+    st[((pp->pos0 + t) % Q_GDN_HIST) * nch + ch] = m[(ulong)t * nch + ch];
 }
 
 // L2 norm of the q and k heads of each row, in place. Groups (2 nkh, T), 128.
@@ -357,7 +356,7 @@ __kernel void p_attn_prep(__global float *Q, __global const float *K, __global c
   if (is_q) {
     q[g * 2 * Q_ATT_D + d] = r;
     const uint slot = g / (Q_ATT_H / Q_ATT_KV) * Q_ATT_SLOTS + g % (Q_ATT_H / Q_ATT_KV);
-    qt[((ulong)t * Q_ATT_D + d) * hp + slot] = convert_half(r * (1.0f / 16.0f));
+    qt[((ulong)t * Q_ATT_D + d) * hp + slot] = convert_half(r * Q_ATT_SCALE);
     return;
   }
   uint c = g - nq;
@@ -836,17 +835,15 @@ __kernel void p_ple_conv(__global const float *N, __global const float *v, __glo
   R += r0 * Q_HC_DIM;
   uint pos = pp->pos0 + t;
   __global const float *h = hist + pp->slot * slot_stride;
-  float nv[4];
-  for (uint j = 0; j < 3; j++) {
-    uint d = Q_PLE_DIL * (3 - j);
+  float nv[Q_GDN_CONV];
+  for (uint j = 0; j < Q_GDN_HIST; j++) {
+    uint d = Q_PLE_DIL * (Q_GDN_HIST - j);
     nv[j] = t >= d ? N[(ulong)(t - d) * Q_HC_DIM + ch] : h[((pos + Q_PLE_HIST - d) % Q_PLE_HIST) * Q_HC_DIM + ch];
   }
-  nv[3] = N[(ulong)t * Q_HC_DIM + ch];
+  nv[Q_GDN_HIST] = N[(ulong)t * Q_HC_DIM + ch];
   __global const float *k = w + ch * Q_GDN_CONV;
   float acc = k[0] * nv[0];
-  acc += k[1] * nv[1];
-  acc += k[2] * nv[2];
-  acc += k[3] * nv[3];
+  for (uint j = 1; j < Q_GDN_CONV; j++) acc += k[j] * nv[j];
   R[(ulong)t * Q_HC_DIM + ch] += gates[t * Q_HC + ch / Q_EMBD] * v[(ulong)t * Q_EMBD + ch % Q_EMBD] + silu(acc);
 }
 

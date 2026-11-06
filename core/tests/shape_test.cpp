@@ -52,6 +52,7 @@ Meta good_meta() {
   set("attention.value_length", (int64_t)Q_ATT_D);
   set("rope.dimension_count", (int64_t)Q_ROT);
   set("rope.freq_base", (double)Q_ROPE_BASE);
+  set("rope.dimension_sections", std::vector<int64_t>{Q_ROPE_SEC_T, Q_ROPE_SEC_H, Q_ROPE_SEC_W, 0});
   set("attention.layer_norm_rms_epsilon", (double)Q_EPS);
   set("attention.indexer.head_count", (int64_t)Q_IDX_H);
   set("attention.indexer.key_length", (int64_t)Q_IDX_D);
@@ -152,6 +153,11 @@ int main() {
     Meta m = good;
     m["qwen4exp.rope.freq_base"] = 10000.0;
     EXPECT(names(mismatches(m, tensors), "rope.freq_base"), "rope base");
+  }
+  {
+    Meta m = good;
+    m["qwen4exp.rope.dimension_sections"] = std::vector<int64_t>{16, 16, 0, 0};
+    EXPECT(names(mismatches(m, tensors), "rope.dimension_sections"), "rope sections");
   }
 
   // The sizes that come from the file: another layer count or vocabulary is not a difference.

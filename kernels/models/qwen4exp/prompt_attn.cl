@@ -203,7 +203,7 @@ REQD_SG __kernel void p_attn_rows(__global const float *Q, __global const uchar 
       float part_ = 0.0f;
       for (uint t = 0; t < 16; t++) part_ += qh[t] * kv[t];
       float dot = sub_group_reduce_add(db * part_);
-      if (lane == 0) p[h][i] = dot * (1.0f / 16.0f);
+      if (lane == 0) p[h][i] = dot * Q_ATT_SCALE;
     }
   }
   barrier(CLK_LOCAL_MEM_FENCE);
