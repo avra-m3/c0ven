@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 from engine.api.interface import CORE_RESERVE, PAGE_CELLS, SplitKind
 from engine.memory_plan import ModelMemory, PlanOptions
 from engine.models.qwen4exp import numbers
-from engine.models.qwen4exp.draft import Q8_BLOCK, draft_per_card, kv_per_slot, read_shapes
+from engine.models.qwen4exp.draft import Q8_BLOCK, draft_kv_cell, draft_per_card, kv_per_slot, read_shapes
 from engine.models.qwen4exp.split import bytes_per_card, split_of
 from engine.models.qwen4exp.tensors import Category, LayerKind, TensorTable
 
@@ -50,6 +52,30 @@ def _q8(values: int) -> int:
     return values // per * nbytes
 
 
+def deltanet_state_bytes(table: TensorTable) -> int:
+    """One DeltaNet layer's state (spec/MODEL_LAYER.md, 2.7): the conv's last `conv_kernel - 1` rows of q, k and v,
+    and the recurrence, a state_size square for each value head."""
+    a = table.architecture
+    inner, state = _int(table, f"{a}.ssm.inner_size"), _int(table, f"{a}.ssm.state_size")
+    conv_rows = (_int(table, f"{a}.ssm.conv_kernel") - 1) * (inner + 2 * _int(table, f"{a}.ssm.group_count") * state)
+    recurrence = state * inner
+    return (conv_rows + recurrence) * F32
+
+
+def ple_history_bytes(table: TensorTable) -> int:
+    """The PLE conv history of the layers that have one (spec/MODEL_IO.md): `conv_kernel - 1` steps of each n-gram
+    position, a hyper-connection's width each."""
+    a = table.architecture
+    width = _int(table, f"{a}.hyper_connection.count") * _int(table, f"{a}.embedding_length")
+    steps = (_int(table, f"{a}.ple.conv_kernel") - 1) * _int(table, f"{a}.ple.ngram_size")
+    layers = len(cast("list[int]", table.field(f"{a}.ple.layers")))
+    return layers * steps * width * F32
+
+
+def _int(table: TensorTable, key: str) -> int:
+    return int(cast("int", table.field(key)))
+
+
 def model_memory(
     table: TensorTable, cards: int = 2, draft_shapes: dict[str, tuple[int, ...]] | None = None
 ) -> ModelMemory:
@@ -70,9 +96,10 @@ def model_memory(
     fp16_kv = FP16 * kv_values
     pooled_key = F32 * key_values // PAGE_CELLS
     split_key = 2 * FP16 * key_values // PAGE_CELLS
-    state = kinds.count(LayerKind.DELTANET) * numbers.DELTANET_STATE_BYTES + numbers.PLE_HISTORY_BYTES
+    state = kinds.count(LayerKind.DELTANET) * deltanet_state_bytes(table) + ple_history_bytes(table)
     shapes = draft_shapes if draft_shapes is not None else read_shapes()
-    draft_kv_planned = numbers.DRAFT_KV_BYTES // cards
+    draft_kv = numbers.DRAFT_WINDOW * _q8(draft_kv_cell(shapes))
+    draft_kv_planned = draft_kv // cards
 
     def working_of(o: PlanOptions, pool: int) -> int:
         """What the core holds beside the plan's rows, and the difference between its K and V and indexer keys and
@@ -101,10 +128,10 @@ def model_memory(
         kv_cell_per_card=kv_cell // cards,
         indexer_cell_per_card=indexer_cell // cards,
         state_per_card=state // cards,
-        draft_kv_per_card=numbers.DRAFT_KV_BYTES // cards,
+        draft_kv_per_card=draft_kv // cards,
         resident_cells=numbers.RESIDENT_CELLS,
         kv_cell_host=kv_cell,
-        draft_kv_host=numbers.DRAFT_KV_BYTES,
+        draft_kv_host=draft_kv,
         checkpoint_bytes=state,
         max_context=table.context_length,
         ngram_bytes=sum(t.nbytes for t in table.tensors if split_of(t.name) is SplitKind.FILE),

@@ -6,13 +6,8 @@ Token ids are the model file's (tensors.TensorTable.token_id).
 
 from __future__ import annotations
 
-# Per sequence (MEMORY_BUDGET.md, "Per sequence"). K and V and the indexer's keys come from the tensor table
-# (memory.py).
-DELTANET_STATE_BYTES = 3_268_608
-"""One DeltaNet layer's state (spec/MODEL_LAYER.md, 2.7)."""
-PLE_HISTORY_BYTES = 368_640
-"""The PLE conv history, which one layer holds (spec/MODEL_LAYER.md, 2.7)."""
-DRAFT_KV_BYTES = 35_651_584
-"""The draft layer's ring of 32,768 cells."""
+# Per sequence (MEMORY_BUDGET.md, "Per sequence"): the sizes are the model file's (memory.py).
+DRAFT_WINDOW = 32_768
+"""The draft layer's ring, in cells: it attends to its last 32,768 (`--mtp-window`, spec/MODEL_IO.md, section 3)."""
 RESIDENT_CELLS = 32_768
 """K and V cells kept in VRAM per sequence when KV streams (spec/STRATA_MEMORY.md, section 5)."""
