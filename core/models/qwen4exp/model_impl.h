@@ -17,7 +17,6 @@ namespace detail {
 
 using Ranges = std::vector<std::pair<uint64_t, uint64_t>>;  // [start, start + count)
 
-inline constexpr uint32_t kMtpExperts = 512;  // the draft layer's checkpoint has its own count (docs/MODEL_FILES.md)
 inline constexpr uint32_t kSgSize = 16;  // the kernels' SG_SIZE
 inline constexpr uint32_t kAttXmxSubGroups = 16;  // p_attn_xmx's sub-groups a work-group (prompt_attn.cl)
 // The fewest rows of a prompt chunk at which the two cards split the hyper-connections
@@ -46,9 +45,6 @@ inline uint32_t step_width(uint32_t n) {
 // A prompt token's weight in the swap counts against a written token's 1: there are many, and decode is what the
 // cache serves.
 inline constexpr float kPromptRouting = 0.05f;
-// The main layers whose outputs DFlash 2 reads, in the order of its features (zero-based; the model's
-// target_layer_ids).
-inline constexpr uint32_t kDfTargetLayers[DF_LAYERS] = {5, 15, 25, 35, 45};
 
 inline uint64_t a8_bytes(uint64_t K) { return K + K / 8; }
 inline uint64_t align256(uint64_t x) { return (x + 255) & ~255ull; }

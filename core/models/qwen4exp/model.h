@@ -47,6 +47,17 @@ using engine::TraceRow;
 // patches the encoder is built for: 16 pixels a side, 768 bytes, merged 2 x 2 (docs/spec/MODEL_VISION.md, sections 2,
 // 4.1 and 6; vision_sizes.h). meta: the model file's metadata.
 ImageShape image_shape_of(const std::map<std::string, GgufValue> &meta);
+// What DFlash 2's config.json gives beyond its tensors' sizes, from dflash-config.txt (tools/dflash_fetch.py).
+struct DfConfig {
+  int32_t mask_token = 0;                     // the token of a block's rows after its first: mask_token_id
+  std::array<uint32_t, DF_LAYERS> targets{};  // the main layers whose outputs it reads, in its features' order
+};
+// dir's dflash-config.txt, checked against the sizes the drafter's kernels are built for (layout.h). Throws when the
+// file is missing or a size differs.
+DfConfig read_df_config(const std::string &dir);
+// The MTP layer's routed experts: its router's rows, from the size of its file in dir. Throws when the file is not a
+// whole number of rows of embd values, or the count has no kernels.
+uint32_t mtp_expert_count(const std::string &dir, uint32_t embd);
 // The drafts a round makes by default: the draft layer's; DFlash 2 drafts a whole window in one pass.
 constexpr uint32_t kDraftMaxLayer = 3, kDraftMaxCap = STEP_MAX_ROWS - 1;
 
@@ -368,6 +379,9 @@ class Model final : public engine::Model {
   std::unique_ptr<ze::EventPool> mevents_;
   // DFlash 2's plans, block embeddings, exchange events and candidates (dflash.cpp).
   bool df_on_ = false;
+  DfConfig dfc_;             // with df_on_
+  uint32_t mtp_experts_ = 0;  // with mtp_on_: the MTP layer's routed experts
+  std::string mtp_module_;    // with mtp_on_: the kernel module built for that count
   DraftPlan *dfcplan_ = nullptr, *dfbplan_ = nullptr;
   float *dfembed_ = nullptr;
   float *dfex_ = nullptr;  // the exchanges' partial sums, [2 DF_LAYERS][card][STEP_MAX_ROWS][DF_EMBD]
