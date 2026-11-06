@@ -3,6 +3,9 @@
 // video. No card.
 #include <cstdint>
 #include <cstdio>
+#include <map>
+#include <string>
+#include <vector>
 
 #include "api/model.h"
 #include "models/qwen4exp/model.h"
@@ -15,9 +18,17 @@ using engine::is_media;
 using engine::kNoToken;
 
 int main() {
-  const ImageShape q = engine::qwen4exp::kImageShape;
-  EXPECT(q.image_token == 248056 && q.video_token == 248057, "Flash-Next's image and video tokens");
-  EXPECT(q.patch_bytes == 768 && q.merge == 2, "16-pixel RGB patches merged 2 x 2");
+  // The tokens are the file's, found by their text; a file without video has no video token.
+  std::map<std::string, engine::GgufValue> meta;
+  meta["tokenizer.ggml.tokens"] = std::vector<std::string>{"a", "<|image_pad|>", "b", "<|video_pad|>"};
+  const ImageShape f = engine::qwen4exp::image_shape_of(meta);
+  EXPECT(f.image_token == 1 && f.video_token == 3, "the file's image and video tokens");
+  EXPECT(f.patch_bytes == 768 && f.merge == 2, "16-pixel RGB patches merged 2 x 2");
+  meta["tokenizer.ggml.tokens"] = std::vector<std::string>{"a", "<|image_pad|>"};
+  EXPECT(engine::qwen4exp::image_shape_of(meta).video_token == kNoToken, "no video token");
+
+  // Flash-Next's file: <|image_pad|> 248,056 and <|video_pad|> 248,057.
+  const ImageShape q{248056, 248057, f.patch_bytes, f.merge};
   EXPECT(engine::qwen4exp::kDraftMaxLayer == 3, "the draft layer's default drafts a round");
   EXPECT(engine::qwen4exp::kDraftMaxCap == 7, "the most drafts a round: a window's rows but one");
 
