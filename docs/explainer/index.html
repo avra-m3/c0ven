@@ -31,6 +31,7 @@
         <div class="key"><span style="--c: var(--sodium)" id="keyF">Fetching</span><span style="--c: var(--cool)" id="keyT">Thinking</span></div>
         <div class="history" id="history"></div>
       </section>
+      <section class="panel slip" id="slip4" hidden aria-label="The list"><span class="ph">The list</span><div class="lines" id="lines4"></div></section>
       <section class="panel reveal" id="reveal" hidden aria-label="What this floor teaches">
         <span class="ph">Under the labels</span>
         <div class="map" id="revealMap"></div>
@@ -43,6 +44,7 @@
 
   <div class="bottom">
     <div class="hint" id="hint3" hidden>Pick a name in the annex, then one in the office, to swap them</div>
+    <div class="hint" id="hint4" hidden></div>
     <div class="choices" id="choices"></div>
     <div class="caption" id="caption" hidden role="status" aria-live="polite"></div>
   </div>
@@ -64,8 +66,14 @@
 <div class="anchor wrap" id="aAnnex3">main memory: every expert</div>
 <div class="anchor think wrap" id="aBoard">use counts, fading each round</div>
 <div class="anchor slow wrap" id="aMover">swapped in: copied onto the card</div>
+<div class="anchor slow wrap" id="aMic4">the computer's main processor: you</div>
+<div class="anchor wrap" id="aTeam4">the graphics card: fast, waits to be told</div>
+<div class="anchor think wrap" id="aBoard4">this word's numbers: all that changes</div>
+<div class="anchor wrap" id="aSlip4">the list: written once</div>
+<div class="anchor slow wrap" id="aFax4">a question only the processor can answer</div>
 
 <div class="tags" id="tags" hidden></div>
+<div class="tags" id="tags4" hidden></div>
 
 <div class="ride-skip" id="rideSkip">Click or press Space to hurry the lift</div>
 
@@ -77,7 +85,7 @@
     <div class="directory">
       <span class="ph">Directory</span>
       <div class="floors" id="floors"></div>
-      <div class="closed"><i>04&ndash;48</i>Closed for refurbishment</div>
+      <div class="closed"><i>05&ndash;48</i>Closed for refurbishment</div>
     </div>
   </div>
 </div>
