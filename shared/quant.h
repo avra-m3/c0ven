@@ -175,6 +175,10 @@ SHARED_FN u64 quant_run_offset(u32 t, u32 f, u64 n) {
   return off * n;
 }
 
+// Bytes the cards' kernels may read past a slice's last block in the file's layout (kernels/quant/decode.h, dec_u32):
+// a buffer of file blocks has this many after its last block.
+#define QUANT_FILE_PAD 8
+
 // Whether the prompt path's expert kernels (kernels/quant/qgemm.cl) take a type's values in the order sigma, the
 // middle two of every four swapped (kernels/quant/decode.h, decode_unit_pairs), or in their own order. Their
 // activations are stored in the same order.
