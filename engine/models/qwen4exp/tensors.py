@@ -30,6 +30,13 @@ FIELD_ARRAY_MAX = 64
 """The longest array `fields` keeps: the per-layer and per-head lists, not the tokenizer's."""
 FIELD_TEXT_MAX = 256
 """The longest string `fields` keeps: names and labels, not the chat template."""
+TOKEN_TEXTS = ("<|im_start|>", "<|im_end|>", "<|endoftext|>", "system", "assistant", "\u010a")
+"""The tokens the control plane finds by their text in `tokenizer.ggml.tokens`: the chat template's markers and roles,
+and the newline, which the tokenizer writes as `\u010a`."""
+TOKEN_IDS = "c0ven.token_ids"
+"""Not a field of the file: the key under which `fields` keeps the ids of TOKEN_TEXTS."""
+_CACHE_FORM = 2
+"""Part of the cache's key: raised when what the cache keeps changes, so an older cache is read again."""
 
 
 class Category(StrEnum):
@@ -120,6 +127,21 @@ class TensorTable:
         """The longest context the model was trained for: `<arch>.context_length`."""
         return int(cast("int", self.field(f"{self.architecture}.context_length")))
 
+    def token_id(self, text: str) -> int:
+        """The id of the token `text`, one of TOKEN_TEXTS. Raises ValueError when the file has no such token."""
+        ids = cast("dict[str, int | None]", self.field(TOKEN_IDS))
+        if (found := ids.get(text)) is None:
+            raise ValueError(f"token missing from the model: {text!r}")
+        return found
+
+    @property
+    def eos_ids(self) -> tuple[int, ...]:
+        """The tokens generation stops at: the file's `tokenizer.ggml.eos_token_id`, then `<|im_end|>` and
+        `<|endoftext|>` (generation_config.json, spec/MODEL_IO.md, section 2.3) where they are others."""
+        ids = [int(cast("int", self.field("tokenizer.ggml.eos_token_id")))]
+        ids += [self.token_id(t) for t in ("<|im_end|>", "<|endoftext|>")]
+        return tuple(dict.fromkeys(ids))
+
     @property
     def layers(self) -> int:
         """The file's layers: one past the highest numbered block."""
@@ -181,7 +203,8 @@ def from_tsv(path: Path = TSV) -> TensorTable:
 
 def read_fields(reader: gguf.GGUFReader) -> dict[str, object]:
     """The reader's fields that are numbers, strings up to FIELD_TEXT_MAX characters, or arrays of those up to
-    FIELD_ARRAY_MAX long: what the control plane reads, without the tokenizer's lists or the chat template."""
+        FIELD_ARRAY_MAX long: what the control plane reads, without the tokenizer's lists or the chat template. Under
+    TOKEN_IDS, the ids of TOKEN_TEXTS from the tokenizer's list (None for one it lacks)."""
     out: dict[str, object] = {}
     for key, f in reader.fields.items():
         if key.startswith("GGUF."):
@@ -194,6 +217,12 @@ def read_fields(reader: gguf.GGUFReader) -> dict[str, object]:
         elif isinstance(value, str) and len(value) > FIELD_TEXT_MAX:
             continue
         out[key] = value
+    tokens = reader.get_field("tokenizer.ggml.tokens")
+    if tokens is not None:
+        index: dict[str, int] = {}
+        for i, text in enumerate(cast("list[str]", tokens.contents())):
+            index.setdefault(text, i)
+        out[TOKEN_IDS] = {t: index.get(t) for t in TOKEN_TEXTS}
     return out
 
 
@@ -238,7 +267,9 @@ def from_gguf_cached(path: Path, cache: Path | None) -> TensorTable:
     if cache is None:
         return from_gguf(path)
     paths = shard_paths(path)
-    key = "\n".join(f"{p.resolve()} {p.stat().st_size} {p.stat().st_mtime_ns}" for p in paths)
+    key = "\n".join(
+        [f"form {_CACHE_FORM}"] + [f"{p.resolve()} {p.stat().st_size} {p.stat().st_mtime_ns}" for p in paths]
+    )
     file = cache / f"tensors-{hashlib.sha256(key.encode()).hexdigest()[:16]}.tsv"
     if file.is_file() and fields_path(file).is_file():
         return replace(from_tsv(file), shard_paths=paths)

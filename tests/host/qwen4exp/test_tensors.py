@@ -53,6 +53,17 @@ def test_the_context_length_is_the_files():
     assert TABLE.context_length == from_tsv(TSV_UD_IQ4_XS).context_length == 262_144
 
 
+def test_generation_stops_at_the_files_end_tokens():
+    """`tokenizer.ggml.eos_token_id` is <|im_end|>; <|endoftext|> follows it."""
+    assert TABLE.eos_ids == from_tsv(TSV_UD_IQ4_XS).eos_ids == (248_046, 248_044)
+
+
+def test_a_token_the_file_lacks_says_which():
+    table = tensors.TensorTable(TABLE.tensors, fields={**TABLE.fields, tensors.TOKEN_IDS: {"system": None}})
+    with pytest.raises(ValueError, match="system"):
+        table.token_id("system")
+
+
 def test_a_field_the_file_lacks_says_which():
     with pytest.raises(ValueError, match=r"general\.architecture"):
         _ = tensors.TensorTable(TABLE.tensors).context_length
