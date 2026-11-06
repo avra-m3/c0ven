@@ -46,7 +46,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--engine-backend", choices=("native", "mock", "reference"), default="native")
     p.add_argument("--arch", default="qwen4exp", help="the architecture, for the mock and the reference")
     p.add_argument("--slots", type=int, default=1)
-    p.add_argument("--context", type=int, default=262_144)
+    p.add_argument("--context", type=int, default=0, help="tokens per slot; default: the model file's context length")
     p.add_argument(
         "--kv-tokens",
         type=protocol.tokens,

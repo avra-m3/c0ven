@@ -185,7 +185,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--model", type=Path, help="the GGUF file (any shard); needed by the native backend")
     p.add_argument("--arch", help="the architecture, when there is no model file (mock, reference)")
     p.add_argument("--slots", type=int, default=1)
-    p.add_argument("--context", type=int, default=262_144)
+    p.add_argument("--context", type=int, default=0, help="tokens per slot; default: the model file's context length")
     p.add_argument(
         "--checkpoints",
         type=int,
@@ -584,7 +584,7 @@ def main(argv: list[str] | None = None) -> int:
     sched = SchedulerOptions(
         prompt_budget_ms=args.prompt_budget_ms, decode_share=args.decode_share, chunk_rows=args.chunk_rows
     )
-    rule: CheckpointRule = model.checkpoint_positions
+    rule: CheckpointRule = model.checkpoint_rule(args.model if native else None, args.table_cache)
     return serve(
         make_engine(args.backend, args.realtime, arch),
         config,
