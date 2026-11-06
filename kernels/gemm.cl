@@ -2,7 +2,6 @@
 // gemm_f16) and, with -DBF16, as bf16 (module gemm_bf16) for the file's BF16 weights, whose reference products take
 // bf16 activations (docs/spec/MODEL_LAYER.md, section 6).
 // gemm:  Y[t][n] = post(scale * sum_k X[t][k] W[n][k]), t < *ntok, n < N; also into Y2 when set.
-// to_16: f32 rows into fp16 or bf16 rows, for the activations.
 #include "builtins.h"
 
 #ifdef BF16
@@ -114,18 +113,3 @@ REQD_SG __kernel void gemm(__global const ushort *W, uint N, uint K, uint ldw, _
       }
   }
 }
-
-// out[t * ld_out + i] = x[t * ld_in + i] as fp16 (or bf16), i < cols, t < *ntok. One work-item per value.
-__kernel void to_16(__global const float *x, uint ld_in, uint cols, __global const uint *ntok, __global ushort *out,
-                    uint ld_out) {
-  uint i = get_global_id(0), t = get_global_id(1);
-  if (i >= cols || t >= *ntok) return;
-  float v = x[(ulong)t * ld_in + i];
-#ifdef BF16
-  out[(ulong)t * ld_out + i] = f32_to_bf16(v);
-#else
-  vstore_half(v, (ulong)t * ld_out + i, (__global half *)out);
-#endif
-}
-
-

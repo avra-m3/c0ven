@@ -139,8 +139,8 @@ REQD_SG __kernel void mv_xmx_bf16(__global const ushort *W, uint N, uint K, uint
   }
 }
 
-// topk for rows: row r of v (v_stride apart) into idx and val at r * k, its count at count[r], for r < *nrows.
-// Groups (rows), TOPK_WG.
+// The k largest of each row: row r of v (v_stride apart) into idx and val at r * k (indices increasing, offset added
+// to each), its count at count[r], for r < *nrows. Groups (rows), TOPK_WG.
 REQD_SG __kernel void topk_rows(__global const float *v, uint v_stride, uint n, uint k, uint offset,
                                 __global const uint *nrows, __global uint *idx, __global float *val,
                                 __global uint *count) {
@@ -158,15 +158,4 @@ REQD_SG __kernel void topk_rows(__global const float *v, uint v_stride, uint n, 
 __kernel void swiglu(__global const float *g, __global const float *u, __global float *out, uint n) {
   uint i = get_global_id(0);
   if (i < n) out[i] = SWIGLU(g[i], u[i]);
-}
-
-// The k largest of v[0..n) into idx and val (indices increasing), and their count into *count. One work-group of
-// TOPK_WG work-items. offset is added to every index written.
-REQD_SG __kernel void topk(__global const float *v, uint n, uint k, uint offset, __global uint *idx,
-                           __global float *val, __global uint *count) {
-  __local uint hist[TOPK_HIST];
-  __local uint scan[TOPK_WG];
-  __local ulong cand[TOPK_CAND];
-  uint got = topk_select_few(v, n, k, offset, idx, val, hist, scan, cand);
-  if (get_local_id(0) == 0) *count = got;
 }
