@@ -78,9 +78,9 @@ class Runtime {
   void vm_unmap(void *va, size_t bytes);
 
  private:
-  ze_driver_handle_t driver_ = nullptr;
   void unmap_cpu(void *p);
 
+  ze_driver_handle_t driver_ = nullptr;
   ze_context_handle_t ctx_ = nullptr;
   std::vector<Card> cards_;
   std::vector<uint64_t> device_bytes_;

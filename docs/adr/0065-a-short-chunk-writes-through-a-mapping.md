@@ -25,7 +25,7 @@ what limits a mapping's speed.
 
 ## Why
 
-- First token on one card: long-gen 0.77 → 0.64 s, gpqa-1 1.26 → 1.04 s, decode level
+- First token on one card: long-gen 0.76 → 0.64 s, gpqa-1 1.26 → 1.04 s, decode level
   ([MEASUREMENTS.md](../measurements/MEASUREMENTS.md#2026-11-05-staging-through-a-mapping)).
 - A read of the card's memory returns only after the writes before it have arrived, so the card cannot see the event
   before the data. A fence alone sends the writes on their way and does not say they have arrived. The fence is a full
@@ -42,6 +42,7 @@ what limits a mapping's speed.
 
 ## Consequences
 
-- A start takes about 0.5 s longer on one card, for the driver's write and the touch of the 1.91 GiB buffer.
+- A start and a wake each take about 0.5 s longer on one card, for the driver's write and the touch of the 1.91 GiB
+  buffer.
 - The runtime keeps the exported descriptor and closes it when the memory is freed; the memory returns on free
   after the mapping is removed, so sleep and wake hold nothing back.
