@@ -231,6 +231,38 @@ export function makeChair(x, z) {
   chair.position.set(x, 0, z);
   return chair;
 }
+// The eight advisers of the upper floors. `he` picks the narrator's wording; `old` is makeAdviser's.
+export const PEOPLE = [
+  { name: "Pat", topic: "Cooking", color: 0xe07a3b, suit: 0x56657d, hair: 0x3b322b, skin: 0xe0c3a8, hat: "toque" },
+  { name: "Dev", topic: "Sport", color: 0x4fb36b, suit: 0x5b6f63, hair: 0x2a2420, skin: 0x8d5a3b, hat: "cap", he: true },
+  { name: "Ines", topic: "Travel", color: 0x4f8fd0, suit: 0x6a5f78, hair: 0x6b4a2e, skin: 0xb98a64, hat: "beret" },
+  { name: "Otto", topic: "Weather", color: 0x7fcfd0, suit: 0x4d5868, hair: 0x8a7a62, skin: 0xd9b9a0, hat: "souwester", he: true },
+  { name: "Margaret", topic: "Law", color: 0xb05ac0, suit: 0x6b5a48, hair: 0xc4c4bf, skin: 0xe3cbb5, hat: "wig", old: true },
+  { name: "Hugh", topic: "Contracts", color: 0xd2556b, suit: 0x3f4a5c, hair: 0x4a3b2c, skin: 0xa77555, hat: "bowler", he: true },
+  { name: "Rosa", topic: "Music", color: 0xe0c050, suit: 0x7a5a5a, hair: 0x2a2020, skin: 0x6e4630, hat: "phones" },
+  { name: "Bram", topic: "Gardens", color: 0x9aa64a, suit: 0x55604a, hair: 0x6b5a3a, skin: 0xd2a789, hat: "straw", he: true },
+];
+// Hats and headphones, one per adviser, so each reads at a glance; they ride on the head and turn with it.
+export function dressAdviser(A, kind, color) {
+  const h = A.head, m = (c, o) => mat(c, o);
+  const cyl = (rt, rb, ht, c, y, seg = 18) => { const k = new THREE.Mesh(new THREE.CylinderGeometry(rt, rb, ht, seg), c); k.position.y = y; k.castShadow = true; h.add(k); return k; };
+  const ball = (r, c, x, y, z, sx = 1, sy = 1, sz = 1) => { const b = new THREE.Mesh(new THREE.SphereGeometry(r, 16, 10), c); b.position.set(x, y, z); b.scale.set(sx, sy, sz); b.castShadow = true; h.add(b); return b; };
+  if (kind === "toque") { cyl(0.13, 0.15, 0.18, m(0xf2f2ec), 0.36); ball(0.17, m(0xf2f2ec), 0, 0.47, 0, 1.05, 0.55, 1.05); }
+  if (kind === "cap") { ball(0.172, m(color), 0, 0.17, 0, 1, 0.75, 1); const b = box(0.24, 0.016, 0.16, m(color), 0, 0.21, 0.17, h); b.rotation.x = 0.12; }
+  if (kind === "beret") { const b = ball(0.19, m(color), 0.02, 0.29, -0.01, 1.05, 0.32, 1.05); b.rotation.z = 0.25; ball(0.02, m(color), 0.03, 0.36, 0); }
+  if (kind === "souwester") { cyl(0.11, 0.17, 0.13, m(color, { roughness: 0.35 }), 0.31); cyl(0.26, 0.26, 0.015, m(color, { roughness: 0.35 }), 0.245, 24); }
+  if (kind === "wig") {
+    const wig = m(0xece8dc, { roughness: 0.95 });
+    ball(0.18, wig, 0, 0.2, -0.01, 1, 0.75, 1);
+    for (const sx of [-1, 1]) for (let k = 0; k < 3; k++) ball(0.045, wig, sx * 0.165, 0.18 - k * 0.075, -0.03, 1, 0.8, 1);
+  }
+  if (kind === "bowler") { cyl(0.2, 0.2, 0.014, m(0x1c2027), 0.255, 24); ball(0.14, m(0x1c2027), 0, 0.27, 0, 1, 0.85, 1); cyl(0.142, 0.142, 0.03, m(color), 0.275); }
+  if (kind === "phones") {
+    const band = new THREE.Mesh(new THREE.TorusGeometry(0.18, 0.018, 6, 20, Math.PI), m(0x23272f)); band.position.y = 0.15; h.add(band);
+    for (const sx of [-1, 1]) { const cup = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.05, 14), m(color)); cup.rotation.z = Math.PI / 2; cup.position.set(sx * 0.175, 0.14, 0); h.add(cup); }
+  }
+  if (kind === "straw") { cyl(0.3, 0.3, 0.014, m(0xd8c27a, { roughness: 0.9 }), 0.25, 24); cyl(0.13, 0.15, 0.12, m(0xd8c27a, { roughness: 0.9 }), 0.31); cyl(0.152, 0.152, 0.035, m(color), 0.275); }
+}
 // An adviser. The frame loop poses them from walking, walkPhase, sit (0 standing, 1 seated), carry, reach, busy
 // (typing at a desk), lift (extra height) and heading (the yaw they turn towards). `old` gives a stoop and a shuffle.
 // Optional: cheer (seated, both arms up) and watch (a point whose x and z the head turns to).
@@ -307,6 +339,7 @@ export function poseAdviser(A, t, dt) {
   // Arms seated: both at the keyboard when busy, else one on the desk and one at the chin.
   let sL = 1.15, sR = 1.25, seL = 0.45, seR = 2.1 + nod * 0.05, sezR = -0.7;
   if (A.busy) { sL = sR = 1.05; seL = 0.55 + Math.sin(t * 13 + A.nodPhase) * 0.07; seR = 0.55 + Math.cos(t * 13 + A.nodPhase) * 0.07; sezR = 0; }
+  if (A.hand) { sR = 2.9; seR = 0.25; sezR = 0; }
   if (A.cheer) { sL = sR = 2.75; seL = seR = 0.3 + (reduced ? 0 : Math.sin(t * 20 + A.nodPhase) * 0.15); sezR = 0; }
   A.armL.rotation.set(-blend(aL, sL), 0, blend(zL, 0)); A.armL.elbow.rotation.set(-blend(eL, seL), 0, blend(ezL, 0));
   A.armR.rotation.set(-blend(aR, sR), 0, blend(zR, 0)); A.armR.elbow.rotation.set(-blend(eR, seR), 0, blend(ezR, sezR));

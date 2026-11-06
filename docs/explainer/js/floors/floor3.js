@@ -1,9 +1,10 @@
 // Floor 3, musical desks, around x = X3. Which experts sit on the card follows the conversation: the player runs one
 // night by hand, then the narrator runs the same night with the engine's swap rule.
 import { $, box, camera, canvasTex, closeFloor, halo, haloTex, mat, openFloor, pool, reduced, rep, scene, sign, toScreen, tubes, up, v, view } from "../world.js";
-import { backOut, ease, lerp, tween } from "../motion.js";
-import { laminate, makeAdviser, makeCabinet, makeCat, makeChair, makeClock, makeCoatStand, makeCooler, makeEnvelope, makeFax, makeFaxPage, makeLadder, makeLibrary, makePlant, makeRug, makeVan, oak, paperM, poseAdviser, roomDesk, steel3, wood, woodDark, wrapAngle } from "../props.js";
-import { asphaltTex, boardsTex, brickTex, carpetTex, city, curtainWall, floorDrop, makeHoist, makeLift, plaster, skirtM, slabTex, traffic, trimM, wallWithDoor, windowView } from "../tower.js";
+import { backOut, ease, lerp, rt, tween, until } from "../motion.js";
+import { bestFit, makeFramer, placeLabelsApart, placeTags, sizeOf, tagSize } from "../framing.js";
+import { dressAdviser, laminate, makeAdviser, makeCabinet, makeCat, makeChair, makeClock, makeCoatStand, makeCooler, makeEnvelope, makeFax, makeFaxPage, makeLadder, makeLibrary, makePlant, makeRug, makeVan, oak, paperM, PEOPLE, poseAdviser, roomDesk, steel3, wood, woodDark, wrapAngle } from "../props.js";
+import { asphaltTex, boardsTex, brickTex, carpetTex, city, curtainWall, cutawayWall, floorDrop, makeHoist, makeLift, plaster, skirtM, slabTex, traffic, trimM, wallWithDoor, windowView } from "../tower.js";
 import { parkCar } from "../lift.js";
 import { speak, speaking } from "../narration.js";
 import { addHistory, choose, clearStage, endings, findEnding, goFloor, labels, revealButtons, setClock } from "../hud.js";
@@ -20,7 +21,7 @@ const config = {
     ["The letter", "a new prompt: the experts it used count too, and a round follows it"],
   ],
   lesson: "Which experts a conversation needs changes as it goes. c0ven counts what each word uses, and every few words swaps the busiest outsiders in for the quietest residents, but only when the difference is clear. The copying runs alongside the work, so the card pauses for only a moment.",
-  next: "Floor 4 · coming next.",
+  next: "Floor 4 · The Briefing · open now.",
 };
 
 // Two rooms of four desks, the main office and the annex, either side of an alley ("row") or, on a tall screen, one
@@ -32,16 +33,7 @@ const wireMat = new THREE.LineBasicMaterial({ color: 0x14171c });
 const COL = 1.3, ROWZ = [-1.8, 0.4], RW = 6.0, RD = 5.2, LANE = 3.4;
 const G3 = -floorDrop(3), ROAD_NEAR = RD / 2 + 2.6, ROAD_FAR = RD / 2 + 4.4, HOIST_UP = 0.12, HOIST_DOWN = G3 + 0.16;   // the road's lanes are in R3.road's z
 const SLOTS = Array.from({ length: 8 }, () => [0, 0]);
-const STAFF = [
-  { name: "Pat", topic: "Cooking", color: 0xe07a3b, suit: 0x56657d, hair: 0x3b322b, skin: 0xe0c3a8, hat: "toque" },
-  { name: "Dev", topic: "Sport", color: 0x4fb36b, suit: 0x5b6f63, hair: 0x2a2420, skin: 0x8d5a3b, hat: "cap", he: true },
-  { name: "Ines", topic: "Travel", color: 0x4f8fd0, suit: 0x6a5f78, hair: 0x6b4a2e, skin: 0xb98a64, hat: "beret" },
-  { name: "Otto", topic: "Weather", color: 0x7fcfd0, suit: 0x4d5868, hair: 0x8a7a62, skin: 0xd9b9a0, hat: "souwester", he: true },
-  { name: "Margaret", topic: "Law", color: 0xb05ac0, suit: 0x6b5a48, hair: 0xc4c4bf, skin: 0xe3cbb5, hat: "wig", old: true },
-  { name: "Hugh", topic: "Contracts", color: 0xd2556b, suit: 0x3f4a5c, hair: 0x4a3b2c, skin: 0xa77555, hat: "bowler", he: true },
-  { name: "Rosa", topic: "Music", color: 0xe0c050, suit: 0x7a5a5a, hair: 0x2a2020, skin: 0x6e4630, hat: "phones" },
-  { name: "Bram", topic: "Gardens", color: 0x9aa64a, suit: 0x55604a, hair: 0x6b5a3a, skin: 0xd2a789, hat: "straw", he: true },
-];
+const STAFF = PEOPLE.map((p) => ({ ...p }));
 const hex = (c) => "#" + c.toString(16).padStart(6, "0");
 const MFAX = new THREE.Vector3(), AFAX = new THREE.Vector3();
 // The layout in use and what hangs off it: each room's aisle, the board's face, the label points, who the
@@ -54,37 +46,7 @@ const boardTex = canvasTex(1024, 640, () => {});
 const boardMat = new THREE.MeshStandardMaterial({ map: boardTex, emissiveMap: boardTex, emissive: 0xffffff, emissiveIntensity: 0.32, roughness: 0.9 });
 const BW = 3.2, BH = 2.0;
 
-// A side wall, cut away towards the front so the room stays open to the camera.
-function sideWall(parent, x, m, back, front) {
-  const sh = new THREE.Shape();
-  sh.moveTo(-RD / 2, 0); sh.lineTo(RD / 2, 0); sh.lineTo(RD / 2, front); sh.lineTo(-RD / 2, back); sh.closePath();
-  const w = new THREE.Mesh(new THREE.ExtrudeGeometry(sh, { depth: 0.12, bevelEnabled: false }), m);
-  // The shape's x runs along z, back to front; the extrusion is the wall's thickness, along -x.
-  w.rotation.y = -Math.PI / 2; w.position.set(x + 0.06, 0, 0); w.castShadow = w.receiveShadow = true;
-  parent.add(w); return w;
-}
-
-// Hats and headphones, one per adviser, so each reads at a glance; they ride on the head and turn with it.
-function dress3(A, kind, color) {
-  const h = A.head, m = (c, o) => mat(c, o);
-  const cyl = (rt, rb, ht, c, y, seg = 18) => { const k = new THREE.Mesh(new THREE.CylinderGeometry(rt, rb, ht, seg), c); k.position.y = y; k.castShadow = true; h.add(k); return k; };
-  const ball = (r, c, x, y, z, sx = 1, sy = 1, sz = 1) => { const b = new THREE.Mesh(new THREE.SphereGeometry(r, 16, 10), c); b.position.set(x, y, z); b.scale.set(sx, sy, sz); b.castShadow = true; h.add(b); return b; };
-  if (kind === "toque") { cyl(0.13, 0.15, 0.18, m(0xf2f2ec), 0.36); ball(0.17, m(0xf2f2ec), 0, 0.47, 0, 1.05, 0.55, 1.05); }
-  if (kind === "cap") { ball(0.172, m(color), 0, 0.17, 0, 1, 0.75, 1); const b = box(0.24, 0.016, 0.16, m(color), 0, 0.21, 0.17, h); b.rotation.x = 0.12; }
-  if (kind === "beret") { const b = ball(0.19, m(color), 0.02, 0.29, -0.01, 1.05, 0.32, 1.05); b.rotation.z = 0.25; ball(0.02, m(color), 0.03, 0.36, 0); }
-  if (kind === "souwester") { cyl(0.11, 0.17, 0.13, m(color, { roughness: 0.35 }), 0.31); cyl(0.26, 0.26, 0.015, m(color, { roughness: 0.35 }), 0.245, 24); }
-  if (kind === "wig") {
-    const wig = m(0xece8dc, { roughness: 0.95 });
-    ball(0.18, wig, 0, 0.2, -0.01, 1, 0.75, 1);
-    for (const sx of [-1, 1]) for (let k = 0; k < 3; k++) ball(0.045, wig, sx * 0.165, 0.18 - k * 0.075, -0.03, 1, 0.8, 1);
-  }
-  if (kind === "bowler") { cyl(0.2, 0.2, 0.014, m(0x1c2027), 0.255, 24); ball(0.14, m(0x1c2027), 0, 0.27, 0, 1, 0.85, 1); cyl(0.142, 0.142, 0.03, m(color), 0.275); }
-  if (kind === "phones") {
-    const band = new THREE.Mesh(new THREE.TorusGeometry(0.18, 0.018, 6, 20, Math.PI), m(0x23272f)); band.position.y = 0.15; h.add(band);
-    for (const sx of [-1, 1]) { const cup = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.05, 14), m(color)); cup.rotation.z = Math.PI / 2; cup.position.set(sx * 0.175, 0.14, 0); h.add(cup); }
-  }
-  if (kind === "straw") { cyl(0.3, 0.3, 0.014, m(0xd8c27a, { roughness: 0.9 }), 0.25, 24); cyl(0.13, 0.15, 0.12, m(0xd8c27a, { roughness: 0.9 }), 0.31); cyl(0.152, 0.152, 0.035, m(color), 0.275); }
-}
+const sideWall = (parent, x, m, back, front) => cutawayWall(parent, x, m, -RD / 2, RD / 2, back, front);
 
 (() => {
   const [office, annex] = rooms;
@@ -276,7 +238,7 @@ for (const [i, s] of STAFF.entries()) {
   s.legs = chairLegs(s.chair);
   s.A = makeAdviser({ suit: s.suit, hair: s.hair, tie: s.color, skin: s.skin, nodPhase: i * 0.9, old: !!s.old });
   s.A.group.rotation.order = "YXZ";
-  dress3(s.A, s.hat, s.color);
+  dressAdviser(s.A, s.hat, s.color);
   s.A.sit = 1;
   s.slot = i;
   s.box = packBox(s.color);
@@ -435,9 +397,6 @@ function resetFloor3() {
 // ---------- Camera ----------
 const camera3 = { look: new THREE.Vector3(X3, 1.3, 0.6), offset: true, fog: [20, 90], par: 0.7, fov: 36 };
 
-// Floor 3's camera looks down at a fixed pitch from whatever distance and screen offset fit the layout's outline
-// into the part of the screen the HUD leaves clear: beside the side panel or under it, whichever shows it larger.
-const fit3 = { key: "", at: 0, fov: 36, d: 20, fog: 20, wide: false, snap: true, pos: new THREE.Vector3(), look: new THREE.Vector3(), off: [0, 0], tPos: new THREE.Vector3(), tLook: new THREE.Vector3(), tOff: [0, 0] };
 // A trip pulls the camera back to the wide outline, which adds the street.
 const FIT3 = { row: { pitch: 0.44, pts: [], wide: [] }, stack: { pitch: 0.82, pts: [], wide: [] } };
 for (const [m, hx, z0, z1, hb, hf, zs] of [["row", 7.75, -2.6, RD / 2 + 0.3, 4.7, 1.8, ROAD_NEAR + 1], ["stack", RW / 2 + 0.4, -RD - 0.9, RD + 0.9, 4.7, 1.6, RD / 2 + 0.9 + ROAD_NEAR + 1]])
@@ -445,79 +404,12 @@ for (const [m, hx, z0, z1, hb, hf, zs] of [["row", 7.75, -2.6, RD / 2 + 0.3, 4.7
     FIT3[m].pts.push(new THREE.Vector3(X3 + sx * hx, 0, z0), new THREE.Vector3(X3 + sx * hx, hb, z0), new THREE.Vector3(X3 + sx * hx, 0, z1), new THREE.Vector3(X3 + sx * hx, hf, z1));
     FIT3[m].wide.push(...FIT3[m].pts.slice(-4), new THREE.Vector3(X3 + sx * hx, G3, zs));
   }
-const probe = new THREE.PerspectiveCamera(), pv = new THREE.Vector3();
-function freeRects() {
-  const W = innerWidth, H = innerHeight, narrow = W <= 720, g = 12;
-  const top = document.querySelector(".topbar").getBoundingClientRect().bottom + 6;
-  const sd = document.querySelector(".side").getBoundingClientRect();
-  const bottom = H - (narrow ? 172 : 104);
-  const under = { x: g, y: sd.bottom + 6, w: W - 2 * g, h: bottom - sd.bottom - 6 };
-  return narrow ? [under] : [{ x: g, y: top, w: sd.left - 2 * g, h: bottom - top }, under];
-}
-function fitPoints(m, rect, wide) {
-  const { pitch } = FIT3[m], pts = wide ? FIT3[m].wide : FIT3[m].pts, W = innerWidth, H = innerHeight;
-  probe.fov = fit3.fov; probe.aspect = W / H; probe.near = 0.1; probe.far = 300; probe.updateProjectionMatrix();
-  const lo3 = pts[0].clone(), hi3 = pts[0].clone();
-  for (const p of pts) { lo3.min(p); hi3.max(p); }
-  const c = lo3.add(hi3).multiplyScalar(0.5), dir = new THREE.Vector3(0, Math.sin(pitch), Math.cos(pitch));
-  const ext = (d) => {
-    probe.position.copy(c).addScaledVector(dir, d); probe.lookAt(c); probe.updateMatrixWorld();
-    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
-    for (const p of pts) {
-      pv.copy(p).project(probe);
-      const x = (pv.x + 1) * W / 2, y = (1 - pv.y) * H / 2;
-      x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y);
-    }
-    return [x0, x1, y0, y1];
-  };
-  let lo = 4, hi = 200;
-  const w = Math.max(rect.w, 40), h = Math.max(rect.h, 40);
-  for (let k = 0; k < 26; k++) { const d = (lo + hi) / 2, e = ext(d); if (e[1] - e[0] <= w && e[3] - e[2] <= h) hi = d; else lo = d; }
-  const e = ext(hi);
-  return { c, dir, d: hi, off: [(e[0] + e[1]) / 2 - (rect.x + rect.w / 2), (e[2] + e[3]) / 2 - (rect.y + rect.h / 2)], scale: 1 / hi };
-}
-const bestFit = (m, rects, wide) => rects.map((r) => fitPoints(m, r, wide)).reduce((a, b) => (b.scale > a.scale ? b : a));
+const FOV3 = 36, outline3 = (m, wide) => ({ pitch: FIT3[m].pitch, pts: wide ? FIT3[m].wide : FIT3[m].pts });
+const fit3 = makeFramer(camera3, FOV3, () => outline3(L3.mode, fit3.wide));
+fit3.wide = false;
 // One behind the other wins only where it shows the rooms clearly larger.
-function pickLayout3() {
-  const rects = freeRects();
-  return bestFit("stack", rects).scale > bestFit("row", rects).scale * 1.12 ? "stack" : "row";
-}
-function cam3(dt) {
-  const now = performance.now();
-  if (!fit3.key || now - fit3.at > 100) {
-    fit3.at = now;
-    const rects = freeRects(), key = L3.mode + fit3.wide + innerWidth + "x" + innerHeight + rects.map((r) => [r.x, r.y, r.w, r.h].map(Math.round).join(",")).join("|");
-    if (key !== fit3.key) {
-      fit3.key = key;
-      const b = bestFit(L3.mode, rects, fit3.wide);
-      fit3.tPos.copy(b.c).addScaledVector(b.dir, b.d); fit3.tLook.copy(b.c); fit3.tOff = b.off; fit3.d = b.d;
-    }
-  }
-  const k = fit3.snap || reduced ? 1 : 1 - Math.exp(-dt * 4);
-  fit3.snap = false;
-  fit3.pos.lerp(fit3.tPos, k); fit3.look.lerp(fit3.tLook, k);
-  fit3.off[0] += (fit3.tOff[0] - fit3.off[0]) * k; fit3.off[1] += (fit3.tOff[1] - fit3.off[1]) * k;
-  camera.setViewOffset(innerWidth, innerHeight, fit3.off[0], fit3.off[1], innerWidth, innerHeight);
-  camera3.look.copy(fit3.look);
-  fit3.fog += (fit3.d - fit3.fog) * k;
-  scene.fog.near = fit3.fog * 1.05; scene.fog.far = fit3.fog * 4.2;
-  return fit3.pos;
-}
-
-camera3.place = cam3;
-
-// Screen boxes {x (centre), y (top), w, h} nudged apart vertically; a few passes settle small clusters.
-function declutter(items, gap = 4) {
-  for (let pass = 0; pass < 4; pass++) for (let i = 0; i < items.length; i++) for (let j = i + 1; j < items.length; j++) {
-    const a = items[i], b = items[j];
-    if (Math.abs(a.x - b.x) * 2 >= a.w + b.w + gap) continue;
-    const [t, u] = a.y <= b.y ? [a, b] : [b, a], over = t.y + t.h + gap - u.y;
-    if (over > 0) { t.y -= over / 2; u.y += over / 2; }
-  }
-}
-// Element sizes, read once after a change rather than every frame.
-const tagSize = new Map();
-const sizeOf = (el) => { let s = tagSize.get(el); if (!s) { s = [el.offsetWidth, el.offsetHeight]; tagSize.set(el, s); } return s; };
+const pickLayout3 = () => (bestFit(outline3("stack"), FOV3).scale > bestFit(outline3("row"), FOV3).scale * 1.12 ? "stack" : "row");
+camera3.place = fit3.place;
 
 // The reveal's labels. This floor places them itself, in dom3, to keep them apart.
 const anchors3 = [
@@ -568,17 +460,9 @@ function dom3() {
       const g = n.A.group.position, [x, y] = toScreen(v.set(g.x, 2.0, g.z)), [w, h] = sizeOf(n.tag);
       items.push({ el: n.tag, x, w, h, y: y - h });
     }
-    declutter(items);
-    for (const it of items) it.el.style.transform = `translate(${Math.round(Math.min(innerWidth - it.w - 4, Math.max(4, it.x - it.w / 2)))}px, ${Math.round(it.y)}px)`;
+    placeTags(items);
   }
-  const labs = [];
-  for (const [el, at] of anchors3) {
-    if (!el.classList.contains("on")) continue;
-    const [x, y] = toScreen(at()), [w, h] = sizeOf(el);
-    labs.push({ el, x, w, h: h + 6, y: y - h - 6 });
-  }
-  declutter(labs, 6);
-  for (const it of labs) it.el.style.transform = `translate(${Math.round(Math.min(innerWidth - it.w / 2 - 6, Math.max(it.w / 2 + 6, it.x)))}px, ${Math.round(it.y + it.h)}px) translate(-50%, -100%)`;
+  placeLabelsApart(anchors3);
 }
 
 // The night: who each question needs, by STAFF index. The first twelve spread over the office; then a letter
@@ -631,16 +515,6 @@ function engineNight() {
   return { total: Math.round(t * 10) / 10, after };
 }
 const ENGINE = engineNight();
-
-// Real-time tweens: the shift's pace is the stopwatch's, with or without reduced motion.
-function rt(seconds, fn) {
-  return new Promise((done) => {
-    const t0 = performance.now();
-    const tick = (now) => { const u = Math.min(1, Math.max(0, (now - t0) / (seconds * 1000))); fn(u); if (u < 1) requestAnimationFrame(tick); else done(); };
-    requestAnimationFrame(tick);
-  });
-}
-const until = (cond) => new Promise((r) => { const c = () => cond() ? r() : setTimeout(c, 80); c(); });
 
 // The board in two columns, desks and annex, each row a bar of its adviser's colour. An annex row in L3.hot is
 // ringed, with an arrow; `packing` are the ones the narrator has boxed up. Tags get the same bars and arrows.
@@ -1174,7 +1048,8 @@ async function reveal3() {
   $("reveal").hidden = false;
   $("caption").hidden = true;
   revealButtons([
-    [endings[3].has("beat") ? "Run the night again" : "Try to beat him", f3Again, !endings[3].has("beat")],
+    ["Take the lift to floor 4", () => goFloor(4), true],
+    [endings[3].has("beat") ? "Run the night again" : "Try to beat him", f3Again],
     ["Replay floor 3", () => { endings[3].clear(); goFloor(3); }],
     ["Back to floor 2", () => goFloor(2)],
   ]);
