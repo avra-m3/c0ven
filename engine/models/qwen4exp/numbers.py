@@ -17,17 +17,13 @@ SYSTEM = 8_678
 ASSISTANT = 74_455
 NEWLINE = 198
 
-# Per sequence, the engine's 8-bit KV (Q8_0, 32 values in 34 B; ADR-0008; MEMORY_BUDGET.md, "Per sequence").
-KV_CELL_BYTES_PER_LAYER = 1_088
-"""K and V of one attention layer, per token."""
-INDEXER_CELL_BYTES_PER_LAYER = 136
-"""The indexer's keys of one attention layer, per token."""
-DELTANET_STATE_BYTES = 3_268_608
-"""One DeltaNet layer's state (spec/MODEL_LAYER.md, 2.7)."""
-PLE_HISTORY_BYTES = 368_640
-"""The PLE conv history, which one layer holds (spec/MODEL_LAYER.md, 2.7)."""
-DRAFT_KV_BYTES = 35_651_584
-"""The draft layer's ring of 32,768 cells."""
+# Per sequence: the sizes are the model file's (memory.py); these are the engine's choices of how it keeps them.
+KV_BLOCK = (32, 34)
+"""The engine's 8-bit KV and indexer keys: Q8_0, 32 values in 34 B (ADR-0008; MEMORY_BUDGET.md, "Per sequence")."""
+STATE_VALUE_BYTES = 4
+"""The recurrent state and the PLE conv history are F32 (spec/MODEL_LAYER.md, 2.7)."""
+DRAFT_WINDOW = 32_768
+"""The draft layer's ring, in cells: it attends to its last 32,768 (`--mtp-window`, spec/MODEL_IO.md, section 3)."""
 RESIDENT_CELLS = 32_768
 """K and V cells kept in VRAM per sequence when KV streams (spec/STRATA_MEMORY.md, section 5)."""
 

@@ -46,6 +46,14 @@ def read_shapes(directory: Path = COMMITTED) -> dict[str, tuple[int, ...]]:
     raise FileNotFoundError(f"no drafter manifest in {directory}")
 
 
+def draft_kv_cell(shapes: dict[str, tuple[int, ...]]) -> int:
+    """The values of K and V the MTP layer keeps per cell: its k and v projections' rows. DFlash 2's ring is its own
+    (dflash.cpp); for it this gives the MTP layer's, from the committed manifest, as the plan has always counted."""
+    if not any(n.startswith("mtp.") for n in shapes):
+        shapes = read_shapes()
+    return sum(shapes[f"mtp.layers.0.self_attn.{p}_proj.weight"][0] for p in ("k", "v"))
+
+
 def _align(n: int) -> int:
     return -(-n // 256) * 256
 
