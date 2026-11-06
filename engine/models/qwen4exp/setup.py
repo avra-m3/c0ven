@@ -77,7 +77,7 @@ def open_config(
         shard_paths=tuple(str(p) for p in table.shard_paths),
         tensors=tensors,
         slots=options.slots,
-        max_context=options.context,
+        max_context=mp.options.context,
         pages=mp.pages,
         checkpoints=options.checkpoints,
         kv_resident_cells=mp.kv_resident_cells,
