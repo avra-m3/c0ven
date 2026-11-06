@@ -157,5 +157,13 @@
  "quantize.imatrix.chunks_count": 45,
  "split.no": 0,
  "split.tensors.count": 1224,
- "split.count": 3
+ "split.count": 3,
+ "c0ven.token_ids": {
+  "<|im_start|>": 248045,
+  "<|im_end|>": 248046,
+  "<|endoftext|>": 248044,
+  "system": 8678,
+  "assistant": 74455,
+  "\u010a": 198
+ }
 }
