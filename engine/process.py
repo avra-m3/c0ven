@@ -190,7 +190,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--checkpoints",
         type=int,
         default=8,
-        help="slot checkpoints in pinned host memory, each a slot's running state",
+        help="slot checkpoints in pinned host memory, each a slot's running state; 0: none, every prompt is read whole",
     )
     p.add_argument(
         "--kv-tokens",

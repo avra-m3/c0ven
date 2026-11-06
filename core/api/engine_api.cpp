@@ -1323,7 +1323,7 @@ engine_status engine_open(const engine_config *config, engine_info *info, engine
     e->stats.experts_floor = e->model->experts_floor();
     // The checkpoints, each a slot's fixed state, in pinned host memory: allocated now, never on the token path
     // (docs/DESIGN.md, section 6).
-    uint32_t nck = config->checkpoints ? config->checkpoints : 2;
+    uint32_t nck = config->checkpoints;
     e->checkpoint_bytes = e->model->slot_state_bytes();
     e->checkpoints.resize(nck);
     e->pin_checkpoints();
