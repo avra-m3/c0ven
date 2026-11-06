@@ -57,9 +57,16 @@ class Runtime {
   // Device memory on one card; host memory in the context, which every card and the CPU read.
   void *alloc_device(uint32_t card, size_t bytes, size_t align = 256);
   void *alloc_host(size_t bytes, size_t align = 4096);
-  // Device memory the CPU can also write, at `cpu`, with no driver call in between; `cpu` is null where the system will
-  // not map it. The CPU's writes have reached the card once it has run a full fence and read the memory back. A page's
-  // first write takes a fault, and the pages move when the card first uses the memory, so touch them after that.
+  // Device memory the CPU can also write, at `cpu`, with no driver call in between; throws where the system will not
+  // export or map it (ADR-0065). While the memory is on the card, xe maps it write-combining (xe_ttm_io_mem_reserve
+  // sets ttm_write_combined). A full fence then sends the CPU's writes out of its write-combining buffers (Intel SDM
+  // vol. 3A, "Buffering of Write Combining Memory Locations"), and a read of the memory after it returns only once
+  // those writes have arrived, as PCIe does not let a read pass earlier writes on the same path (PCI Express Base
+  // Specification, "Transaction Ordering Rules"). So the writes have reached the card once the CPU has run a full fence
+  // and read the memory back. That holds only for a write-combining or uncached mapping: in a write-back one the writes
+  // would sit in the CPU's cache. Where the driver has pushed the memory out to host memory, the mapping is of host
+  // pages, which the card reads coherently. A page's first write takes a fault. Pages written before the runtime's
+  // first copy into the memory fault again after it, for a reason not known, so touch them after that copy.
   void *alloc_device_mapped(uint32_t card, size_t bytes, uint8_t *&cpu, size_t align = 256);
   void free(void *p);
   // Frees every device allocation on the card; host memory stays (a sleep: ADR-0032).

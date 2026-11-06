@@ -155,10 +155,9 @@ consecutive tokens of up to four sequences (`Model::prompt_runs`):
   by the swap counts, until the layer's router has run, then the rest the router picked. The chunk's list waits for
   them after the cached experts' and the shared expert's products
   ([ADR-0046](adr/0046-a-short-chunk-fetches-the-experts-its-router-picks.md),
-  [ADR-0065](adr/0065-a-short-chunk-writes-through-a-mapping.md)). Where the system will not map the buffer the thread
-  copies through an immediate list, which the runtime makes from the anonymous arena with the CPU
-  ([measurements/LEVEL_ZERO.md](measurements/LEVEL_ZERO.md) row 31;
-  [the record](measurements/MEASUREMENTS.md#2026-10-21-short-chunk-fetch)).
+  [ADR-0065](adr/0065-a-short-chunk-writes-through-a-mapping.md)). A load where the system will not export or map
+  the buffer fails. The log gives each card's touch of the buffer at load and, after a chunk, any page faults its
+  writes took.
 - The cards exchange fp16 partial sums. The kernel that makes a card's partial sum also writes it into the other
   card's memory while it computes, 64 bytes per store. Stores of 32 bytes or less cross at a tenth of the rate
   ([the record](measurements/MEASUREMENTS.md#2026-10-15-prompt-exchange-stores)).
