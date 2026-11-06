@@ -262,7 +262,9 @@ void Model::fetch_experts(uint32_t c, const std::vector<std::vector<uint32_t>> &
     for (uint32_t e : hl.uncached)
       if (cnt[e] && !done[e]) one(hl, slot, e);
     if (P.stage_cpu) {
-      _mm_sfence();
+      // A full fence, not a store fence: the read below must not go out before the writes, and a store fence does not
+      // hold back a later read from this write-combining memory.
+      _mm_mfence();
       (void)*(volatile uint8_t *)(P.stage_cpu);  // returns once the writes before it have reached the card
     } else {
       F.synchronize();

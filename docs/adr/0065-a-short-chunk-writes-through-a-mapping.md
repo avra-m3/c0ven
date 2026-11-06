@@ -18,7 +18,7 @@ what limits a mapping's speed.
 ## Decision
 
 1. `fetch_experts` writes an expert with `memcpy` through the CPU's mapping of the staging buffer, then at the end of
-   the layer runs a store fence and reads the buffer once before it signals the layer's staging event.
+   the layer runs a full fence and reads the buffer once before it signals the layer's staging event.
 2. The load writes the whole buffer once from the driver, so the buffer is in its place on the card, then touches each
    of its 4 KiB pages through the mapping, so no chunk takes the pages' first-write faults.
 3. Where the system will not export or map the buffer, `fetch_experts` copies through the immediate list as before.
@@ -28,7 +28,8 @@ what limits a mapping's speed.
 - First token on one card: long-gen 0.77 → 0.64 s, gpqa-1 1.26 → 1.04 s, decode level
   ([MEASUREMENTS.md](../measurements/MEASUREMENTS.md#2026-11-05-staging-through-a-mapping)).
 - A read of the card's memory returns only after the writes before it have arrived, so the card cannot see the event
-  before the data. The fence alone sends the writes on their way and does not say they have arrived.
+  before the data. A fence alone sends the writes on their way and does not say they have arrived. The fence is a full
+  one (`mfence`): a store fence orders only writes, so the read could go out ahead of the last writes.
 - Pages touched before the card first uses the buffer move with it, and the first chunk then takes the faults again:
   long-gen's first token was 1.46 s that way.
 

@@ -58,7 +58,7 @@ class Runtime {
   void *alloc_device(uint32_t card, size_t bytes, size_t align = 256);
   void *alloc_host(size_t bytes, size_t align = 4096);
   // Device memory the CPU can also write, at `cpu`, with no driver call in between; `cpu` is null where the system will
-  // not map it. The CPU's writes have reached the card once it has run a store fence and read the memory back. A page's
+  // not map it. The CPU's writes have reached the card once it has run a full fence and read the memory back. A page's
   // first write takes a fault, and the pages move when the card first uses the memory, so touch them after that.
   void *alloc_device_mapped(uint32_t card, size_t bytes, uint8_t *&cpu, size_t align = 256);
   void free(void *p);
