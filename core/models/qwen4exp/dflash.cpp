@@ -163,7 +163,9 @@ void Model::load_dflash(Card &card) {
 // A context pass of W rows (the last decode step's features into each slot's ring) or, with block, a block pass.
 void Model::record_df(Card &card, uint32_t W, bool block) {
   DfCard &D = *card.df;
-  auto list = std::make_unique<ze::List>(*rt_, card.c, ze::List::regular);
+  // Not in order, as the decode step's list: the launches between L.together(true) and L.together(false) read the same
+  // inputs and write their own outputs, so they may run side by side; each other command waits for those before it.
+  auto list = std::make_unique<ze::List>(*rt_, card.c, ze::List::regular, false, false);
   ze::List &L = *list;
   const uint32_t c = card.c, C = ncards_, E = DF_EMBD;
   auto df = [&](const char *name) { return kernel(c, "qwen4exp_dflash", name); };
@@ -188,8 +190,10 @@ void Model::record_df(Card &card, uint32_t W, bool block) {
     const float *no_q = nullptr;
     for (uint32_t l = 0; l < DF_LAYERS; l++) {
       DfCard::Layer &Ly = D.layers[l];
+      L.together(true);
       bf16mv(Ly.k, kd, E, D.ctxb, D.k);
       bf16mv(Ly.v, kd, E, D.ctxb, D.v);
+      L.together(false);
       L.launch(df("df_prep"), {no_q, D.k, D.v, Ly.qn, Ly.kn, zero, nkv, Ly.rk, Ly.rv, pl}, nkv, W, 1, DF_D);
     }
     L.signal((*devents_)[2 * DF_LAYERS * C + c]);
@@ -221,9 +225,11 @@ void Model::record_df(Card &card, uint32_t W, bool block) {
     L.launch(df("df_norm"), {D.h, Ly.in_norm, pl, D.x, D.xb}, W, 1, 1, 256);
     bf16mv(Ly.akp, DF_KP, E, D.xb, D.dyn);
     L.launch(df("df_conv"), {D.x, D.dyn, Ly.abase, pl, D.xc, D.xcb}, E / 64, W, 1, 64);
+    L.together(true);
     bf16mv(Ly.q, qd, E, D.xcb, D.q);
     bf16mv(Ly.k, kd, E, D.xcb, D.k);
     bf16mv(Ly.v, kd, E, D.xcb, D.v);
+    L.together(false);
     L.launch(df("df_prep"), {D.q, D.k, D.v, Ly.qn, Ly.kn, nq, nkv, Ly.rk, Ly.rv, pl}, nq + nkv, W, 1, DF_D);
     L.launch(df("df_attn"), {D.q, Ly.rk, Ly.rv, nq, nkv, pl, D.part}, nkv, W, splits, DF_D);
     L.launch(df("df_merge"), {nq, pl, D.part, D.o, D.ob}, nq, W, 1, DF_D);
@@ -233,8 +239,10 @@ void Model::record_df(Card &card, uint32_t W, bool block) {
     L.launch(df("df_norm"), {D.h, Ly.post_norm, pl, D.x, D.xb}, W, 1, 1, 256);
     bf16mv(Ly.mkp, DF_KP, E, D.xb, D.dyn);
     L.launch(df("df_conv"), {D.x, D.dyn, Ly.mbase, pl, D.xc, D.xcb}, E / 64, W, 1, 64);
+    L.together(true);
     bf16mv(Ly.gate, D.ff, E, D.xcb, D.g);
     bf16mv(Ly.up, D.ff, E, D.xcb, D.u);
+    L.together(false);
     L.launch(df("df_swiglu"), {D.g, D.u, D.ff, pl, D.gub}, (D.ff + 63) / 64, W, 1, 64);
     bf16mv(Ly.down, E, D.ff, D.gub, partial(x, c), event());
     exchange(Ly.mbase);

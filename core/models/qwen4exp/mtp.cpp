@@ -331,7 +331,9 @@ void Model::load_mtp(Card &card) {
 // writes cells only. Each row's cell is written before any row attends, so the rows may come in any order.
 void Model::record_mtp(Card &card, uint32_t W, uint32_t Wr, bool chain) {
   MtpCard &M = *card.mtp;
-  auto list = std::make_unique<ze::List>(*rt_, card.c, ze::List::regular);
+  // Not in order, as the decode step's list: the launches between L.together(true) and L.together(false) read the same
+  // inputs and write their own outputs, so they may run side by side; each other command waits for those before it.
+  auto list = std::make_unique<ze::List>(*rt_, card.c, ze::List::regular, false, false);
   ze::List &L = *list;
   const uint32_t c = card.c, C = ncards_, E = shape_.embd;
   auto common = [&](const char *name) { return kernel(c, "common", name); };
@@ -378,14 +380,18 @@ void Model::record_mtp(Card &card, uint32_t W, uint32_t Wr, bool chain) {
   // fc_hidden takes each of the 4 streams: the streams as rows of E, 8 to a read of the weights.
   const uint32_t stream_rows = shape_.hc * W;
   to_bf16(M.hn, E, M.counts + stream_rows, card.xb16, stream_rows);
+  L.together(true);
   for (uint32_t r0 = 0; r0 < stream_rows; r0 += 8)
     bf16mv(M.fc_h, E, E, card.xb16 + (size_t)r0 * E, M.counts + std::min(8u, stream_rows - r0), M.hs + (size_t)r0 * E);
+  L.together(false);
   L.launch(q4("mtp_sum"), {M.hs, M.e, pl, M.R}, shape_.hc_dim() / 64, W, 1, 64);
   // Attention, densely over its own cells: every row's K and V into its cell, then the rest's rows attend.
   hc_mix(M.hc_norm[0], M.hc_down[0], M.hc_up[0], card.inj[0], lw, pl, W);
+  L.together(true);
   bf16mv(M.q, card.nq * 2 * shape_.att_key, E, card.xbf16, nrows, card.Q);
   bf16mv(M.k, card.nkv * shape_.att_key, E, card.xbf16, nrows, card.Kt);
   bf16mv(M.v, card.nkv * shape_.att_key, E, card.xbf16, nrows, card.Vt);
+  L.together(false);
   // The draft layer's KV is not paged: no table, and each slot's own run of pages (layout.h).
   const uint32_t *no_table = nullptr, mnpp = opt_.max_ctx / KV_PAGE_CELLS;
   const uint8_t *no_kv = nullptr;  // the draft layer's KV is not streamed
@@ -423,8 +429,10 @@ void Model::record_mtp(Card &card, uint32_t W, uint32_t Wr, bool chain) {
                {M.cache, M.slot_bytes, card.groups, card.ngroups, E, dbpr, M.down_off, card.ha8, card.ff, stride, card.y,
                 card.grids}, (E + 15) / 16, Wr * shape_.used, 1, 64);
     }
+    L.together(true);
     bf16mv(M.sh_gate, card.ff, E, card.xbf16, nrest, card.shg);
     bf16mv(M.sh_up, card.ff, E, card.xbf16, nrest, card.shu);
+    L.together(false);
     L.launch(q4("swiglu_rows"), {card.shg, card.shu, card.ff, pr, card.shh}, (card.ff + 63) / 64, Wr, 1, 64);
     to_bf16(card.shh, card.ff, nrest, card.xb16, Wr);
     bf16mv(M.sh_down, E, card.ff, card.xb16, nrest, card.s);
