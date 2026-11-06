@@ -40,6 +40,9 @@ const std::vector<int64_t> &ints_of(const std::map<std::string, GgufValue> &meta
 }
 
 static_assert(KV_PAGE_CELLS == Q_IDX_BLOCK, "a page is one indexer block");
+static_assert(Q_ATT_SCALE * Q_ATT_SCALE * Q_ATT_D == 1.0f, "Q_ATT_SCALE is 1 / sqrt(Q_ATT_D)");
+static_assert(3 * Q_ROPE_SEC_H >= Q_ROT / 2 - 1 && Q_ROPE_SEC_T + Q_ROPE_SEC_H + Q_ROPE_SEC_W == Q_ROT / 2,
+              "rope3 turns every pair by one of the three positions");
 
 // The counts kernels/models/qwen4exp/CMakeLists.txt builds modules for.
 constexpr uint32_t kBuiltExperts = 512, kBuiltExpertsSmall = 256;
@@ -69,6 +72,7 @@ Shape read_shape(const std::map<std::string, GgufValue> &meta, const std::map<st
   s.att_value = size_of(meta, "attention.value_length");
   s.rot = size_of(meta, "rope.dimension_count");
   s.rope_base = real_of(meta, "rope.freq_base");
+  s.rope_sections = ints_of(meta, "rope.dimension_sections");
   s.eps = real_of(meta, "attention.layer_norm_rms_epsilon");
   s.idx_h = size_of(meta, "attention.indexer.head_count");
   s.idx_d = size_of(meta, "attention.indexer.key_length");
@@ -122,6 +126,9 @@ std::vector<std::string> shape_mismatches(const Shape &s, const std::map<std::st
   if (s.experts != kBuiltExperts && s.experts != kBuiltExpertsSmall)
     bad.push_back("expert_count is " + std::to_string(s.experts) + ", this build has kernels for 512 and 256");
   if (s.rope_base != Q_ROPE_BASE) bad.push_back("rope.freq_base differs from this build's");
+  if (s.rope_sections != std::vector<int64_t>{Q_ROPE_SEC_T, Q_ROPE_SEC_H, Q_ROPE_SEC_W, 0})
+    bad.push_back("rope.dimension_sections differs from this build's " + std::to_string(Q_ROPE_SEC_T) + ", " +
+                  std::to_string(Q_ROPE_SEC_H) + ", " + std::to_string(Q_ROPE_SEC_W) + ", 0");
   if (s.eps != Q_EPS) bad.push_back("attention.layer_norm_rms_epsilon differs from this build's");
 
   // Sizes the code divides by or walks over.
