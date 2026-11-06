@@ -21,7 +21,11 @@ from engine.memory_plan import (
     write_working,
 )
 from engine.models.qwen4exp.draft import draft_per_card, read_shapes
-from engine.models.qwen4exp.memory import model_memory
+from engine.models.qwen4exp.memory import (
+    deltanet_state_bytes,
+    model_memory,
+    ple_history_bytes,
+)
 from engine.models.qwen4exp.tensors import TSV_UD_IQ4_XS, Category, TensorTable, from_tsv
 from tests.helpers import plan_options
 
@@ -29,11 +33,33 @@ TABLE = from_tsv()
 MODEL = model_memory(TABLE)
 
 
+def test_no_context_given_is_the_models_whole_context():
+    p = plan(MODEL, plan_options(slots=1, context=0))
+    assert MODEL.max_context == TABLE.context_length
+    assert p.options.context == MODEL.max_context
+    assert p == plan(MODEL, plan_options(slots=1, context=MODEL.max_context))
+
+
+def test_the_sizes_per_sequence_are_the_files():
+    """MEMORY_BUDGET.md, "Per sequence", from the file's fields; the UD-IQ4_XS file's are the same."""
+    for table in (TABLE, from_tsv(TSV_UD_IQ4_XS)):
+        assert model_memory(table).kv_cell_host == 12 * 1_088
+        assert deltanet_state_bytes(table) == 3_268_608
+        assert ple_history_bytes(table) == 368_640
+    assert MODEL.draft_kv_host == 32_768 * 1_088
+
+
+def test_a_dflash_drafter_counts_the_mtp_layers_ring():
+    """DFlash 2's manifest has no MTP layer: its ring is counted as the MTP layer's, as before."""
+    dflash = {"layers.0.self_attn.k_proj.weight": (1024, 2560), "fc.weight": (2560, 12800)}
+    assert model_memory(TABLE, draft_shapes=dflash).draft_kv_host == MODEL.draft_kv_host
+
+
 def test_the_sizes_follow_the_layers():
     """MEMORY_BUDGET.md's sizes for this file. Half its layers are 6 attention and 18 DeltaNet."""
     assert (MODEL.layers, MODEL.experts) == (48, 48 * 512)
     assert (MODEL.kv_cell_host, MODEL.checkpoint_bytes) == (13_056, 118_038_528)
-    half = model_memory(TensorTable(tuple(t for t in TABLE.tensors if t.layer < 24)))
+    half = model_memory(TensorTable(tuple(t for t in TABLE.tensors if t.layer < 24), fields=TABLE.fields))
     assert (half.layers, half.experts) == (24, 24 * 512)
     assert half.kv_cell_host == 6 * 1_088
     assert half.indexer_cell_per_card == 6 * 136 // 2

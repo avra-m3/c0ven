@@ -28,16 +28,19 @@ Ngram::Ngram(const GgufModel &model, uint32_t cache_rows, unsigned readers, bool
   auto m = model.get_ints("qwen4exp.ple.layer_multipliers");
   auto v = model.get_ints("qwen4exp.ple.head_vocab_sizes");
   auto o = model.get_ints("qwen4exp.ple.head_offsets");
-  if (m.size() != 3 || v.size() != 16 || o.size() != 16) throw std::runtime_error("unexpected ple.* arrays");
+  if (m.size() != 3 || v.size() != kNgramHeads || o.size() != kNgramHeads)
+    throw std::runtime_error("unexpected ple.* arrays");
+  per_ngram_ = (uint32_t)model.get_int("qwen4exp.ple.heads_per_ngram");
+  if (2 * per_ngram_ != kNgramHeads) throw std::runtime_error("ple.heads_per_ngram is not half the n-gram heads");
   for (int i = 0; i < 3; i++) mult_[i] = (uint64_t)m[i];
-  for (int i = 0; i < 16; i++) vocab_[i] = (uint64_t)v[i], offset_[i] = (uint64_t)o[i];
+  for (uint32_t i = 0; i < kNgramHeads; i++) vocab_[i] = (uint64_t)v[i], offset_[i] = (uint64_t)o[i];
   reset_ = model.get_int("qwen4exp.ple.eos_token_id");
   const GgufTensor &t = model.tensor("per_layer_token_embd.weight");
   type_ = t.type;
   row_bytes_ = t.row_bytes();
   row_values_ = t.shape[0];
-  // The 16 literal is the hash's (rows); a row's width is the file's, and gather's caller sized u for one embedding.
-  if (row_values_ * 16 != (uint64_t)model.get_int("qwen4exp.embedding_length"))
+  // kNgramHeads is the hash's (rows); a row's width is the file's, and gather's caller sized u for one embedding.
+  if (row_values_ * kNgramHeads != (uint64_t)model.get_int("qwen4exp.embedding_length"))
     throw std::runtime_error("the n-gram table's rows do not make one embedding");
   data_offset_ = t.offset;
   if (row_bytes_ > kPage) throw std::runtime_error("n-gram rows larger than a page");
@@ -86,7 +89,7 @@ double Ngram::read_latency_us() {
   return std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count() / kReads;
 }
 
-std::array<uint64_t, 16> Ngram::rows(int32_t t, int32_t p1, int32_t p2) const {
+std::array<uint64_t, kNgramHeads> Ngram::rows(int32_t t, int32_t p1, int32_t p2) const {
   // A missing or reset predecessor makes it, and every older one, the reset token.
   uint64_t c0 = (uint64_t)t;
   bool reset1 = p1 < 0 || p1 == reset_;
@@ -95,8 +98,8 @@ std::array<uint64_t, 16> Ngram::rows(int32_t t, int32_t p1, int32_t p2) const {
   uint64_t c2 = reset2 ? (uint64_t)reset_ : (uint64_t)p2;
   uint64_t mixed2 = (c0 * mult_[0]) ^ (c1 * mult_[1]);
   uint64_t mixed3 = mixed2 ^ (c2 * mult_[2]);
-  std::array<uint64_t, 16> r;
-  for (int h = 0; h < 16; h++) r[h] = ((h < 8 ? mixed2 : mixed3) % vocab_[h]) + offset_[h];
+  std::array<uint64_t, kNgramHeads> r;
+  for (uint32_t h = 0; h < kNgramHeads; h++) r[h] = ((h < per_ngram_ ? mixed2 : mixed3) % vocab_[h]) + offset_[h];
   return r;
 }
 
@@ -119,21 +122,21 @@ void Ngram::read_rows(const std::vector<uint64_t> &ids, uint8_t *out) {
 void Ngram::gather(int32_t t, int32_t p1, int32_t p2, float *u) { gather_rows(&t, &p1, &p2, 1, u); }
 
 void Ngram::gather_rows(const int32_t *t, const int32_t *p1, const int32_t *p2, uint32_t n, float *u) {
-  std::vector<uint64_t> ids((size_t)n * 16);
+  std::vector<uint64_t> ids((size_t)n * kNgramHeads);
   for (uint32_t i = 0; i < n; i++) {
     auto r = rows(t[i], p1[i], p2[i]);
-    std::memcpy(&ids[(size_t)i * 16], r.data(), sizeof r);
+    std::memcpy(&ids[(size_t)i * kNgramHeads], r.data(), sizeof r);
   }
   fill(ids, n, u);
 }
 
 void Ngram::gather_many(const int32_t *tokens, uint32_t n, int32_t p1, int32_t p2, float *u) {
   // Every row the tokens name; the distinct ones not in the cache are read.
-  std::vector<uint64_t> ids((size_t)n * 16);
+  std::vector<uint64_t> ids((size_t)n * kNgramHeads);
   for (uint32_t i = 0; i < n; i++) {
     int32_t q1 = i >= 1 ? tokens[i - 1] : p1, q2 = i >= 2 ? tokens[i - 2] : i == 1 ? p1 : p2;
     auto r = rows(tokens[i], q1, q2);
-    std::memcpy(&ids[(size_t)i * 16], r.data(), sizeof r);
+    std::memcpy(&ids[(size_t)i * kNgramHeads], r.data(), sizeof r);
   }
   fill(ids, n, u);
 }
@@ -167,7 +170,7 @@ void Ngram::fill(const std::vector<uint64_t> &ids, uint32_t n, float *u) {
   auto to_float = ggml_get_type_traits((ggml_type)type_)->to_float;
   const uint64_t w = row_values_;
   auto dequantise = [&](uint64_t i) {
-    for (uint64_t h = 0; h < 16; h++) to_float(where[i * 16 + h], u + (i * 16 + h) * w, w);
+    for (uint64_t h = 0; h < kNgramHeads; h++) to_float(where[i * kNgramHeads + h], u + (i * kNgramHeads + h) * w, w);
   };
   if (n <= 8) {
     for (uint32_t i = 0; i < n; i++) dequantise(i);

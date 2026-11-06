@@ -339,7 +339,7 @@ void Model::record_mtp(Card &card, uint32_t W, uint32_t Wr, bool chain) {
   // The kernels read the plans from the card's copies, as the decode step's do.
   const StepPlan *pl = M.plan, *pr = Wr < W ? M.rest : M.plan;
   const uint32_t *nrows = &M.plan->nrows, *nrest = &pr->nrows;
-  const float one = 1.0f, quarter = 0.25f;
+  const float one = 1.0f, quarter = 1.0f / (float)shape_.hc;  // the hyper-connections' 1 / hc (4 streams: a quarter)
   const uint32_t zero = 0, mode_silu = 1, from_pad = 1;
   L.copy(M.plan, mplan_, sizeof(StepPlan));
   if (pr != pl) L.copy(M.rest, mrest_, sizeof(StepPlan));

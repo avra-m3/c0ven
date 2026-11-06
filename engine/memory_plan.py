@@ -102,7 +102,9 @@ class ModelMemory:
 @dataclass(frozen=True, slots=True)
 class PlanOptions:
     slots: int = 1
-    context: int = 262_144
+    context: int = 0
+    """Each slot's context, in tokens; 0: the model's whole context (ModelMemory.max_context), which `plan` puts in
+    its MemoryPlan.options."""
     cards: int = 2
     """Cards the engine runs on: the tensor split's two, or one holding every weight whole."""
     usable_vram: int | None = None
@@ -363,6 +365,8 @@ def reserve_per_sequence(m: ModelMemory, context: int) -> int:
 def plan(m: ModelMemory, o: PlanOptions) -> MemoryPlan:
     """The plan for the options. Raises PlanError, with options that fit where there are some, when the cards or the
     host's memory are too small."""
+    if o.context == 0:
+        o = replace(o, context=m.max_context)
     try:
         p = _plan(m, o)
     except PlanError as exc:
