@@ -19,6 +19,10 @@
 #define Q_PLE_DIL 3  // the PLE conv's dilation (the n-gram size)
 #define Q_ROPE_BASE 10000000.0f
 #define Q_ROT 64  // rotated dimensions per head, NeoX pairs (i, i + 32)
+// rope.dimension_sections: the rotated pairs that turn by the time, height and width positions (images; M-RoPE)
+#define Q_ROPE_SEC_T 11
+#define Q_ROPE_SEC_H 11
+#define Q_ROPE_SEC_W 10
 #define Q_USED 10
 
 #endif
