@@ -115,44 +115,10 @@ __kernel void hc_mix(__global const float *n, __global const float *a, __global 
   x[(ulong)r * Q_EMBD + i] = acc * 0.25f;
 }
 
-// The up projection (BF16, Q_HC_DIM rows of K = Q_HC_LR, value-major) and hc_mix in one: a sub-group takes rows
-// 4i .. 4i+3, four lanes per row as matvec_bf16 with lpr 4, so it holds a_s[i] for every stream and writes x[i]
-// with hc_mix's sum. lr rows lr_stride apart. Groups (Q_EMBD / 4, 1), 64; rows up to plan->nrows.
-#define UPM_LPR 4
-REQD_SG __kernel void hc_up_mix(__global const ushort *W, __global const float *lr, uint lr_stride,
-                                __global const float *n, __global const StepPlan *plan, __global float *x) {
-  const uint lane = sg_lane(), sub = lane % UPM_LPR;
-  const uint i = get_group_id(0) * 4 + sg_id();
-  const uint row = Q_HC * i + lane / UPM_LPR;
-  __global const ushort *w = W + (ulong)row * Q_HC_LR;
-  const uint ntok = plan->nrows;
-  float acc[STEP_MAX_ROWS];
-  for (uint t = 0; t < STEP_MAX_ROWS; t++) acc[t] = 0.0f;
-  for (uint k = 8 * sub; k < Q_HC_LR; k += 8 * UPM_LPR) {
-    ushort8 wv = vload8(0, w + k);
-    float8 wf = (float8)(bf16_to_f32(wv.s0), bf16_to_f32(wv.s1), bf16_to_f32(wv.s2), bf16_to_f32(wv.s3),
-                         bf16_to_f32(wv.s4), bf16_to_f32(wv.s5), bf16_to_f32(wv.s6), bf16_to_f32(wv.s7));
-    for (uint t = 0; t < STEP_MAX_ROWS; t++) {
-      if (t >= ntok) break;
-      float8 xv = vload8(0, lr + (ulong)t * lr_stride + k);
-      acc[t] += dot(wf.lo, xv.lo) + dot(wf.hi, xv.hi);
-    }
-  }
-  for (uint t = 0; t < STEP_MAX_ROWS; t++) {
-    if (t >= ntok) break;
-    float a = acc[t];
-    for (uint m = 1; m < UPM_LPR; m <<= 1) a += sub_group_shuffle_xor(a, m);
-    float mix = 0.0f;
-    for (uint s = 0; s < Q_HC; s++)
-      mix += n[(ulong)t * Q_HC_DIM + s * Q_EMBD + i] * sigmoid(sub_group_shuffle(a, UPM_LPR * s));
-    if (lane == 0) x[(ulong)t * Q_EMBD + i] = mix * 0.25f;
-  }
-}
-
-// hc_up_mix on the XMX units: dpas up projection of lrb (8 bf16 rows of Q_HC_LR, all read; to_bf16_rows), 16 of W's
-// value-major rows a sub-group (4 values' a for the 4 streams), then hc_mix's sum in stream order. A work-group's 8
-// sub-groups write 32 values of x, also as bf16 into xb (rows Q_EMBD apart) and as a8 into xa (a8.h; rows
-// Q_EMBD + Q_EMBD / 8 bytes apart, sub-group m storing row m). Groups (Q_HC_DIM / 128), 128.
+// The up projection and hc_mix in one, on the XMX units: dpas up projection of lrb (8 bf16 rows of Q_HC_LR, all read;
+// to_bf16_rows), 16 of W's value-major rows a sub-group (4 values' a for the 4 streams), then hc_mix's sum in stream
+// order. A work-group's 8 sub-groups write 32 values of x, also as bf16 into xb (rows Q_EMBD apart) and as a8 into xa
+// (a8.h; rows Q_EMBD + Q_EMBD / 8 bytes apart, sub-group m storing row m). Groups (Q_HC_DIM / 128), 128.
 #define UPM_SGS 8
 REQD_SG __kernel void hc_up_mix_xmx(__global const ushort *W, __global const ushort *lrb, __global const float *n,
                                     __global const StepPlan *plan, __global float *x, __global uchar *xa,
@@ -851,7 +817,7 @@ static inline int route(uint r, __global const float *rl, __global const int *sl
   return slot;
 }
 
-// The router (4.2), a sub-group per row so nothing waits on a work-group barrier: softmax over the 512 logits (rl rows
+// The router (4.2), a sub-group per row so nothing waits on a work-group barrier: softmax over the Q_EXPERTS logits (rl rows
 // hold them, then the shared expert's gate), the 10 largest, weights renormalised, into ids, w and slots at r * Q_USED
 // (slot_map: an int per expert, negative when not cached), the uncached count into nmiss[r]. With jobs (card 0), row
 // r's MissJob gets the misses and x when there are any, then the step's number. Groups (width), 16.

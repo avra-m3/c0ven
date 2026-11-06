@@ -1,9 +1,20 @@
 # qwen4exp's kernel modules (ADR-0024 item 3), named qwen4exp*.
 
-engine_add_kernel_module(qwen4exp SOURCE kernels/models/qwen4exp/layer.cl
-                         OPTIONS -I${CMAKE_SOURCE_DIR}/core/models/qwen4exp -I${CMAKE_SOURCE_DIR}/kernels/models/qwen4exp)
-engine_add_kernel_module(qwen4exp_prompt SOURCE kernels/models/qwen4exp/prompt.cl
-                         OPTIONS -I${CMAKE_SOURCE_DIR}/core/models/qwen4exp -I${CMAKE_SOURCE_DIR}/kernels/models/qwen4exp)
+# The modules that route experts: one for each count a file can have, which core/models/qwen4exp/shape.cpp picks from
+# (ADR-0063). The draft layer's checkpoint always has 512.
+foreach(experts 512 256)
+  if(experts EQUAL 512)
+    set(suffix "")
+  else()
+    set(suffix "_e${experts}")
+  endif()
+  engine_add_kernel_module(qwen4exp${suffix} SOURCE kernels/models/qwen4exp/layer.cl
+                           OPTIONS -DQ_EXPERTS=${experts} -I${CMAKE_SOURCE_DIR}/core/models/qwen4exp
+                                   -I${CMAKE_SOURCE_DIR}/kernels/models/qwen4exp)
+  engine_add_kernel_module(qwen4exp_prompt${suffix} SOURCE kernels/models/qwen4exp/prompt.cl
+                           OPTIONS -DQ_EXPERTS=${experts} -I${CMAKE_SOURCE_DIR}/core/models/qwen4exp
+                                   -I${CMAKE_SOURCE_DIR}/kernels/models/qwen4exp)
+endforeach()
 engine_add_kernel_module(qwen4exp_attn SOURCE kernels/models/qwen4exp/prompt_attn.cl
                          OPTIONS -cl-intel-256-GRF-per-thread -I${CMAKE_SOURCE_DIR}/core/models/qwen4exp)
 engine_add_kernel_module(qwen4exp_gdn SOURCE kernels/models/qwen4exp/prompt_gdn.cl

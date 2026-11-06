@@ -462,63 +462,6 @@ __kernel void p_idx_pool(__global const uchar *raw, __global const uint *pt, uin
 
 static inline uint idx_own(uint nb, uint c, uint C) { return nb > c ? (nb - c + C - 1) / C : 0; }
 
-// scores[t][lb] = sum_h relu(iq_h . K_b) for this card's blocks complete at row t's position, by local index lb
-// (block lb C + c). The prompt runs p_idx_score_xmx (prompt_attn.cl) instead; this is its f32 reference, the decode
-// step's sums (layer.cl). A work-item takes one block for IDX_SCORE_ROWS consecutive rows, reading its key once; each sum
-// is the one-row expression in the same order, so the same bits. Groups (ceil(nb_max / 64), ceil(T / IDX_SCORE_ROWS)),
-// 64; rows nb_max apart.
-#define IDX_SCORE_ROWS 8
-#if Q_IDX_H != 4
-#error "p_idx_score holds the indexer's heads in a float4"
-#endif
-__kernel void p_idx_score(__global const float *iq, __global const float *pooled, __global const uint *pt, uint npp,
-                          uint nb_max, __global const PromptPlan *runs, __global float *scores, uint c, uint C) {
-  __local float4 qs[Q_IDX_D][IDX_SCORE_ROWS];  // qs[i][r]: the 4 heads' value i of row t0 + r
-  RUN_OF_GROUP()
-  const uint lb = get_global_id(0), t0 = IDX_SCORE_ROWS * get_group_id(1), lid = get_local_id(0);
-  const uint n = pp->n;
-  if (t0 >= n) return;
-  iq += (ulong)pp->row0 * (Q_IDX_H + 1) * Q_IDX_D;
-  scores += (ulong)pp->row0 * nb_max;
-  const uint rows = min((uint)IDX_SCORE_ROWS, n - t0);
-  // Below the width every cell is taken whatever the scores; the last row sees the most blocks.
-  const uint nkv_last = pp->pos0 + t0 + rows;
-  if (nkv_last <= Q_IDX_CELLS) return;
-  for (uint j = lid; j < Q_IDX_D * IDX_SCORE_ROWS; j += 64) {
-    const uint i = j / IDX_SCORE_ROWS, r = j % IDX_SCORE_ROWS;
-    __global const float *q = iq + (ulong)(t0 + min(r, rows - 1)) * (Q_IDX_H + 1) * Q_IDX_D + i;
-    qs[i][r] = (float4)(q[0], q[Q_IDX_D], q[2 * Q_IDX_D], q[3 * Q_IDX_D]);
-  }
-  barrier(CLK_LOCAL_MEM_FENCE);
-  if (lb >= idx_own(nkv_last / Q_IDX_BLOCK, c, C)) return;
-  const uint page = kv_page(pt, npp, pp->slot, (lb * C + c) * Q_IDX_BLOCK);
-  __global const float *K = pooled + (ulong)(page / C) * Q_IDX_D;
-  float4 dot[IDX_SCORE_ROWS];
-  for (uint r = 0; r < IDX_SCORE_ROWS; r++) dot[r] = (float4)0.0f;
-  for (uint i0 = 0; i0 < Q_IDX_D; i0 += 4) {
-    const float4 k4 = vload4(0, K + i0);
-    const float kv[4] = {k4.s0, k4.s1, k4.s2, k4.s3};
-    __attribute__((opencl_unroll_hint)) for (uint u = 0; u < 4; u++)
-      __attribute__((opencl_unroll_hint)) for (uint r = 0; r < IDX_SCORE_ROWS; r++) {
-        const float4 q = qs[i0 + u][r];
-        dot[r].s0 += q.s0 * kv[u];
-        dot[r].s1 += q.s1 * kv[u];
-        dot[r].s2 += q.s2 * kv[u];
-        dot[r].s3 += q.s3 * kv[u];
-      }
-  }
-  for (uint r = 0; r < rows; r++) {
-    const uint t = t0 + r, nkv = pp->pos0 + t + 1;
-    if (nkv <= Q_IDX_CELLS || lb >= idx_own(nkv / Q_IDX_BLOCK, c, C)) continue;
-    float score = 0.0f;
-    score += fmax(dot[r].s0, 0.0f);
-    score += fmax(dot[r].s1, 0.0f);
-    score += fmax(dot[r].s2, 0.0f);
-    score += fmax(dot[r].s3, 0.0f);
-    scores[(ulong)t * nb_max + lb] = score;
-  }
-}
-
 // The pooled keys of the blocks the runs' rows score, each split in two fp16 terms, x = hi + lo (p_idx_score_xmx):
 // kh, kl at the key's local page, as pooled. Groups (nb_max, 1, runs), Q_IDX_D.
 __kernel void p_idx_ksplit(__global const float *pooled, __global const uint *pt, uint npp, uint nb_max,
@@ -701,7 +644,7 @@ __kernel void p_kv16(__global const uchar *kc, __global const uchar *vc, __globa
 // ---------------------------------------------------------------------------------------------------------------
 // The MoE block
 
-// The router per row, as layer.cl's, by one sub-group of 32 per row: rl[t] holds the 512 router logits then the
+// The router per row, as layer.cl's, by one sub-group of 32 per row: rl[t] holds the Q_EXPERTS router logits then the
 // shared expert's gate. Writes ids[t] and w[t] (Q_USED each). The softmax's sum adds the sub-group's sums of each 32
 // logits in order. Ties in the top 10 go to the lower expert, -0 and +0 being equal. Groups (ceil(T / 4)), 128.
 __attribute__((intel_reqd_sub_group_size(32)))
@@ -817,7 +760,7 @@ __kernel void p_swiglu(__global const float *g, __global const float *u, uint ff
 }
 
 // This card's partial sum of the block for row t: the routed experts' outputs y (fp16, in expert order, found through
-// inv) weighted in rank order, then the shared expert's s gated by sigma(rl[t][512]); as fp16 into out, and into out2
+// inv) weighted in rank order, then the shared expert's s gated by sigma(rl[t][Q_EXPERTS]); as fp16 into out, and into out2
 // when set (the other card's buffer). Two values a work-item, so that a sub-group's store is 64 bytes, which the other
 // card takes at full rate (docs/measurements/MEASUREMENTS.md#2026-10-15-prompt-exchange-stores). Groups (Q_EMBD / 128, T), 64.
 __kernel void p_moe_combine(__global const half *y, __global const uint *inv, __global const float *w,

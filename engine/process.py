@@ -190,7 +190,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--checkpoints",
         type=int,
         default=8,
-        help="slot checkpoints in pinned host memory, each a slot's running state",
+        help="slot checkpoints in pinned host memory, each a slot's running state; 0: none, every prompt is read whole",
     )
     p.add_argument(
         "--kv-tokens",
@@ -208,7 +208,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=("auto", "on", "off"),
         default="auto",
         help="the n-gram table in RAM; auto: when the host has room for it beside the plan, with"
-        " a quarter of its memory, at least 8 GiB, left free",
+        " half of its memory, at least 8 GiB, left free",
     )
     p.add_argument(
         "--card-memory",
@@ -492,7 +492,7 @@ def serve(
 
 def card_memory(reported: list[int], limit_gib: float | None) -> int | None:
     """The memory the plan gives each card: the smallest card's, or `--card-memory` when that is less (the core keeps
-    to it through card_reserve). None: the model's reference card (no cards were read and no limit is set)."""
+    to it through card_reserve). None: no cards were read and no limit is set."""
     limit = round(limit_gib * GIB) if limit_gib is not None else None
     sizes = [*reported, *([limit] if limit is not None else [])]
     return min(sizes) if sizes else None
@@ -526,9 +526,14 @@ def main(argv: list[str] | None = None) -> int:
             print(protocol.Error(None, f"cards: {exc}").encode(), flush=True)
             return 1
     used = cards[:2]
+    card_size = card_memory([c.memory for c in used], args.card_memory)
+    if card_size is None and not native:
+        from engine.api.mock import CARD_MEMORY  # noqa: PLC0415
+
+        card_size = CARD_MEMORY
     options = PlanOptions(
         cards=len(used) if used else 2,
-        usable_vram=card_memory([c.memory for c in used], args.card_memory),
+        usable_vram=card_size,
         slots=args.slots,
         context=args.context,
         checkpoints=args.checkpoints,

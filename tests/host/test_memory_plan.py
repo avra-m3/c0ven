@@ -22,6 +22,7 @@ from engine.models.qwen4exp import numbers
 from engine.models.qwen4exp.draft import draft_per_card, read_shapes
 from engine.models.qwen4exp.memory import model_memory
 from engine.models.qwen4exp.tensors import Category, TensorTable, from_tsv
+from tests.helpers import plan_options
 
 TABLE = from_tsv()
 MODEL = model_memory(TABLE)
@@ -56,14 +57,14 @@ def test_experts_with_every_weight_halved(slots: int, context: int, cached: int)
     halves = (
         TABLE.bytes_of(Category.DENSE) + TABLE.bytes_of(Category.PLE) + TABLE.bytes_of(Category.EMBEDDING)
     ) // 2 + TABLE.bytes_of(Category.HEAD) // 2
-    p = plan(replace(MODEL, weights_per_card=halves), PlanOptions(slots=slots, context=context))
+    p = plan(replace(MODEL, weights_per_card=halves), plan_options(slots=slots, context=context))
     assert p.experts_cached == cached
 
 
 def test_the_split_rules_keep_some_weights_whole():
     """The router, the norms and the indexer's projections are whole on both cards, so the cards hold more than
     half the dense bytes, and fewer experts than MEMORY_BUDGET.md counts."""
-    p = plan(MODEL, PlanOptions(slots=1, context=262_144))
+    p = plan(MODEL, plan_options(slots=1, context=262_144))
     assert MODEL.weights_per_card > 2_257_086_720
     assert p.experts_cached < 18_757
     assert p.free_per_card == 24_385_683_456 - MODEL.weights_per_card - 831_015_936 - 1_600_663_296 - 504_664_064
@@ -95,7 +96,7 @@ def test_a_dflash_manifest(tmp_path: Path):
 
 
 def test_host_side():
-    p = plan(MODEL, PlanOptions(slots=1, context=262_144))
+    p = plan(MODEL, plan_options(slots=1, context=262_144))
     assert MODEL.expert_bytes == 2_046_400
     assert p.arena_bytes == (24_576 - p.experts_cached) * 2_046_400
     assert p.streamed_kv_bytes == 13_056 * 262_144 + 35_651_584
@@ -106,55 +107,57 @@ def test_host_side():
 def test_the_checkpoints_are_pinned_at_the_cores_size():
     """A checkpoint is a slot's running state only, at any context; the KV of its positions stays in its pages
     (ADR-0033). The checkpoints are in the pinned total."""
-    p = plan(MODEL, PlanOptions(slots=1, context=262_144, checkpoints=8))
+    p = plan(MODEL, plan_options(slots=1, context=262_144, checkpoints=8))
     assert p.checkpoint_bytes == 8 * 118_038_528
     assert p.pinned_bytes == p.arena_bytes + p.streamed_kv_bytes + 8 * 118_038_528
-    none = plan(MODEL, PlanOptions(slots=1, context=262_144, checkpoints=0))
+    none = plan(MODEL, plan_options(slots=1, context=262_144, checkpoints=0))
     assert none.pinned_bytes == p.pinned_bytes - 8 * 118_038_528
 
 
 @pytest.mark.parametrize("slots", [1, 2, 4, 8])
 def test_the_pool_is_the_same_at_any_slot_count(slots: int):
     """The slots share the pool they are given; their count does not size it."""
-    assert plan(MODEL, PlanOptions(slots=slots, context=262_144, kv_tokens=524_288)).pages == 131_072
+    assert plan(MODEL, plan_options(slots=slots, context=262_144, kv_tokens=524_288)).pages == 131_072
 
 
 def test_without_a_pool_size_every_slot_has_its_context():
-    assert plan(MODEL, PlanOptions(slots=4, context=262_144)).pages == 4 * 65_536
+    assert plan(MODEL, plan_options(slots=4, context=262_144)).pages == 4 * 65_536
 
 
 def test_a_pool_too_small_for_one_sequence():
     with pytest.raises(PlanError):
-        plan(MODEL, PlanOptions(slots=4, context=262_144, kv_tokens=262_143))
+        plan(MODEL, plan_options(slots=4, context=262_144, kv_tokens=262_143))
 
 
 def test_the_host_holds_every_page_of_the_pool():
     """The host's K and V are the pool's pages, not each slot's whole context."""
-    p = plan(MODEL, PlanOptions(slots=4, context=262_144, kv_tokens=524_288))
+    p = plan(MODEL, plan_options(slots=4, context=262_144, kv_tokens=524_288))
     assert p.streamed_kv_bytes == 13_056 * 524_288 + 4 * 35_651_584
 
 
 def test_a_plan_over_the_hosts_memory_is_refused_with_what_fits():
-    full = plan(MODEL, PlanOptions(slots=4, context=262_144))
+    full = plan(MODEL, plan_options(slots=4, context=262_144))
     with pytest.raises(PlanError, match="--slots 3") as exc:
-        plan(MODEL, PlanOptions(slots=4, context=262_144, host_memory=full.host_bytes - 1))
+        plan(MODEL, plan_options(slots=4, context=262_144, host_memory=full.host_bytes - 1))
     assert "the host can give" in str(exc.value)
-    assert plan(MODEL, PlanOptions(slots=4, context=262_144, host_memory=full.host_bytes)).host_bytes == full.host_bytes
+    assert (
+        plan(MODEL, plan_options(slots=4, context=262_144, host_memory=full.host_bytes)).host_bytes == full.host_bytes
+    )
 
 
 def test_ram_max_is_a_limit_of_its_own():
-    full = plan(MODEL, PlanOptions(slots=1, context=262_144))
+    full = plan(MODEL, plan_options(slots=1, context=262_144))
     with pytest.raises(PlanError, match="--ram-max allows") as exc:
-        plan(MODEL, PlanOptions(slots=1, context=262_144, ram_max=full.host_bytes - 1, host_memory=2**50))
+        plan(MODEL, plan_options(slots=1, context=262_144, ram_max=full.host_bytes - 1, host_memory=2**50))
     assert "--context 131072" in str(exc.value)
 
 
 def test_a_limit_nothing_fits_names_a_smaller_file():
     with pytest.raises(PlanError, match="smaller model file"):
-        plan(MODEL, PlanOptions(slots=1, context=4096, host_memory=2**30))
+        plan(MODEL, plan_options(slots=1, context=4096, host_memory=2**30))
 
 
-@pytest.mark.parametrize("options", [PlanOptions(slots=0), PlanOptions(context=300_000), PlanOptions(slots=40)])
+@pytest.mark.parametrize("options", [plan_options(slots=0), plan_options(context=300_000), plan_options(slots=40)])
 def test_impossible_plans(options: PlanOptions):
     with pytest.raises(PlanError):
         plan(MODEL, options)
@@ -165,75 +168,81 @@ def test_one_card_holds_every_weight_and_head_whole():
     two = model_memory(TABLE, cards=2)
     assert one.weights_per_card > 2 * two.weights_per_card - 2 * 1024**3
     assert one.kv_cell_per_card == 2 * two.kv_cell_per_card
-    p1 = plan(one, PlanOptions(cards=1, slots=1, context=262_144))
-    p2 = plan(two, PlanOptions(slots=1, context=262_144))
+    p1 = plan(one, plan_options(cards=1, slots=1, context=262_144))
+    p2 = plan(two, plan_options(slots=1, context=262_144))
     assert p1.experts_cached < p2.experts_cached // 2
     assert p1.arena_bytes > p2.arena_bytes
 
 
 def test_the_plan_takes_the_cards_memory():
-    big = plan(MODEL, PlanOptions(slots=1, context=262_144, usable_vram=32 * 2**30))
-    ref = plan(MODEL, PlanOptions(slots=1, context=262_144))
+    big = plan(MODEL, plan_options(slots=1, context=262_144, usable_vram=32 * 2**30))
+    ref = plan(MODEL, plan_options(slots=1, context=262_144))
     assert ref.usable_vram == 24_385_683_456
     assert big.experts_per_layer > ref.experts_per_layer
 
 
+def test_a_plan_with_no_card_size_is_refused():
+    with pytest.raises(PlanError, match="no card was read"):
+        plan(MODEL, PlanOptions(slots=1))
+
+
 def test_a_card_too_small_is_refused_with_what_fits():
     with pytest.raises(PlanError, match="short before any expert") as exc:
-        plan(MODEL, PlanOptions(slots=4, context=262_144, usable_vram=6 * 2**30))
+        plan(MODEL, plan_options(slots=4, context=262_144, usable_vram=6 * 2**30))
     assert "Options that fit" in str(exc.value)
 
 
 def test_without_the_draft_layer_the_cards_cache_more():
     assert (
-        plan(MODEL, PlanOptions(slots=1, draft=False)).experts_cached > plan(MODEL, PlanOptions(slots=1)).experts_cached
+        plan(MODEL, plan_options(slots=1, draft=False)).experts_cached
+        > plan(MODEL, plan_options(slots=1)).experts_cached
     )
 
 
 def test_the_ngram_table_in_ram_counts_in_the_host_total():
-    off = plan(MODEL, PlanOptions(slots=1))
-    on = plan(MODEL, PlanOptions(slots=1, ngram_in_ram=True))
+    off = plan(MODEL, plan_options(slots=1))
+    on = plan(MODEL, plan_options(slots=1, ngram_in_ram=True))
     assert MODEL.ngram_bytes > 28 * 10**9
     assert on.host_bytes == off.host_bytes + MODEL.ngram_bytes
 
 
 def test_the_ngram_table_moves_into_ram_only_with_room_to_spare():
     gib = 2**30
-    p = plan(MODEL, PlanOptions(slots=1, host_memory=56 * gib))
+    p = plan(MODEL, plan_options(slots=1, host_memory=80 * gib))
     assert not ngram_fits(p, mem_total=90 * gib)
-    roomy = plan(MODEL, PlanOptions(slots=1, host_memory=80 * gib))
-    assert ngram_fits(roomy, mem_total=90 * gib)
-    assert not ngram_fits(plan(MODEL, PlanOptions(slots=1)), mem_total=90 * gib)
+    roomy = plan(MODEL, plan_options(slots=1, host_memory=120 * gib))
+    assert ngram_fits(roomy, mem_total=128 * gib)
+    assert not ngram_fits(plan(MODEL, plan_options(slots=1)), mem_total=90 * gib)
 
 
 def test_the_working_memory_is_the_models_estimate_unless_the_options_give_one():
     assert MODEL.working_per_card == numbers.WORKING_PER_CARD
-    assert plan(MODEL, PlanOptions()).working_per_card == numbers.WORKING_PER_CARD
-    given = plan(MODEL, PlanOptions(working_per_card=numbers.WORKING_PER_CARD + 2**30))
+    assert plan(MODEL, plan_options()).working_per_card == numbers.WORKING_PER_CARD
+    given = plan(MODEL, plan_options(working_per_card=numbers.WORKING_PER_CARD + 2**30))
     assert given.working_per_card == numbers.WORKING_PER_CARD + 2**30
-    assert given.free_per_card == plan(MODEL, PlanOptions()).free_per_card - 2**30
+    assert given.free_per_card == plan(MODEL, plan_options()).free_per_card - 2**30
 
 
 def test_the_cores_expert_budget_gives_its_working_memory():
-    p = plan(MODEL, PlanOptions())
+    p = plan(MODEL, plan_options())
     assert p.working_from(p.free_per_card) == p.working_per_card
     assert p.working_from(p.free_per_card - 2**30) == p.working_per_card + 2**30
     # Planned again with the core's figure, the plan leaves the core's budget for experts.
-    q = plan(MODEL, replace(PlanOptions(), working_per_card=p.working_from(p.free_per_card - 2**30)))
+    q = plan(MODEL, replace(plan_options(), working_per_card=p.working_from(p.free_per_card - 2**30)))
     assert q.free_per_card == p.free_per_card - 2**30
 
 
 def test_the_working_memory_is_kept_per_model_and_options(tmp_path: Path):
     model = tmp_path / "m.gguf"
     model.write_bytes(b"x")
-    a = working_file(tmp_path, model, PlanOptions(slots=2), "draft=None")
+    a = working_file(tmp_path, model, plan_options(slots=2), "draft=None")
     assert read_working(a) is None
     write_working(a, 1_700_000_000)
     assert read_working(a) == 1_700_000_000
-    assert working_file(tmp_path, model, PlanOptions(slots=2), "draft=None") == a
-    assert working_file(tmp_path, model, PlanOptions(slots=4), "draft=None") != a
-    assert working_file(tmp_path, model, PlanOptions(slots=2), "draft=/m/mtp") != a
-    assert working_file(tmp_path, model, PlanOptions(slots=2, working_per_card=1), "draft=None") == a
+    assert working_file(tmp_path, model, plan_options(slots=2), "draft=None") == a
+    assert working_file(tmp_path, model, plan_options(slots=4), "draft=None") != a
+    assert working_file(tmp_path, model, plan_options(slots=2), "draft=/m/mtp") != a
+    assert working_file(tmp_path, model, plan_options(slots=2, working_per_card=1), "draft=None") == a
     a.write_text("{")
     assert read_working(a) is None
     a.write_text('{"working_per_card": -1}')
