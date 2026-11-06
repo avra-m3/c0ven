@@ -44,5 +44,8 @@ what limits a mapping's speed.
 
 - A start and a wake each take about 0.5 s longer on one card, for the driver's write and the touch of the 1.91 GiB
   buffer.
+- Another process that takes the card's memory pushes the buffer to host memory. The card's next use brings it back,
+  and the CPU's next two writes fault on every page: about 0.75 s once, on the next short prompt; the bytes stay the
+  same ([MEASUREMENTS.md](../measurements/MEASUREMENTS.md#2026-11-05-staging-through-a-mapping)).
 - The runtime keeps the exported descriptor and closes it when the memory is freed; the memory returns on free
   after the mapping is removed, so sleep and wake hold nothing back.
