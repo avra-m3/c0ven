@@ -6,8 +6,6 @@ section 4.1, and reference/prompts.jsonl. Where a number is an estimate it says 
 
 from __future__ import annotations
 
-CONTEXT = 262_144
-
 # Token ids (spec/MODEL_IO.md, section 4.1).
 IM_START = 248_045
 IM_END = 248_046
