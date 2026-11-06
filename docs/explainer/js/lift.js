@@ -103,13 +103,13 @@ function drawPlate(level, dest) {
   g.fillStyle = "#ffb347"; g.textAlign = "center"; g.textBaseline = "middle"; g.font = "700 70px 'IBM Plex Mono', Menlo, monospace";
   g.fillText(level === 0 ? "G" : String(level).padStart(2, "0"), w / 2, 66);
   g.fillStyle = "#1c1810"; g.font = "600 17px 'Barlow Condensed', Arial Narrow, sans-serif"; g.fillText("MERIDIAN WORDS LTD.", w / 2, 128);
-  for (let r = 0; r < 7; r++) for (let c = 0; c < 4; c++) {
+  for (let r = 0; r < 6; r++) for (let c = 0; c < 4; c++) {
     g.fillStyle = "#3a3226"; g.beginPath(); g.arc(36 + c * 36, 160 + r * 32, 11, 0, 7); g.fill();
   }
-  g.save(); g.translate(w / 2, 256); g.rotate(-0.1); g.fillStyle = "#e0c94f"; g.fillRect(-92, -24, 184, 48);
-  g.fillStyle = "#1a1a12"; g.font = "700 20px 'Barlow Condensed', Arial Narrow, sans-serif"; g.fillText("4 TO 48: OUT OF ORDER", 0, 2); g.restore();
-  ["3", "2", "1", "G"].forEach((s, i) => {
-    const y = 412 + i * 54, lv = s === "G" ? 0 : +s, lit = lv === dest;
+  g.save(); g.translate(w / 2, 240); g.rotate(-0.1); g.fillStyle = "#e0c94f"; g.fillRect(-92, -24, 184, 48);
+  g.fillStyle = "#1a1a12"; g.font = "700 20px 'Barlow Condensed', Arial Narrow, sans-serif"; g.fillText("5 TO 48: OUT OF ORDER", 0, 2); g.restore();
+  ["4", "3", "2", "1", "G"].forEach((s, i) => {
+    const y = 376 + i * 54, lv = s === "G" ? 0 : +s, lit = lv === dest;
     g.fillStyle = lit ? "#ffb347" : "#2a2519"; g.beginPath(); g.arc(w / 2, y, 21, 0, 7); g.fill();
     g.fillStyle = lit ? "#2a1a05" : "#d9cfb2"; g.font = "700 26px 'Barlow Condensed', Arial Narrow, sans-serif"; g.fillText(s, w / 2, y + 1);
   });
@@ -157,7 +157,9 @@ const V = (x, y, z) => new THREE.Vector3(x, y, z);
 
 // Takes the camera from floor `from` to floor `to`, on foot through the doors. enter() switches the game to the new
 // floor; it runs while the car's doors are shut. Each floor's `lift` is its doors; it may add `route` (points to pass
-// on the way to them), `walk` (seconds of that walk), `doorAt` (seconds before they open) and `onWalk(u)`.
+// on the way to them), `walk` (seconds of that walk), `doorAt` (seconds before they open) and `onWalk(u)`. A floor whose
+// camera looks back at its doors adds `arrive`: `via` (points on the way to the camera), `walk`, and `turn` (the share of
+// the walk before the rider starts to turn round).
 export async function ride(from, to, enter) {
   riding = true; speed = 1;
   document.body.classList.add("riding");
@@ -232,14 +234,20 @@ export async function ride(from, to, enter) {
   const opened = doors(B, 0, 1, 0.75);
   await wait(0.3);
   const start = rig.pos.clone(), lookOut = V(door.x, door.y + eye, door.z + 6), end0 = rig.base.clone();
-  const out = new THREE.CatmullRomCurve3([start, V(door.x, door.y + eye, door.z + 0.15), V(door.x, door.y + 1.75, door.z + 2.7), end0], false, "centripetal");
+  const way = A === B ? null : B.arrive;
+  const out = new THREE.CatmullRomCurve3([start, V(door.x, door.y + eye, door.z + 0.15), ...(way ? way.via : [V(door.x, door.y + 1.75, door.z + 2.7)]), end0], false, "centripetal");
   const seen = { hud: false };
   const shutting = (async () => { await opened; await wait(0.9); await doors(B, 1, 0, 0.7); })();
-  await rt(A === B ? 0.1 : 1.75, (u) => {
+  await rt(A === B ? 0.1 : way ? way.walk : 1.75, (u) => {
     const e = smooth(u);
     setMusic(1 - e * 0.98);
     rig.pos.copy(out.getPoint(e)).addScaledVector(rig.base.clone().sub(end0), e);
-    rig.look.lerpVectors(lookOut, to.camera.look, smooth(Math.min(1, u * 1.15)));
+    if (way) {
+      // A turn to the left, ending on exactly the floor's own look.
+      const d = to.camera.look.clone().sub(rig.base), len = d.length(), k = smooth(Math.max(0, (u - way.turn) / (1 - way.turn)));
+      const end = Math.atan2(d.x, d.z), yaw = k * (end > 0 ? end - 2 * Math.PI : end), tip = k * Math.asin(d.y / len);
+      rig.look.set(rig.pos.x + Math.sin(yaw) * Math.cos(tip) * len, rig.pos.y + Math.sin(tip) * len, rig.pos.z + Math.cos(yaw) * Math.cos(tip) * len);
+    } else rig.look.lerpVectors(lookOut, to.camera.look, smooth(Math.min(1, u * 1.15)));
     rig.fov = lerp(fov1, rig.baseFov, e);
     rig.off = e;
     if (u > 0.55 && !seen.hud) { seen.hud = true; document.body.classList.remove("riding"); }
