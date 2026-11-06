@@ -12,8 +12,9 @@ Every number here was measured on one machine:
 - an AMD Ryzen 9 7945HX: 16 Zen 4 cores on two CCDs, with AVX-512 (VNNI, VBMI, BF16, IFMA);
 - 96 GiB of dual-channel DDR5 at 5200 MT/s, about 90 GiB of it visible to Linux;
 - a PCIe 4.0 NVMe SSD, which holds the model files;
-- Linux 6.17 with the in-tree `xe` driver, and the engine image's user-space stack: compute-runtime 26.35.39758.10,
-  IGC 2.41.5 and the Level Zero loader 1.32.0 ([ADR-0002](../adr/0002-pin-the-toolchain.md)).
+- Linux 6.17 with the in-tree `xe` driver, and the engine image's user-space stack: compute-runtime 26.40.40196.8,
+  IGC 2.42.6 and the Level Zero loader 1.32.0 ([ADR-0002](../adr/0002-pin-the-toolchain.md)). Rows measured before
+  2026-11-06 ran on compute-runtime 26.35.39758.10 and IGC 2.41.5.
 
 Other software shares the machine. A number that rests on the host (the CPU's experts, host memory, load times)
 moves with what else runs, so compare such numbers only within one row.
@@ -537,3 +538,4 @@ The tests of [Other quants](#other-quants). UD-IQ4_XS's value is given first, th
 | --- | --- | --- |
 | The root Dockerfile | builds with nothing copied to the host; every version matches [ADR-0002](../adr/0002-pin-the-toolchain.md) | <a id="2026-10-13-engine-image"></a>[2026-10-13](#2026-10-13-engine-image) |
 | A container as user `ubuntu` | sees both B60s, compiles for `bmg-g21`, has an unlimited memory lock and reads `/models` | [2026-10-13](#2026-10-13-engine-image) |
+| compute-runtime 26.40.40196.8 and IGC 2.42.6, kernels rebuilt, against 26.35.39758.10 and 2.41.5: one ABBA round deployed, two cards | short 19.98 → 19.46 s (decode 104.2 → 107.1 tokens/s), four 13.69 → 13.27 s, mixed 14.78 → 14.73 s; all GPU tests pass | <a id="2026-11-06-intel-stack-26-40"></a>[2026-11-06](#2026-11-06-intel-stack-26-40) |

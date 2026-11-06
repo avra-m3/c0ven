@@ -126,6 +126,7 @@ Model::Model(const std::string &path, const Options &opt) : opt_(opt), gguf_(pat
   auto t0 = std::chrono::steady_clock::now();
   if (gguf_.get_string("general.architecture") != "qwen4exp") throw std::runtime_error("not a qwen4exp model");
   shape_ = read_shape(gguf_.metadata(), gguf_.tensors());
+  image_shape_ = image_shape_of(gguf_.metadata());
   if (const auto bad = shape_mismatches(shape_, gguf_.tensors()); !bad.empty()) {
     std::string why = bad[0];
     for (size_t i = 1; i < std::min<size_t>(bad.size(), 5); i++) why += "; " + bad[i];
@@ -217,6 +218,8 @@ Model::Model(const std::string &path, const Options &opt) : opt_(opt), gguf_(pat
   }
   if (!opt_.mtp_dir.empty() && !init_dflash()) {
     mtp_on_ = true;
+    mtp_experts_ = mtp_expert_count(opt_.mtp_dir, shape_.embd);
+    mtp_module_ = expert_module("qwen4exp", mtp_experts_);
     mplan_ = static_cast<StepPlan *>(rt_->alloc_host(sizeof(StepPlan)));
     std::memset(mplan_, 0, sizeof(StepPlan));
     mrest_ = static_cast<StepPlan *>(rt_->alloc_host(sizeof(StepPlan)));
@@ -849,7 +852,7 @@ void Model::load_card(Card &card) {
   card.blocks = upload<uint32_t>(card, nullptr, W * (shape_.idx_blocks() + 1) * 4);
   card.cells = upload<uint32_t>(card, nullptr, W * shape_.idx_cells() * 4);
   card.ncells = upload<uint32_t>(card, nullptr, W * 4);
-  card.rl = fbuf(std::max(shape_.experts, kMtpExperts) + 1);  // the main layers' routers and the draft layer's
+  card.rl = fbuf(std::max(shape_.experts, mtp_experts_) + 1);  // the main layers' routers and the draft layer's
   card.w = fbuf(shape_.used);
   card.ids = upload<int32_t>(card, nullptr, W * shape_.used * 4);
   card.merged = fbuf(2 * (shape_.idx_blocks() + 1));
@@ -1146,7 +1149,7 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
   const uint32_t c = card.c, C = ncards_;
   auto common = [&](const char *name) { return kernel(c, "common", name); };
   auto q4 = [&](const char *name) { return kernel(c, layer_module_, name); };
-  const float one = 1.0f, quarter = 0.25f;
+  const float one = 1.0f, quarter = 1.0f / (float)shape_.hc;  // the hyper-connections' 1 / hc (4 streams: a quarter)
   const uint32_t zero = 0, mode_silu = 1;
   // The kernels read the plan from the card's copy: a word in host memory makes each launch slower
   // (docs/measurements/MEASUREMENTS.md#2026-10-16-bf16-products-occupancy).
@@ -1369,7 +1372,7 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
              normed ? card.layers[l + 1].hc_norm[0] : nullptr);
     // DFlash 2 reads the layer's output (dflash.cpp).
     for (uint32_t k = 0; df_on_ && k < DF_LAYERS; k++)
-      if (l == kDfTargetLayers[k])
+      if (l == dfc_.targets[k])
         L.launch(kernel(c, "qwen4exp_dflash", "df_feat"), {card.R, k, plan, card.df->feat}, shape_.embd / 64, W, 1, 64);
   }
   record_head(L, card, plan, W);
@@ -1422,7 +1425,7 @@ void Model::record_head(ze::List &L, Card &card, const StepPlan *plan, uint32_t 
   const uint32_t c = card.c;
   auto common = [&](const char *name) { return kernel(c, "common", name); };
   auto q4 = [&](const char *name) { return kernel(c, layer_module_, name); };
-  const float one = 1.0f, quarter = 0.25f;
+  const float one = 1.0f, quarter = 1.0f / (float)shape_.hc;  // the hyper-connections' 1 / hc (4 streams: a quarter)
   const uint32_t zero = 0, mode_silu = 1, gs = shape_.embd;
   uint16_t *no_bf16 = nullptr;
   L.launch(q4("rms_norm"), {card.R, card.out_norm, plan, card.n, no_bf16}, shape_.hc, W, 1, 256);
