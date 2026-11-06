@@ -712,7 +712,7 @@ void Model::load_card(Card &card) {
       L.A = gather_f32(blk(l, "ssm_a"), vh, 1);
       L.dt = gather_f32(blk(l, "ssm_dt.bias"), vh, 1);
       L.ssm_norm = f32(blk(l, "ssm_norm.weight"));
-      L.conv_stride = 3ull * card.nch;
+      L.conv_stride = (uint64_t)(shape_.gdn_conv - 1) * card.nch;  // the conv's history: its kernel less one row
       L.S_stride = (uint64_t)card.nvh * shape_.gdn_d * shape_.gdn_d;
       L.conv_state = upload<float>(card, nullptr, S * L.conv_stride * 4);
       L.wu = upload<float>(card, nullptr, (size_t)STEP_MAX_ROWS * card.nch * 4);
