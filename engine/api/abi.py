@@ -45,8 +45,6 @@ class Status(IntEnum):
 
 
 class ConfigFlag(IntEnum):
-    EXPERTS_SET = 1
-    PROMPT_SET = 2
     SWAPS = 4
     SHARE_KV = 8
     NGRAM_RAM = 16

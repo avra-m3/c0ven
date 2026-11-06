@@ -37,8 +37,6 @@ MAX_PAGE_CHANGES = 2048
 """Page changes a plan carries at most: a whole 4,352-row chunk's 1,088 pages with room for the writing slots'
 batches (SchedulerOptions.decode_batch). The core copies any count; each plan's changes cost it one write of the
 page tables (ADR-0033)."""
-MAX_EOS = 4
-MAX_BATCH_WIDTHS = 8
 
 
 class EngineError(RuntimeError):
@@ -139,14 +137,9 @@ class OpenConfig:
     checkpoints: int
     kv_resident_cells: int
     experts_cached: int
-    arena_bytes: int
-    working_bytes: int
     cpu_workers: int
-    ngram_cache_rows: int
-    timing_records: int
     eos_ids: tuple[int, ...]
     vocab_size: int
-    batch_widths: tuple[int, ...] = (1,)
     deterministic: bool = False
     """ADR-0016's switches: no PCIe share of the misses, no adaptive swaps, no prefetching."""
     draft_dir: str = ""

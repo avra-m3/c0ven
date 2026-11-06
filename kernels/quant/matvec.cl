@@ -1,8 +1,8 @@
 // Matrix-vector products with quantised weights in the runs layout and a8 activations (decode.h): one weight type per
 // module (-DQTYPE), LANES lanes of a 16-wide sub-group per row (-DLANES: 16, 8 or 4), WG_SG sub-groups a work-group,
 // up to MAXT tokens sharing each weight read. matvec: a dense slice, rows x K. matvec_ks: K split over a work-group's
-// sub-groups, for slices of few rows. moe_gate_up: h[m] = silu(gate x) * up x for each assignment m (row, expert)
-// with a slot on this card. moe_down: y[m] = down h[m] for each such m, with its own activation.
+// sub-groups, for slices of few rows. moe_gate_up_g: h[a] = silu(gate x) * up x for each assignment a (row, expert)
+// of a group. moe_down_g: y[a] = down h[a] for each, with its own activation.
 #include "decode.h"
 #include "moe_tile.h"
 #include "swiglu.h"
@@ -12,7 +12,6 @@
 #endif
 #define WG_SG 4
 #define RPS (SG_SIZE / LANES)          // rows per sub-group
-#define ROWS_PER_WG (WG_SG * RPS)
 #define MAXT 8
 
 static inline float lanes_sum(float x) {
@@ -88,47 +87,9 @@ REQD_SG __kernel void matvec_ks(__global const uchar *W, uint rows, uint bpr, __
 
 static inline float silu(float x) { return x / (1.0f + exp(-x)); }
 
-// Assignment m (group id 1) is token m / per_tok's expert m % per_tok, in slot slots[m] of the cache (negative:
-// not on this card, skipped). Its gate slice starts at the slot, its up slice up_off bytes later; both are rows x K.
-// The token's activation is a8 at act + (m / per_tok) * act_stride.
-REQD_SG __kernel void moe_gate_up(__global const uchar *cache, ulong slot_bytes, __global const int *slots,
-                                  uint rows, uint bpr, ulong up_off, __global const uchar *act, uint K,
-                                  uint act_stride, uint per_tok, __global float *h, __global const uchar *grids) {
-  LOAD_GRID(grids)
-  uint m = get_group_id(1);
-  int slot = slots[m];
-  if (slot < 0) return;
-  uint r = (get_group_id(0) * WG_SG + sg_id()) * RPS + sg_lane() / LANES;
-  bool valid = r < rows;
-  if (!valid) r = rows - 1;
-  __global const uchar *G = cache + (ulong)slot * slot_bytes;
-  __global const uchar *a = act + (m / per_tok) * act_stride;
-  ulong n = (ulong)rows * bpr;
-  float g[MAXT], u[MAXT];
-  row_dot(G, n, r, bpr, a, K, 0, 1, sg_lane() % LANES, LANES, g GRID_ARG);
-  row_dot(G + up_off, n, r, bpr, a, K, 0, 1, sg_lane() % LANES, LANES, u GRID_ARG);
-  if (valid && sg_lane() % LANES == 0) h[m * rows + r] = SWIGLU(g[0], u[0]);
-}
-
-// y[m] = down_m h[m]: the down slice starts down_off bytes into the slot, rows x K; h[m] is a8 at act + m * act_stride.
-REQD_SG __kernel void moe_down(__global const uchar *cache, ulong slot_bytes, __global const int *slots, uint rows,
-                               uint bpr, ulong down_off, __global const uchar *act, uint K, uint act_stride,
-                               __global float *y, __global const uchar *grids) {
-  LOAD_GRID(grids)
-  uint m = get_group_id(1);
-  int slot = slots[m];
-  if (slot < 0) return;
-  uint r = (get_group_id(0) * WG_SG + sg_id()) * RPS + sg_lane() / LANES;
-  bool valid = r < rows;
-  if (!valid) r = rows - 1;
-  __global const uchar *D = cache + (ulong)slot * slot_bytes + down_off;
-  float acc[MAXT];
-  row_dot(D, (ulong)rows * bpr, r, bpr, act + m * act_stride, K, 0, 1, sg_lane() % LANES, LANES, acc GRID_ARG);
-  if (valid && sg_lane() % LANES == 0) y[m * rows + r] = acc[0];
-}
-
-// The same products by groups (MoeGroup): group g (group id 1) is one cached expert and up to MOE_GROUP_MAX
-// assignments, so each weight row is decoded once for all of them. Assignment a's activation is a8 at
+// An expert's products by groups (MoeGroup): group g (group id 1) is one cached expert and up to MOE_GROUP_MAX
+// assignments, so each weight row is decoded once for all of them. The expert's gate slice starts at its slot, its
+// up slice up_off bytes and its down slice down_off bytes into it, each rows x K. Assignment a's activation is a8 at
 // act + (a / per_tok) * act_stride (gate and up) or act + a * act_stride (down); outputs go to h[a] and y[a].
 // Groups past *ngroups return.
 static inline void row_dot_g(__global const uchar *W, ulong n, uint r, uint bpr, __global const uchar *act, uint K,
