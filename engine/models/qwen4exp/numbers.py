@@ -17,16 +17,8 @@ SYSTEM = 8_678
 ASSISTANT = 74_455
 NEWLINE = 198
 
-# Per sequence: the sizes are the model file's (memory.py); these are the engine's choices of how it keeps them.
-KV_BLOCK = (32, 34)
-"""The engine's 8-bit KV and indexer keys: Q8_0, 32 values in 34 B (ADR-0008; MEMORY_BUDGET.md, "Per sequence")."""
-STATE_VALUE_BYTES = 4
-"""The recurrent state and the PLE conv history are F32 (spec/MODEL_LAYER.md, 2.7)."""
+# Per sequence (MEMORY_BUDGET.md, "Per sequence"): the sizes are the model file's (memory.py).
 DRAFT_WINDOW = 32_768
 """The draft layer's ring, in cells: it attends to its last 32,768 (`--mtp-window`, spec/MODEL_IO.md, section 3)."""
 RESIDENT_CELLS = 32_768
 """K and V cells kept in VRAM per sequence when KV streams (spec/STRATA_MEMORY.md, section 5)."""
-
-# Per card, outside the layers' weights (MEMORY_BUDGET.md, "Per card, for the tensor split").
-WORKING_PER_CARD = 1_600_663_296
-"""*Estimate*: working buffers per card."""

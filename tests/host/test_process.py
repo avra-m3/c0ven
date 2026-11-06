@@ -89,7 +89,7 @@ def test_a_plan_that_does_not_fit_is_refused():
 
 def test_a_plan_over_ram_max_is_refused_with_options_that_fit():
     p = subprocess.run(
-        [sys.executable, "-m", "engine", "--backend", "mock", "--arch", "qwen4exp", "--ram-max", "15"],
+        [sys.executable, "-m", "engine", "--backend", "mock", "--arch", "qwen4exp", "--ram-max", "20"],
         input="",
         capture_output=True,
         text=True,
