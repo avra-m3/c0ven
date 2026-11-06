@@ -548,7 +548,7 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
     exchange(l, 1, P.inj[1], l >= 1 && l + 1 < shape_.layers ? card.layers[l + 1].hc_norm[0] : nullptr);
     // DFlash 2 reads each run's last rows of the layer's output (dflash.cpp), from the card that holds them.
     for (uint32_t k = 0; df_on_ && k < DF_LAYERS; k++) {
-      if (l != kDfTargetLayers[k]) continue;
+      if (l != dfc_.targets[k]) continue;
       const uint32_t f0 = split || c == 0 ? r0 : 0, f1 = split || c == 0 ? r1 : 0;
       L.launch(kernel(c, "qwen4exp_dflash", "p_df_feat"), {P.R, runs_p, k, f0, f1, pfeat_}, shape_.embd / 64,
                STEP_MAX_ROWS, runs, 64);

@@ -52,6 +52,8 @@ std::vector<std::string> shape_mismatches(const Shape &s, const std::map<std::st
 // The module of kernels built for this expert count, from its base name: expert_module("qwen4exp", 256) is
 // "qwen4exp_e256". The count must be one shape_mismatches accepts.
 std::string expert_module(const std::string &base, uint32_t experts);
+// Whether this build has kernels for that many experts.
+bool experts_built(uint32_t experts);
 
 // The same for sharing the model between n cards: each card takes an equal share of the heads, the expert width and the
 // vocabulary, and a share of a layer's down experts is a whole number of blocks.

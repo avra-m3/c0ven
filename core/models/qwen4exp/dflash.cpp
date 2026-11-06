@@ -7,8 +7,12 @@
 
 #include <algorithm>
 #include <cstring>
+#include <fstream>
+#include <map>
+#include <sstream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #include "ggml-cpu.h"
 #include "models/qwen4exp/model_impl.h"
@@ -51,14 +55,55 @@ std::vector<uint16_t> df_tensor(const std::string &dir, const std::string &name,
 
 }  // namespace
 
+DfConfig read_df_config(const std::string &dir) {
+  const std::string path = dir + "/dflash-config.txt";
+  std::ifstream f(path);
+  if (!f) throw std::runtime_error(path + " is missing: fetch the drafter again (tools/dflash_fetch.py)");
+  std::map<std::string, std::vector<double>> kv;  // a line: a key, then its values
+  for (std::string line; std::getline(f, line);) {
+    std::istringstream in(line);
+    std::string key;
+    in >> key;
+    for (double x; in >> x;) kv[key].push_back(x);
+  }
+  auto one = [&](const char *key) {
+    auto it = kv.find(key);
+    if (it == kv.end() || it->second.size() != 1) throw std::runtime_error(path + ": no single value for " + key);
+    return it->second[0];
+  };
+  const struct {
+    const char *key;
+    double built;
+  } sizes[] = {
+      {"hidden_size", DF_EMBD},       {"num_hidden_layers", DF_LAYERS},  {"num_attention_heads", DF_H},
+      {"num_key_value_heads", DF_KV}, {"head_dim", DF_D},                {"intermediate_size", DF_FF},
+      {"conv_group_size", DF_GROUP},  {"sliding_window", DF_WINDOW},     {"rope_theta", DF_ROPE_BASE},
+      {"block_size", STEP_MAX_ROWS},  {"conv_kernel_size", DF_KP / 2 / (DF_EMBD / DF_GROUP)},
+  };
+  for (const auto &s : sizes)
+    if (one(s.key) != s.built)
+      throw std::runtime_error("DFlash 2's " + std::string(s.key) + " differs from this build's");
+  if ((float)one("rms_norm_eps") != DF_EPS) throw std::runtime_error("DFlash 2's rms_norm_eps differs from this build's");
+  DfConfig c;
+  c.mask_token = (int32_t)one("mask_token_id");
+  const auto &t = kv["target_layer_ids"];
+  if (t.size() != DF_LAYERS) throw std::runtime_error(path + ": target_layer_ids is not one layer for each of its own");
+  for (uint32_t k = 0; k < DF_LAYERS; k++) c.targets[k] = (uint32_t)t[k];
+  return c;
+}
+
 bool Model::init_dflash() {
   if (::access((opt_.mtp_dir + "/dflash-manifest.json").c_str(), R_OK) != 0) return false;
   if (shape_.embd != DF_EMBD)
     throw std::runtime_error("DFlash 2 reads hidden states of " + std::to_string(DF_EMBD) +
                              " values; the model's are " + std::to_string(shape_.embd));
-  if (kDfTargetLayers[DF_LAYERS - 1] >= shape_.layers)
-    throw std::runtime_error("DFlash 2 reads layer " + std::to_string(kDfTargetLayers[DF_LAYERS - 1]) + "; the model has " +
-                             std::to_string(shape_.layers));
+  dfc_ = read_df_config(opt_.mtp_dir);
+  for (uint32_t k = 0; k < DF_LAYERS; k++)
+    if (dfc_.targets[k] >= shape_.layers || (k && dfc_.targets[k] <= dfc_.targets[k - 1]))
+      throw std::runtime_error("DFlash 2 reads layer " + std::to_string(dfc_.targets[k]) + "; the model has " +
+                               std::to_string(shape_.layers) + ", and the layers have to rise");
+  if (dfc_.mask_token < 0 || (uint32_t)dfc_.mask_token >= shape_.vocab)
+    throw std::runtime_error("DFlash 2's mask token is outside the model's vocabulary");
   df_on_ = true;
   dfcplan_ = static_cast<DraftPlan *>(rt_->alloc_host(sizeof(DraftPlan)));
   dfbplan_ = static_cast<DraftPlan *>(rt_->alloc_host(sizeof(DraftPlan)));
@@ -289,7 +334,7 @@ std::vector<std::vector<std::vector<Candidate>>> Model::df_pass(const StepIn *ct
         uint32_t lo = std::max(dffirst_[bk.slot], pos + 1 > DF_WINDOW ? pos + 1 - DF_WINDOW : 0u);
         lo = std::min(lo, bk.pos);
         dfbplan_->rows[r] = {bk.slot, pos, r - j, bk.n, lo, {0, 0, 0}};
-        const int32_t tok = j == 0 ? bk.token : DF_MASK;
+        const int32_t tok = j == 0 ? bk.token : dfc_.mask_token;
         to_float(te.data + (uint64_t)tok * te.row_bytes(), dfembed_ + (size_t)r * DF_EMBD, DF_EMBD);
       }
     }

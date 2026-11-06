@@ -181,6 +181,8 @@ std::vector<std::string> shape_mismatches(const Shape &s, const std::map<std::st
   return bad;
 }
 
+bool experts_built(uint32_t experts) { return experts == kBuiltExperts || experts == kBuiltExpertsSmall; }
+
 std::string expert_module(const std::string &base, uint32_t experts) {
   return experts == kBuiltExperts ? base : base + "_e" + std::to_string(experts);
 }

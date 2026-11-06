@@ -217,6 +217,8 @@ Model::Model(const std::string &path, const Options &opt) : opt_(opt), gguf_(pat
   }
   if (!opt_.mtp_dir.empty() && !init_dflash()) {
     mtp_on_ = true;
+    mtp_experts_ = mtp_expert_count(opt_.mtp_dir, shape_.embd);
+    mtp_module_ = expert_module("qwen4exp", mtp_experts_);
     mplan_ = static_cast<StepPlan *>(rt_->alloc_host(sizeof(StepPlan)));
     std::memset(mplan_, 0, sizeof(StepPlan));
     mrest_ = static_cast<StepPlan *>(rt_->alloc_host(sizeof(StepPlan)));
@@ -849,7 +851,7 @@ void Model::load_card(Card &card) {
   card.blocks = upload<uint32_t>(card, nullptr, W * (shape_.idx_blocks() + 1) * 4);
   card.cells = upload<uint32_t>(card, nullptr, W * shape_.idx_cells() * 4);
   card.ncells = upload<uint32_t>(card, nullptr, W * 4);
-  card.rl = fbuf(std::max(shape_.experts, kMtpExperts) + 1);  // the main layers' routers and the draft layer's
+  card.rl = fbuf(std::max(shape_.experts, mtp_experts_) + 1);  // the main layers' routers and the draft layer's
   card.w = fbuf(shape_.used);
   card.ids = upload<int32_t>(card, nullptr, W * shape_.used * 4);
   card.merged = fbuf(2 * (shape_.idx_blocks() + 1));
@@ -1369,7 +1371,7 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
              normed ? card.layers[l + 1].hc_norm[0] : nullptr);
     // DFlash 2 reads the layer's output (dflash.cpp).
     for (uint32_t k = 0; df_on_ && k < DF_LAYERS; k++)
-      if (l == kDfTargetLayers[k])
+      if (l == dfc_.targets[k])
         L.launch(kernel(c, "qwen4exp_dflash", "df_feat"), {card.R, k, plan, card.df->feat}, shape_.embd / 64, W, 1, 64);
   }
   record_head(L, card, plan, W);

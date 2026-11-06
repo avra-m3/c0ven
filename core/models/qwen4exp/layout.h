@@ -38,7 +38,6 @@
 #define DF_RING 2112                  // K and V cells per slot: the window and a pass's rows past it
 #define DF_ROPE_BASE 10000.0f
 #define DF_EPS 1e-6f
-#define DF_MASK 248077                // the token of a block's rows after its first
 #ifdef __OPENCL_C_VERSION__
 #if Q_EMBD != DF_EMBD
 #error "dflash.cl mixes the main model's embedding with the drafter's hidden size"

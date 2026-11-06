@@ -232,6 +232,7 @@ int main(int argc, char **argv) {
   if (path.empty()) return test::skip("model not found under FLASH_MODEL_DIR");
   const char *dd = std::getenv("FLASH_DFLASH_DIR");
   const std::string dir = dd ? dd : "/models/dflash";
+  const int32_t mask = engine::qwen4exp::read_df_config(dir).mask_token;
   if (access((dir + "/dflash-manifest.json").c_str(), R_OK) != 0) return test::skip("no DFlash 2 files in " + dir);
   EXPECT(argc >= 2, "usage: dflash_test <reference dir>");
   const uint32_t N = DF_WINDOW + 8, B = 8;
@@ -281,7 +282,7 @@ int main(int argc, char **argv) {
     const GgufTensor &te = g.tensor("token_embd.weight");
     auto to_float = ggml_get_type_traits((ggml_type)te.type)->to_float;
     for (uint32_t t = 0; t < B; t++)
-      to_float(te.data + (uint64_t)(t ? DF_MASK : toks[N]) * te.row_bytes(), &emb[(size_t)t * E], E);
+      to_float(te.data + (uint64_t)(t ? mask : toks[N]) * te.row_bytes(), &emb[(size_t)t * E], E);
   }
   auto ref = reference(dir, feat, emb, N, B);
   int failures = 0;
