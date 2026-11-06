@@ -176,7 +176,14 @@ void Model::load_prompt(Card &card) {
 void Model::record_prompt_copy(Card &card) {
   PromptCard &P = *card.pc;
   for (auto &hl : host_layers_) P.stage_slot = std::max<uint64_t>(P.stage_slot, hl->pieces.size() * hl->stg_bytes);
-  if (P.stage_slot) P.stage = static_cast<uint8_t *>(rt_->alloc_device_mapped(card.c, 2 * P.stage_slot, P.stage_cpu));
+  if (P.stage_slot) {
+    P.stage = static_cast<uint8_t *>(rt_->alloc_device_mapped(card.c, 2 * P.stage_slot, P.stage_cpu));
+    // Which way a short chunk's experts reach this card: the slower way costs a short prompt about a sixth of its
+    // first token (ADR-0065), so the log says which one a start got.
+    std::fprintf(stderr, "engine: card %u: a short chunk's experts go %s\n", card.c,
+                 P.stage_cpu ? "through the CPU's mapping of the staging buffer"
+                             : "through the runtime's copies; the staging buffer could not be mapped");
+  }
   for (uint32_t l = 0; l < shape_.layers; l++)
     P.stage_map.push_back(upload<int32_t>(card, host_layers_[l]->stage_of.data(), shape_.experts * 4));
   P.copy = prompt_copies(card, staging_now(), copy_count_);
