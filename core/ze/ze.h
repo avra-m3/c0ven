@@ -57,6 +57,10 @@ class Runtime {
   // Device memory on one card; host memory in the context, which every card and the CPU read.
   void *alloc_device(uint32_t card, size_t bytes, size_t align = 256);
   void *alloc_host(size_t bytes, size_t align = 4096);
+  // Device memory the CPU can also write, at `cpu`, with no driver call in between; `cpu` is null where the system will
+  // not map it. The CPU's writes have reached the card once it has run a full fence and read the memory back. A page's
+  // first write takes a fault, and the pages move when the card first uses the memory, so touch them after that.
+  void *alloc_device_mapped(uint32_t card, size_t bytes, uint8_t *&cpu, size_t align = 256);
   void free(void *p);
   // Frees every device allocation on the card; host memory stays (a sleep: ADR-0032).
   void free_card(uint32_t card);
@@ -74,6 +78,8 @@ class Runtime {
   void vm_unmap(void *va, size_t bytes);
 
  private:
+  void unmap_cpu(void *p);
+
   ze_driver_handle_t driver_ = nullptr;
   ze_context_handle_t ctx_ = nullptr;
   std::vector<Card> cards_;
@@ -83,6 +89,7 @@ class Runtime {
   std::map<void *, std::pair<int, size_t>> ranges_;  // reserved: card, bytes
   std::map<ze_physical_mem_handle_t, std::pair<int, size_t>> blocks_;  // card, bytes
   std::map<void *, size_t> mapped_;  // mapped address, bytes
+  std::map<void *, std::pair<void *, size_t>> cpu_maps_;  // allocation: its CPU mapping, bytes
 };
 
 class Kernel;

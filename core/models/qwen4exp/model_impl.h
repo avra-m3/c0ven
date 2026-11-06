@@ -303,6 +303,7 @@ struct Model::PromptCard {
   uint32_t *prof = nullptr;  // [layer][expert] rows routed, with Options::profile_routing (card 0)
   // The experts the cards do not cache, streamed in on the copy engine: two layers' worth, used in turn.
   uint8_t *stage = nullptr;
+  uint8_t *stage_cpu = nullptr;  // the same memory, for the CPU's writes; null where it could not be mapped
   uint64_t stage_slot = 0;
   std::vector<int32_t *> stage_map;  // per layer: expert -> staging slot, or -1
   std::unique_ptr<ze::List> copy;
