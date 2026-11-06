@@ -140,7 +140,7 @@ int main() {
         }
         ref[(size_t)a * half + r] = gs / (1 + std::exp(-gs)) * us;
       }
-    auto *dW = static_cast<uint8_t *>(rt.alloc_device(card, buf.size()));
+    auto *dW = static_cast<uint8_t *>(rt.alloc_device(card, buf.size() + QUANT_FILE_PAD));
     L.copy(dW, buf.data(), buf.size());
     uint64_t slot_bytes = buf.size();
     std::string mod = "qgemm_" + lower(ggml_type_label(type)) + (file ? "_file" : "");
@@ -196,7 +196,7 @@ int main() {
         ref[(size_t)a * E + r] = s;
       }
     auto *dH = static_cast<uint16_t *>(rt.alloc_device(card, hin.size() * 2));
-    auto *dW = static_cast<uint8_t *>(rt.alloc_device(card, buf.size()));
+    auto *dW = static_cast<uint8_t *>(rt.alloc_device(card, buf.size() + QUANT_FILE_PAD));
     L.copy(dH, hin.data(), hin.size() * 2);
     L.copy(dW, buf.data(), buf.size());
     std::fill(dOut, dOut + (size_t)nasg * E, 0x7e00);
