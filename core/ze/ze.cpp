@@ -362,6 +362,12 @@ ze_kernel_handle_t Module::kernel(const std::string &name) {
   ze_kernel_handle_t k = nullptr;
   ze_result_t r = zeKernelCreate(mod_, &kd, &k);
   if (r != ZE_RESULT_SUCCESS) throw std::runtime_error("zeKernelCreate(" + name + ") failed");
+  // The card runs the oldest work-groups' threads first, not round robin after a dependency: one writer decodes about
+  // 2% faster (docs/measurements/MEASUREMENTS.md#2026-11-06-kernels-oldest-first).
+  ze_scheduling_hint_exp_desc_t hint = {ZE_STRUCTURE_TYPE_SCHEDULING_HINT_EXP_DESC};
+  hint.flags = ZE_SCHEDULING_HINT_EXP_FLAG_OLDEST_FIRST;
+  r = zeKernelSchedulingHintExp(k, &hint);
+  if (r != ZE_RESULT_SUCCESS) throw std::runtime_error("zeKernelSchedulingHintExp(" + name + ") failed");
   kernels_[name] = k;
   return k;
 }
