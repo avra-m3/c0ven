@@ -39,19 +39,20 @@ static inline float wg_max(float v, __local float *red) {
   return t;
 }
 
-static inline float rope(__local const float *x, uint d, uint pos) {
+static inline float rope(__local const float *x, uint d, uint pos, float fs, uint yl, uint yh) {
   if (d >= Q_ROT) return x[d];
   uint i = d % (Q_ROT / 2);
-  float theta = (float)pos * pow(Q_ROPE_BASE, -2.0f * (float)i / (float)Q_ROT);
-  float c = cos(theta), s = sin(theta);
+  float theta = q_yarn_theta((float)pos * pow(Q_ROPE_BASE, -2.0f * (float)i / (float)Q_ROT), i, fs, yl, yh);
+  float m = q_yarn_scale(fs), c = cos(theta) * m, s = sin(theta) * m;
   return d < Q_ROT / 2 ? x[i] * c - x[i + Q_ROT / 2] * s : x[i] * s + x[i + Q_ROT / 2] * c;
 }
 
 // Interleaved M-RoPE, as in layer.cl, by the positions of cell e of the chunk's table (step.h: (t, h, w, 0) per cell
 // from the chunk's first block).
-static inline float rope_at(__local const float *x, uint d, __global const uint *ppos, uint e) {
+static inline float rope_at(__local const float *x, uint d, __global const uint *ppos, uint e, float fs, uint yl,
+                            uint yh) {
   uint i = d % (Q_ROT / 2), m = i % 3;
-  return rope(x, d, ppos[4 * e + ((m == 1) ? 1 : (m == 2 && i < 30) ? 2 : 0)]);
+  return rope(x, d, ppos[4 * e + ((m == 1) ? 1 : (m == 2 && i < 30) ? 2 : 0)], fs, yl, yh);
 }
 
 // The table's entry for chunk row t.
@@ -335,7 +336,8 @@ __kernel void p_attn_prep(__global float *Q, __global const float *K, __global c
                           __global const float *qn, __global const float *kn, uint nq, uint nkv, __global uchar *kc,
                           __global uchar *vc, __global const uint *pt, uint npp, __global const PromptPlan *runs,
                           __global const uint *ppos_all, uint pstride, __global half *qt, uint hp,
-                          __global uchar *kh, __global uchar *vh, __global const uint *where) {
+                          __global uchar *kh, __global uchar *vh, __global const uint *where, float fs, uint yl,
+                          uint yh) {
   __local float x[Q_ATT_D], y[Q_ATT_D], red[64];
   __local uint4 blk[KV_HEAD_BYTES / 16];
   uint g = get_group_id(0), t = get_group_id(1), d = get_local_id(0);
@@ -353,7 +355,7 @@ __kernel void p_attn_prep(__global float *Q, __global const float *K, __global c
   float ss = wg_sum(v * v, red);
   x[d] = v * rsqrt(ss / (float)Q_ATT_D + Q_EPS) * (is_q ? qn[d] : kn[d]);
   barrier(CLK_LOCAL_MEM_FENCE);
-  float r = rope_at(x, d, ppos, pos_entry(pp, t));
+  float r = rope_at(x, d, ppos, pos_entry(pp, t), fs, yl, yh);
   if (is_q) {
     q[g * 2 * Q_ATT_D + d] = r;
     const uint slot = g / (Q_ATT_H / Q_ATT_KV) * Q_ATT_SLOTS + g % (Q_ATT_H / Q_ATT_KV);
@@ -416,7 +418,7 @@ __kernel void p_kv_flush(__global const uint4 *sk, __global const uint4 *sv, __g
 // rotate a query head in place; group 4 stores the raw key when the row's block is this card's. Groups (5, T), 128.
 __kernel void p_idx_prep(__global float *iq, __global const float *qn, __global uchar *raw, __global const uint *pt,
                          uint npp, __global const PromptPlan *runs, __global const uint *ppos_all, uint pstride,
-                         uint c, uint C) {
+                         uint c, uint C, float fs, uint yl, uint yh) {
   __local float x[Q_IDX_D], red[64];
   uint g = get_group_id(0), t = get_group_id(1), d = get_local_id(0);
   RUN_OF_ROW(t)
@@ -428,7 +430,7 @@ __kernel void p_idx_prep(__global float *iq, __global const float *qn, __global 
     float ss = wg_sum(v * v, red);
     x[d] = v * rsqrt(ss / (float)Q_IDX_D + Q_EPS) * qn[d];
     barrier(CLK_LOCAL_MEM_FENCE);
-    r[g * Q_IDX_D + d] = rope_at(x, d, ppos, pos_entry(pp, t));
+    r[g * Q_IDX_D + d] = rope_at(x, d, ppos, pos_entry(pp, t), fs, yl, yh);
     return;
   }
   if (b % C != c) return;
@@ -442,7 +444,7 @@ __kernel void p_idx_prep(__global float *iq, __global const float *qn, __global 
 // rotated by the positions of its first cell, which is the table's entry 4 group. Groups (T / 4 + 1), 128.
 __kernel void p_idx_pool(__global const uchar *raw, __global const uint *pt, uint npp, __global const float *kn,
                          __global float *pooled, __global const PromptPlan *runs, __global const uint *ppos_all,
-                         uint pstride, uint c, uint C) {
+                         uint pstride, uint c, uint C, float fs, uint yl, uint yh) {
   __local float blk[Q_IDX_D], red[64];
   RUN_OF_GROUP()
   __global const uint *ppos = ppos_all + (ulong)ri * pstride;
@@ -457,7 +459,7 @@ __kernel void p_idx_pool(__global const uchar *raw, __global const uint *pt, uin
   float ss = wg_sum(mean * mean, red);
   blk[d] = mean * rsqrt(ss / (float)Q_IDX_D + Q_EPS) * kn[d];
   barrier(CLK_LOCAL_MEM_FENCE);
-  pooled[(ulong)lpage * Q_IDX_D + d] = rope_at(blk, d, ppos, Q_IDX_BLOCK * get_group_id(0));
+  pooled[(ulong)lpage * Q_IDX_D + d] = rope_at(blk, d, ppos, Q_IDX_BLOCK * get_group_id(0), fs, yl, yh);
 }
 
 static inline uint idx_own(uint nb, uint c, uint C) { return nb > c ? (nb - c + C - 1) / C : 0; }

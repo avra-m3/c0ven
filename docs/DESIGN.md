@@ -246,6 +246,14 @@ The rules ([ADR-0033](adr/0033-paged-kv-kept-by-python.md)):
   rows only. The KV cells of rejected rows are overwritten when those positions come again
   ([MODEL_LAYER.md, 2.8](spec/MODEL_LAYER.md#28-what-must-be-saved-to-roll-back-rejected-draft-tokens)).
 
+### Past the trained context
+
+A context above the file's `context_length`, 262,144 tokens, rotates K, Q and the indexer's queries and pooled keys by YaRN, with
+`s = context / context_length` ([MODEL_LAYER.md, section 3.3](spec/MODEL_LAYER.md#33-rope-821-832),
+[ADR-0066](adr/0066-past-the-trained-context-the-rotation-is-scaled-by-yarn.md)). The core takes `s` from `max_ctx` and the file at
+load, in `core/models/qwen4exp/yarn.h`, so it is the same for every request on the server. K in the cache is stored
+rotated, and so holds for that `s` only. The draft layers do not scale: they attend over a short window of positions.
+
 ### The indexer on two cards: split by position
 
 The indexer picks which 2,048 cached positions each query attends to, by scoring one key per position block. Each

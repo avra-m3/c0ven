@@ -6,6 +6,7 @@
 
 #include "step.h"
 #include "types.h"
+#include "yarn.h"
 
 // The kernels see the sizes in kernel_sizes.h. Model code in the core does not, and reads them from Shape (ADR-0064).
 #ifdef __OPENCL_C_VERSION__

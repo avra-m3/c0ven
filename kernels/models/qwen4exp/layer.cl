@@ -41,20 +41,21 @@ static inline float wg_max(float v, __local float *red) {
 }
 
 // NeoX RoPE on the first Q_ROT dimensions of a head held in local memory: pairs (i, i + 32), angle
-// pos * base^(-2i / 64) (section 3.3). Every work-item of the group calls it; d is its dimension.
-static inline float rope(__local const float *x, uint d, uint pos) {
+// pos * base^(-2i / 64) (section 3.3), scaled by fs and the range yl to yh past the trained context (yarn.h). Every
+// work-item of the group calls it; d is its dimension.
+static inline float rope(__local const float *x, uint d, uint pos, float fs, uint yl, uint yh) {
   if (d >= Q_ROT) return x[d];
   uint i = d % (Q_ROT / 2);
-  float theta = (float)pos * pow(Q_ROPE_BASE, -2.0f * (float)i / (float)Q_ROT);
-  float c = cos(theta), s = sin(theta);
+  float theta = q_yarn_theta((float)pos * pow(Q_ROPE_BASE, -2.0f * (float)i / (float)Q_ROT), i, fs, yl, yh);
+  float m = q_yarn_scale(fs), c = cos(theta) * m, s = sin(theta) * m;
   return d < Q_ROT / 2 ? x[i] * c - x[i + Q_ROT / 2] * s : x[i] * s + x[i + Q_ROT / 2] * c;
 }
 
 // Interleaved M-RoPE (docs/spec/MODEL_VISION.md, section 4.2): pair i turns by the height position when i % 3 is 1,
 // by the width position when i % 3 is 2 and i < 30, by the time position otherwise. With t = h = w it is rope().
-static inline float rope3(__local const float *x, uint d, uint t, uint h, uint w) {
+static inline float rope3(__local const float *x, uint d, uint t, uint h, uint w, float fs, uint yl, uint yh) {
   uint i = d % (Q_ROT / 2), m = i % 3;
-  return rope(x, d, m == 1 ? h : (m == 2 && i < 30) ? w : t);
+  return rope(x, d, m == 1 ? h : (m == 2 && i < 30) ? w : t, fs, yl, yh);
 }
 
 // One Q8_0 block of 32 values from local memory into dst (d = max|x| / 127, q = round(x / d)).
@@ -402,7 +403,7 @@ __kernel void attn_prep(__global float *Q, __global const float *K, __global con
                         __global const float *kn, uint nq, uint nkv, __global uchar *kc, __global uchar *vc,
                         __global const uint *pt, uint npp, __global const StepPlan *plan,
                         __global const SlotRope *sr, __global uchar *kh, __global uchar *vh,
-                        __global const uint *where) {
+                        __global const uint *where, float fs, uint yl, uint yh) {
   __local float x[Q_ATT_D], y[Q_ATT_D], red[64];
   uint g = get_group_id(0), r = get_group_id(1), d = get_local_id(0);
   ROW_OR_RETURN(r)
@@ -413,7 +414,7 @@ __kernel void attn_prep(__global float *Q, __global const float *K, __global con
   float ss = wg_sum(v * v, red);
   x[d] = v * rsqrt(ss / (float)Q_ATT_D + Q_EPS) * (is_q ? qn[d] : kn[d]);
   barrier(CLK_LOCAL_MEM_FENCE);
-  float rv = rope(x, d, pos - sr[plan->rows[r].slot].delta);
+  float rv = rope(x, d, pos - sr[plan->rows[r].slot].delta, fs, yl, yh);
   if (is_q) {
     q[g * 2 * Q_ATT_D + d] = rv;
     return;
@@ -450,7 +451,8 @@ __kernel void attn_prep(__global float *Q, __global const float *K, __global con
 // rotate a query head in place; work-group 4 stores the raw key (8-bit) when the row's block is this card's.
 // Groups (5, width), 128.
 __kernel void idx_prep(__global float *iq, __global const float *qn, __global uchar *raw, __global const uint *pt,
-                       uint npp, __global const StepPlan *plan, __global const SlotRope *sr, uint c, uint C) {
+                       uint npp, __global const StepPlan *plan, __global const SlotRope *sr, uint c, uint C, float fs, uint yl,
+                       uint yh) {
   __local float x[Q_IDX_D], red[64];
   uint g = get_group_id(0), r = get_group_id(1), d = get_local_id(0);
   ROW_OR_RETURN(r)
@@ -461,7 +463,7 @@ __kernel void idx_prep(__global float *iq, __global const float *qn, __global uc
     float ss = wg_sum(v * v, red);
     x[d] = v * rsqrt(ss / (float)Q_IDX_D + Q_EPS) * qn[d];
     barrier(CLK_LOCAL_MEM_FENCE);
-    row[g * Q_IDX_D + d] = rope(x, d, pos - sr[plan->rows[r].slot].delta);
+    row[g * Q_IDX_D + d] = rope(x, d, pos - sr[plan->rows[r].slot].delta, fs, yl, yh);
     return;
   }
   if (b % C != c) return;
@@ -476,7 +478,7 @@ __kernel void idx_prep(__global float *iq, __global const float *qn, __global uc
 // stored. Groups (width), 128.
 __kernel void idx_pool(__global const uchar *raw, __global const uint *pt, uint npp, __global const float *kn,
                        __global float *pooled, __global const StepPlan *plan, __global const SlotRope *sr, uint c,
-                       uint C) {
+                       uint C, float fs, uint yl, uint yh) {
   __local float blk[Q_IDX_D], red[64];
   uint r = get_group_id(0), d = get_local_id(0);
   ROW_OR_RETURN(r)
@@ -494,7 +496,7 @@ __kernel void idx_pool(__global const uchar *raw, __global const uint *pt, uint 
   __global const SlotRope *s = sr + slot;
   uint b0 = Q_IDX_BLOCK * b, t = b0 - s->delta, h = t, w = t;
   if (b0 == s->blk) t = s->t, h = s->h, w = s->w;
-  pooled[(ulong)lpage * Q_IDX_D + d] = rope3(blk, d, t, h, w);
+  pooled[(ulong)lpage * Q_IDX_D + d] = rope3(blk, d, t, h, w, fs, yl, yh);
 }
 
 // This card's blocks complete at a row's position: b < nb with b % C == c, local indices 0 .. own - 1.

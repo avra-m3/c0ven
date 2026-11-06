@@ -443,6 +443,19 @@ One card's value is given first.
 | The prompt's staging buffer written through the CPU's mapping of it, one card, one slot at 262,144, 137 experts cached a layer | first token long-gen 0.76 (0.76-0.78) → 0.64 (0.64-0.65) s, gpqa-1 1.26 (1.24-1.32) → 1.04 (1.03-1.06) s; prompt reading by the client's clock 113 (110-114) → 134 (133-135) tokens/s, 172 (165-175) → 209 (205-211). doc-4k-qa and doc-32k, whose chunks do not take this path, level. Decode level. Start to `core open` 25.1 → 25.6 s. Two cards level: short first token 0.35 → 0.34 s, decode 105.3 → 104.2 tokens/s, four 36.1 → 34.2, mixed 38.0 → 38.7 | <a id="2026-11-05-staging-through-a-mapping"></a>[2026-11-05](#2026-11-05-staging-through-a-mapping) |
 | The experts copied in for a prompt read by 4-byte-aligned loads in place of 2-byte loads, one card, one slot at 262,144, 137 experts cached a layer | first token doc-32k 21.85 (21.47-23.74) → 20.32 (20.31-20.34) s, prompt reading 1,468 → 1,579.5 tokens/s; doc-4k-qa 2.69 (2.69-2.70) → 2.535 (2.53-2.59) s, 1,551.5 → 1,648 tokens/s; edit-py, gpqa-1 and long-gen overlapping; decode per window level. Two cards: decode short 104.3 → 104.75 tokens/s, four 32.2 → 32.5, mixed 38.4 → 38.15; first token mixed 5.75 → 5.665 s, four 8.415 → 8.055, the long prompt level | [2026-11-06](#2026-11-06-file-layout-wide-loads) |
 
+### Past the trained context
+
+The IQ3_S file with `--context 524288`, one slot, and the rotation scaled by YaRN. One request with `max_tokens` 64 on a
+prompt of repeated text. The arena was not locked, so the times are indicative
+([DEVELOPING.md](../DEVELOPING.md) says not to time runs that way), and there was one run.
+
+| Test | Value | Measured |
+| --- | --- | --- |
+| First token, 299,999-token prompt | 133.45 s | <a id="2026-11-02-context-524288"></a>[2026-11-02](#2026-11-02-context-524288) |
+| Prompt reading | 2,260.91 tokens/s | [2026-11-02](#2026-11-02-context-524288) |
+| Decode after it, 64 tokens | 56.66 tokens/s | [2026-11-02](#2026-11-02-context-524288) |
+| Experts cached per layer, plan 363 | 325 at load, 314.3 at the end | [2026-11-02](#2026-11-02-context-524288) |
+
 ### Other quants
 
 ISTA-DASLab's IQ3_XXS, IQ2_XS and Q2_0 files of the same model, each against IQ3_S in its own ABBA series on two
