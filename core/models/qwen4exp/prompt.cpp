@@ -179,7 +179,7 @@ void Model::record_prompt_copy(Card &card) {
   PromptCard &P = *card.pc;
   for (auto &hl : host_layers_) P.stage_slot = std::max<uint64_t>(P.stage_slot, hl->pieces.size() * hl->stg_bytes);
   if (P.stage_slot)
-    P.stage = static_cast<uint8_t *>(rt_->alloc_device_mapped(card.c, 2 * P.stage_slot, P.stage_cpu));
+    P.stage = static_cast<uint8_t *>(rt_->alloc_device_mapped(card.c, 2 * P.stage_slot + QUANT_FILE_PAD, P.stage_cpu));
   for (uint32_t l = 0; l < shape_.layers; l++)
     P.stage_map.push_back(upload<int32_t>(card, host_layers_[l]->stage_of.data(), shape_.experts * 4));
   P.copy = prompt_copies(card, staging_now(), copy_count_);

@@ -11,24 +11,50 @@ positions are per pair of effort and tools, as ADR-0017 says.
 
 from __future__ import annotations
 
-from engine.models.qwen4exp import numbers
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
 from engine.scheduler import every_16k
+
+if TYPE_CHECKING:
+    from engine.models.qwen4exp.tensors import TensorTable
+    from engine.scheduler import CheckpointRule
 
 LONG_SYSTEM = 2048
 
 
-def checkpoint_positions(prompt: tuple[int, ...]) -> list[tuple[int, bool]]:
-    marks: dict[int, bool] = dict(every_16k(prompt))
-    for i in range(len(prompt) - 1):
-        if prompt[i] == numbers.IM_START and prompt[i + 1] == numbers.ASSISTANT:
-            marks[i] = marks.get(i, False)
-    if prompt[:2] == (numbers.IM_START, numbers.SYSTEM):
-        try:
-            end = prompt.index(numbers.IM_END) + 1
-        except ValueError:
-            end = -1
-        if end >= 0 and end < len(prompt) and prompt[end] == numbers.NEWLINE:
-            end += 1
-        if end >= LONG_SYSTEM:
-            marks[end] = True
-    return sorted((p, k) for p, k in marks.items() if 0 < p < len(prompt))
+@dataclass(frozen=True, slots=True)
+class ChatTokens:
+    """The ids the rule looks for, the model file's."""
+
+    im_start: int
+    im_end: int
+    system: int
+    assistant: int
+    newline: int
+
+    @classmethod
+    def of(cls, table: TensorTable) -> ChatTokens:
+        return cls(*(table.token_id(t) for t in ("<|im_start|>", "<|im_end|>", "system", "assistant", "\u010a")))
+
+
+def checkpoint_rule(chat: ChatTokens) -> CheckpointRule:
+    """The checkpoint positions of a prompt of the file whose tokens `chat` holds: (position, kept) pairs."""
+
+    def positions(prompt: tuple[int, ...]) -> list[tuple[int, bool]]:
+        marks: dict[int, bool] = dict(every_16k(prompt))
+        for i in range(len(prompt) - 1):
+            if prompt[i] == chat.im_start and prompt[i + 1] == chat.assistant:
+                marks[i] = marks.get(i, False)
+        if prompt[:2] == (chat.im_start, chat.system):
+            try:
+                end = prompt.index(chat.im_end) + 1
+            except ValueError:
+                end = -1
+            if end >= 0 and end < len(prompt) and prompt[end] == chat.newline:
+                end += 1
+            if end >= LONG_SYSTEM:
+                marks[end] = True
+        return sorted((p, k) for p, k in marks.items() if 0 < p < len(prompt))
+
+    return positions

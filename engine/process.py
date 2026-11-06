@@ -584,7 +584,7 @@ def main(argv: list[str] | None = None) -> int:
     sched = SchedulerOptions(
         prompt_budget_ms=args.prompt_budget_ms, decode_share=args.decode_share, chunk_rows=args.chunk_rows
     )
-    rule: CheckpointRule = model.checkpoint_positions
+    rule: CheckpointRule = model.checkpoint_rule(args.model if native else None, args.table_cache)
     return serve(
         make_engine(args.backend, args.realtime, arch),
         config,
