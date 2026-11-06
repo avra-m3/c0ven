@@ -317,7 +317,8 @@ Both cards route every token in full, so both know its misses. Card 0 alone hand
 host memory, each with one writer ([ADR-0011](adr/0011-cpu-gpu-signalling.md)). The CPU computes each missed expert
 whole, in place in the arena, and card 0 adds the answer to its partial sum. A decode step copies no expert onto the
 cards. The prompt path and swaps do, through the copy engines (section 9), and a prompt chunk of 1,024 rows or fewer
-through copies the runtime makes with the CPU ([DEVELOPING.md](DEVELOPING.md#how-a-prompt-chunk-runs)).
+through the CPU's writes to a mapping of the staging buffer; a load fails where the system will not map it
+([DEVELOPING.md](DEVELOPING.md#how-a-prompt-chunk-runs)).
 
 The weights are the only large data, about 5.1 GB read per decode token, half on each card
 ([measurements/MEMORY_BUDGET.md](measurements/MEMORY_BUDGET.md#what-one-decode-token-reads-computed)). They never move during decode: each
@@ -350,8 +351,10 @@ the plan's figures and the core's, and sends it in INFO as `fit_*` facts. The co
 layer on each card as its physical memory allows, after setting aside `reserve_bytes` (1 GiB) for the driver's own use
 and some free ([ADR-0027](adr/0027-the-c-abi-as-the-core-was-optimised.md), item 3). It reports the memory it had left for them
 (`engine_info.expert_budget`). The plan's working memory per card, everything outside the weights, the draft layer,
-the sequences' reserve and the experts, is an estimate until a load shows the core's: with `ENGINE_CACHE_DIR` set, the core's
+the sequences' reserve and the experts, is an estimate from the slots, the context, the KV pool and the drafter until a load shows the core's: with `ENGINE_CACHE_DIR` set, the core's
 figure is kept for each model file, version and set of options, and the next start plans with it.
+The plan also takes the prompt path's staging from what the experts have, as the core does, and so gives the count the
+core starts from. The core then lends spare KV blocks to the cache, so its final count is higher.
 
 A model with an SSD tier holds its experts in VRAM, the arena and the SSD: its arena takes what the host can spare, and
 an arena that does not fit is a normal plan

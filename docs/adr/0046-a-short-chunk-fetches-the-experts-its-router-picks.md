@@ -1,6 +1,6 @@
 # ADR-0046: a short prompt chunk fetches the experts its router picks
 
-**Status:** draft, 2026-10-21; not accepted.
+**Status:** draft, 2026-10-21; not accepted; how item 1 makes its copies superseded by [ADR-0065](0065-a-short-chunk-writes-through-a-mapping.md).
 **Revisit when:** compute-runtime stops making a copy from host memory it did not allocate with the CPU on an
 immediate list ([LEVEL_ZERO.md](../measurements/LEVEL_ZERO.md) row 31), the cards cache so many experts that a chunk's staging
 hides behind its products, a chunk of more than 1,024 rows should fetch as well, or a chunk of 500-1,024 rows is
