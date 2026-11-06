@@ -10,6 +10,7 @@
 #include <stdexcept>
 
 #include "models/qwen4exp/model_impl.h"
+#include "models/qwen4exp/vision_sizes.h"
 
 namespace engine::qwen4exp {
 
@@ -17,13 +18,24 @@ using namespace detail;
 
 namespace {
 
-constexpr uint32_t kVD = 1152, kVFF = 4304, kVFFP = 4320, kVLayers = 27, kVHeads = 16, kVHdp = 80, kVPatch = 768;
+// The sizes the encoder's kernels are built for (vision_sizes.h), which load_vision checks the file against.
+constexpr uint32_t kVD = V_D, kVFF = V_FF, kVFFP = V_FFP, kVLayers = V_LAYERS, kVHeads = V_H, kVHdp = V_HDP;
+constexpr uint32_t kVPatch = V_PATCH;
 constexpr uint32_t kVQkvW = kVHeads * kVHdp;  // fp16 values per row of q, k and v (vision.cl's V_QKV_W)
-constexpr uint32_t kMerge = 4 * kVD, kVOut = 2560;  // the encoder's output, its own size
+constexpr uint32_t kMerge = V_MERGE * V_MERGE * kVD, kVOut = V_OUT;  // the encoder's output, its own size
 constexpr uint32_t kStages = kVLayers + 2;  // the layers, then the merger's mm.0 and mm.2
 constexpr uint32_t kTokensMax = 4096;       // section 4.3
 constexpr uint32_t kFramesMax = 2;          // a pair of video frames (section 6)
-static_assert(kVPatch == kImageShape.patch_bytes);
+
+// The file's id of the token whose text is `text`, from tokenizer.ggml.tokens; kNoToken when it has none.
+int32_t token_id(const std::map<std::string, GgufValue> &meta, const std::string &text) {
+  auto it = meta.find("tokenizer.ggml.tokens");
+  if (it == meta.end()) throw std::runtime_error("GGUF key missing: tokenizer.ggml.tokens");
+  const auto *tokens = std::get_if<std::vector<std::string>>(&it->second);
+  if (!tokens) throw std::runtime_error("GGUF key is not a string array: tokenizer.ggml.tokens");
+  auto at = std::find(tokens->begin(), tokens->end(), text);
+  return at == tokens->end() ? kNoToken : (int32_t)(at - tokens->begin());
+}
 
 // The four products of a layer in its stage: qkv, out, up, down (rows of 4,320, the last 16 zero).
 struct LayerOffsets {
@@ -91,6 +103,10 @@ std::vector<uint16_t> gelu_table() {
 
 }  // namespace
 
+ImageShape image_shape_of(const std::map<std::string, GgufValue> &meta) {
+  return {token_id(meta, "<|image_pad|>"), token_id(meta, "<|video_pad|>"), V_PATCH, V_MERGE};
+}
+
 
 void Model::set_images(uint32_t slot, const Image *images, uint32_t n) {
   if (slot >= opt_.slots) throw std::runtime_error("slot out of range");
@@ -140,8 +156,17 @@ void Model::load_vision(bool first) {
     throw std::runtime_error("not a qwen3vl_merger encoder");
   if (g.get_int("clip.vision.block_count") != kVLayers || g.get_int("clip.vision.embedding_length") != kVD ||
       g.get_int("clip.vision.feed_forward_length") != kVFF || g.get_int("clip.vision.attention.head_count") != kVHeads ||
-      g.get_int("clip.vision.patch_size") != 16 || g.get_int("clip.vision.projection_dim") != kVOut)
+      g.get_int("clip.vision.patch_size") != V_SIDE || g.get_int("clip.vision.projection_dim") != kVOut ||
+      g.get_int("clip.vision.spatial_merge_size") != V_MERGE ||
+      (float)g.get_float("clip.vision.attention.layer_norm_epsilon") != V_EPS)
     throw std::runtime_error("an encoder of another shape");
+  for (const char *key : {"clip.vision.image_mean", "clip.vision.image_std"}) {
+    auto it = g.metadata().find(key);
+    const auto *v = it == g.metadata().end() ? nullptr : std::get_if<std::vector<double>>(&it->second);
+    const float want = std::string(key).ends_with("mean") ? V_PIX_MEAN : V_PIX_STD;
+    if (!v || v->size() != 3 || std::any_of(v->begin(), v->end(), [&](double x) { return (float)x != want; }))
+      throw std::runtime_error(std::string("an encoder with another ") + key);
+  }
   auto tensor = [&](const std::string &name, uint32_t type, uint64_t elements) -> const GgufTensor & {
     const GgufTensor &t = g.tensor(name);
     if (t.type != type || t.elements() != elements) throw std::runtime_error("unexpected tensor " + name);
@@ -221,7 +246,7 @@ void Model::load_vision(bool first) {
     V.wt2 = upload<float>(*card, wt2.data(), wt2.size() * 4);
     V.gelu = upload<uint16_t>(*card, gelu.data(), gelu.size() * 2);
     V.pbias = f32("v.patch_embd.bias", kVD);
-    V.pos = f32("v.position_embd.weight", 48ull * 48 * kVD);
+    V.pos = f32("v.position_embd.weight", (uint64_t)V_GRID * V_GRID * kVD);
     for (uint32_t l = 0; l < kVLayers; l++)
       V.layers.push_back({f32(vblk(l, "ln1.weight"), kVD), f32(vblk(l, "ln1.bias"), kVD),
                           f32(vblk(l, "attn_qkv.bias"), 3 * kVD), f32(vblk(l, "attn_out.bias"), kVD),
@@ -270,7 +295,7 @@ void Model::encode_image(const Image &im, float *out) {
   std::memcpy(vpix_, im.pixels, (size_t)N * kVPatch * F);
   for (uint32_t i = 0; i < vevents_->size(); i++) ZE_CHECK(zeEventHostReset((*vevents_)[i]));
   const LayerOffsets lo = layer_offsets();
-  const float one = 1.0f, scale = 1.0f / std::sqrt(72.0f);
+  const float one = 1.0f, scale = 1.0f / std::sqrt((float)V_HD);
   const uint32_t zero = 0, gh = im.grid_h, gw = im.grid_w;
   // The cards' commands are appended layer by layer, the cards in turn, so that every event a list waits for is
   // signalled by a command appended before the wait: an immediate list's append can block until the card has run
@@ -318,7 +343,7 @@ void Model::encode_image(const Image &im, float *out) {
       L.wait({ev(0, l, c)});
       L.launch(vk(c, "v_norm"), {V.x, R[c], Ly.ln1w, Ly.ln1b, V.a}, R[c], 1, 1, 16);
       gemm(c, st + lo.qkv, 3 * kVD, kVD, kVD, V.a, kVD, &vcount_[16 * c], R[c], V.y);
-      L.launch(vk(c, "v_qkv"), {V.y, Ly.bqkv, R[c], r0[c], gw, V.q, V.k + kv0, V.v + kv0}, kVHeads * 36 / 64, R[c], 1,
+      L.launch(vk(c, "v_qkv"), {V.y, Ly.bqkv, R[c], r0[c], gw, V.q, V.k + kv0, V.v + kv0}, kVHeads * V_ROT / 64, R[c], 1,
                64);
       if (C > 1) {
         // Into the other card's K and V once it has finished with the last layer's.

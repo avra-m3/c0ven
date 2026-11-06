@@ -126,6 +126,7 @@ Model::Model(const std::string &path, const Options &opt) : opt_(opt), gguf_(pat
   auto t0 = std::chrono::steady_clock::now();
   if (gguf_.get_string("general.architecture") != "qwen4exp") throw std::runtime_error("not a qwen4exp model");
   shape_ = read_shape(gguf_.metadata(), gguf_.tensors());
+  image_shape_ = image_shape_of(gguf_.metadata());
   if (const auto bad = shape_mismatches(shape_, gguf_.tensors()); !bad.empty()) {
     std::string why = bad[0];
     for (size_t i = 1; i < std::min<size_t>(bad.size(), 5); i++) why += "; " + bad[i];
