@@ -27,6 +27,7 @@ struct Shape {
   uint32_t vocab;  // output.weight's rows
   uint32_t ple_heads, ple_row, ple_dil;
   std::vector<int64_t> compress_ratios;  // one a layer
+  std::vector<int64_t> rope_sections;    // rope.dimension_sections: time, height, width, and a fourth of 0
 
   bool attn(uint32_t l) const { return (l + 1) % attn_interval == 0; }  // else a Gated DeltaNet layer
   uint32_t attn_layers() const { return layers / attn_interval; }

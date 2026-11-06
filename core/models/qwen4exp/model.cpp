@@ -126,6 +126,7 @@ Model::Model(const std::string &path, const Options &opt) : opt_(opt), gguf_(pat
   auto t0 = std::chrono::steady_clock::now();
   if (gguf_.get_string("general.architecture") != "qwen4exp") throw std::runtime_error("not a qwen4exp model");
   shape_ = read_shape(gguf_.metadata(), gguf_.tensors());
+  image_shape_ = image_shape_of(gguf_.metadata());
   if (const auto bad = shape_mismatches(shape_, gguf_.tensors()); !bad.empty()) {
     std::string why = bad[0];
     for (size_t i = 1; i < std::min<size_t>(bad.size(), 5); i++) why += "; " + bad[i];
@@ -714,7 +715,7 @@ void Model::load_card(Card &card) {
       L.A = gather_f32(blk(l, "ssm_a"), vh, 1);
       L.dt = gather_f32(blk(l, "ssm_dt.bias"), vh, 1);
       L.ssm_norm = f32(blk(l, "ssm_norm.weight"));
-      L.conv_stride = 3ull * card.nch;
+      L.conv_stride = (uint64_t)(shape_.gdn_conv - 1) * card.nch;  // the conv's history: its kernel less one row
       L.S_stride = (uint64_t)card.nvh * shape_.gdn_d * shape_.gdn_d;
       L.conv_state = upload<float>(card, nullptr, S * L.conv_stride * 4);
       L.wu = upload<float>(card, nullptr, (size_t)STEP_MAX_ROWS * card.nch * 4);
@@ -1148,7 +1149,7 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
   const uint32_t c = card.c, C = ncards_;
   auto common = [&](const char *name) { return kernel(c, "common", name); };
   auto q4 = [&](const char *name) { return kernel(c, layer_module_, name); };
-  const float one = 1.0f, quarter = 0.25f;
+  const float one = 1.0f, quarter = 1.0f / (float)shape_.hc;  // the hyper-connections' 1 / hc (4 streams: a quarter)
   const uint32_t zero = 0, mode_silu = 1;
   // The kernels read the plan from the card's copy: a word in host memory makes each launch slower
   // (docs/measurements/MEASUREMENTS.md#2026-10-16-bf16-products-occupancy).
@@ -1424,7 +1425,7 @@ void Model::record_head(ze::List &L, Card &card, const StepPlan *plan, uint32_t 
   const uint32_t c = card.c;
   auto common = [&](const char *name) { return kernel(c, "common", name); };
   auto q4 = [&](const char *name) { return kernel(c, layer_module_, name); };
-  const float one = 1.0f, quarter = 0.25f;
+  const float one = 1.0f, quarter = 1.0f / (float)shape_.hc;  // the hyper-connections' 1 / hc (4 streams: a quarter)
   const uint32_t zero = 0, mode_silu = 1, gs = shape_.embd;
   uint16_t *no_bf16 = nullptr;
   L.launch(q4("rms_norm"), {card.R, card.out_norm, plan, card.n, no_bf16}, shape_.hc, W, 1, 256);

@@ -20,11 +20,29 @@
 #define FIELD(f, k) (W + quant_run_offset(QTYPE, f, n) + (ulong)(k) * quant_field_size(QTYPE, f))
 #endif
 
-// A 32-bit load from a field. File blocks keep 16-bit alignment only: every type's block is an even number of bytes.
+// 32- and 64-bit loads from a field. File blocks keep 16-bit alignment only (every type's block is an even number of
+// bytes), so a file field's words come from the 4-byte-aligned words around it, shifted: one wide load where 16-bit
+// loads took one load each (docs/measurements/MEASUREMENTS.md#2026-11-06-file-layout-wide-loads). They read up to 4
+// bytes past the field, so a buffer of file blocks starts 4-byte aligned and has QUANT_FILE_PAD bytes after its last
+// block (shared/quant.h).
 #ifdef LAYOUT_FILE
-static inline uint dec_u32(__global const uchar *p) { return (uint)ld_u16(p) | ((uint)ld_u16(p + 2) << 16); }
+static inline __global const uint *file_words(__global const uchar *p) {
+  return (__global const uint *)((ulong)p & ~3ul);
+}
+// The word at byte 2 of lo, hi when odd (the field starts 2 bytes past a 4-byte boundary), else lo.
+static inline uint file_word(uint lo, uint hi, bool odd) { return odd ? (lo >> 16) | (hi << 16) : lo; }
+static inline uint dec_u32(__global const uchar *p) {
+  const uint2 w = vload2(0, file_words(p));
+  return file_word(w.s0, w.s1, ((ulong)p & 2) != 0);
+}
+static inline uint2 dec_u64(__global const uchar *p) {
+  const uint3 w = vload3(0, file_words(p));
+  const bool odd = ((ulong)p & 2) != 0;
+  return (uint2)(file_word(w.s0, w.s1, odd), file_word(w.s1, w.s2, odd));
+}
 #else
 static inline uint dec_u32(__global const uchar *p) { return ld_u32(p); }
+static inline uint2 dec_u64(__global const uchar *p) { return (uint2)(ld_u32(p), ld_u32(p + 4)); }
 #endif
 
 // Bytes of the codebook a type needs in shared local memory, and where it starts in the packed buffer.
@@ -472,16 +490,23 @@ static inline uint8 unit_raw(__global const uchar *W, ulong n, ulong k, uint s) 
   r.s2 = (uint)FIELD(2, k)[s] | ((uint)FIELD(3, k)[s] << 8);
   r.s3 = ld_u16(FIELD(4, k));
 #elif QTYPE == QT_IQ3_XXS
-  r.s0 = dec_u32(FIELD(0, k) + 8 * s);
-  r.s1 = dec_u32(FIELD(0, k) + 8 * s + 4);
+  r.s01 = dec_u64(FIELD(0, k) + 8 * s);
   r.s2 = dec_u32(FIELD(1, k) + 4 * s);
   r.s3 = ld_u16(FIELD(2, k));
 #elif QTYPE == QT_IQ3_S
-  r.s0 = dec_u32(FIELD(0, k) + 8 * s);
-  r.s1 = dec_u32(FIELD(0, k) + 8 * s + 4);
+  r.s01 = dec_u64(FIELD(0, k) + 8 * s);
   r.s2 = dec_u32(FIELD(1, k) + 4 * s);
   r.s3 = (uint)FIELD(2, k)[s] | ((uint)((FIELD(3, k)[s / 2] >> (4 * (s & 1))) & 15) << 8);
   r.s4 = ld_u16(FIELD(4, k));
+#elif QTYPE == QT_IQ4_NL && defined(LAYOUT_FILE)
+  // The whole block, d then qs, from five aligned words.
+  __global const uchar *b = FIELD(1, k);
+  __global const uint *a = file_words(b);
+  const bool odd = ((ulong)b & 2) != 0;
+  const uint4 v = vload4(0, a);
+  const uint w[5] = {v.s0, v.s1, v.s2, v.s3, a[4]};
+  for (uint i = 0; i < 4; i++) r[i] = odd ? w[i + 1] : file_word(w[i], w[i + 1], true);
+  r.s4 = odd ? w[0] >> 16 : w[0] & 0xffff;
 #elif QTYPE == QT_IQ4_NL
   for (uint i = 0; i < 4; i++) r[i] = dec_u32(FIELD(0, k) + 4 * i);
   r.s4 = ld_u16(FIELD(1, k));
@@ -492,8 +517,7 @@ static inline uint8 unit_raw(__global const uchar *W, ulong n, ulong k, uint s) 
   r.s4 = sl | (sh << 4);
   r.s5 = ld_u16(FIELD(3, k));
 #elif QTYPE == QT_Q2_0
-  r.s0 = dec_u32(FIELD(0, k) + 8 * s);
-  r.s1 = dec_u32(FIELD(0, k) + 8 * s + 4);
+  r.s01 = dec_u64(FIELD(0, k) + 8 * s);
   r.s2 = ld_u16(FIELD(1, k));
 #endif
   return r;
@@ -512,11 +536,9 @@ static inline uint8 unit_raw(__global const uchar *W, ulong n, ulong k, uint s) 
 
 static inline uint8 block_raw(__global const uchar *W, ulong n, ulong k) {
   uint8 x = (uint8)(0);
-  x.s0 = dec_u32(FIELD(2, k));
-  x.s1 = dec_u32(FIELD(2, k) + 4);
+  x.s01 = dec_u64(FIELD(2, k));
 #if QTYPE == QT_IQ2_S
-  x.s2 = dec_u32(FIELD(3, k));
-  x.s3 = dec_u32(FIELD(3, k) + 4);
+  x.s23 = dec_u64(FIELD(3, k));
   x.s4 = ld_u16(FIELD(4, k));
 #else
   x.s2 = dec_u32(FIELD(3, k));
@@ -535,8 +557,7 @@ static inline uint8 unit_raw_in(__global const uchar *W, ulong n, ulong k, uint 
   r.s2 = qh | ((((s < 4 ? x.s2 : x.s3) >> (8 * (s & 3))) & 255) << 8);
   r.s3 = x.s4;
 #else
-  r.s0 = dec_u32(FIELD(0, k) + 8 * s);
-  r.s1 = dec_u32(FIELD(0, k) + 8 * s + 4);
+  r.s01 = dec_u64(FIELD(0, k) + 8 * s);
   r.s2 = dec_u32(FIELD(1, k) + 4 * s);
   r.s3 = qh | (((x.s2 >> (4 * s)) & 15) << 8);
   r.s4 = x.s4;

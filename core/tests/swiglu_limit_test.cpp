@@ -215,7 +215,7 @@ int main() {
   *dNT = NEXP;
   for (uint32_t i = 0; i < nasg; i++)
     for (uint32_t k = 0; k < K; k++) X[(size_t)i * K + k] = ggml_fp32_to_fp16(x[order[i] / PER][k]);
-  auto *dW = static_cast<uint8_t *>(rt.alloc_device(card, pbuf.size()));
+  auto *dW = static_cast<uint8_t *>(rt.alloc_device(card, pbuf.size() + QUANT_FILE_PAD));
   auto *dX = static_cast<uint16_t *>(rt.alloc_device(card, X.size() * 2));
   auto *dH = static_cast<uint16_t *>(rt.alloc_host(nout * 2));
   L.copy(dW, pbuf.data(), pbuf.size());

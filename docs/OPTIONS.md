@@ -7,7 +7,7 @@ The arguments after the image name in `docker run` are the server's options. The
 | --- | --- | --- |
 | `--model` | | The GGUF file (any shard). |
 | `--slots` | `1` | How many requests can run at once. |
-| `--context` | `262144` | Context length in tokens. |
+| `--context` | the model file's | Context length in tokens. |
 | `--default-max-tokens` | the rest of the context | What a request without `max_tokens` may write, in tokens (`32k` is 32,768). |
 | `--kv-tokens` | slots x context | The KV cache the slots share, in tokens (`512k` is 524,288), at least `--context`. The tokens the requests do not hold lend their VRAM to the expert cache; with `--deterministic`, each token of it takes VRAM that would otherwise cache experts. See below. |
 | `--host` | `127.0.0.1` | Address to listen on. |

@@ -26,7 +26,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--model", type=Path, help="the GGUF file (any shard)")
     p.add_argument("--arch", help=f"the architecture; default: the --model file's, else {ARCH}")
     p.add_argument("--slots", type=int, default=1)
-    p.add_argument("--context", type=int, default=262_144)
+    p.add_argument("--context", type=int, default=0, help="tokens per slot; default: the model's context length")
     p.add_argument("--checkpoints", type=int, default=8)
     p.add_argument(
         "--kv-tokens", type=protocol.tokens, default=0, help="the KV pool the slots share; default: slots x context"

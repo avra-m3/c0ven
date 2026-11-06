@@ -43,9 +43,10 @@ using engine::StepIn;
 using engine::StepStats;
 using engine::TraceRow;
 
-// The image and video tokens, and 16-pixel patches of 768 bytes merged 2 x 2 (docs/spec/MODEL_VISION.md, sections 2,
-// 4.1 and 6).
-constexpr ImageShape kImageShape{248056, 248057, 768, 2};
+// The image and video tokens, the file's `<|image_pad|>` and `<|video_pad|>` (kNoToken for one it lacks), and the
+// patches the encoder is built for: 16 pixels a side, 768 bytes, merged 2 x 2 (docs/spec/MODEL_VISION.md, sections 2,
+// 4.1 and 6; vision_sizes.h). meta: the model file's metadata.
+ImageShape image_shape_of(const std::map<std::string, GgufValue> &meta);
 // What DFlash 2's config.json gives beyond its tensors' sizes, from dflash-config.txt (tools/dflash_fetch.py).
 struct DfConfig {
   int32_t mask_token = 0;                     // the token of a block's rows after its first: mask_token_id
@@ -77,7 +78,7 @@ class Model final : public engine::Model {
   std::array<uint32_t, 3> position(uint32_t slot, uint32_t cell) const;
   // The most tokens an image may have: 0 without Options::vision_path.
   uint32_t image_tokens_max() const override { return vmax_tokens_; }
-  ImageShape image_shape() const override { return kImageShape; }
+  ImageShape image_shape() const override { return image_shape_; }
   // An image's rows of the text model's input (vision.cpp), image_tokens rows of 2,560 into out: what the prompt path
   // reads at the image's block. For tests; prompt() runs it itself.
   void encode_image(const Image &im, float *out);
@@ -330,6 +331,7 @@ class Model final : public engine::Model {
 
   Options opt_;
   GgufModel gguf_;
+  ImageShape image_shape_;
   Shape shape_;  // the file's sizes; those still fixed at build time equal it once the constructor has checked them
   std::string layer_module_, prompt_module_;  // the kernels built for shape_.experts
   std::unique_ptr<ze::Runtime> rt_;
