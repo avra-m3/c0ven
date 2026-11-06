@@ -86,8 +86,8 @@ const directory = canvasTex(360, 512, (g, w, h) => {
   g.strokeStyle = "#b08a4a"; g.lineWidth = 8; g.strokeRect(5, 5, w - 10, h - 10);
   g.fillStyle = "#e6dfc9"; g.font = "700 36px 'Barlow Condensed', Arial Narrow, sans-serif"; g.textAlign = "center"; g.fillText("DIRECTORY", w / 2, 54);
   g.textAlign = "left"; g.font = "500 28px 'Barlow Condensed', Arial Narrow, sans-serif";
-  [["01", "THE SHELF ROOM"], ["02", "THE ANNEX"], ["03", "MUSICAL DESKS"], ["04", "CLOSED"], ["05", "CLOSED"], ["...", ""], ["48", "THE ROOF"]].forEach(([n, t], i) => {
-    g.fillStyle = "#e8a33d"; g.fillText(n, 34, 112 + i * 52); g.fillStyle = i < 3 ? "#e6dfc9" : "#7d8088"; g.fillText(t, 96, 112 + i * 52);
+  [["01", "THE SHELF ROOM"], ["02", "THE ANNEX"], ["03", "MUSICAL DESKS"], ["04", "THE BRIEFING"], ["05", "CLOSED"], ["...", ""], ["48", "THE ROOF"]].forEach(([n, t], i) => {
+    g.fillStyle = "#e8a33d"; g.fillText(n, 34, 112 + i * 52); g.fillStyle = i < 4 ? "#e6dfc9" : "#7d8088"; g.fillText(t, 96, 112 + i * 52);
   });
 });
 const dirM = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 2.1), new THREE.MeshStandardMaterial({ map: directory, roughness: 0.4, emissive: 0x332a18, emissiveMap: directory, emissiveIntensity: 0.9 }));

@@ -6,13 +6,14 @@ import lobby from "./floors/lobby.js";
 import floor1 from "./floors/floor1.js";
 import floor2 from "./floors/floor2.js";
 import floor3 from "./floors/floor3.js";
+import floor4 from "./floors/floor4.js";
 import { $, camera, reduced, renderer, resize, scene, tubes, view } from "./world.js";
 import { loadNarration, skip, speaking, unlockAudio } from "./narration.js";
 import { addFloor, floors, goFloor, placeLabels, setFloorHud } from "./hud.js";
 import { isRiding, parkCar, skipRide } from "./lift.js";
 import { unlockSound } from "./sound.js";
 
-const FLOORS = [floor1, floor2, floor3];
+const FLOORS = [floor1, floor2, floor3, floor4];
 addFloor(lobby); FLOORS.forEach(addFloor);
 const narrationRead = loadNarration(FLOORS.map((F) => F.number));
 

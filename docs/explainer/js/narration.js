@@ -22,7 +22,7 @@ export async function loadNarration(numbers) {
         t += words * 0.36 + 0.5;
         return at;
       });
-      CHUNKS[c] = { dur: +t.toFixed(2), lines: placed };
+      CHUNKS[c] = { dur: +t.toFixed(2), lines: placed, silent: true };
     }
     for (const c of Object.keys(timing)) {
       fetch(`audio/${c}.mp3`).then((r) => r.ok ? r.blob() : null).then((b) => { if (b) clips[c] = URL.createObjectURL(b); }).catch(() => {});
@@ -44,10 +44,10 @@ function caption(lineId) {
 
 // Plays a chunk; onCue(lineId) runs as each caption starts. Without sound, or if the file fails, a clock stands in.
 export function speak(id, onCue) {
-  const { dur, lines } = CHUNKS[id];
+  const { dur, lines, silent } = CHUNKS[id];
   const cues = lines.map(([line, ts], i) => [i ? ts[0] : 0, line, ts]);
   return new Promise((resolve) => {
-    let done = false, shown = -1, spans = [], said = 0, useAudio = soundOn, base = 0, t0 = performance.now();
+    let done = false, shown = -1, spans = [], said = 0, useAudio = soundOn && !silent, base = 0, t0 = performance.now();
     let lastT = -1, lastMove = performance.now(), endTimer = null;
     const time = () => useAudio ? audio.currentTime : base + (performance.now() - t0) / 1000;
     const toClock = () => { if (!useAudio) return; base = audio.currentTime || 0; t0 = performance.now(); useAudio = false; audio.pause(); };
