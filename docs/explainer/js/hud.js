@@ -21,14 +21,17 @@ export function setFloorHud(n) {
 const pct = (s) => (s / floors[view.floor].scale * 100).toFixed(2) + "%";
 
 export function setClock(f, t) { $("time").textContent = (f + t).toFixed(1) + " s"; $("liveF").style.width = pct(f); $("liveT").style.width = pct(t); }
-const ran = new Set();
+const ran = new Map();
+// A label already on the list keeps its row, which takes the new numbers.
 export function addHistory(run) {
-  if (ran.has(run.label)) return;
-  ran.add(run.label);
-  const row = document.createElement("div");
-  row.className = "row";
+  let row = ran.get(run.label);
+  if (!row) {
+    row = document.createElement("div");
+    row.className = "row";
+    ran.set(run.label, row);
+    $("history").appendChild(row);
+  }
   row.innerHTML = `<span>${run.label}</span><div class="bar"><div class="f" style="width:${pct(run.fetch)}"></div><div class="t" style="width:${pct(run.think)}"></div></div><b>${(run.fetch + run.think).toFixed(1)} s</b>`;
-  $("history").appendChild(row);
 }
 
 // ---------- UI pieces ----------
@@ -88,6 +91,7 @@ export function placeLabels(F) {
 export async function goFloor(n) {
   clearStage();
   const from = floors[view.floor], F = floors[n];
+  if (from.leave) from.leave();
   const enter = () => {
     view.floor = n;
     showFloor(n);
