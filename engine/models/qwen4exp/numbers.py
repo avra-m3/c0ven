@@ -8,7 +8,7 @@ from __future__ import annotations
 
 MAX_YARN_SCALE = 4
 """The longest context the engine accepts, as a multiple of the file's context_length; past that the core rotates by
-YaRN (ADR-0065)."""
+YaRN (ADR-0066)."""
 
 # Token ids (spec/MODEL_IO.md, section 4.1).
 IM_START = 248_045

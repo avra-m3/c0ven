@@ -1,4 +1,4 @@
-# ADR-0065: past the trained context the rotation is scaled by YaRN
+# ADR-0066: past the trained context the rotation is scaled by YaRN
 
 **Status:** draft, 2026-11-02; not accepted. Item 3 of [ADR-0006](0006-scope.md) superseded in part.
 **Revisit when:** the model's answers past 262,144 tokens are measured and found poor, or a request needs its own
