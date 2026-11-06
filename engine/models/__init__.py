@@ -10,6 +10,7 @@ if TYPE_CHECKING:
 
     from engine.api.interface import OpenConfig
     from engine.memory_plan import MemoryPlan, PlanOptions
+    from engine.scheduler import CheckpointRule
 
 
 class ModelSetup(Protocol):
@@ -39,6 +40,7 @@ class ModelSetup(Protocol):
         """The image encoder's file the model finds beside `model`; None: there is none."""
         ...
 
-    def checkpoint_positions(self, prompt: tuple[int, ...]) -> list[tuple[int, bool]]:
-        """Where to checkpoint a prompt of these token ids: (position, kept) pairs (scheduler.CheckpointRule)."""
+    def checkpoint_rule(self, model: Path | None, table_cache: Path | None = None) -> CheckpointRule:
+        """Where to checkpoint a prompt of the model's token ids: (position, kept) pairs. model and table_cache: as
+        `open_config`'s."""
         ...
