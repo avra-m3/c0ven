@@ -492,9 +492,10 @@ def test_the_cost_model_is_kept_at_a_sleep(tmp_path: Path):
 
 
 class FailsAtSubmit(MockEngine):
-    """A core whose plan failed, as when a list times out."""
+    """A core whose plan failed."""
 
     closed = False
+    stuck = False
 
     def submit(self, plan: StepPlan) -> None:
         raise RuntimeError("card 0 did not finish a list in 60 s")
@@ -503,22 +504,27 @@ class FailsAtSubmit(MockEngine):
         self.closed = True
         super().close()
 
+    def queue_stuck(self) -> bool:
+        return self.stuck
 
-def test_a_failed_engine_says_so_and_does_not_close_the_core():
+
+@pytest.mark.parametrize("stuck", [False, True])
+def test_a_failed_engine_says_so_and_closes_the_core_unless_a_queue_is_stuck(stuck: bool):
     engine = FailsAtSubmit()
+    engine.stuck = stuck
     out = io.StringIO()
     stdin = cast("TextIO", lines_apart([protocol.Gen(1, 4, tuple(range(3, 40))).encode()], 0.0, 30.0))
     status = serve(engine, open_config(), rule=every_16k, options=SchedulerOptions(), stdin=stdin, stdout=out)
     assert status == 1
-    assert not engine.closed
+    assert engine.closed is not stuck
     last = protocol.parse_event(out.getvalue().splitlines()[-1])
     assert isinstance(last, protocol.Error)
     assert last.rid is None
     assert "did not finish a list" in last.message
 
 
-# The engine's own entry point, with a core that fails its first plan, and whose close and exit-time teardown would
-# both wait for as long as the test does: the failed process has to skip both.
+# The engine's own entry point, with a core whose first plan leaves a queue stuck, and whose close and exit-time
+# teardown would both wait for as long as the test does: the process has to skip both.
 STUCK_ENGINE = """
     import atexit, runpy, sys, time
     from engine import process
@@ -529,6 +535,8 @@ STUCK_ENGINE = """
             raise RuntimeError("card 0 did not finish a list in 60 s")
         def close(self):
             time.sleep(600)
+        def queue_stuck(self):
+            return True
 
     process.make_engine = lambda *args: Stuck()
     atexit.register(time.sleep, 600)
@@ -553,30 +561,39 @@ def test_a_failed_engine_exits_without_waiting_on_its_teardown():
     assert "did not finish a list" in events[-1].message
 
 
-# The engine's own entry point with a core that serves and closes: the clean stop has to run the exit-time teardown,
-# where the driver stops its copy loops.
-CLEAN_ENGINE = """
+# The engine's own entry point with a core that has no stuck queue, after a clean stop and after a failure: both have
+# to run the exit-time teardown, where the driver stops its copy loops.
+UNSTUCK_ENGINE = """
     import atexit, runpy, sys
     from engine import process
     from engine.api.mock import MockEngine
 
-    mark = sys.argv[1]
+    class Fails(MockEngine):
+        def submit(self, plan):
+            raise RuntimeError("out of memory")
+
+    mark, how = sys.argv[1:3]
     atexit.register(lambda: open(mark, "w").write("torn down"))
-    process.make_engine = lambda *args: MockEngine()
+    process.make_engine = lambda *args: Fails() if how == "fail" else MockEngine()
     sys.argv = ["engine", "--backend", "mock", "--arch", "qwen4exp"]
     runpy.run_module("engine", run_name="__main__")
 """
 
 
-def test_a_clean_stop_exits_through_the_teardown(tmp_path: Path):
+@pytest.mark.parametrize(
+    ("how", "command", "status"), [("quit", protocol.Quit(), 0), ("fail", protocol.Gen(1, 4, tuple(range(3, 40))), 1)]
+)
+def test_an_engine_without_a_stuck_queue_exits_through_the_teardown(
+    tmp_path: Path, how: str, command: protocol.Command, status: int
+):
     mark = tmp_path / "mark"
-    argv = [sys.executable, "-c", textwrap.dedent(CLEAN_ENGINE), str(mark)]
+    argv = [sys.executable, "-c", textwrap.dedent(UNSTUCK_ENGINE), str(mark), how]
     p = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
     try:
         assert p.stdin is not None
-        p.stdin.write(protocol.Quit().encode() + "\n")
+        p.stdin.write(command.encode() + "\n")
         p.stdin.flush()
-        assert p.wait(timeout=30) == 0
+        assert p.wait(timeout=30) == status
     finally:
         p.kill()
     assert mark.read_text() == "torn down"

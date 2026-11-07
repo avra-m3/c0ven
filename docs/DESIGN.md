@@ -88,12 +88,13 @@ flowchart TB
 
 The front end starts the engine process as its child and talks to it in token ids, one line per message over a pipe
 ([`protocol.py`](../protocol.py)). Every line about a request carries its id. If the engine dies, every request in
-flight gets an error and the next request starts it again. An engine that fails sends `ERR -` and exits with no
-teardown, because a queue on the cards may never finish and the driver's calls would wait on it; the kernel frees the
-cards. A child that has not exited 10 s after `ERR -` is killed. An engine that stops cleanly exits through the
-driver's teardown, the one step that stops the copy loop the driver keeps running on each card after a copy; a process
-that ends with one running can leave that card's copy engine unable to run new work, and the next start then hangs
-([measured](measurements/MEASUREMENTS.md#2026-11-06-copy-engine-stuck-after-exit)). A fault on the cards cannot take down the API
+flight gets an error and the next request starts it again. An engine that fails sends `ERR -` and exits. A child
+that has not exited 10 s after `ERR -` is killed. The engine exits through the driver's teardown, the one step that
+stops the copy loop the driver keeps running on each card after a copy: a process that ends with one running can leave
+that card's copy engine unable to run new work, and the next start then hangs
+([measured](measurements/MEASUREMENTS.md#2026-11-06-copy-engine-stuck-after-exit)). The one exception is a command
+list that timed out: its queue never finishes, the teardown and the driver's other calls would wait on it, so the
+engine skips them and the kernel frees the cards. A fault on the cards cannot take down the API
 ([ADR-0022](adr/0022-two-processes-python-and-cpp.md)).
 
 One engine process drives both cards. Host memory that both cards read must come from one Level Zero context that
