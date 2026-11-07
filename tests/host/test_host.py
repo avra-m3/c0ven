@@ -90,3 +90,15 @@ def test_workers_under_a_quota(tmp_path: Path):
 
 def test_workers_on_one_thread_of_eight_cores(tmp_path: Path):
     assert read(make_root(tmp_path), affinity=set(range(8))).cpu_workers() == (8, "cores")
+
+
+def test_the_free_reserved_huge_pages(tmp_path: Path):
+    root = make_root(tmp_path)
+    (root / "proc/meminfo").write_text(
+        "MemAvailable: 1000 kB\nHugePages_Total: 40\nHugePages_Free: 30\nHugePages_Rsvd: 4\nHugepagesize: 2048 kB\n"
+    )
+    assert read(root, affinity={0}).huge_pages_free == 26 * 2 * 2**20
+
+
+def test_no_huge_pages_reported_gives_none(tmp_path: Path):
+    assert read(make_root(tmp_path), affinity={0}).huge_pages_free is None

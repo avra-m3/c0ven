@@ -579,3 +579,16 @@ def test_the_reference_backend_refuses_an_architecture_it_has_no_records_of():
     with pytest.raises(SystemExit, match="records of qwen4exp only, not of testarch"):
         make_engine("reference", arch="testarch")
     assert isinstance(make_engine("reference", arch="qwen4exp"), ReferenceEngine)
+
+
+def test_hugepages_gives_the_hosts_free_reserved_pages_or_none():
+    from engine.host import Host  # noqa: PLC0415
+    from engine.process import hugetlb_pool  # noqa: PLC0415
+
+    def a_host(free: int | None) -> Host:
+        return Host(None, None, None, None, None, None, 1, None, 1, frozenset(), "", huge_pages_free=free)
+
+    assert hugetlb_pool(False, a_host(8 * 2**30)) is None
+    assert hugetlb_pool(True, a_host(8 * 2**30)) == 8 * 2**30
+    assert hugetlb_pool(True, a_host(None)) == 0
+    assert hugetlb_pool(True, None) == 0

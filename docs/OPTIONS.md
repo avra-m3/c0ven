@@ -37,5 +37,23 @@ pinned at load: 13,056 bytes a token of the KV cache, 13.7 GB for four 262,144-t
 `ZE_AFFINITY_MASK` limits which cards the engine sees. Useful engine flags through `--engine-arg`: `--no-draft`,
 `--no-vision`, `--deterministic`, `--checkpoints N`, `--ram-max GiB`, which refuses a configuration that would take
 more host memory, `--ngram-ram on|off`, which holds the n-gram table (28.8 GB) in RAM or leaves it in the file; by
-default it is in RAM when the host has room for it, and `--card-memory GiB`, which limits the memory the engine takes on
+default it is in RAM when the host has room for it, `--hugepages`, which puts the expert arena in the host's reserved
+huge pages (see below), and `--card-memory GiB`, which limits the memory the engine takes on
 each card, for a card that also drives a desktop (`python -m engine --help` lists them all).
+
+## Reserved huge pages
+
+The cards read the expert arena in place. When the kernel moves one of its small pages, a card stops until it can
+read that page again. `--engine-arg --hugepages` takes the arena from the host's reserved huge pages, which the
+kernel never moves or swaps ([ADR-0066](adr/0066-the-arena-may-take-reserved-huge-pages.md)). Reserve them on the
+host before the start: the arena's size is in the fit report as "host arena", and with 2 MiB pages each GiB needs
+512 of them.
+
+```bash
+sudo sysctl vm.nr_hugepages=20480
+```
+
+That reserves 40 GiB, which the host cannot use for anything else while it is reserved. The arena takes 1 GiB pieces
+from the pool while it lasts, and the rest from ordinary memory; the log says how many pieces are in reserved huge
+pages. A container needs no extra flag, unless its cgroup limits huge pages (`hugetlb.2MB.max`).
+

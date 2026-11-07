@@ -20,6 +20,8 @@ from engine.api.interface import PAGE_CELLS
 GIB = 2**30
 
 SSD_TIER_HEADROOM = 24 * GIB
+ARENA_PIECE = GIB
+"""The core takes its arena in pieces of this many bytes (the core's kArenaPiece)."""
 """What a plan with an SSD tier leaves free on the host, bytes: the 22 GiB default of `tools/check.py --mem-floor` and
 2 GiB, so a timed run does not stop at the floor."""
 
@@ -133,6 +135,9 @@ class PlanOptions:
     """`--ram-max`: a limit the user sets on the host memory the plan may take; None: none."""
     ngram_in_ram: bool = False
     """The whole n-gram table in RAM, counted in the host total."""
+    hugetlb_pool: int | None = None
+    """`--hugepages`: the host's free reserved huge pages, bytes. The arena's pieces take them first, and what they
+    hold is not counted against host_memory, which leaves them out. None: the arena is all in host memory."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -253,11 +258,20 @@ class MemoryPlan:
         return self.experts_cached // self.layers
 
     @property
+    def arena_reserved_bytes(self) -> int:
+        """The part of the arena in reserved huge pages (PlanOptions.hugetlb_pool): the core's whole pieces that fit
+        in them."""
+        if self.options.hugetlb_pool is None:
+            return 0
+        return min(self.arena_bytes, self.options.hugetlb_pool // ARENA_PIECE * ARENA_PIECE)
+
+    @property
     def host_bytes(self) -> int:
-        """The host memory the engine takes: the pinned total, the working estimate, and the n-gram table when it is
-        in RAM."""
+        """The host memory the engine takes: the pinned total but for the arena's part in reserved huge pages, the
+        working estimate, and the n-gram table when it is in RAM."""
         return (
             self.pinned_bytes
+            - self.arena_reserved_bytes
             + self.options.host_working
             + (self.ngram_bytes if self.options.ngram_in_ram else 0)
             + self.host_caches_bytes
@@ -293,6 +307,11 @@ class MemoryPlan:
             ("free for experts per card", gib(self.free_per_card)),
             ("experts cached", f"{self.experts_cached:,} of {self.experts_total:,}"),
             ("host arena", gib(self.arena_bytes)),
+            *(
+                [("host arena in reserved huge pages", gib(self.arena_reserved_bytes))]
+                if o.hugetlb_pool is not None
+                else []
+            ),
             ("streamed KV", gib(self.streamed_kv_bytes)),
             ("checkpoints", f"{o.checkpoints} x {self.checkpoint_bytes // o.checkpoints if o.checkpoints else 0:,} B"),
             ("pinned host memory", gib(self.pinned_bytes)),
@@ -455,13 +474,15 @@ def _fill(budget: int, sizes: Sequence[int], caps: Sequence[int]) -> tuple[int, 
 
 
 def _arena_budget(m: ModelMemory, o: PlanOptions, pinned_outside_arena: int) -> int:
-    """What a model with an SSD tier may give its arena; 0 when the host has none to spare, or is not known."""
+    """What a model with an SSD tier may give its arena: the reserved huge pages' whole pieces, and what the host can
+    spare; the host's part is 0 when it has none to spare, or is not known."""
+    reserved = (o.hugetlb_pool or 0) // ARENA_PIECE * ARENA_PIECE
     limit = host_limit(o)
     if limit is None:
-        return 0
+        return reserved
     ngram = m.ngram_bytes if o.ngram_in_ram else 0
     caches = m.engram_cache + m.ssd_staging_ring + m.prompt_host_ring
-    return max(0, limit - pinned_outside_arena - o.host_working - ngram - caches - SSD_TIER_HEADROOM)
+    return reserved + max(0, limit - pinned_outside_arena - o.host_working - ngram - caches - SSD_TIER_HEADROOM)
 
 
 def _layer_experts(

@@ -100,7 +100,8 @@ A load locks the arena in memory and stops if it cannot, so the container needs 
 daemon that cannot raise the limit, such as one inside another container, refuses that flag. There, set
 `ENGINE_UNLOCKED_ARENA=1` to load with the arena unlocked. The kernel may then swap out or move arena pages the copy
 engines read, and under the host's reclaim a copy can reset a card's copy engine
-([ADR-0035](adr/0035-the-arena-in-the-engines-own-memory.md)). Do not time runs that way.
+([ADR-0035](adr/0035-the-arena-in-the-engines-own-memory.md)). Do not time runs that way. Arena pieces in reserved
+huge pages (`--hugepages`, [server options](OPTIONS.md#reserved-huge-pages)) are not locked.
 
 `ZE_AFFINITY_MASK=0` limits a run to card 0. The model then runs whole on one card, with fewer experts cached.
 
