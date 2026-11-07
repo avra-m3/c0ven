@@ -360,6 +360,7 @@ int main(int argc, char **argv) {
   engine_abi_row rows[256];
   uint32_t nr = engine_abi_layout(rows, 256);
   CHECK(nr > 0 && nr <= 256, "layout rows");
+  CHECK(engine_queue_stuck() == 0, "no queue stuck");
   engine_close(e);
 
   /* With drafting, exactly the tokens of plain decoding: drafts change how many tokens a step gives, never which.
