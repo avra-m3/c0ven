@@ -408,13 +408,35 @@ static uint64_t free_huge_blocks() {
   return bytes;
 }
 
+// One arena piece from the host's reserved huge pages (vm.nr_hugepages), of the default huge page size; null when
+// too few are free. The kernel never moves or swaps these pages, so the cards' bindings of them stay valid and need no
+// lock. A private mapping reserves its pages at mmap, so a short pool fails here and not at a later fault.
+void *Model::hugetlb_piece() {
+  void *m = mmap(nullptr, kArenaPiece, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
+  if (m != MAP_FAILED) return m;
+  if (!hugetlb_short_) {
+    const int e = errno;
+    std::fprintf(stderr,
+                 "engine: the arena: no reserved huge pages for piece %zu (mmap: %s); it and the pieces after it "
+                 "are in the process's own memory\n",
+                 anon_pieces_.size(), std::strerror(e));
+    hugetlb_short_ = true;
+  }
+  return nullptr;
+}
+
 // need bytes of the arena, in pieces of 1 GiB, as small pieces are slower to allocate and to read
 // (docs/measurements/MEASUREMENTS.md#2026-10-13-design-inputs). With Options::anon_arena (the default, ADR-0035) a piece is the
 // process's own memory, 2 MiB aligned for huge pages, which the driver cannot take from the CPU; without it, the
-// driver's host memory (DESIGN.md, section 6).
+// driver's host memory (DESIGN.md, section 6). With Options::hugetlb_arena a piece comes from the host's reserved huge
+// pages first, and from the process's own memory once they run out.
 uint8_t *Model::arena_piece(uint64_t need) {
   if (arena_left_ < need) {
-    if (opt_.anon_arena) {
+    void *reserved = opt_.anon_arena && opt_.hugetlb_arena ? hugetlb_piece() : nullptr;
+    if (reserved) {
+      arena_at_ = static_cast<uint8_t *>(reserved);
+      anon_pieces_.push_back({reserved, kArenaPiece, arena_at_, 0, false, true});
+    } else if (opt_.anon_arena) {
       const uint64_t huge = 2ull << 20, bytes = kArenaPiece + huge;
       void *m = mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
       if (m == MAP_FAILED) throw std::runtime_error("anon_arena: mmap of a piece failed");
@@ -433,13 +455,14 @@ uint8_t *Model::arena_piece(uint64_t need) {
         if (!arena_lock_errno_) arena_lock_errno_ = e;
       }
       arena_at_ = reinterpret_cast<uint8_t *>((reinterpret_cast<uintptr_t>(m) + huge - 1) & ~(huge - 1));
-      // The pieces that may take huge pages: settled at the first piece, before any is filled.
-      if (anon_pieces_.empty()) {
+      // The pieces that may take huge pages: settled at the first such piece, before any is filled.
+      if (!thp_settled_) {
         const uint64_t blocks = free_huge_blocks();
         huge_pieces_ = blocks > kKeepFreeHuge ? (blocks - kKeepFreeHuge) / kArenaPiece : 0;
+        thp_settled_ = true;
       }
-      const bool in_huge = anon_pieces_.size() < huge_pieces_;
-      anon_pieces_.push_back({m, bytes, arena_at_, 0, in_huge});
+      const bool in_huge = thp_pieces_++ < huge_pieces_;
+      anon_pieces_.push_back({m, bytes, arena_at_, 0, in_huge, false});
       madvise(arena_at_, kArenaPiece, in_huge ? MADV_HUGEPAGE : MADV_NOHUGEPAGE);
     } else {
       arena_at_ = static_cast<uint8_t *>(rt_->alloc_host(kArenaPiece));
@@ -460,14 +483,21 @@ void Model::settle_arena() {
   const uint64_t huge = 2ull << 20;
   const auto t0 = std::chrono::steady_clock::now();
   uint64_t ranges = 0, collapsed = 0;
+  uint64_t reserved = 0;
   for (const AnonPiece &a : anon_pieces_)
-    for (uint64_t o = 0; o + huge <= a.used; o += huge, ranges++)
-      if (a.in_huge && madvise(a.at + o, huge, MADV_COLLAPSE) == 0) collapsed++;
+    if (a.reserved)
+      reserved++;
+    else
+      for (uint64_t o = 0; o + huge <= a.used; o += huge, ranges++)
+        if (a.in_huge && madvise(a.at + o, huge, MADV_COLLAPSE) == 0) collapsed++;
   const std::string lock = arena_lock_errno_ ? std::string("not locked (mlock2: ") + std::strerror(arena_lock_errno_) +
                                                    "), so the kernel may swap it out"
                                              : "locked in memory";
-  std::fprintf(stderr, "engine: the arena: %llu of %llu 2 MiB ranges in huge pages, in %.2f s; %s\n",
-               (unsigned long long)collapsed, (unsigned long long)ranges,
+  std::fprintf(stderr,
+               "engine: the arena: %llu of %llu pieces in reserved huge pages; of the rest, %llu of %llu 2 MiB ranges "
+               "in huge pages, in %.2f s; %s\n",
+               (unsigned long long)reserved, (unsigned long long)anon_pieces_.size(), (unsigned long long)collapsed,
+               (unsigned long long)ranges,
                std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(), lock.c_str());
 }
 

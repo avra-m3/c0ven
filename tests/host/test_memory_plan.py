@@ -341,3 +341,15 @@ def test_the_working_memory_is_kept_per_model_and_options(tmp_path: Path):
     assert read_working(a) is None
     a.write_text('{"working_per_card": -1}')
     assert read_working(a) is None
+
+
+def test_the_arena_in_reserved_huge_pages_leaves_the_host_total():
+    gib = 2**30
+    off = plan(MODEL, plan_options(slots=1))
+    assert off.arena_bytes > 4 * gib
+    held = plan(MODEL, plan_options(slots=1, hugetlb_pool=4 * gib + gib // 2))
+    assert held.arena_reserved_bytes == 4 * gib
+    assert held.host_bytes == off.host_bytes - 4 * gib
+    whole = plan(MODEL, plan_options(slots=1, hugetlb_pool=off.arena_bytes + gib))
+    assert whole.arena_reserved_bytes == off.arena_bytes
+    assert plan(MODEL, plan_options(slots=1, hugetlb_pool=0)).host_bytes == off.host_bytes

@@ -150,6 +150,9 @@ class OpenConfig:
     """Read the whole n-gram table into RAM at open, and serve every row from it."""
     reserve_bytes: int = 0
     """Device memory each card leaves free beyond what the engine counts; 0: the core's default, CORE_RESERVE."""
+    hugetlb_arena: bool = False
+    """The expert arena in the host's reserved huge pages (`vm.nr_hugepages`) while they last, the rest in the
+    process's own memory."""
     """The image encoder's file (the mmproj GGUF, spec/MODEL_VISION.md); empty: no images."""
 
 
