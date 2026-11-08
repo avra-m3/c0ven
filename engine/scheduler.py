@@ -8,7 +8,7 @@ protocol lines. The rules, from ADR-0017:
   time is mostly a fixed part that each piece pays, so a short prompt is read whole and a long one in pieces sized
   from the fixed part and what decode is worth (`CostModel.piece_ms`), between the budget and `STRETCH` x the budget,
   at most `whole_rows` of the core's `fetch_rows` (`CostModel.rows_within`), or a whole chunk when STRETCH x the
-  budget fits one (`CostModel.whole_chunks`, ADR-0067). With nobody writing, a prompt takes whole chunks.
+  budget fits one (`CostModel.whole_chunks`, ADR-0069). With nobody writing, a prompt takes whole chunks.
 - Short prompts are packed into one step, shortest first, and the engine reads up to PROMPT_RUNS of them as one
   chunk. A prompt passed over `max_passes` times goes first.
 - One producer per shared prefix: a request whose prompt starts with a prefix another request will checkpoint waits

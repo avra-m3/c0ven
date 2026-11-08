@@ -325,7 +325,7 @@ def pieces_beside_a_writer(run: Run, *lengths: int) -> list[list[tuple[int, int]
 def test_the_default_budget_gives_the_pieces_it_gave_before_whole_chunks(
     chunk_ms: float, weight: int, expected: list[list[tuple[int, int]]]
 ):
-    # `expected` is what the scheduler gave before ADR-0067, on the same load.
+    # `expected` is what the scheduler gave before ADR-0069, on the same load.
     run = make(
         open_config(slots=4, context=16384),
         options=SchedulerOptions(),

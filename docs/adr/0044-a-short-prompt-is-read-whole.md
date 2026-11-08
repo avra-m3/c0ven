@@ -3,7 +3,7 @@
 **Status:** draft, 2026-10-20; not accepted. Would supersede the first point of item 1 of
 [ADR-0017](0017-scheduling-several-requests.md) where it says a prompt piece shrinks until its cost per row fits the
 time budget. Item 3's bound of 1,024 rows superseded in part by
-[ADR-0067](0067-a-prompt-piece-may-be-a-whole-chunk-when-the-budget-fits-one.md) (draft), when the budget fits a whole
+[ADR-0069](0069-a-prompt-piece-may-be-a-whole-chunk-when-the-budget-fits-one.md) (draft), when the budget fits a whole
 chunk.
 **Revisit when:** a prompt chunk's fixed part stops being most of a short chunk's time, for example when the layers'
 uncached experts are no longer staged for each chunk.

@@ -443,7 +443,7 @@ writers longest. These come from chunk times and writers' gaps measured at piece
 When a whole chunk (`--chunk-rows`, 4,352), priced on the second line, costs at most 1.6 times the budget, a piece
 beside writers is a whole chunk instead, or the rows left before the prompt's end or its next checkpoint, and other
 prompts may join a chunk up to a whole one while the plan stays within 1.6 times the budget
-([ADR-0067](adr/0067-a-prompt-piece-may-be-a-whole-chunk-when-the-budget-fits-one.md)). Just past the fetch path a
+([ADR-0069](adr/0069-a-prompt-piece-may-be-a-whole-chunk-when-the-budget-fits-one.md)). Just past the fetch path a
 chunk reads fewer rows a second than a 1,021-row piece, so a piece that leaves the fetch path goes to a whole chunk.
 The default budget, 500 ms, fits no whole chunk. [OPTIONS.md](OPTIONS.md#long-prompt-pieces-beside-writers) gives
 the setting and the writers' gaps that come with it. With `ENGINE_CACHE_DIR` set,

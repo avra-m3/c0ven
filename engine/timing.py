@@ -2,7 +2,7 @@
 
 The core records, the control plane reports: records are drained with `read_timing` and summed here. The cost model
 is what ADR-0017's time slices need: the measured time of a decode step, and of a prompt chunk as a fixed part and a
-part per row, for each of the two ways the core stages a chunk's experts (ADR-0067).
+part per row, for each of the two ways the core stages a chunk's experts (ADR-0069).
 """
 
 from __future__ import annotations
@@ -87,7 +87,7 @@ class CostModel:
     is a fixed part, the staging of the layers' uncached experts, and a part per row: both fitted from the chunks
     seen, decayed, as least squares over (chunks, rows) and the prompt's share of the plan's time. A chunk of more
     than `short_rows` rows copies every uncached expert, so it has a line of its own, `long_chunk_ms` and
-    `long_row_ms` (ADR-0067). A row read as a decode window costs `window_row_ms`, an average of the plans whose prompt
+    `long_row_ms` (ADR-0069). A row read as a decode window costs `window_row_ms`, an average of the plans whose prompt
     rows were all read so."""
 
     decode_ms: Ewma
@@ -199,7 +199,7 @@ class CostModel:
 
     def whole_chunks(self, budget_ms: float, chunk_rows: int) -> bool:
         """Whether a prompt piece beside writers may hold a whole chunk of `chunk_rows` rows: when that chunk costs at
-        most STRETCH x the budget (ADR-0067)."""
+        most STRETCH x the budget (ADR-0069)."""
         return self.prompt_ms(chunk_rows) <= STRETCH * budget_ms
 
     def piece_ms(self, budget_ms: float, decode_share: float, decode_weight: int, writers: int) -> float:
@@ -218,7 +218,7 @@ class CostModel:
         """The rows of a piece that aims at `budget_ms`, of the `wanted` rows left, with `whole` the most a piece
         holds (`whole_rows`). When there are more than `whole` and the budget fits a whole chunk of `chunk_rows` rows
         (`whole_chunks`), all of them up to `chunk_rows`, since a piece past the fetch path reads more rows a second
-        only as it nears a whole chunk (ADR-0067). All of them when they are at most `whole` and their chunk costs at
+        only as it nears a whole chunk (ADR-0069). All of them when they are at most `whole` and their chunk costs at
         most STRETCH x the budget or its fixed part is at least its rows' part, since each cut would pay the fixed part
         again and a short prompt's chunk is mostly that part, the staging
         (docs/measurements/MEASUREMENTS.md#2026-10-17-prefill-timings).

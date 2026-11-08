@@ -1,4 +1,4 @@
-# ADR-0067: a prompt piece beside writers is a whole chunk when the budget fits one
+# ADR-0069: a prompt piece beside writers is a whole chunk when the budget fits one
 
 **Status:** draft, 2026-11-08; not accepted. Supersedes in part item 3 of
 [ADR-0044](0044-a-short-prompt-is-read-whole.md), where it says a piece holds never more than 1,024 rows.
