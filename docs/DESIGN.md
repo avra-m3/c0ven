@@ -440,9 +440,11 @@ writers longest. These come from chunk times and writers' gaps measured at piece
 ([the record](measurements/MEASUREMENTS.md#2026-11-01-full-prompt-pieces),
 [the rule](measurements/MEASUREMENTS.md#2026-11-01-piece-rule-with-a-slow-split)).
 
-When a whole chunk (`--chunk-rows`, 4,352), priced on the second line, costs at most 1.6 times the budget, a piece
-beside writers is a whole chunk instead, or the rows left before the prompt's end or its next checkpoint, and other
-prompts may join a chunk up to a whole one while the plan stays within 1.6 times the budget
+Beside writers a whole chunk is `--chunk-rows` less three rows, 4,349, since the core adds the writers' rows only
+while a chunk is short of 4,352 rows ([ADR-0053](adr/0053-writers-rows-ride-in-a-prompt-chunk.md)). When such a
+chunk, priced on the second line, costs at most 1.6 times the budget, a piece beside writers is a whole chunk
+instead, or the rows left before the prompt's end or its next checkpoint, and other prompts may join a chunk up to a
+whole one while the plan stays within 1.6 times the budget
 ([ADR-0069](adr/0069-a-prompt-piece-may-be-a-whole-chunk-when-the-budget-fits-one.md)). Just past the fetch path a
 chunk reads fewer rows a second than a 1,021-row piece, so a piece that leaves the fetch path goes to a whole chunk.
 The default budget, 500 ms, fits no whole chunk. [OPTIONS.md](OPTIONS.md#long-prompt-pieces-beside-writers) gives

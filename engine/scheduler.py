@@ -379,8 +379,10 @@ class Scheduler:
         budget = o.chunk_rows
         window = plan.window_rows
         left_ms = STRETCH * o.prompt_budget_ms
-        # The most rows of a chunk that prompts share: on the fetch path, or a whole chunk if the budget fits one.
-        whole = o.chunk_rows if writing and self.cost.whole_chunks(o.prompt_budget_ms, o.chunk_rows) else 0
+        # The most rows of a chunk that prompts share: on the fetch path, or a whole chunk if the budget fits one, less
+        # the writers' rows, which the core adds only while the chunk is short of `prompt_chunk` (ADR-0053).
+        room = o.chunk_rows - (PROMPT_RUNS - 1)
+        whole = room if writing and self.cost.whole_chunks(o.prompt_budget_ms, room) else 0
         limit = max(whole, self.whole_rows)
         marks: list[tuple[Request, int, bool]] = []
         chosen: set[int] = set()

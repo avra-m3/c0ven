@@ -35,17 +35,20 @@ line changes so that a 1,021-row piece reads as many rows a second as a whole ch
 - With the default budget, 500 ms, a piece aims at no more than 1.6 times it, 800 ms, which stops it near 1,500 rows
   even without the cap.
 - Writers' next rows ride inside a prompt chunk for 5.6-9.8 ms
-  ([ADR-0053](0053-writers-rows-ride-in-a-prompt-chunk.md)), so they advance during a long chunk too.
+  ([ADR-0053](0053-writers-rows-ride-in-a-prompt-chunk.md)), but the core adds one only while the chunk has fewer
+  rows than `prompt_chunk` (4,352) and fewer than four runs (`add_writers` in `core/api/engine_api.cpp`). A piece of
+  4,352 rows leaves no room, and no writer advances during it.
 - On a load where one slot is almost always writing and nobody watches the tokens stream, every prompt piece is cut
   to 1,021 rows, and the operator may prefer longer gaps between a writer's tokens for faster prompt reading.
 
 ## Decision
 
-1. Beside writers, when a whole chunk (`--chunk-rows`, 4,352) priced by the cost model costs at most 1.6 times
-   `--prompt-budget-ms`, a prompt's piece is a whole chunk, or the rows left before the prompt's end or its next
-   checkpoint if fewer. Otherwise pieces follow ADR-0044 as before, at most `whole_rows`.
-2. While item 1 holds, another prompt may join a chunk past the fetch path, up to a whole chunk, while the plan's
-   prompt time stays within 1.6 times the budget.
+1. Beside writers, a whole chunk is `--chunk-rows` less three rows, 4,349, so that up to three writers' rows ride in
+   it. When such a chunk, priced by the cost model, costs at most 1.6 times `--prompt-budget-ms`, a prompt's piece is
+   a whole chunk, or the rows left before the prompt's end or its next checkpoint if fewer. Otherwise pieces follow
+   ADR-0044 as before, at most `whole_rows`.
+2. While item 1 holds, another prompt may join a chunk past the fetch path, up to a whole chunk of 4,349 rows, while
+   the plan's prompt time stays within 1.6 times the budget.
 3. The cost model fits a second line, a fixed part and a part per row, from chunks of more than the fetch path's rows
    (`fetch_rows` less three), and prices such chunks on it once it has seen one. Until their sizes differ enough to
    split the line, its part per row is the fetch path's, or less if the line through 0 gives less.
@@ -55,6 +58,8 @@ line changes so that a 1,021-row piece reads as many rows a second as a whole ch
 
 - A piece past the fetch path pays more fixed part and reads fewer rows a second until it nears a whole chunk
   (Context's table), so a piece that leaves the fetch path goes all the way.
+- Leaving three rows to the writers costs the piece about 1 ms of a 1.7-2.7 s chunk (*estimate*, at 0.35 ms a row),
+  and each writer gets a token from every chunk instead of none.
 - The budget is the operator's bound on a prompt step's time beside writers. Reusing it keeps one setting: the
   default fits no whole chunk, so its pieces stay as they were; a budget of 2,000 ms (3,200 ms at 1.6 times) fits the
   2,748 ms of a whole chunk at position 239,360, with room for the cost model's error.

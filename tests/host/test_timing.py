@@ -101,13 +101,13 @@ def test_a_budget_that_fits_a_whole_chunk_reads_past_the_fetch_path():
     cost = CostModel.initial(row_ms=0.35, chunk_ms=316.0)  # a whole chunk 1,839 ms
     whole = whole_rows(1024)
     for budget in (500.0, 1100.0):
-        assert not cost.whole_chunks(budget, 4352)
-        assert cost.rows_within(budget, 5000, whole, None, 4352) == cost.rows_within(budget, 5000, whole), "as before"
-    assert cost.whole_chunks(1150.0, 4352)
-    assert cost.rows_within(1150.0, 4352, whole, None, 4352) == 4352, "a whole chunk"
-    assert cost.rows_within(2000.0, 2600, whole, 900.0, 4352) == 2600, "the prompt's rest, whatever the aim"
-    assert cost.rows_within(2000.0, 1100, whole, None, 4352) == 1100
-    assert cost.rows_within(2000.0, 600, whole, None, 4352) == 600, "a short prompt is whole, as before"
+        assert not cost.whole_chunks(budget, 4349)
+        assert cost.rows_within(budget, 5000, whole, None, 4349) == cost.rows_within(budget, 5000, whole), "as before"
+    assert cost.whole_chunks(1150.0, 4349)
+    assert cost.rows_within(1150.0, 4352, whole, None, 4349) == 4349, "a whole chunk less the writers' rows"
+    assert cost.rows_within(2000.0, 2600, whole, 900.0, 4349) == 2600, "the prompt's rest, whatever the aim"
+    assert cost.rows_within(2000.0, 1100, whole, None, 4349) == 1100
+    assert cost.rows_within(2000.0, 600, whole, None, 4349) == 600, "a short prompt is whole, as before"
     assert cost.rows_within(2000.0, 4352, whole) == whole, "no chunk_rows: kept to whole_rows"
 
 

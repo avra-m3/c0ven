@@ -71,8 +71,8 @@ at the cost of longer gaps:
 --engine-arg=--prompt-budget-ms=2000
 ```
 
-When a whole chunk of 4,352 rows costs at most 1.6 times the budget, each piece is a whole chunk, or the rest of the
-prompt ([ADR-0069](adr/0069-a-prompt-piece-may-be-a-whole-chunk-when-the-budget-fits-one.md)). A whole chunk takes
+When a whole chunk costs at most 1.6 times the budget, each piece is a whole chunk of 4,349 rows, which leaves room
+for three writers' rows, or the rest of the prompt ([ADR-0069](adr/0069-a-prompt-piece-may-be-a-whole-chunk-when-the-budget-fits-one.md)). A whole chunk takes
 1,645-1,680 ms at position 0 and 2,748 ms at position 239,360
 ([the record](measurements/MEASUREMENTS.md#2026-10-17-prefill-timings)), so 2,000 ms (3,200 ms at 1.6 times) fits
 one with room to spare. A writer's longest gap is then a whole chunk's time plus up to 85 ms

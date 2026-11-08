@@ -8,7 +8,7 @@ from dataclasses import dataclass, field, replace
 import pytest
 
 import protocol
-from engine.api.interface import Event, EventKind, OpenConfig, StepPlan
+from engine.api.interface import PROMPT_RUNS, Event, EventKind, OpenConfig, StepPlan
 from engine.api.mock import MockEngine, Script
 from engine.scheduler import CheckpointRule, Phase, Scheduler, SchedulerOptions, every_16k
 from tests.helpers import facts_of, open_config
@@ -347,13 +347,39 @@ def test_a_budget_that_fits_a_whole_chunk_gives_whole_chunks_beside_a_writer():
         decode_weight=30,
         long_chunk_ms=316.0,
     )
-    assert pieces_beside_a_writer(run, 10000) == [[(1, 4352)], [(1, 4352)], [(1, 1296)]]
+    assert pieces_beside_a_writer(run, 10000) == [[(1, 4349)], [(1, 4349)], [(1, 1302)]], "room for 3 writers' rows"
     cost = run.scheduler.cost
     assert (cost.chunk_ms, cost.long_chunk_ms) == (pytest.approx(247.0), pytest.approx(316.0)), "a line for each path"
     steps = [at for at, p in zip(run.engine.submitted_at, run.engine.plans, strict=True) if p.prompt][1:]
     gaps = [b - a for a, b in itertools.pairwise(steps)]
-    owed = 0.5 * (316.0 + 0.46 * 4352) / 11.0
+    owed = 0.5 * (316.0 + 0.46 * 4349) / 11.0
     assert min(gaps) >= int(owed), f"decode is still owed half of each whole chunk's time: {gaps}"
+
+
+def test_a_whole_chunk_piece_leaves_the_writers_room_in_its_chunk():
+    # The core adds a writer's row to a chunk only while it is short of the chunk's rows and runs (ADR-0053). The mock
+    # decodes every writer in every plan whatever the chunk holds, so this checks the plans leave the room.
+    options = SchedulerOptions(prompt_budget_ms=2000.0)
+    run = make(
+        open_config(slots=4, context=16384),
+        options=options,
+        prompt_chunk_ms=247.0,
+        fetch_rows=1024,
+        decode_weight=30,
+        long_chunk_ms=316.0,
+    )
+    for rid in (1, 2, 3):
+        run.add(rid, prompt(300, start=rid), 3000)
+    run.tick(6)
+    assert all(run.scheduler.by_rid[rid].phase is Phase.DECODE for rid in (1, 2, 3))
+    run.add(4, prompt(10000, start=17), 2)
+    run.until_idle()
+    assert run.errors() == []
+    after = [p for p in run.engine.plans if p.prompt and all(s.count > 300 for s in p.prompt)]
+    assert [s.count for p in after for s in p.prompt] == [4349, 4349, 1302]
+    for p in after:
+        assert sum(s.count for s in p.prompt) + 3 <= SchedulerOptions().chunk_rows, "three writers' rows fit"
+        assert len(p.prompt) + 3 <= PROMPT_RUNS, "and three runs for them"
 
 
 def test_a_budget_short_of_a_whole_chunk_keeps_pieces_to_the_fetch_path():
