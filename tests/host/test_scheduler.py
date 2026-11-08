@@ -15,8 +15,15 @@ from tests.helpers import facts_of, open_config
 
 
 class SpyEngine(MockEngine):
-    def __init__(self, script: Script | None = None, *, prompt_chunk_ms: float = 0.0) -> None:
-        super().__init__(script, prompt_chunk_ms=prompt_chunk_ms)
+    def __init__(
+        self,
+        script: Script | None = None,
+        *,
+        prompt_chunk_ms: float = 0.0,
+        fetch_rows: int = 0,
+        long_chunk_ms: float | None = None,
+    ) -> None:
+        super().__init__(script, prompt_chunk_ms=prompt_chunk_ms, fetch_rows=fetch_rows, long_chunk_ms=long_chunk_ms)
         self.plans: list[StepPlan] = []
         self.calls: list[tuple[str, int, int]] = []
         self.submitted_at: list[int] = []
@@ -76,9 +83,10 @@ def make(
     *,
     fetch_rows: int = 0,
     decode_weight: int = 0,
+    long_chunk_ms: float | None = None,
 ) -> Run:
     config = config or open_config()
-    engine = SpyEngine(script, prompt_chunk_ms=prompt_chunk_ms)
+    engine = SpyEngine(script, prompt_chunk_ms=prompt_chunk_ms, fetch_rows=fetch_rows, long_chunk_ms=long_chunk_ms)
     facts = replace(engine.open(config), fetch_rows=fetch_rows, decode_weight=decode_weight)
     assert facts_of(config).slots == facts.slots
     return Run(engine, Scheduler(engine, facts, options, rule))
@@ -292,6 +300,84 @@ def test_a_long_prompt_beside_a_writer_is_cut_by_what_decode_is_worth():
         assert run.errors() == []
         pieces[weight] = max(s.count for p in run.engine.plans[1:] for s in p.prompt)
     assert pieces[60] < pieces[0], "worth more, decode gets its turn sooner"
+
+
+def pieces_beside_a_writer(run: Run, *lengths: int) -> list[list[tuple[int, int]]]:
+    """The (slot, rows) of each prompt plan after a writer's own, with prompts of `lengths` rows sent together."""
+    run.add(1, prompt(300), 3000)
+    run.tick(3)
+    assert run.scheduler.by_rid[1].phase is Phase.DECODE
+    for i, n in enumerate(lengths):
+        run.add(2 + i, prompt(n, start=7 + 2 * i), 2)
+    run.until_idle()
+    assert run.errors() == []
+    return [[(s.slot, s.count) for s in p.prompt] for p in run.engine.plans[1:] if p.prompt]
+
+
+@pytest.mark.parametrize(
+    ("chunk_ms", "weight", "expected"),
+    [
+        (233.0, 30, [[(3, 200)], [(2, 1021)], [(2, 279)], *[[(1, 1021)]] * 4, [(1, 916)]]),
+        (600.0, 0, [[(3, 200)], [(2, 510)], [(2, 790)], *[[(1, 510)]] * 8, [(1, 920)]]),
+        (60.0, 30, [[(3, 200)], [(2, 956)], [(2, 344)], *[[(1, 956)]] * 5, [(1, 220)]]),
+    ],
+)
+def test_the_default_budget_gives_the_pieces_it_gave_before_whole_chunks(
+    chunk_ms: float, weight: int, expected: list[list[tuple[int, int]]]
+):
+    # `expected` is what the scheduler gave before ADR-0067, on the same load.
+    run = make(
+        open_config(slots=4, context=16384),
+        options=SchedulerOptions(),
+        prompt_chunk_ms=chunk_ms,
+        fetch_rows=1024,
+        decode_weight=weight,
+        long_chunk_ms=chunk_ms + 70.0,
+    )
+    assert pieces_beside_a_writer(run, 5000, 1300, 200) == expected
+
+
+def test_a_budget_that_fits_a_whole_chunk_gives_whole_chunks_beside_a_writer():
+    options = SchedulerOptions(prompt_budget_ms=2000.0)
+    run = make(
+        open_config(slots=2, context=16384),
+        options=options,
+        prompt_chunk_ms=247.0,
+        fetch_rows=1024,
+        decode_weight=30,
+        long_chunk_ms=316.0,
+    )
+    assert pieces_beside_a_writer(run, 10000) == [[(1, 4352)], [(1, 4352)], [(1, 1296)]]
+    cost = run.scheduler.cost
+    assert (cost.chunk_ms, cost.long_chunk_ms) == (pytest.approx(247.0), pytest.approx(316.0)), "a line for each path"
+    steps = [at for at, p in zip(run.engine.submitted_at, run.engine.plans, strict=True) if p.prompt][1:]
+    gaps = [b - a for a, b in itertools.pairwise(steps)]
+    owed = 0.5 * (316.0 + 0.46 * 4352) / 11.0
+    assert min(gaps) >= int(owed), f"decode is still owed half of each whole chunk's time: {gaps}"
+
+
+def test_a_budget_short_of_a_whole_chunk_keeps_pieces_to_the_fetch_path():
+    options = SchedulerOptions(prompt_budget_ms=1000.0)
+    run = make(
+        open_config(slots=2, context=16384), options=options, prompt_chunk_ms=247.0, fetch_rows=1024, decode_weight=30
+    )
+    pieces = [rows for plan in pieces_beside_a_writer(run, 10000) for _, rows in plan]
+    assert sum(pieces) == 10000
+    assert max(pieces) == 1021, "1.6 x 1,000 ms is short of a whole chunk's 2,249 ms"
+
+
+def test_prompts_beside_a_writer_share_a_chunk_past_the_fetch_path_when_the_budget_fits_one():
+    options = SchedulerOptions(prompt_budget_ms=2000.0)
+    run = make(
+        open_config(slots=4, context=16384),
+        options=options,
+        prompt_chunk_ms=247.0,
+        fetch_rows=1024,
+        decode_weight=30,
+        long_chunk_ms=316.0,
+    )
+    assert pieces_beside_a_writer(run, 200, 1300, 700) == [[(1, 200), (3, 700), (2, 1300)]]
+    assert run.engine.stats().prompt_chunks == 2, "the writer's chunk, then one chunk for the three prompts"
 
 
 def test_a_long_prompt_alone_takes_whole_chunks():

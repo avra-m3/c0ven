@@ -8,7 +8,7 @@ import pytest
 
 from engine.api import abi
 from engine.api.interface import TIMING_DTYPE, WINDOW_ROWS, TimingStage
-from engine.timing import WHOLE_ROWS, WINDOW_ROWS_RANGE, CostModel, summarise, whole_rows
+from engine.timing import WHOLE_ROWS, WINDOW_ROWS_RANGE, CostModel, short_rows, summarise, whole_rows
 from tools.attach import HEADER, RING, Reader, Region, trace_events
 
 
@@ -66,6 +66,49 @@ def test_a_piece_and_the_writers_beside_it_keep_to_the_fetch_path():
     assert cost.rows_within(500.0, 1100, whole_rows(1024)) == 1021, "a prompt of 1,100 rows is cut"
     dear = CostModel.initial(row_ms=0.3, chunk_ms=900.0)
     assert dear.rows_within(500.0, 2048, whole_rows(1024)) == 510, "nothing fits the budget: half of the cap"
+
+
+def test_chunks_past_the_fetch_path_are_priced_on_a_line_of_their_own():
+    cost = CostModel.initial(decode_ms=10.0, row_ms=0.46)
+    cost.short_rows = short_rows(1024)
+    assert cost.short_rows == 1021
+    assert short_rows(0) == 0
+    for rows in (300, 1000, 500, 1021):
+        cost.observe(decoded=1, rows=rows, ms=10.0 + 247.0 + 0.31 * rows)
+    assert (cost.chunk_ms, cost.row_ms) == (pytest.approx(247.0), pytest.approx(0.31))
+    assert cost.prompt_ms(4352) == pytest.approx(247.0 + 0.31 * 4352), "no long chunk seen: priced as the others"
+    for rows in (4352, 2048, 4352, 3072, 1300):
+        cost.observe(decoded=1, rows=rows, ms=10.0 + 316.0 + 0.35 * rows)
+    assert (cost.long_chunk_ms, cost.long_row_ms) == (pytest.approx(316.0), pytest.approx(0.35))
+    assert (cost.chunk_ms, cost.row_ms) == (pytest.approx(247.0), pytest.approx(0.31)), "the fetch path's line stays"
+    assert cost.prompt_ms(1021) == pytest.approx(247.0 + 0.31 * 1021)
+    assert cost.prompt_ms(1022) == pytest.approx(316.0 + 0.35 * 1022)
+    cost.observe(decoded=0, rows=2 * 4352, ms=2 * (316.0 + 0.35 * 4352), chunks=2)
+    assert cost.long_chunk_ms == pytest.approx(316.0), "a plan of two whole chunks"
+
+
+def test_long_chunks_of_one_size_are_priced_right_at_that_size():
+    for chunk_ms in (300.0, 0.0):  # the second costs less a row than the fetch path's line
+        cost = CostModel.initial(row_ms=0.378, chunk_ms=233.0)
+        cost.short_rows = 1021
+        for _ in range(5):
+            cost.observe(decoded=0, rows=4352, ms=chunk_ms + 0.3 * 4352)
+        assert cost.prompt_ms(4352) == pytest.approx(chunk_ms + 0.3 * 4352)
+        assert cost.long_row_ms <= 0.378
+
+
+def test_a_budget_that_fits_a_whole_chunk_reads_past_the_fetch_path():
+    cost = CostModel.initial(row_ms=0.35, chunk_ms=316.0)  # a whole chunk 1,839 ms
+    whole = whole_rows(1024)
+    for budget in (500.0, 1100.0):
+        assert not cost.whole_chunks(budget, 4352)
+        assert cost.rows_within(budget, 5000, whole, None, 4352) == cost.rows_within(budget, 5000, whole), "as before"
+    assert cost.whole_chunks(1150.0, 4352)
+    assert cost.rows_within(1150.0, 4352, whole, None, 4352) == 4352, "a whole chunk"
+    assert cost.rows_within(2000.0, 2600, whole, 900.0, 4352) == 2600, "the prompt's rest, whatever the aim"
+    assert cost.rows_within(2000.0, 1100, whole, None, 4352) == 1100
+    assert cost.rows_within(2000.0, 600, whole, None, 4352) == 600, "a short prompt is whole, as before"
+    assert cost.rows_within(2000.0, 4352, whole) == whole, "no chunk_rows: kept to whole_rows"
 
 
 def test_a_piece_aims_by_the_fixed_part_and_what_decode_is_worth():
@@ -195,7 +238,11 @@ def test_the_cost_model_carries_from_one_run_to_the_next():
     for rows in (300, 2048, 300, 1024):
         cost.observe(decoded=1, rows=rows, ms=10.0 + 600.0 + 0.07 * rows)
     cost.observe(decoded=0, rows=64, ms=330.5, chunks=0)
+    cost.short_rows = 1021
+    cost.observe(decoded=0, rows=4352, ms=1839.0)
     again = CostModel.from_dict(cost.to_dict())
+    again.short_rows = 1021
+    assert again.prompt_ms(4352) == pytest.approx(1839.0), "the long line carries"
     assert again.to_dict() == cost.to_dict()
     assert again.window_rows() == cost.window_rows(), "the window plans seen carry too"
     assert again.decode_ms.samples == 0, "the decode time is a start value: the first step replaces it"
@@ -211,3 +258,7 @@ def test_a_cost_model_that_is_not_one_is_refused():
         CostModel.from_dict({**good, "row_ms": float("nan")})
     with pytest.raises(KeyError):
         CostModel.from_dict({k: v for k, v in good.items() if k != "window_row_ms"})
+    with pytest.raises(KeyError):
+        CostModel.from_dict({k: v for k, v in good.items() if k != "s_long"})
+    with pytest.raises(ValueError, match="wrong size"):
+        CostModel.from_dict({**good, "s_long_slow": [0.0] * 6})

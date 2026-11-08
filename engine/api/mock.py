@@ -108,14 +108,19 @@ class MockEngine:
         decode_step_ms: float = 11.0,
         prompt_chunk_ms: float = 0.0,
         realtime: bool = False,
+        fetch_rows: int = 0,
+        long_chunk_ms: float | None = None,
     ) -> None:
         """`prompt_row_ms` and `decode_step_ms` are the step times it reports (estimates from stand-in kernels:
         docs/measurements/MEASUREMENTS.md#2026-10-13-design-inputs), and `prompt_chunk_ms` the fixed time of a
         chunk, as the core's staging costs: the spans longer than the plan's window_rows of each PROMPT_RUNS of a plan
-        share one. With `realtime`, it also sleeps for them."""
+        share one. A chunk of more than `fetch_rows` rows, when it is not 0, has `long_chunk_ms` instead, if given; the
+        facts report `fetch_rows`. With `realtime`, it also sleeps for them."""
         self._script = script
         self._row_ms = prompt_row_ms
         self._chunk_ms = prompt_chunk_ms
+        self._fetch_rows = fetch_rows
+        self._long_chunk_ms = prompt_chunk_ms if long_chunk_ms is None else long_chunk_ms
         self._step_ms = decode_step_ms
         self._realtime = realtime
         self._config: OpenConfig | None = None
@@ -161,8 +166,7 @@ class MockEngine:
         self._serial = -1
         return self._facts(self._config)
 
-    @staticmethod
-    def _facts(config: OpenConfig) -> EngineFacts:
+    def _facts(self, config: OpenConfig) -> EngineFacts:
         return EngineFacts(
             cards=0,
             slots=config.slots,
@@ -175,6 +179,7 @@ class MockEngine:
             host_pinned=0,
             timing_fd=-1,
             version="mock",
+            fetch_rows=self._fetch_rows,
         )
 
     def admit(self, slot: int, settings: SlotSettings, prompt: tuple[int, ...], images: tuple[Image, ...] = ()) -> None:
@@ -382,6 +387,7 @@ class MockEngine:
         self._step += 1
         rows = chunks = 0
         decoded = 0
+        fixed_ms = 0.0
         if plan is not None:
             try:
                 self._apply_pages(plan)
@@ -398,7 +404,11 @@ class MockEngine:
                     self._emit(EventKind.ERROR, fault.slot, ErrorCode.INVALID_ARGUMENT)
             window = plan.window_rows or WINDOW_ROWS
             for i in range(0, len(plan.prompt), PROMPT_RUNS):
-                chunks += any(span.count > window for span in plan.prompt[i : i + PROMPT_RUNS])
+                chunk = sum(span.count for span in plan.prompt[i : i + PROMPT_RUNS] if span.count > window)
+                if chunk:
+                    chunks += 1
+                    long = self._fetch_rows and chunk > self._fetch_rows
+                    fixed_ms += self._long_chunk_ms if long else self._chunk_ms
         started = {span.slot for span in plan.prompt} if plan is not None else set[int]()
         for slot, s in self._slots.items():
             if not s.decoding or s.finished or slot in started:
@@ -416,7 +426,7 @@ class MockEngine:
                 self._emit_token(slot, s)
             except PlanFault as fault:
                 self._emit(EventKind.ERROR, fault.slot, ErrorCode.INVALID_ARGUMENT)
-        t_ms = (self._step_ms if decoded else 0.0) + rows * self._row_ms + chunks * self._chunk_ms
+        t_ms = (self._step_ms if decoded else 0.0) + rows * self._row_ms + fixed_ms
         if self._realtime:
             time.sleep(t_ms / 1e3)
         t_ns = int(t_ms * 1e6)
@@ -427,7 +437,7 @@ class MockEngine:
             busy_ns=st.busy_ns + t_ns,
             prompt_chunks=st.prompt_chunks + chunks,
             prompt_rows=st.prompt_rows + rows,
-            prompt_ns=st.prompt_ns + int(rows * self._row_ms * 1e6 + chunks * self._chunk_ms * 1e6),
+            prompt_ns=st.prompt_ns + int((rows * self._row_ms + fixed_ms) * 1e6),
             steps=st.steps + (1 if decoded else 0),
             step_rows=st.step_rows + decoded,
             step_ns=st.step_ns + (int(self._step_ms * 1e6) if decoded else 0),

@@ -427,7 +427,9 @@ by them ([ADR-0017](adr/0017-scheduling-several-requests.md)). Every piece pays 
 read whole, and a longer one in pieces, each holding the writers about as long as a short prompt does
 ([ADR-0044](adr/0044-a-short-prompt-is-read-whole.md)). The core reports `fetch_rows`, the longest chunk whose
 uncached experts are fetched as its router picks them ([ADR-0046](adr/0046-a-short-chunk-fetches-the-experts-its-router-picks.md));
-a longer chunk copies every uncached expert, and is slower near that size. A piece holds at most `fetch_rows` less
+a longer chunk copies every uncached expert, and is slower near that size. The cost model fits a second fixed part
+and part per row for such chunks, and prices them on it once it has seen one; until their sizes differ enough to
+split the two parts, a row costs what it does on the fetch path. A piece holds at most `fetch_rows` less
 the three writers' rows that may ride in its chunk, and at most 1,024 rows: 1,021 on qwen4exp with experts left
 uncached (`fetch_rows` 1,024), 1,024 with every expert cached (`fetch_rows` 0). A long prompt's piece aims between the budget and
 1.6 times it: past the budget, up to where more time returns little in a score of prompt rows plus decode tokens, each
@@ -436,7 +438,15 @@ one stays at the budget. A plan's pieces are priced at most 1.6 times the budget
 writers longest. These come from chunk times and writers' gaps measured at piece sizes of 256 to 3,072 rows
 ([the record](measurements/MEASUREMENTS.md#2026-11-01-whole-rows-and-stretch)) and a mixed load
 ([the record](measurements/MEASUREMENTS.md#2026-11-01-full-prompt-pieces),
-[the rule](measurements/MEASUREMENTS.md#2026-11-01-piece-rule-with-a-slow-split)). With `ENGINE_CACHE_DIR` set,
+[the rule](measurements/MEASUREMENTS.md#2026-11-01-piece-rule-with-a-slow-split)).
+
+When a whole chunk (`--chunk-rows`, 4,352), priced on the second line, costs at most 1.6 times the budget, a piece
+beside writers is a whole chunk instead, or the rows left before the prompt's end or its next checkpoint, and other
+prompts may join a chunk up to a whole one while the plan stays within 1.6 times the budget
+([ADR-0067](adr/0067-a-prompt-piece-may-be-a-whole-chunk-when-the-budget-fits-one.md)). Just past the fetch path a
+chunk reads fewer rows a second than a 1,021-row piece, so a piece that leaves the fetch path goes to a whole chunk.
+The default budget, 500 ms, fits no whole chunk. [OPTIONS.md](OPTIONS.md#long-prompt-pieces-beside-writers) gives
+the setting and the writers' gaps that come with it. With `ENGINE_CACHE_DIR` set,
 the engine process writes the cost model there at each sleep and at exit, one file for each model file, engine version
 and set of options (the key of the working memory's file), and the next start and wake begin from it instead of the
 estimates. The protocol's
