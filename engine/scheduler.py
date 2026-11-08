@@ -14,6 +14,9 @@ protocol lines. The rules, from ADR-0017:
 - One producer per shared prefix: a request whose prompt starts with a prefix another request will checkpoint waits
   for that checkpoint, holding no slot and no pages, unless it has the higher priority.
 - Checkpoints are taken where the model's rule puts them; a prompt span ends at each one.
+- A slot holds KV pages for what it has read and written and a block ahead (`SeqState.grow`). When a writing slot
+  stalls and evicting checkpoints frees no page for it, the newest slot of the lowest priority is stopped and its
+  request goes back to the queue with its tokens so far added to its prompt (ADR-0067).
 
 The core keeps decoding between plans, so a plan is built only when something changes.
 """
@@ -78,7 +81,8 @@ class SchedulerOptions:
     """Cells assigned ahead of a decoding slot, so the core never waits for the host."""
     decode_batch: int = 256
     """Cells assigned at once when a slot's lookahead runs short. Each plan with page changes costs the core a write to
-    the cards' page tables (ADR-0033), so they come in batches."""
+    the cards' page tables (ADR-0033), so they come in batches. Admission reserves lookahead plus batch cells after the
+    prompt (ADR-0067)."""
 
 
 class Phase(Enum):
@@ -121,6 +125,21 @@ class Request:
     images: tuple[Image, ...] = ()
     key: tuple[int, ...] = ()
     """The prompt as prefixes are compared: with each image's tokens standing for its pixels (`prefix_key`)."""
+    given: int = 0
+    """The client's prompt length. After a preemption `prompt` also holds the tokens written before it."""
+    written: list[int] = field(default_factory=lambda: [])
+    """The tokens sent to the client."""
+    admitted: int = 0
+    """The admission's serial: the newest slot has the highest."""
+    stalled_at: int | None = None
+    """The position the slot waits at for a page, from its STALLED event until it has the page."""
+    preempting: bool = False
+    """It is stopped to free its pages, and goes back to the queue when it finishes."""
+
+    @property
+    def left(self) -> int:
+        """Tokens it may still write."""
+        return self.max_new - len(self.written)
 
     @property
     def remaining(self) -> int:
@@ -158,6 +177,7 @@ class Scheduler:
         self.prompt_step_open = False
         """A plan with prompt spans is submitted and its STEP_DONE, which says what decode it owes, has not come."""
         self._serial = 0
+        self._admissions = 0
 
     @property
     def idle(self) -> bool:
@@ -195,6 +215,7 @@ class Scheduler:
         if (problem := self._image_problem(gen.prompt, images)) is not None:
             return [protocol.Error(gen.rid, problem)]
         r = Request(gen.rid, gen.prompt, gen.max_new, gen.settings.with_defaults(), self.clock(), priority)
+        r.given = len(gen.prompt)
         r.images = images
         r.key = prefix_key(gen.prompt, images)
         self.by_rid[r.rid] = r
@@ -226,14 +247,14 @@ class Scheduler:
         if r.phase is Phase.WAITING:
             self.waiting.remove(r)
             del self.by_rid[rid]
-            return [protocol.Done(rid, 0, len(r.prompt), 0.0, 0.0, protocol.Finish.CANCEL)]
+            return [protocol.Done(rid, len(r.written), r.given, 0.0, 0.0, protocol.Finish.CANCEL, r.reused)]
         r.cancelled = True
         return []
 
     def refuse_waiting(self, message: str) -> list[protocol.Event]:
-        """Every request not yet admitted ends with an error; the admitted ones go on."""
+        """Every request not yet admitted ends with an error; the admitted ones go on, a preempted one among them."""
         out: list[protocol.Event] = []
-        for r in list(self.waiting):
+        for r in [r for r in self.waiting if not r.written]:
             self.waiting.remove(r)
             del self.by_rid[r.rid]
             out.append(protocol.Error(r.rid, message))
@@ -273,11 +294,12 @@ class Scheduler:
                 r.waiting_for = producer
                 continue
             r.waiting_for = None
-            admission = self.state.plan_admission(r.key, r.max_new)
+            o = self.options
+            admission = self.state.plan_admission(r.key, r.left, o.decode_lookahead + o.decode_batch)
             if admission is None:
                 break
             self._flush_drops()
-            seq = self.state.admit(admission, r.key, r.max_new)
+            seq = self.state.admit(admission, r.key, r.left)
             s = r.settings
             try:
                 self.engine.admit(
@@ -292,7 +314,7 @@ class Scheduler:
                         s.penalty_freq,
                         s.penalty_present,
                         s.seed,
-                        r.max_new,
+                        r.left,
                     ),
                     r.prompt,
                     r.images,
@@ -304,10 +326,15 @@ class Scheduler:
                 out.append(protocol.Error(r.rid, str(exc)))
                 continue
             self.waiting.remove(r)
+            again = bool(r.written)
             r.phase = Phase.PREFILL
             r.slot = seq.slot
-            r.next_pos = r.done_pos = r.reused = seq.start
-            r.t_admit = self.clock()
+            r.next_pos = r.done_pos = seq.start
+            self._admissions += 1
+            r.admitted = self._admissions
+            if not again:  # a preempted request keeps its first admission's counts
+                r.reused = seq.start
+                r.t_admit = self.clock()
             # A mark cuts the prompt's spans and makes requests sharing the prefix wait, so a pool of none has no marks.
             r.marks = (
                 sorted((p, k) for p, k in self.rule(r.prompt) if seq.start < p < len(r.prompt))
@@ -317,7 +344,8 @@ class Scheduler:
             self.by_slot[seq.slot] = r
             if admission.checkpoint is not None:
                 self.engine.restore(seq.slot, admission.checkpoint.id)
-                out.append(protocol.Resume(r.rid, seq.start))
+                if not again:
+                    out.append(protocol.Resume(r.rid, seq.start))
 
     def _flush_drops(self) -> None:
         for checkpoint_id in self.state.drops:
@@ -326,12 +354,13 @@ class Scheduler:
 
     def _plan(self) -> None:
         plan = StepPlan(self._serial + 1)
+        for r in list(self.by_slot.values()):
+            if r.phase is Phase.DECODE and not (r.cancelled or r.preempting):
+                self._grow_ahead(r, len(r.prompt) + r.generated)
         for r in self.by_slot.values():
-            if r.cancelled and not r.stop_sent:
+            if (r.cancelled or r.preempting) and not r.stop_sent:
                 plan.stop.append(r.slot)
                 r.stop_sent = True
-            elif r.phase is Phase.DECODE:
-                self._grow_ahead(r, len(r.prompt) + r.generated)
         plan.window_rows = self.cost.window_rows()
         marks = self._prompt_spans(plan)
         plan.pages = self.state.take_changes(MAX_PAGE_CHANGES)
@@ -352,17 +381,39 @@ class Scheduler:
         self._flush_drops()
 
     def _grow_ahead(self, r: Request, used: int) -> None:
-        """Pages for the cells after the first `used`: at least `decode_lookahead`, then `decode_batch` more."""
+        """Pages for the cells after the first `used`: at least `decode_lookahead`, then `decode_batch` more. When the
+        pool has no block, a stalled slot takes the page it waits for, and preempts a slot if there is none."""
         o = self.options
-        if self.state.sequences[r.slot].cells < used + o.decode_lookahead:
-            self.state.grow(r.slot, used + o.decode_lookahead + o.decode_batch)
+        seq = self.state.sequences[r.slot]
+        grown = seq.cells >= used + o.decode_lookahead or self.state.grow(
+            r.slot, used + o.decode_lookahead + o.decode_batch
+        )
+        if not grown and r.stalled_at is not None:
+            self.state.grow(r.slot, r.stalled_at + 1)
+        if r.stalled_at is None:
+            return
+        if seq.cells > r.stalled_at:
+            r.stalled_at = None
+        else:
+            self._preempt()
+
+    def _preempt(self) -> None:
+        """Stop the newest slot of the lowest priority, so that its pages come back when it finishes (ADR-0067). One
+        slot stops at a time: the pages a stopping slot frees may be enough."""
+        if any(q.preempting or q.stop_sent for q in self.by_slot.values()):
+            return
+        running = [q for q in self.by_slot.values() if not q.cancelled]
+        if running:
+            min(running, key=lambda q: (q.priority, -q.admitted)).preempting = True
 
     def _prompt_spans(self, plan: StepPlan) -> list[tuple[Request, int, bool]]:
         """Fill the plan's prompt spans. Returns the checkpoints to take after it."""
         if self.spans_in_flight:
             return []
         candidates = [
-            r for r in self.by_slot.values() if r.phase is Phase.PREFILL and r.remaining > 0 and not r.cancelled
+            r
+            for r in self.by_slot.values()
+            if r.phase is Phase.PREFILL and r.remaining > 0 and not (r.cancelled or r.preempting)
         ]
         if not candidates:
             return []
@@ -458,19 +509,24 @@ class Scheduler:
                     r.t_first = now
                 r.phase = Phase.DECODE
                 r.generated += 1
+                r.written.append(event.a)
                 out.append(protocol.Tokens(r.rid, (event.a,)))
             case EventKind.PROMPT_DONE:
                 r.done_pos = event.a
                 self._span_done(r.slot)
                 out.append(protocol.Progress(r.rid, event.a, len(r.prompt), (now - r.t_admit) * 1e3))
+            case EventKind.FINISHED if (
+                r.preempting and not r.cancelled and FinishReason(event.a) is FinishReason.CANCELLED and r.left > 0
+            ):
+                self._requeue(r)
             case EventKind.FINISHED:
                 first = r.t_first if r.t_first is not None else now
                 st = self.engine.slot_stats(r.slot)  # before the release empties the slot
                 out.append(
                     protocol.Done(
                         r.rid,
-                        r.generated,
-                        len(r.prompt),
+                        len(r.written),
+                        r.given,
                         (first - r.t_admit) * 1e3,
                         (now - first) * 1e3,
                         _FINISH[FinishReason(event.a)],
@@ -485,7 +541,9 @@ class Scheduler:
                 )
                 self._retire(r)
             case EventKind.STALLED:
-                self._grow_ahead(r, max(event.a + 1, len(r.prompt) + r.generated))
+                r.stalled_at = event.a
+                if not (r.cancelled or r.preempting):
+                    self._grow_ahead(r, max(event.a + 1, len(r.prompt) + r.generated))
             case EventKind.ERROR:
                 out.append(protocol.Error(r.rid, f"the core failed this request with error {event.a}"))
                 self._retire(r)
@@ -497,9 +555,26 @@ class Scheduler:
         else:
             self.spans_in_flight.pop(slot, None)
 
-    def _retire(self, r: Request) -> None:
+    def _free_slot(self, r: Request) -> None:
         self.engine.release(r.slot)
         self.state.release(r.slot)
         self.spans_in_flight.pop(r.slot, None)
         del self.by_slot[r.slot]
+
+    def _retire(self, r: Request) -> None:
+        self._free_slot(r)
         del self.by_rid[r.rid]
+
+    def _requeue(self, r: Request) -> None:
+        """A preempted request waits again with its tokens so far added to its prompt and taken from what it may
+        write; they are not sent again. Its arrival time keeps it ahead of every request that came after it."""
+        self._free_slot(r)
+        r.prompt = r.prompt[: r.given] + tuple(r.written)
+        r.key = prefix_key(r.prompt, r.images)
+        r.phase = Phase.WAITING
+        r.slot = -1
+        r.next_pos = r.done_pos = r.passes = r.generated = 0
+        r.marks = []
+        r.stop_sent = r.preempting = False
+        r.stalled_at = None
+        self.waiting.append(r)
