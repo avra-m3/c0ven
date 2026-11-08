@@ -20,8 +20,9 @@ def test_draft_dir_prefers_dflash(tmp_path: Path):
     (tmp_path / "mtp" / "mtp-manifest.json").write_text("{}")
     assert draft_dir(model) == tmp_path / "mtp"
     (tmp_path / "dflash").mkdir()
-    assert draft_dir(model) == tmp_path / "mtp"  # no manifest yet
-    (tmp_path / "dflash" / "dflash-manifest.json").write_text("{}")
+    (tmp_path / "dflash" / "model.safetensors").write_bytes(b"")
+    assert draft_dir(model) == tmp_path / "mtp"  # no config.json yet
+    (tmp_path / "dflash" / "config.json").write_text("{}")
     assert draft_dir(model) == tmp_path / "dflash"
 
 

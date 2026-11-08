@@ -1,7 +1,8 @@
-"""The drafter's size on each card, from its manifest's tensor shapes and the rules the core loads them by.
+"""The drafter's size on each card, from its tensor shapes and the rules the core loads them by.
 
-The MTP layer (core/models/qwen4exp/mtp.cpp, `load_mtp`) and DFlash 2 (dflash.cpp, `load_dflash`) keep their
-tensors as BF16 files, each listed in the directory's manifest with its shape (MODEL_FILES.md). The core splits the
+The MTP layer (core/models/qwen4exp/mtp.cpp, `load_mtp`) keeps its tensors as BF16 files, each listed in the
+directory's manifest with its shape; DFlash 2 (dflash.cpp, `load_dflash`) is the published `model.safetensors`, whose
+header lists them (MODEL_FILES.md). The core splits the
 attention and MLP projections over the cards as a main layer's, widens the norms to F32, quantises the MTP layer's
 routed experts to IQ4_NL, and keeps the rest whole. The committed docs/model/mtp-manifest.json holds the MTP layer's
 manifest, so the plan has its figure without the directory.
@@ -11,7 +12,9 @@ from __future__ import annotations
 
 import json
 import math
+import struct
 from pathlib import Path
+from typing import Any, cast
 
 COMMITTED = Path(__file__).resolve().parents[3] / "docs" / "model"
 """Holds mtp-manifest.json, the MTP layer's manifest: the plan's drafter when it is given no directory."""
@@ -29,6 +32,11 @@ _SPLIT = (
 expert's."""
 _UNUSED = ".indexer."
 """The MTP layer's indexer: the draft layer attends to its last cells without it."""
+DFLASH_FILES = ("model.safetensors", "config.json")
+"""DFlash 2's files in its directory, as incoai/Qwen3.8-Flash-Next-DFlash2 publishes them (core/models/qwen4exp/model.h,
+kDfWeights and kDfConfig)."""
+DFLASH_UNUSED = "candidate_selector."
+"""The checkpoint's candidate selector, which the core does not load (ADR-0050 item 5)."""
 DFLASH_RING = 2112
 """K and V cells a slot keeps per DFlash 2 layer (core/models/qwen4exp/layout.h, DF_RING)."""
 Q8_BLOCK = (32, 34)
@@ -38,16 +46,27 @@ IQ4_NL_BLOCK = (32, 18)
 
 
 def read_shapes(directory: Path = COMMITTED) -> dict[str, tuple[int, ...]]:
-    """Each tensor's shape from the drafter's manifest: `mtp-manifest.json`, a map of names, or
-    `dflash-manifest.json`, whose `tensors` list each carries its name."""
-    for name in ("dflash-manifest.json", "mtp-manifest.json"):
-        f = directory / name
-        if f.is_file():
-            body = json.loads(f.read_text())
-            if name.startswith("dflash"):
-                return {t["name"]: tuple(t["shape"]) for t in body["tensors"]}
-            return {n: tuple(t["shape"]) for n, t in body.items()}
-    raise FileNotFoundError(f"no drafter manifest in {directory}")
+    """Each tensor's shape the core loads: from DFlash 2's `model.safetensors` header, leaving out the candidate
+    selector's, or from the MTP layer's `mtp-manifest.json`, a map of names."""
+    weights = directory / DFLASH_FILES[0]
+    if weights.is_file():
+        with weights.open("rb") as f:
+            (n,) = struct.unpack("<Q", f.read(8))
+            header = cast("dict[str, dict[str, Any]]", json.loads(f.read(n)))
+        return {
+            name: tuple(t["shape"])
+            for name, t in header.items()
+            if name != "__metadata__" and not name.startswith(DFLASH_UNUSED)
+        }
+    f = directory / "mtp-manifest.json"
+    if f.is_file():
+        return {n: tuple(t["shape"]) for n, t in json.loads(f.read_text()).items()}
+    if (directory / "dflash-manifest.json").is_file():
+        raise FileNotFoundError(
+            f"{directory} holds DFlash 2 split one file a tensor, which is no longer read: put the drafter's "
+            "model.safetensors and config.json there (MODEL_FILES.md)"
+        )
+    raise FileNotFoundError(f"no drafter in {directory}")
 
 
 def draft_kv_cell(shapes: dict[str, tuple[int, ...]]) -> int:

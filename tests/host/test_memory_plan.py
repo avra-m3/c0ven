@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import math
+import struct
 from dataclasses import replace
 from pathlib import Path
 
@@ -111,18 +113,41 @@ def test_the_draft_layer_as_the_core_stores_it():
     assert MODEL.draft_per_card == 831_015_936
 
 
-def test_a_dflash_manifest(tmp_path: Path):
-    """DFlash 2's manifest lists its tensors; its projections split, its norms and base kernels widen to F32."""
-    tensors = [
-        {"name": "fc.weight", "dtype": "BF16", "shape": [2560, 12800]},
-        {"name": "norm.weight", "dtype": "BF16", "shape": [2560]},
-        {"name": "layers.0.self_attn.q_proj.weight", "dtype": "BF16", "shape": [4096, 2560]},
-        {"name": "layers.0.mlp.down_proj.weight", "dtype": "BF16", "shape": [2560, 7680]},
-        {"name": "layers.0.attention_conv.base_kernel", "dtype": "BF16", "shape": [4, 2560]},
-    ]
-    (tmp_path / "dflash-manifest.json").write_text(json.dumps({"tensors": tensors}))
+def safetensors(path: Path, shapes: dict[str, list[int]]) -> None:
+    """A BF16 safetensors file of zeros with these tensors."""
+    header: dict[str, object] = {"__metadata__": {"format": "pt"}}
+    offset = 0
+    for name, shape in shapes.items():
+        size = math.prod(shape) * 2
+        header[name] = {"dtype": "BF16", "shape": shape, "data_offsets": [offset, offset + size]}
+        offset += size
+    body = json.dumps(header).encode()
+    path.write_bytes(struct.pack("<Q", len(body)) + body + bytes(offset))
+
+
+def test_a_dflash_safetensors_header(tmp_path: Path):
+    """DFlash 2's shapes come from its model.safetensors header, less the candidate selector; its projections split,
+    its norms and base kernels widen to F32."""
+    safetensors(
+        tmp_path / "model.safetensors",
+        {
+            "fc.weight": [2560, 12800],
+            "norm.weight": [2560],
+            "layers.0.self_attn.q_proj.weight": [4096, 2560],
+            "layers.0.mlp.down_proj.weight": [2560, 7680],
+            "layers.0.attention_conv.base_kernel": [4, 2560],
+            "candidate_selector.hidden_projection.weight": [256, 2560],
+        },
+    )
     shapes = read_shapes(tmp_path)
+    assert "candidate_selector.hidden_projection.weight" not in shapes
     assert draft_per_card(shapes, 2) == 2 * 2560 * 12800 + 4 * 2560 + 4096 * 2560 + 2560 * 7680 + 4 * 4 * 2560
+
+
+def test_the_split_dflash_layout_is_refused(tmp_path: Path):
+    (tmp_path / "dflash-manifest.json").write_text("{}")
+    with pytest.raises(FileNotFoundError, match="no longer read"):
+        read_shapes(tmp_path)
 
 
 def test_host_side():

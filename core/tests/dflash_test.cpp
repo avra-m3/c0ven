@@ -232,7 +232,7 @@ int main(int argc, char **argv) {
   if (path.empty()) return test::skip("model not found under FLASH_MODEL_DIR");
   const char *dd = std::getenv("FLASH_DFLASH_DIR");
   const std::string dir = dd ? dd : "/models/dflash";
-  if (access((dir + "/dflash-manifest.json").c_str(), R_OK) != 0) return test::skip("no DFlash 2 files in " + dir);
+  if (!engine::qwen4exp::is_dflash_dir(dir)) return test::skip("no DFlash 2 files in " + dir);
   const int32_t mask = engine::qwen4exp::read_df_config(dir).mask_token;
   EXPECT(argc >= 2, "usage: dflash_test <reference dir>");
   const uint32_t N = DF_WINDOW + 8, B = 8;
