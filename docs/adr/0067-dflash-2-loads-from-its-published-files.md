@@ -12,6 +12,8 @@
 - A deployment that fetches files with its own downloader has to run that tool, or copy its output, to get the
   drafter. The published files are enough: the safetensors header gives each tensor's dtype, shape and byte range, and
   `config.json` gives every value `dflash-config.txt` held.
+- The serve image does not ship `docs/`, and with a DFlash 2 drafter the plan read `docs/model/mtp-manifest.json`
+  for the draft ring's width, so 0.20.0 could not start with `dflash/` at all.
 
 ## Decision
 
@@ -19,7 +21,10 @@
    a directory with both as DFlash 2's, and refuses one with `dflash-manifest.json` and without them.
 2. The core reads each tensor by its byte range from the safetensors header, and the sizes, the mask token and the
    target layers from `config.json` (`core/util/json.h` reads both). The candidate selector's tensors are not read.
-3. The memory plan reads the drafter's shapes from the same header.
+3. The memory plan reads the drafter's shapes from the same header. A served start reads nothing under `docs/`: the
+   draft ring it counts for DFlash 2, or for no drafter, takes its width from the model file's attention layer, which
+   the MTP layer's equals. Only the mock and the reference, which have no model file, read
+   `docs/model/mtp-manifest.json`.
 4. `tools/model_fetch.py` downloads the two files at the pinned revision and checks their size and sha256.
    `tools/dflash_fetch.py` is removed.
 

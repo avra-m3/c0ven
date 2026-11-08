@@ -4,8 +4,8 @@ The MTP layer (core/models/qwen4exp/mtp.cpp, `load_mtp`) keeps its tensors as BF
 directory's manifest with its shape; DFlash 2 (dflash.cpp, `load_dflash`) is the published `model.safetensors`, whose
 header lists them (MODEL_FILES.md). The core splits the
 attention and MLP projections over the cards as a main layer's, widens the norms to F32, quantises the MTP layer's
-routed experts to IQ4_NL, and keeps the rest whole. The committed docs/model/mtp-manifest.json holds the MTP layer's
-manifest, so the plan has its figure without the directory.
+routed experts to IQ4_NL, and keeps the rest whole. A served start reads only the drafter's directory and the model
+file; the committed docs/model/mtp-manifest.json is the mock's and the reference's drafter.
 """
 
 from __future__ import annotations
@@ -17,7 +17,8 @@ from pathlib import Path
 from typing import Any, cast
 
 COMMITTED = Path(__file__).resolve().parents[3] / "docs" / "model"
-"""Holds mtp-manifest.json, the MTP layer's manifest: the plan's drafter when it is given no directory."""
+"""Holds mtp-manifest.json, a copy of the MTP layer's manifest: the drafter of the mock and the reference, which
+have no model file. A served start never reads it."""
 
 _SPLIT = (
     "self_attn.q_proj.weight",
@@ -45,7 +46,7 @@ IQ4_NL_BLOCK = (32, 18)
 """The MTP layer's experts on the cards: 18 bytes per 32 values."""
 
 
-def read_shapes(directory: Path = COMMITTED) -> dict[str, tuple[int, ...]]:
+def read_shapes(directory: Path) -> dict[str, tuple[int, ...]]:
     """Each tensor's shape the core loads: from DFlash 2's `model.safetensors` header, leaving out the candidate
     selector's, or from the MTP layer's `mtp-manifest.json`, a map of names."""
     weights = directory / DFLASH_FILES[0]
@@ -69,11 +70,12 @@ def read_shapes(directory: Path = COMMITTED) -> dict[str, tuple[int, ...]]:
     raise FileNotFoundError(f"no drafter in {directory}")
 
 
-def draft_kv_cell(shapes: dict[str, tuple[int, ...]]) -> int:
-    """The values of K and V the MTP layer keeps per cell: its k and v projections' rows. DFlash 2's ring is its own
-    (dflash.cpp); for it this gives the MTP layer's, from the committed manifest, as the plan has always counted."""
+def draft_kv_cell(shapes: dict[str, tuple[int, ...]], attention_kv: int) -> int:
+    """The values of K and V the MTP layer keeps per cell: its k and v projections' rows. Without the MTP layer's
+    shapes (DFlash 2, whose ring is its own, or no drafter) it is attention_kv, a main attention layer's K and V values
+    per token from the model file, which the MTP layer's equal; the plan counts that ring for every drafter."""
     if not any(n.startswith("mtp.") for n in shapes):
-        shapes = read_shapes()
+        return attention_kv
     return sum(shapes[f"mtp.layers.0.self_attn.{p}_proj.weight"][0] for p in ("k", "v"))
 
 

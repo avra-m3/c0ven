@@ -32,9 +32,13 @@ CPU_WORKERS = 16
 the reference)."""
 
 
-def memory_plan(table: TensorTable, options: PlanOptions, draft: Path | None = None) -> MemoryPlan:
-    """draft: the drafter's directory, whose manifest sizes it; None: the committed MTP layer's."""
-    return plan(model_memory(table, options.cards, read_shapes(draft) if draft is not None else None), options)
+def memory_plan(
+    table: TensorTable, options: PlanOptions, draft: Path | None = None, *, served: bool = False
+) -> MemoryPlan:
+    """draft: the drafter's directory, whose files size it. Without one, a served start (`served`, a model file)
+    plans no drafter; the mock and the reference plan the committed MTP layer."""
+    shapes = read_shapes(draft) if draft is not None else ({} if served else None)
+    return plan(model_memory(table, options.cards, shapes), options)
 
 
 @lru_cache(maxsize=4)
@@ -82,7 +86,7 @@ def open_config(
     table = table_of(model, table_cache)
     if model is not None:
         options = replace(options, draft=draft is not None)
-    mp = memory_plan(table, options, draft)
+    mp = memory_plan(table, options, draft, served=model is not None)
     tensors = (
         tuple(
             Tensor(t.name, t.ggml_type, t.shard - 1, t.offset, t.nbytes, t.shape, split_of(t.name), t.layer)

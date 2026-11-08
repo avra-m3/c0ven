@@ -22,7 +22,7 @@ from engine.memory_plan import (
     working_file,
     write_working,
 )
-from engine.models.qwen4exp.draft import draft_per_card, read_shapes
+from engine.models.qwen4exp.draft import COMMITTED, draft_per_card, read_shapes
 from engine.models.qwen4exp.memory import (
     deltanet_state_bytes,
     model_memory,
@@ -51,10 +51,15 @@ def test_the_sizes_per_sequence_are_the_files():
     assert MODEL.draft_kv_host == 32_768 * 1_088
 
 
-def test_a_dflash_drafter_counts_the_mtp_layers_ring():
-    """DFlash 2's manifest has no MTP layer: its ring is counted as the MTP layer's, as before."""
+def test_a_dflash_drafter_counts_the_mtp_layers_ring(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    """DFlash 2 has no MTP layer: its ring is counted as the MTP layer's, from the model file's attention widths. A
+    served plan, with DFlash 2 or no drafter, reads nothing under docs/."""
+    monkeypatch.setattr("engine.models.qwen4exp.memory.COMMITTED", tmp_path / "missing")
     dflash = {"layers.0.self_attn.k_proj.weight": (1024, 2560), "fc.weight": (2560, 12800)}
     assert model_memory(TABLE, draft_shapes=dflash).draft_kv_host == MODEL.draft_kv_host
+    none = model_memory(TABLE, draft_shapes={})
+    assert none.draft_kv_host == MODEL.draft_kv_host
+    assert none.draft_per_card == 0
 
 
 def test_the_sizes_follow_the_layers():
@@ -106,7 +111,7 @@ def test_the_split_rules_keep_some_weights_whole():
 def test_the_draft_layer_as_the_core_stores_it():
     """From the committed MTP manifest: IQ4_NL experts, 1,382,400 B a slot on each of two cards, the indexer left
     out, the norms in F32, and the rest split as a main layer's or whole."""
-    shapes = read_shapes()
+    shapes = read_shapes(COMMITTED)
     assert len(shapes) == 31
     assert draft_per_card(shapes, 2) == 831_015_936
     assert draft_per_card(shapes, 1) == 1_593_527_296
