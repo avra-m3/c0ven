@@ -584,8 +584,10 @@ never waits for the CPU, and each further draft is one more pass (`core/models/q
 The core counts which experts the requests route to. Between plans it lets the uncached experts used most replace the
 cached ones used least, up to 64 in a round, shared out among the slots that wrote in the plan before (32 for two, 16
 for four): after a plan that ends a prompt, and otherwise once the time the CPU's misses have cost since the last
-round reaches that round's time, at least 4 plans and at most 16 after it, never while a slot is reading its prompt
-(`core/models/qwen4exp/swap.cpp`, `core/api/swap_cadence.h`). A missed layer's cost is a line through the decode steps'
+round reaches that round's time, at least 4 plans and at most 16 after it
+(`core/models/qwen4exp/swap.cpp`, `core/api/swap_cadence.h`). While a slot reads its prompt and no slot writes, no
+round runs; while any slot writes, rounds keep this cadence beside the prompt, and the prompt's routing stays out of
+the counts ([ADR-0067](adr/0067-swap-rounds-beside-a-prompt.md)). A missed layer's cost is a line through the decode steps'
 times against their missed layers, for each step width. Until a round is timed and a cost is fitted, a round follows
 every 4th plan. While several slots write, a round follows every 16th plan. When the KV pool and the cache share the
 cards (section 6), a round also moves blocks between them: to the pool when the pages backed above those in use run

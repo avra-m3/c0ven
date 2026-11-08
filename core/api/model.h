@@ -263,11 +263,12 @@ class Model {
   virtual void kv_ahead() = 0;
   virtual void kvs_drop(uint32_t slot, uint32_t pages) = 0;
 
-  // Adaptive swaps of the cached experts: note_prompt_routing adds the last prompt chunk's routing to the counts;
+  // Adaptive swaps of the cached experts: note_prompt_routing adds the last prompt chunk's routing to the counts, or
+  // with add false drops it;
   // swap_round makes up to max_swaps swaps where the counts say so and returns the swaps made (decay false: the
   // counts have not changed since the last round). swaps_ready: a round would not wait for the last one's work.
   // swaps_settled: the last round chose nothing for the next. Between steps.
-  virtual void note_prompt_routing() = 0;
+  virtual void note_prompt_routing(bool add) = 0;
   virtual uint32_t swap_round(uint32_t max_swaps = 64, bool decay = true) = 0;
   virtual bool swaps_ready() const = 0;
   virtual bool swaps_settled() const = 0;
