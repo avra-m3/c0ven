@@ -18,10 +18,19 @@ from pathlib import Path
 from engine.api.interface import PAGE_CELLS
 
 GIB = 2**30
+MIB = 2**20
 
 SSD_TIER_HEADROOM = 24 * GIB
 ARENA_PIECE = GIB
 """The core takes its arena in pieces of this many bytes (the core's kArenaPiece)."""
+NGRAM_CACHE_ROWS = 2**20
+"""The rows of the n-gram table's cache outside reserved huge pages (the core's default, ngram.h)."""
+NGRAM_TAG_BYTES = 8
+"""Each n-gram cache row's tag, bytes (row_cache.h)."""
+EXPERTS_TOLERANCE = 0.05
+EXPERTS_TOLERANCE_MIN = 8
+"""How far, as a share of the plan's count or in experts a layer if that is more, the core's cached experts may be
+from the plan's before the fit report notes it: the plan's card figures are estimates."""
 """What a plan with an SSD tier leaves free on the host, bytes: the 22 GiB default of `tools/check.py --mem-floor` and
 2 GiB, so a timed run does not stop at the floor."""
 
@@ -61,6 +70,8 @@ class ModelMemory:
     max_context: int
     ngram_bytes: int
     """The n-gram table, which stays in the file unless the plan holds it in RAM."""
+    ngram_row_bytes: int = 0
+    """One row of the n-gram table, bytes; 0: not given, and its cache keeps the default size."""
     working_of: Callable[[PlanOptions, int], int] | None = None
     """*Estimate*: what the options add to `working_per_card`, given them and the KV pool in tokens; None: nothing."""
     card_weights: tuple[int, ...] = ()
@@ -134,10 +145,16 @@ class PlanOptions:
     ram_max: int | None = None
     """`--ram-max`: a limit the user sets on the host memory the plan may take; None: none."""
     ngram_in_ram: bool = False
-    """The whole n-gram table in RAM, counted in the host total."""
+    """The whole n-gram table in RAM, counted in the host total but for its part in reserved huge pages."""
     hugetlb_pool: int | None = None
     """`--hugepages`: the host's free reserved huge pages, bytes. The arena's pieces take them first, and what they
     hold is not counted against host_memory, which leaves them out. None: the arena is all in host memory."""
+    ngram_hugetlb: int = 0
+    """The reserved huge pages the n-gram table takes, bytes, a multiple of huge_page, from what the arena leaves
+    (MemoryPlan.hugetlb_left): with ngram_in_ram the table's first part, otherwise its row cache. Not counted against
+    host_memory."""
+    huge_page: int = 2 * MIB
+    """One reserved huge page (`Hugepagesize`), bytes."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -246,6 +263,10 @@ class MemoryPlan:
     """As ModelMemory.prompt_host_ring, host bytes."""
     prompt_staging_per_card: int = 0
     """As ModelMemory.prompt_staging_per_card, bytes on each card."""
+    expert_bytes: int = 0
+    """As ModelMemory.expert_bytes."""
+    ngram_row_bytes: int = 0
+    """As ModelMemory.ngram_row_bytes."""
 
     @property
     def pinned_bytes(self) -> int:
@@ -266,14 +287,61 @@ class MemoryPlan:
         return min(self.arena_bytes, self.options.hugetlb_pool // ARENA_PIECE * ARENA_PIECE)
 
     @property
+    def arena_bound_bytes(self) -> int:
+        """The arena at its largest. It grows after the load as the KV pool takes card memory from the expert cache,
+        down to the experts a layer the core keeps room for with the whole pool backed (`experts_floor`). The plan's
+        count is that figure, as it reserves the whole pool too, less the fit report's tolerance for an estimate. A
+        model with an SSD tier fills its arena once: its bound is its size."""
+        if self.tiers is not None or not self.expert_bytes:
+            return self.arena_bytes
+        cached = self.experts_per_layer
+        floor = max(0, cached - max(EXPERTS_TOLERANCE_MIN, round(EXPERTS_TOLERANCE * cached)))
+        return max(self.arena_bytes, (self.experts_total // self.layers - floor) * self.layers * self.expert_bytes)
+
+    @property
+    def arena_hugetlb_claim(self) -> int:
+        """The reserved huge pages kept for the arena: its pieces at its largest, and one more for the experts that do
+        not fit a piece's end, within PlanOptions.hugetlb_pool."""
+        pool = self.options.hugetlb_pool
+        if pool is None:
+            return 0
+        bound = self.arena_bound_bytes
+        pieces = -(-bound // ARENA_PIECE) + 1 if bound else 0
+        return min(pool // ARENA_PIECE * ARENA_PIECE, pieces * ARENA_PIECE)
+
+    @property
+    def hugetlb_left(self) -> int:
+        """The reserved huge pages the arena leaves at its largest, in whole huge pages, bytes."""
+        pool = self.options.hugetlb_pool
+        if pool is None:
+            return 0
+        page = self.options.huge_page
+        return max(0, pool - self.arena_hugetlb_claim) // page * page
+
+    @property
+    def ngram_host_bytes(self) -> int:
+        """The n-gram table's host memory outside reserved huge pages: its part past them when it is in RAM."""
+        if not self.options.ngram_in_ram:
+            return 0
+        return max(0, self.ngram_bytes - self.options.ngram_hugetlb)
+
+    @property
+    def ngram_cache_rows(self) -> int:
+        """The rows of the n-gram table's cache: as many as its reserved huge pages hold, or the core's default."""
+        o = self.options
+        if o.ngram_in_ram or not o.ngram_hugetlb or not self.ngram_row_bytes:
+            return NGRAM_CACHE_ROWS
+        return max(NGRAM_CACHE_ROWS, o.ngram_hugetlb // (self.ngram_row_bytes + NGRAM_TAG_BYTES))
+
+    @property
     def host_bytes(self) -> int:
         """The host memory the engine takes: the pinned total but for the arena's part in reserved huge pages, the
-        working estimate, and the n-gram table when it is in RAM."""
+        working estimate, and the n-gram table's part outside them when it is in RAM."""
         return (
             self.pinned_bytes
             - self.arena_reserved_bytes
             + self.options.host_working
-            + (self.ngram_bytes if self.options.ngram_in_ram else 0)
+            + self.ngram_host_bytes
             + self.host_caches_bytes
         )
 
@@ -316,6 +384,15 @@ class MemoryPlan:
             ("checkpoints", f"{o.checkpoints} x {self.checkpoint_bytes // o.checkpoints if o.checkpoints else 0:,} B"),
             ("pinned host memory", gib(self.pinned_bytes)),
             ("n-gram table", f"{gib(self.ngram_bytes)}, {'in RAM' if o.ngram_in_ram else 'read from the file'}"),
+            *(
+                [
+                    ("n-gram cache", f"{self.ngram_cache_rows:,} rows"),
+                    ("reserved huge pages kept for the arena at its largest", gib(self.arena_hugetlb_claim)),
+                    ("n-gram table or cache in reserved huge pages", gib(o.ngram_hugetlb)),
+                ]
+                if o.hugetlb_pool is not None
+                else []
+            ),
             ("host memory with working set (estimate)", gib(self.host_bytes)),
             ("KV pages", f"{self.pages:,} of {PAGE_CELLS} cells"),
         ]
@@ -405,18 +482,40 @@ def plan(m: ModelMemory, o: PlanOptions) -> MemoryPlan:
 
 
 NGRAM_MARGIN_SHARE = 0.5
-"""The share of the host's memory, at least 8 GiB, left free after the n-gram table moves into RAM: the unlocked arena
-takes the host's free 2 MiB blocks, and with too few of them the host moves and swaps its small pages, which stops the
-cards (docs/measurements/MEASUREMENTS.md#2026-11-04-ngram-room)."""
+"""The share of the host's memory, at least 8 GiB, left free after the n-gram table's part outside reserved huge pages
+moves into RAM: the unlocked arena takes the host's free 2 MiB blocks, and with too few of them the host moves and
+swaps its small pages, which stops the cards (docs/measurements/MEASUREMENTS.md#2026-11-04-ngram-room). Reserved huge
+pages are outside the host's other memory, so a part in them takes no margin (ADR-0070)."""
 
 
-def ngram_fits(p: MemoryPlan, mem_total: int | None) -> bool:
-    """Whether the host has room for the n-gram table in RAM beside the plan (the plan's own table not counted)."""
+def ngram_fits(p: MemoryPlan, mem_total: int | None, hugetlb: int = 0) -> bool:
+    """Whether the host has room for the n-gram table in RAM beside the plan (the plan's own table not counted), with
+    its first `hugetlb` bytes in reserved huge pages."""
+    ordinary = max(0, p.ngram_bytes - hugetlb)
+    if hugetlb and ordinary == 0:
+        return True
     limit = host_limit(p.options)
     if limit is None or mem_total is None:
         return False
-    total = p.host_bytes - (p.ngram_bytes if p.options.ngram_in_ram else 0)
-    return limit - total - p.ngram_bytes >= max(8 * GIB, NGRAM_MARGIN_SHARE * mem_total)
+    total = p.host_bytes - p.ngram_host_bytes
+    return limit - total - ordinary >= max(8 * GIB, NGRAM_MARGIN_SHARE * mem_total)
+
+
+def ngram_auto(p: MemoryPlan, mem_total: int | None) -> tuple[bool, int]:
+    """`--ngram-ram auto`: whether the n-gram table goes in RAM, and the reserved huge pages it takes, bytes
+    (PlanOptions.ngram_in_ram and ngram_hugetlb). The table takes what the arena leaves of them at its largest
+    (MemoryPlan.hugetlb_left). It goes in RAM whole when they and the host's memory, under ngram_fits's margin, hold
+    it; otherwise its row cache fills them, when they hold more rows than the default cache. Without reserved huge
+    pages this is ngram_fits alone."""
+    left, page = p.hugetlb_left, p.options.huge_page
+    whole = min(left, -(-p.ngram_bytes // page) * page)
+    if ngram_fits(p, mem_total, whole):
+        return True, whole
+    row = p.ngram_row_bytes + NGRAM_TAG_BYTES
+    rows = min(left // row, p.ngram_bytes // p.ngram_row_bytes) if p.ngram_row_bytes else 0
+    if rows <= NGRAM_CACHE_ROWS:
+        return False, 0
+    return False, min(left, -(-rows * row // page) * page)
 
 
 def host_limit(o: PlanOptions) -> int | None:
@@ -480,7 +579,7 @@ def _arena_budget(m: ModelMemory, o: PlanOptions, pinned_outside_arena: int) -> 
     limit = host_limit(o)
     if limit is None:
         return reserved
-    ngram = m.ngram_bytes if o.ngram_in_ram else 0
+    ngram = max(0, m.ngram_bytes - o.ngram_hugetlb) if o.ngram_in_ram else 0
     caches = m.engram_cache + m.ssd_staging_ring + m.prompt_host_ring
     return reserved + max(0, limit - pinned_outside_arena - o.host_working - ngram - caches - SSD_TIER_HEADROOM)
 
@@ -581,4 +680,6 @@ def _plan(m: ModelMemory, o: PlanOptions) -> MemoryPlan:
         ssd_staging_bytes=m.ssd_staging_ring,
         prompt_host_ring_bytes=m.prompt_host_ring,
         prompt_staging_per_card=m.prompt_staging_per_card + staging_per_card,
+        expert_bytes=m.expert_bytes,
+        ngram_row_bytes=m.ngram_row_bytes,
     )

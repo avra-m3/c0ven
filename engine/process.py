@@ -39,7 +39,7 @@ from engine.memory_plan import (
     MemoryPlan,
     PlanError,
     PlanOptions,
-    ngram_fits,
+    ngram_auto,
     read_working,
     working_file,
     write_working,
@@ -192,6 +192,18 @@ def hugetlb_pool(wanted: bool, the_host: host.Host | None) -> int | None:
     return free or 0
 
 
+def ngram_placement(mode: str, plan: MemoryPlan, mem_total: int | None) -> tuple[bool, int]:
+    """`--ngram-ram`'s choice: whether the n-gram table goes in RAM, and the reserved huge pages it takes, bytes.
+    `on` and `off` force the first and take none; `auto` is memory_plan.ngram_auto."""
+    match mode:
+        case "on":
+            return True, 0
+        case "auto":
+            return ngram_auto(plan, mem_total)
+        case _:
+            return False, 0
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="python -m engine", description=(__doc__ or "").splitlines()[0])
     p.add_argument("--backend", choices=BACKENDS, default="native")
@@ -221,13 +233,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=("auto", "on", "off"),
         default="auto",
         help="the n-gram table in RAM; auto: when the host has room for it beside the plan, with"
-        " half of its memory, at least 8 GiB, left free",
+        " half of its memory, at least 8 GiB, left free; with --hugepages, the reserved huge pages the arena leaves"
+        " count as room and need no margin, and when the table does not fit, its row cache fills them",
     )
     p.add_argument(
         "--hugepages",
         action="store_true",
         help="the expert arena in the host's reserved huge pages (vm.nr_hugepages), which the kernel never moves, so"
-        " no page move stops a card; what they cannot hold goes in ordinary memory",
+        " no page move stops a card; what they cannot hold goes in ordinary memory. With --ngram-ram auto, the"
+        " n-gram table or its row cache takes the pages the arena leaves at its largest",
     )
     p.add_argument(
         "--card-memory",
@@ -561,6 +575,8 @@ def main(argv: list[str] | None = None) -> int:
         ram_max=round(args.ram_max * GIB) if args.ram_max is not None else None,
         hugetlb_pool=hugetlb_pool(args.hugepages and native, the_host),
     )
+    if the_host is not None and the_host.huge_page_size:
+        options = dataclasses.replace(options, huge_page=the_host.huge_page_size)
     draft: Path | None = None
     if native and not args.no_draft and args.model is not None:
         draft = args.draft_dir or model.draft_dir(args.model)
@@ -589,8 +605,9 @@ def main(argv: list[str] | None = None) -> int:
             args.model if native else None, options, args.deterministic, draft, args.table_cache, **workers
         )
         mem_total = the_host.mem_total if the_host is not None else None
-        if native and (args.ngram_ram == "on" or (args.ngram_ram == "auto" and ngram_fits(plan, mem_total))):
-            options = dataclasses.replace(options, ngram_in_ram=True)
+        in_ram, ngram_huge = ngram_placement(args.ngram_ram, plan, mem_total) if native else (False, 0)
+        if in_ram or ngram_huge:
+            options = dataclasses.replace(options, ngram_in_ram=in_ram, ngram_hugetlb=ngram_huge)
             config, plan = model.open_config(
                 args.model, options, args.deterministic, draft, args.table_cache, **workers
             )
@@ -606,6 +623,13 @@ def main(argv: list[str] | None = None) -> int:
                 plan.arena_reserved_bytes / GIB,
                 plan.arena_bytes / GIB,
                 short / GIB,
+            )
+        if options.ngram_hugetlb:
+            log.info(
+                "--hugepages: %.1f GiB of reserved huge pages for the n-gram %s, after %.1f GiB kept for the arena",
+                options.ngram_hugetlb / GIB,
+                "table" if options.ngram_in_ram else f"cache, {plan.ngram_cache_rows:,} rows",
+                plan.arena_hugetlb_claim / GIB,
             )
     if reserve := card_reserve([c.memory for c in used], args.card_memory):
         config = dataclasses.replace(config, reserve_bytes=reserve)

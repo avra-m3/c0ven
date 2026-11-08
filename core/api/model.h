@@ -43,6 +43,9 @@ struct Options {
   // pages the kernel never moves, so it never stops a card to bind one again. Needs anon_arena.
   bool hugetlb_arena = false;
   bool ngram_in_ram = false;                // the whole n-gram table in RAM
+  // Bytes of the host's reserved huge pages for the n-gram table: with ngram_in_ram its first part, without it the row
+  // cache (models/qwen4exp/ngram.h). A multiple of the huge page size; 0: none.
+  uint64_t ngram_huge_bytes = 0;
   // A profile to choose the cached experts by (tools/route_profile.cpp); empty: the first experts of each layer;
   // none: the model's own.
   std::optional<std::string> routing_profile;
@@ -79,6 +82,8 @@ struct LoadInfo {
   double loader_bytes_per_s = 0;     // their read rate in the probe
   bool ngram_in_ram = false;
   double ngram_read_us = 0;          // one 4 KiB row read from the file, when the table is not in RAM
+  uint64_t ngram_cache_rows = 0;     // rows the n-gram cache holds
+  uint64_t ngram_huge_bytes = 0;     // the n-gram table's or its cache's bytes in reserved huge pages
   double copy_bytes_per_s[2] = {0, 0};  // each card's copy engine reading pinned host memory
 };
 

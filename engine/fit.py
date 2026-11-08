@@ -12,7 +12,7 @@ from typing import TextIO
 
 from engine.api.interface import EngineFacts
 from engine.host import Card, Host
-from engine.memory_plan import GIB, MemoryPlan, Tiers
+from engine.memory_plan import EXPERTS_TOLERANCE, EXPERTS_TOLERANCE_MIN, GIB, MemoryPlan, Tiers
 
 UNKNOWN = "-"
 
@@ -70,10 +70,6 @@ def host_rows(host: Host, plan: MemoryPlan, arena_core: int | None = None, rss_c
     return rows
 
 
-EXPERTS_TOLERANCE = 0.05
-"""A core's expert count further than this share from the plan's is noted: the plan's card figures are estimates."""
-
-
 WORKING_TOLERANCE = 256 * 2**20
 """A core's working memory further than this from the plan's is noted."""
 
@@ -115,7 +111,7 @@ def card_notes(plan: MemoryPlan, experts_core: int, working_core: int | None = N
     """What the core's figures say about the plan's, after the load."""
     out: list[str] = []
     p = plan.experts_per_layer
-    if abs(experts_core - p) > max(8, EXPERTS_TOLERANCE * p):
+    if abs(experts_core - p) > max(EXPERTS_TOLERANCE_MIN, EXPERTS_TOLERANCE * p):
         out.append(
             f"the core caches {experts_core} experts a layer and the plan {p}: the plan's figures for the cards, "
             "and the host memory planned from them, are off by that much"
@@ -218,15 +214,36 @@ def storage_rows(plan: MemoryPlan, facts: EngineFacts) -> list[Row]:
             "ngram",
             "n-gram table",
             f"{facts.ngram_read_us:.0f}us_a_4KiB_read" if facts.ngram_read_us else "",
-            "RAM" if plan.options.ngram_in_ram else "file",
-            "RAM" if facts.ngram_in_ram else "file",
+            ngram_place(plan.options.ngram_in_ram, plan.ngram_cache_rows, plan.options.ngram_hugetlb),
+            ngram_place(facts.ngram_in_ram, facts.ngram_cache_rows, facts.ngram_huge_bytes),
         ),
     ]
+    if (pool := plan.options.hugetlb_pool) is not None:
+        rows.append(
+            Row(
+                "hugetlb",
+                "reserved huge pages",
+                gib(pool),
+                f"arena_{gib(plan.arena_hugetlb_claim)},ngram_{gib(plan.options.ngram_hugetlb)}",
+                f"ngram_{gib(facts.ngram_huge_bytes)}",
+            )
+        )
     rows += [
         Row(f"copy{i}", f"card {i} copy from host memory", "", "", f"{r / 1e9:.1f}GB/s")
         for i, r in enumerate(facts.copy_bytes_per_s)
     ]
     return rows
+
+
+def ngram_place(in_ram: bool, cache_rows: int, huge: int) -> str:
+    """Where the n-gram table is, as one report cell: `RAM` or `file`; with bytes in reserved huge pages, then the
+    cache's rows when the table is read from the file, and those bytes."""
+    cells = ["RAM" if in_ram else "file"]
+    if huge and cache_rows and not in_ram:
+        cells.append(f"cache_{cache_rows / 1e6:.1f}M_rows")
+    if huge:
+        cells.append(f"{gib(huge)}_huge")
+    return ",".join(cells)
 
 
 def storage_notes(facts: EngineFacts) -> list[str]:

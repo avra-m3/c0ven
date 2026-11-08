@@ -400,6 +400,7 @@ class NativeEngine:
             c.flags |= abi.ConfigFlag.NGRAM_RAM
         if config.hugetlb_arena:
             c.flags |= abi.ConfigFlag.HUGETLB
+        c.ngram_huge_bytes = config.ngram_hugetlb
         if config.reserve_bytes:
             c.reserve_bytes = config.reserve_bytes
         self._draft_dir = config.draft_dir.encode()
@@ -449,6 +450,8 @@ class NativeEngine:
             loader_bytes_per_s=float(info.loader_bytes_per_s),
             ngram_in_ram=bool(info.ngram_in_ram),
             ngram_read_us=float(info.ngram_read_us),
+            ngram_cache_rows=int(info.ngram_cache_rows),
+            ngram_huge_bytes=int(info.ngram_huge_bytes),
             copy_bytes_per_s=tuple(float(info.copy_bytes_per_s[i]) for i in range(info.cards)),
             expert_budget=tuple(int(info.expert_budget[i]) for i in range(info.cards)),
             fetch_rows=int(info.fetch_rows),

@@ -20,7 +20,7 @@ extern "C" {
 #define ENGINE_API
 #endif
 
-#define ENGINE_API_VERSION 19
+#define ENGINE_API_VERSION 20
 
 typedef enum {
   ENGINE_OK = 0,
@@ -55,6 +55,11 @@ typedef struct {
                                   default: slots x the context's */
   uint32_t kv_resident_cells;  /* K and V cells per slot kept in VRAM, the rest in host memory (ADR-0008 item 3);
                                   0: every cell */
+  uint64_t ngram_huge_bytes;   /* bytes of the host's reserved huge pages for the n-gram table, a multiple of their
+                                  size (ADR-0070): with NGRAM_RAM the table's first part, the rest in the process's
+                                  own memory; without it the row cache, as many rows as they hold, when that is more
+                                  than the default 1,048,576. If they cannot be mapped, the log says so and the table
+                                  is read from the file with the default cache. 0: none */
 } engine_config;
 
 #define ENGINE_CONFIG_EXPERTS_SET 1u  /* experts_per_layer is meaningful, 0 included */
@@ -104,6 +109,8 @@ typedef struct {
                                   one way (all experts cached, or a model with one path) */
   uint32_t decode_weight;      /* what a decode token is worth in prompt rows when the scheduler sizes a prompt piece
                                   beside writers; 0: decode does not count */
+  uint64_t ngram_cache_rows;   /* rows the n-gram table's cache holds */
+  uint64_t ngram_huge_bytes;   /* the n-gram table's or its cache's bytes in reserved huge pages */
 } engine_info;
 
 /* A request's sampling and stopping, copied once by admit. The core samples in llama.cpp's order: penalties, top-k,

@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <random>
 
+#include <cerrno>
 #include <cstdlib>
 #include <cstring>
 #include <stdexcept>
@@ -21,10 +22,10 @@ namespace engine::qwen4exp {
 
 namespace {
 constexpr uint64_t kPage = 4096;
-constexpr uint64_t kEmpty = ~0ull;
 }  // namespace
 
-Ngram::Ngram(const GgufModel &model, uint32_t cache_rows, unsigned readers, bool in_ram, unsigned loader_threads) {
+Ngram::Ngram(const GgufModel &model, uint64_t cache_rows, unsigned readers, bool in_ram, unsigned loader_threads,
+             uint64_t huge_bytes) {
   auto m = model.get_ints("qwen4exp.ple.layer_multipliers");
   auto v = model.get_ints("qwen4exp.ple.head_vocab_sizes");
   auto o = model.get_ints("qwen4exp.ple.head_offsets");
@@ -47,17 +48,19 @@ Ngram::Ngram(const GgufModel &model, uint32_t cache_rows, unsigned readers, bool
   // ADR-0015: the table is read past the page cache; a filesystem that refuses O_DIRECT stops the engine.
   fd_ = ::open(model.files().at(t.shard).c_str(), O_RDONLY | O_CLOEXEC | O_DIRECT);
   if (fd_ < 0) throw std::runtime_error("cannot open the n-gram table's shard with O_DIRECT (ADR-0015)");
-  slots_ = cache_rows;
-  tag_.assign(slots_, kEmpty);
-  data_.resize((size_t)slots_ * row_bytes_);
   readers_ = std::make_unique<Pool>(readers > 1 ? readers - 1 : 0);
   rows_ = t.bytes / row_bytes_;
   if (in_ram) {
     ram_bytes_ = (t.bytes + DirectReader::kAlign - 1) / DirectReader::kAlign * DirectReader::kAlign;
-    void *m = mmap(nullptr, ram_bytes_, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (m == MAP_FAILED) throw std::runtime_error("cannot map " + std::to_string(t.bytes) + " B for the n-gram table");
-    madvise(m, ram_bytes_, MADV_HUGEPAGE);
-    ram_ = static_cast<uint8_t *>(m);
+    map_ram(huge_bytes);
+  }
+  const bool huge_cache =
+      !in_ram && huge_bytes && RowCache::slots_in(huge_bytes, row_bytes_) > cache_rows && map_cache(huge_bytes);
+  if (!huge_cache) {
+    cache_mem_.resize((RowCache::bytes_for(cache_rows, row_bytes_) + 7) / 8);
+    cache_.init(reinterpret_cast<uint8_t *>(cache_mem_.data()), cache_rows, row_bytes_);
+  }
+  if (ram_) {
     // The table read in 1 GiB ranges, each widened to the file's alignment into a buffer, then copied in place.
     DirectReader reader(model.files(), loader_threads);
     constexpr uint64_t kRange = 1ull << 30;
@@ -74,7 +77,69 @@ Ngram::Ngram(const GgufModel &model, uint32_t cache_rows, unsigned readers, bool
 
 Ngram::~Ngram() {
   if (fd_ >= 0) close(fd_);
-  if (ram_) munmap(ram_, ram_bytes_);
+  for (const Mapping &m : maps_) munmap(m.at, m.bytes);
+}
+
+// The table's place in RAM: its first huge_bytes in reserved huge pages and the rest in the process's own memory, at
+// one range of addresses, so row i is at ram_ + i x row_bytes. With no huge pages to be had, ram_ stays null.
+void Ngram::map_ram(uint64_t huge_bytes) {
+  const int anon = MAP_PRIVATE | MAP_ANONYMOUS;
+  if (huge_bytes == 0) {
+    void *m = mmap(nullptr, ram_bytes_, PROT_READ | PROT_WRITE, anon, -1, 0);
+    if (m == MAP_FAILED) throw std::runtime_error("cannot map " + std::to_string(ram_bytes_) + " B for the n-gram table");
+    madvise(m, ram_bytes_, MADV_HUGEPAGE);
+    ram_ = static_cast<uint8_t *>(m);
+    maps_.push_back({m, ram_bytes_});
+    return;
+  }
+  // A range aligned to 1 GiB, the largest huge page, then the two parts mapped over it.
+  constexpr uint64_t kAlignHuge = 1ull << 30;
+  const uint64_t huge = huge_bytes, rest = huge >= ram_bytes_ ? 0 : ram_bytes_ - huge, span = huge + rest;
+  void *r = mmap(nullptr, span + kAlignHuge, PROT_NONE, anon | MAP_NORESERVE, -1, 0);
+  if (r == MAP_FAILED) throw std::runtime_error("cannot reserve addresses for the n-gram table");
+  uint8_t *base = reinterpret_cast<uint8_t *>((reinterpret_cast<uintptr_t>(r) + kAlignHuge - 1) & ~(kAlignHuge - 1));
+  const size_t lead = (size_t)(base - static_cast<uint8_t *>(r)), tail = kAlignHuge - lead;
+  if (lead) munmap(r, lead);
+  if (tail) munmap(base + span, tail);
+  void *h = mmap(base, huge, PROT_READ | PROT_WRITE, anon | MAP_FIXED | MAP_HUGETLB, -1, 0);
+  if (h == MAP_FAILED) {
+    const int e = errno;
+    munmap(base, span);
+    std::fprintf(stderr,
+                 "engine: the n-gram table: no reserved huge pages for %.2f GiB (mmap: %s); it stays in the file\n",
+                 huge / double(1ull << 30), std::strerror(e));
+    return;
+  }
+  maps_.push_back({base, huge});
+  if (rest) {
+    void *o = mmap(base + huge, rest, PROT_READ | PROT_WRITE, anon | MAP_FIXED, -1, 0);
+    if (o == MAP_FAILED) throw std::runtime_error("cannot map " + std::to_string(rest) + " B for the n-gram table");
+    madvise(o, rest, MADV_HUGEPAGE);
+    maps_.push_back({o, rest});
+  }
+  ram_ = base;
+  huge_bytes_ = huge;
+}
+
+// The cache in huge_bytes of reserved huge pages, faulted in now so that no step waits for a page to be cleared.
+// false: the pages could not be mapped, and the log says so.
+bool Ngram::map_cache(uint64_t huge_bytes) {
+  void *m = mmap(nullptr, huge_bytes, PROT_READ | PROT_WRITE,
+                 MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB | MAP_POPULATE, -1, 0);
+  if (m == MAP_FAILED) {
+    const int e = errno;
+    std::fprintf(stderr,
+                 "engine: the n-gram cache: no reserved huge pages for %.2f GiB (mmap: %s); it keeps its default "
+                 "size in the process's own memory\n",
+                 huge_bytes / double(1ull << 30), std::strerror(e));
+    return false;
+  }
+  maps_.push_back({m, huge_bytes});
+  cache_.init(static_cast<uint8_t *>(m), RowCache::slots_in(huge_bytes, row_bytes_), row_bytes_);
+  huge_bytes_ = huge_bytes;
+  std::fprintf(stderr, "engine: the n-gram cache: %llu rows in %.2f GiB of reserved huge pages\n",
+               (unsigned long long)cache_.slots(), huge_bytes / double(1ull << 30));
+  return true;
 }
 
 double Ngram::read_latency_us() {
@@ -150,9 +215,8 @@ void Ngram::fill(const std::vector<uint64_t> &ids, uint32_t n, float *u) {
   std::vector<uint32_t> miss_of(ids.size(), UINT32_MAX);
   for (size_t k = 0; k < ids.size(); k++) {
     uint64_t id = ids[k];
-    uint32_t slot = (uint32_t)(id % slots_);
-    if (tag_[slot] == id) {
-      where[k] = &data_[(size_t)slot * row_bytes_];
+    if (const uint8_t *row = cache_.find(id)) {
+      where[k] = row;
       stats_.hits++;
       continue;
     }
@@ -177,11 +241,7 @@ void Ngram::fill(const std::vector<uint64_t> &ids, uint32_t n, float *u) {
   } else {
     readers_->run(n, dequantise);
   }
-  for (size_t j = 0; j < miss.size(); j++) {
-    uint32_t slot = (uint32_t)(miss[j] % slots_);
-    tag_[slot] = miss[j];
-    std::memcpy(&data_[(size_t)slot * row_bytes_], &got[j * row_bytes_], row_bytes_);
-  }
+  for (size_t j = 0; j < miss.size(); j++) cache_.put(miss[j], &got[j * row_bytes_]);
 }
 
 }  // namespace engine::qwen4exp

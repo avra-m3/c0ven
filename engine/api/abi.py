@@ -16,7 +16,8 @@ Version 6 adds `engine_image.frames` for video (ADR-0034). Version 7 adds min-p 
 `engine_settings`. Version 9 adds the counters: `engine_read_stats` and `engine_read_slot_stats` (ADR-0049).
 Version 11 adds `engine_cards`, the cards listed before open (ADR-0057); version 12 the workers' read rate of the
 arena to `engine_info`; version 13 the loader's threads, the n-gram table in RAM (`NGRAM_RAM`) and the cards' copy
-rates; version 19 the arena in reserved huge pages (`HUGETLB`).
+rates; version 19 the arena in reserved huge pages (`HUGETLB`); version 20 the n-gram table or its cache in them
+(`ngram_huge_bytes`) and the cache's rows in `engine_info`.
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ import ctypes
 from dataclasses import dataclass
 from enum import IntEnum
 
-ABI_VERSION = 19
+ABI_VERSION = 20
 
 MAX_STOP = 8
 MAX_STEP_SLOTS = 8
@@ -99,6 +100,7 @@ class CConfig(ctypes.Structure):
         ("vision_path", ctypes.c_char_p),
         ("kv_pages", ctypes.c_uint32),
         ("kv_resident_cells", ctypes.c_uint32),
+        ("ngram_huge_bytes", ctypes.c_uint64),
     )
 
 
@@ -129,6 +131,8 @@ class CInfo(ctypes.Structure):
         ("expert_budget", ctypes.c_uint64 * 2),
         ("fetch_rows", ctypes.c_uint32),
         ("decode_weight", ctypes.c_uint32),
+        ("ngram_cache_rows", ctypes.c_uint64),
+        ("ngram_huge_bytes", ctypes.c_uint64),
     )
 
 
