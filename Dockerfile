@@ -92,6 +92,9 @@ COPY core core
 COPY tools tools
 COPY engine engine
 COPY frontend frontend
+# The committed tensor tables and MTP manifest the memory plan reads at run time (engine/models/qwen4exp/draft.py,
+# tensors.py); without them a DFlash 2 drafter's plan fails.
+COPY docs/model docs/model
 RUN cmake -S /opt/c0ven -B /opt/c0ven/build -G Ninja \
  && ninja -C /opt/c0ven/build \
  && UV_NO_CACHE=1 uv sync --locked --no-dev
