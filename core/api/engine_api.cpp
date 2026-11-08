@@ -142,7 +142,7 @@ struct engine_ctx {
   bool idle_due = false;  // with swaps on, a plan has run since the idle rounds last settled (idle_rounds)
   bool prompt_ended = false;  // the plan being run read some slot's last prompt token
   uint32_t writers = 0;  // the slots the plan being run decoded
-  uint32_t writing = 0;  // the slots that had read their whole prompt when the plan being run began
+  uint32_t writing_at_start = 0;  // the slots writing when the plan being run began (writing_slots)
   uint32_t shared_choices = 0;  // shared_most's choices, for its kSharedCheck; under mu
   engine::WindowTimes window_times;  // decode steps of one slot and rounds of any number, by their rows
   engine::SwapCadence swap_cadence;  // when the next swap round is due; under mu
@@ -652,7 +652,7 @@ struct engine_ctx {
       if (chunk.empty()) return;
       prompt_chunk(plan, chunk);
       rows = 0;
-      if (swaps) model->note_prompt_routing(engine::count_prompt_routing(writing));
+      if (swaps) model->note_prompt_routing(engine::count_prompt_routing(writing_at_start));
     };
     for (uint32_t i = 0; i < sp.npieces && i < ENGINE_MAX_PROMPT_PIECES; i++) {
       // A piece of a slot already in the chunk starts where that one ends.
@@ -665,7 +665,7 @@ struct engine_ctx {
       if (!prepare_piece(sp.pieces[i], window, pi)) continue;
       if (pi.windowed) {  // its slot is not in the chunk, which can wait for it
         prompt_windows(plan, StepIn{pi.slot, pi.pos0, pi.toks[0], pi.p1, pi.p2, pi.p3}, pi.toks, pi.restart);
-        if (swaps) model->note_prompt_routing(engine::count_prompt_routing(writing));
+        if (swaps) model->note_prompt_routing(engine::count_prompt_routing(writing_at_start));
         continue;
       }
       if (chunk.size() == PROMPT_MAX_RUNS || rows + pi.n > info.prompt_chunk) flush();
@@ -1123,7 +1123,7 @@ struct engine_ctx {
         running = true;
         prompt_ended = false;
         writers = 0;
-        writing = writing_slots();
+        writing_at_start = writing_slots();
       }
       const uint64_t t_plan = now_ns();
       try {
