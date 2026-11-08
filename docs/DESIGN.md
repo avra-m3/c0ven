@@ -233,10 +233,11 @@ The rules ([ADR-0033](adr/0033-paged-kv-kept-by-python.md)):
   once with a `STALLED` event, until a plan maps more. The scheduler maps a writing slot's pages at least 64 cells
   ahead, 256 cells at a time, so that few plans carry page changes.
 - An admitted request reserves pages for its prompt and the 320 cells after it (64 + 256). A writing slot reserves
-  each later block when it maps it ([ADR-0067](adr/0067-kv-pages-are-reserved-as-a-sequence-grows.md)). When
+  each later block when it maps it ([ADR-0068](adr/0068-kv-pages-are-reserved-as-a-sequence-grows.md)). When
   the pool cannot give a block, the checkpoints that hold the last reference to a page are evicted. If that is not
   enough and a slot stalls, the newest slot of the lowest priority is stopped. Its request waits again with the
-  tokens it wrote added to its prompt, and the front end gets no token twice.
+  tokens it wrote added to its prompt, and the front end gets no token twice. While a slot waits for a page, no
+  request is admitted.
 - A shared prefix reuses its full KV pages and copies the partial last one. Its DeltaNet state can be reused only
   through a checkpoint taken where the prefix ends, so a later request with the same prefix waits for the first
   one's checkpoint ([ADR-0017](adr/0017-scheduling-several-requests.md)). Prefixes are matched by token ids, never by

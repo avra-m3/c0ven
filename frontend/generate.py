@@ -163,7 +163,7 @@ def render(model: Model, request: Request, image_tokens_max: int = 0) -> Prompt:
 
 def budget(engine: Engine, prompt: Prompt, max_tokens: int | None, default: int = 0) -> int:
     """The tokens a request may write: max_tokens, cut to the rest of the context. default: the limit for a request
-    without max_tokens, 0 for the rest of the context. The engine reserves KV as the request writes (ADR-0067), so
+    without max_tokens, 0 for the rest of the context. The engine reserves KV as the request writes (ADR-0068), so
     a large limit holds no pages. Agent clients send one max_tokens however long the conversation grows, so a limit
     past the context's end is cut. Raises BadRequest when max_tokens is below 1 or the prompt fills the context."""
     if max_tokens is not None and max_tokens < 1:

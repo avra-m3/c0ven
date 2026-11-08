@@ -33,7 +33,7 @@ request holds whatever pages it needs, wherever they are.
 When a request starts, the server holds room for its prompt and the first few hundred tokens of its answer. If that
 room is not there, the request waits. Its answer takes more room as it is written, a few hundred tokens at a time,
 so a large `max_tokens` holds no room the answer does not use
-([ADR-0067](adr/0067-kv-pages-are-reserved-as-a-sequence-grows.md)).
+([ADR-0068](adr/0068-kv-pages-are-reserved-as-a-sequence-grows.md)).
 
 ## Reusing the beginning of a prompt
 
@@ -123,7 +123,8 @@ A running answer that needs more room drops checkpoints the same way, but only t
 checkpoint whose tokens a running request or another checkpoint also holds frees nothing. If no checkpoint is left to
 drop, the newest running request pauses. It gives its room back and waits ahead of the requests that came after it.
 When there is room again, it reads its prompt and the part of the answer it had written, and goes on writing. The
-client sees a delay in the answer, and no token twice.
+client sees a delay in the answer, and no token twice. While a running answer waits for room, no new request starts,
+so the room that comes free goes to that answer first.
 
 ```mermaid
 flowchart TD

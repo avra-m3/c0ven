@@ -1,4 +1,4 @@
-# ADR-0067: KV pages are reserved as a sequence grows, and a full pool preempts the newest slot
+# ADR-0068: KV pages are reserved as a sequence grows, and a full pool preempts the newest slot
 
 **Status:** draft. 2026-11-08.
 **Revisit when:** preemptions are seen to read back more prompt tokens than the up-front reservation's waits cost, or
@@ -35,8 +35,12 @@ the core can keep a stopped slot's pages for its return.
 5. A stopped slot's request goes back to the queue with its arrival time, which puts it ahead of every request that
    came after it. The tokens it wrote are added to its prompt and taken from its `max_new`. They are not sent to the
    front end again, and no `RESUME` is sent for the new admission. Its `DONE` counts the client's prompt and every
-   token written, with the first admission's times and reused tokens.
-6. A request preempted while the engine drains for sleep is not refused with the requests that were never admitted.
+   token written, with the first admission's times and reused tokens. It reads its prompt and its written tokens
+   again, less what a checkpoint covers.
+6. While a slot waits for a page or is being stopped, nothing is admitted, and no checkpoint is evicted for an
+   admission. The stalled slot has first claim on the pages the stopped one frees; a request admitted into them
+   would be stopped again on every tick. A slot that stops itself waits again with no stall, so admission goes on.
+7. A request preempted while the engine drains for sleep is not refused with the requests that were never admitted.
 
 ## Why
 
@@ -45,7 +49,9 @@ checkpoints are evicted, since the pool holds at least one context (`--kv-tokens
 finishes and the queue moves. vLLM preempts the same way, by recomputing the newest request.
 
 Reading the written tokens as prompt gives the next token the same position, the same tokens before it and the same
-seed, so the sampler's inputs are unchanged, and in the mock the tokens are identical. On the cards the written
+seed, so the sampler's inputs are unchanged, and in the mock the tokens are identical. The sampler keeps no state
+to restart: its random number is a function of the seed and the position alone (`uniform` in
+`core/api/sampling.cpp`). On the cards the written
 tokens' rows are then computed by the prompt path, not by the decode steps that first computed them, and the two
 are not known to round alike. A later token can then differ as it can when the work is split another way. This is
 not checked on the cards.

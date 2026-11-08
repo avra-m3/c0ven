@@ -499,3 +499,36 @@ def test_the_deployed_pool_admits_three_long_conversations_with_large_max_new():
     run.tick()
     phases = [run.scheduler.by_rid[rid].phase for rid in range(4)]
     assert phases == [Phase.PREFILL, Phase.PREFILL, Phase.PREFILL, Phase.WAITING]
+
+
+@pytest.mark.parametrize("writers", [1, 2])
+def test_a_reading_slot_stopped_for_a_stalled_writer_does_not_take_its_pages_back(writers: int):
+    """The stalled writer has first claim on the pages the stopped reader frees. Admitting the reader into them again
+    would stop it again on every tick."""
+    small = SchedulerOptions(decode_lookahead=8, decode_batch=32, chunk_rows=4)
+    reqs = {rid: (prompt(40, start=300 * rid + 3), 400) for rid in range(writers)}
+    reqs[9] = (prompt(150, start=603), 100)
+    alone = make(open_config(slots=1, context=512), options=small, script=history)
+    for rid, (p, n) in reqs.items():
+        alone.add(rid, p, n)
+        alone.until_idle()
+    run = make(open_config(slots=3, context=512, pages=128), options=small, script=history)
+    for rid in range(writers):
+        run.add(rid, *reqs[rid])
+    while run.scheduler.state.pool.available * 4 >= 230:  # the reader's 190 cells fit, and little more
+        run.tick()
+    run.add(9, *reqs[9])
+    run.tick()
+    assert run.scheduler.by_rid[9].phase is Phase.PREFILL, "admitted into the last spare pages"
+    read_stopped = False
+    for _ in range(3000):
+        if run.scheduler.idle:
+            break
+        r = run.scheduler.by_rid.get(9)
+        read_stopped |= r is not None and r.preempting and r.phase is Phase.PREFILL
+        run.tick()
+    assert run.scheduler.idle, "the scheduler did not finish"
+    assert read_stopped, "the reading slot was the one stopped"
+    assert run.errors() == []
+    for rid in reqs:
+        assert run.tokens(rid) == alone.tokens(rid)

@@ -16,7 +16,8 @@ protocol lines. The rules, from ADR-0017:
 - Checkpoints are taken where the model's rule puts them; a prompt span ends at each one.
 - A slot holds KV pages for what it has read and written and a block ahead (`SeqState.grow`). When a writing slot
   stalls and evicting checkpoints frees no page for it, the newest slot of the lowest priority is stopped and its
-  request goes back to the queue with its tokens so far added to its prompt (ADR-0067).
+  request goes back to the queue with its tokens so far added to its prompt. Nothing is admitted while a slot waits
+  for a page (ADR-0068).
 
 The core keeps decoding between plans, so a plan is built only when something changes.
 """
@@ -82,7 +83,7 @@ class SchedulerOptions:
     decode_batch: int = 256
     """Cells assigned at once when a slot's lookahead runs short. Each plan with page changes costs the core a write to
     the cards' page tables (ADR-0033), so they come in batches. Admission reserves lookahead plus batch cells after the
-    prompt (ADR-0067)."""
+    prompt (ADR-0068)."""
 
 
 class Phase(Enum):
@@ -286,6 +287,10 @@ class Scheduler:
         return None
 
     def _admit(self, out: list[protocol.Event]) -> None:
+        # A slot waiting for a page has first claim on freed pages, and admission would also evict checkpoints for
+        # them. A slot that stops itself waits again unstalled, so admission goes on (ADR-0068).
+        if any(q.stalled_at is not None or q.preempting for q in self.by_slot.values()):
+            return
         self.waiting.sort(key=lambda r: (-r.priority, r.arrived))
         for r in list(self.waiting):
             best = self.state.checkpoints.longest_prefix(r.key)
@@ -398,7 +403,7 @@ class Scheduler:
             self._preempt()
 
     def _preempt(self) -> None:
-        """Stop the newest slot of the lowest priority, so that its pages come back when it finishes (ADR-0067). One
+        """Stop the newest slot of the lowest priority, so that its pages come back when it finishes (ADR-0068). One
         slot stops at a time: the pages a stopping slot frees may be enough."""
         if any(q.preempting or q.stop_sent for q in self.by_slot.values()):
             return
