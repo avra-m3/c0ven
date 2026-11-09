@@ -394,6 +394,10 @@ class EngineStats:
     experts_floor: int = 0
     idle_rounds: int = 0
     """Of the swap rounds, those run while no plan came."""
+    reading_steps: int = 0
+    """Of the undrafted steps, those run while another slot read its prompt."""
+    reading_rounds: int = 0
+    """Of the rounds, those run while another slot read its prompt (ADR-0071)."""
 
 
 @dataclass(frozen=True, slots=True)
