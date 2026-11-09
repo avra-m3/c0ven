@@ -403,6 +403,8 @@ class NativeEngine:
             c.flags |= abi.ConfigFlag.SWAPS | abi.ConfigFlag.SHARE_KV
         if config.ngram_in_ram:
             c.flags |= abi.ConfigFlag.NGRAM_RAM
+        if config.hugetlb_arena:
+            c.flags |= abi.ConfigFlag.HUGETLB
         if config.reserve_bytes:
             c.reserve_bytes = config.reserve_bytes
         self._draft_dir = config.draft_dir.encode()

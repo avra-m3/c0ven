@@ -322,6 +322,7 @@ class Model final : public engine::Model {
   void release_expert(uint32_t l, uint32_t e);               // its pages of the file back to the host
   uint8_t *spare_piece(uint64_t need);
   uint8_t *arena_piece(uint64_t need);
+  void *hugetlb_piece();
   double measure_host_read();
   unsigned loader_threads();
   double measure_copy(uint32_t card);
@@ -453,6 +454,7 @@ class Model final : public engine::Model {
     uint8_t *at;       // the piece: 2 MiB aligned, kArenaPiece bytes
     uint64_t used;     // bytes of it arena_piece has handed out
     bool in_huge;      // it may take huge pages (kKeepFreeHuge)
+    bool reserved;     // from the host's reserved huge pages (hugetlb_piece), never moved, swapped or locked
   };
   std::vector<AnonPiece> anon_pieces_;  // Options::anon_arena
   // The host's free 2 MiB blocks the arena leaves alone. A host with too few of them in its free memory compacts and
@@ -461,6 +463,9 @@ class Model final : public engine::Model {
   // nothing moves them while the host has blocks to spare.
   static constexpr uint64_t kKeepFreeHuge = 5ull << 30;
   uint64_t huge_pieces_ = 0;
+  uint64_t thp_pieces_ = 0;    // the pieces not from reserved huge pages, which huge_pieces_ counts
+  bool thp_settled_ = false;   // huge_pieces_ is set
+  bool hugetlb_short_ = false;  // the reserved huge pages ran out, and the log said so
   int arena_lock_errno_ = 0;            // why mlock2 failed for a piece; 0: every piece is locked
   uint32_t tmax_ = 0;
   uint32_t last_width_ = 1;  // the width of the last decode step

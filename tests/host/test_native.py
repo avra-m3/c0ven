@@ -564,6 +564,14 @@ def test_open_asks_for_swaps_and_drafting_but_with_adr_0016s_switches():
     assert fake.opened == (0, None)
 
 
+def test_open_asks_for_the_arena_in_reserved_huge_pages():
+    fake = FakeCore()
+    NativeEngine(core=fake).open(
+        replace(open_config(), shard_paths=("m.gguf",), deterministic=True, hugetlb_arena=True)
+    )
+    assert fake.opened == (abi.ConfigFlag.HUGETLB, None)
+
+
 def test_sleep_and_wake_give_the_same_tokens_after():
     run = make()
     prompt = prompt_of(70)

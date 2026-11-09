@@ -179,6 +179,19 @@ def make_engine(backend: str, realtime: bool = False, arch: str | None = None) -
             raise SystemExit(f"unknown backend {backend!r}")
 
 
+def hugetlb_pool(wanted: bool, the_host: host.Host | None) -> int | None:
+    """The reserved huge pages `--hugepages` gives the arena, bytes; None without the flag. A host with none free
+    gives 0, and the arena is then in ordinary memory."""
+    if not wanted:
+        return None
+    free = the_host.huge_pages_free if the_host is not None else None
+    if not free:
+        log.warning(
+            "--hugepages: the host has no free reserved huge pages (vm.nr_hugepages); the arena is in ordinary memory"
+        )
+    return free or 0
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="python -m engine", description=(__doc__ or "").splitlines()[0])
     p.add_argument("--backend", choices=BACKENDS, default="native")
@@ -209,6 +222,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="auto",
         help="the n-gram table in RAM; auto: when the host has room for it beside the plan, with"
         " half of its memory, at least 8 GiB, left free",
+    )
+    p.add_argument(
+        "--hugepages",
+        action="store_true",
+        help="the expert arena in the host's reserved huge pages (vm.nr_hugepages), which the kernel never moves, so"
+        " no page move stops a card; what they cannot hold goes in ordinary memory",
     )
     p.add_argument(
         "--card-memory",
@@ -540,6 +559,7 @@ def main(argv: list[str] | None = None) -> int:
         kv_tokens=args.kv_tokens,
         host_memory=the_host.memory_limit if the_host is not None else None,
         ram_max=round(args.ram_max * GIB) if args.ram_max is not None else None,
+        hugetlb_pool=hugetlb_pool(args.hugepages and native, the_host),
     )
     draft: Path | None = None
     if native and not args.no_draft and args.model is not None:
@@ -577,6 +597,16 @@ def main(argv: list[str] | None = None) -> int:
     except PlanError as exc:
         print(protocol.Error(None, f"memory plan: {exc}").encode(), flush=True)
         return 1
+    if options.hugetlb_pool is not None:
+        config = dataclasses.replace(config, hugetlb_arena=True)
+        if (short := plan.arena_bytes - plan.arena_reserved_bytes) > 0:
+            log.warning(
+                "--hugepages: the reserved huge pages hold %.1f of the arena's %.1f GiB; the other %.1f GiB is in"
+                " ordinary memory. Raise vm.nr_hugepages to hold it all",
+                plan.arena_reserved_bytes / GIB,
+                plan.arena_bytes / GIB,
+                short / GIB,
+            )
     if reserve := card_reserve([c.memory for c in used], args.card_memory):
         config = dataclasses.replace(config, reserve_bytes=reserve)
     if vision is not None:

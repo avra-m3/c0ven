@@ -236,6 +236,12 @@ The rules ([ADR-0033](adr/0033-paged-kv-kept-by-python.md)):
 - A slot reads and writes only through its mapped pages. A slot that reaches a position past them waits, and says so
   once with a `STALLED` event, until a plan maps more. The scheduler maps a writing slot's pages at least 64 cells
   ahead, 256 cells at a time, so that few plans carry page changes.
+- An admitted request reserves pages for its prompt and the 320 cells after it (64 + 256). A writing slot reserves
+  each later block when it maps it ([ADR-0068](adr/0068-kv-pages-are-reserved-as-a-sequence-grows.md)). When
+  the pool cannot give a block, the checkpoints that hold the last reference to a page are evicted. If that is not
+  enough and a slot stalls, the newest slot of the lowest priority is stopped. Its request waits again with the
+  tokens it wrote added to its prompt, and the front end gets no token twice. While a slot waits for a page, no
+  request is admitted.
 - A shared prefix reuses its full KV pages and copies the partial last one. Its DeltaNet state can be reused only
   through a checkpoint taken where the prefix ends, so a later request with the same prefix waits for the first
   one's checkpoint ([ADR-0017](adr/0017-scheduling-several-requests.md)). Prefixes are matched by token ids, never by
@@ -338,7 +344,7 @@ No card is kept busy to hold its clock up. In decode both cards stay at 2,400 MH
 | --- | --- |
 | Each card's VRAM (`zeMemAllocDevice`) | The card's half of every layer's weights and of each cached expert, its KV pages and state heads, its buffers and recorded lists |
 | Pinned host memory (`zeMemAllocHost`) | Each card's K and V of every KV page. What both cards or the CPU read: step plans, the misses' jobs and answers, the one-row exchanges, the step's n-gram rows, the cards' candidates, the checkpoints, the image encoder's weights |
-| The expert arena: the engine's own memory, from `mmap` in 1 GiB pieces, in huge pages while the host keeps free 2 MiB blocks | Every expert no card caches, each in one place. The CPU reads it for misses and copies from it for short prompt chunks, and the copy engines read it in place for longer chunks and swaps. The driver cannot move this memory under the host's reclaim, and it counts against the engine's cgroup ([ADR-0035](adr/0035-the-arena-in-the-engines-own-memory.md); [known limits](../README.md#known-limits)) |
+| The expert arena: the engine's own memory, from `mmap` in 1 GiB pieces, in huge pages while the host keeps free 2 MiB blocks; with `--hugepages`, in the host's reserved huge pages while they last ([ADR-0066](adr/0066-the-arena-may-take-reserved-huge-pages.md)) | Every expert no card caches, each in one place. The CPU reads it for misses and copies from it for short prompt chunks, and the copy engines read it in place for longer chunks and swaps. The driver cannot move this memory under the host's reclaim, and it counts against the engine's cgroup ([ADR-0035](adr/0035-the-arena-in-the-engines-own-memory.md); [known limits](../README.md#known-limits)) |
 | RAM | The n-gram rows already read, in a cache; or the whole n-gram table, when the host has room for it ([ADR-0057](adr/0057-the-engine-reads-the-host-it-runs-on.md)) |
 | The SSD | The n-gram table, 28.8 GB, read with `O_DIRECT` past the page cache ([ADR-0015](adr/0015-ngram-table-on-the-ssd.md)), unless it is in RAM |
 
