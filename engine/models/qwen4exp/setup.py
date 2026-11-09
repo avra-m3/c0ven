@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 
 from engine.api.interface import OpenConfig, Tensor
 from engine.memory_plan import MemoryPlan, PlanOptions, plan
-from engine.models.qwen4exp.draft import DFLASH_FILES, read_shapes
+from engine.models.qwen4exp.draft import DFLASH_FILES, read_shapes, split_layout_error
 from engine.models.qwen4exp.memory import model_memory
 from engine.models.qwen4exp.split import split_of
 from engine.models.qwen4exp.tensors import TensorTable, from_gguf_cached, from_tsv
@@ -56,10 +56,12 @@ def checkpoint_rule(model: Path | None, table_cache: Path | None = None) -> Chec
 def draft_dir(model: Path) -> Path | None:
     """The drafter's directory beside the model file: `dflash/` with DFlash 2's `model.safetensors` and `config.json`
     (MODEL_FILES.md, "The DFlash 2 drafter"), else `mtp/` with its manifest (MODEL_FILES.md, "The MTP layer"), else
-    None."""
+    None. A `dflash/` that holds only the split layout (`dflash-manifest.json`) raises FileNotFoundError."""
     dflash = model.parent / "dflash"
     if all((dflash / name).is_file() for name in DFLASH_FILES):
         return dflash
+    if (dflash / "dflash-manifest.json").is_file():
+        raise split_layout_error(dflash)
     mtp = model.parent / "mtp"
     return mtp if (mtp / "mtp-manifest.json").is_file() else None
 

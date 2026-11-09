@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from engine.models import ModelSetup
 from engine.models.qwen4exp import setup
 from engine.models.qwen4exp.setup import draft_dir, vision_file
@@ -24,6 +26,21 @@ def test_draft_dir_prefers_dflash(tmp_path: Path):
     assert draft_dir(model) == tmp_path / "mtp"  # no config.json yet
     (tmp_path / "dflash" / "config.json").write_text("{}")
     assert draft_dir(model) == tmp_path / "dflash"
+
+
+def test_draft_dir_refuses_a_dflash_that_holds_only_the_split_layout(tmp_path: Path):
+    model = tmp_path / "model.gguf"
+    (tmp_path / "mtp").mkdir()
+    (tmp_path / "mtp" / "mtp-manifest.json").write_text("{}")
+    (tmp_path / "dflash").mkdir()
+    (tmp_path / "dflash" / "dflash-manifest.json").write_text("{}")
+    with pytest.raises(FileNotFoundError, match=r"no longer read.*model\.safetensors and config\.json"):
+        draft_dir(model)
+    (tmp_path / "dflash" / "model.safetensors").write_bytes(b"")
+    with pytest.raises(FileNotFoundError, match="no longer read"):
+        draft_dir(model)  # one published file is not both
+    (tmp_path / "dflash" / "config.json").write_text("{}")
+    assert draft_dir(model) == tmp_path / "dflash"  # the published files win
 
 
 def test_vision_file_is_the_one_mmproj_beside_the_model(tmp_path: Path):

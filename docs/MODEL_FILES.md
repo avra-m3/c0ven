@@ -48,7 +48,7 @@ it can be mounted read-only.
 | Part | Where the engine looks | To change it |
 | --- | --- | --- |
 | The other shards | beside it, by name | - |
-| The drafter | `dflash/` beside the model when it holds `model.safetensors` and `config.json`, else `mtp/` when it holds `mtp-manifest.json` | `--engine-arg=--draft-dir=<dir>`; `--engine-arg=--no-draft` decodes without it |
+| The drafter | `dflash/` beside the model when it holds `model.safetensors` and `config.json`, else `mtp/` when it holds `mtp-manifest.json`; a `dflash/` with only `dflash-manifest.json` is refused | `--engine-arg=--draft-dir=<dir>`; `--engine-arg=--no-draft` decodes without it |
 | The image encoder | the one `mmproj-*.gguf` beside the model; with two or more, none | `--engine-arg=--vision=<file>`; `--engine-arg=--no-vision` reads no images |
 | The tokenizer and chat template | the GGUF's metadata | `--tokenizer <tokenizer.json>`, `--chat-template <chat_template.jinja>` |
 
@@ -58,7 +58,7 @@ no normalizer). It refuses a file with any other value or none; give that model'
 
 A missing drafter or encoder is not an error: the engine runs without it. The core takes a directory that holds
 `model.safetensors` and `config.json` as DFlash 2's and any other as the MTP layer's. It refuses a directory that
-holds `dflash-manifest.json` without them, the older layout of DFlash 2 split into one file a tensor
+holds `dflash-manifest.json` without them (so does the server's choice of `dflash/` beside the model, which does not fall back to `mtp/`), the older layout of DFlash 2 split into one file a tensor
 ([ADR-0067](adr/0067-dflash-2-loads-from-its-published-files.md)).
 
 At each load the engine quantises the draft layer's experts from BF16, which takes tens of seconds. Set

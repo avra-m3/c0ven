@@ -46,6 +46,13 @@ IQ4_NL_BLOCK = (32, 18)
 """The MTP layer's experts on the cards: 18 bytes per 32 values."""
 
 
+def split_layout_error(directory: Path) -> FileNotFoundError:
+    return FileNotFoundError(
+        f"{directory} holds DFlash 2 split one file a tensor, which is no longer read: put the drafter's "
+        "model.safetensors and config.json there (MODEL_FILES.md)"
+    )
+
+
 def read_shapes(directory: Path) -> dict[str, tuple[int, ...]]:
     """Each tensor's shape the core loads: from DFlash 2's `model.safetensors` header, leaving out the candidate
     selector's, or from the MTP layer's `mtp-manifest.json`, a map of names."""
@@ -63,10 +70,7 @@ def read_shapes(directory: Path) -> dict[str, tuple[int, ...]]:
     if f.is_file():
         return {n: tuple(t["shape"]) for n, t in json.loads(f.read_text()).items()}
     if (directory / "dflash-manifest.json").is_file():
-        raise FileNotFoundError(
-            f"{directory} holds DFlash 2 split one file a tensor, which is no longer read: put the drafter's "
-            "model.safetensors and config.json there (MODEL_FILES.md)"
-        )
+        raise split_layout_error(directory)
     raise FileNotFoundError(f"no drafter in {directory}")
 
 
