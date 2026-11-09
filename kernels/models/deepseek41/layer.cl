@@ -473,7 +473,7 @@ REQD_SG __kernel void ds_exch_send(__global const float *y, __global float *peer
   for (uint i = at; i < at + n; i += 64) wr4(peer + i, rd4(y + i));
 }
 
-// A list's wait (ADR-0011, ADR-0062 item 5) on the miss answer, the other card's exchange flag or the Engram flag: one
+// A list's wait (ADR-0011, ADR-0074 item 5) on the miss answer, the other card's exchange flag or the Engram flag: one
 // work-item polls flag until it holds *want, and sets *stuck past D41_WAIT_TICKS in this wait or D41_LIST_TICKS since the
 // list's first polling wait stamped *start, which the plan's copy zeroes. A wait that finds *stuck set does not poll.
 // Pointers other than want, stuck and start may be null. stamp gets the clock at entry and exit. Group 1.

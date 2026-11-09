@@ -1,6 +1,6 @@
 """The numbers of deepseek41 that the control plane needs, each with its source.
 
-Sizes are from the GGUF's metadata and ADR-0062; token ids from the file's tokenizer. Where a number is an estimate it
+Sizes are from the GGUF's metadata and ADR-0074; token ids from the file's tokenizer. Where a number is an estimate it
 says so, with its method.
 """
 
@@ -13,7 +13,7 @@ EXPERTS_PER_LAYER = 384
 ROUTES_PER_ROW = 6
 """`expert_used_count`: the experts one row routes to in each layer."""
 CONTEXT = 16_384
-"""The most positions a sequence holds until the indexer's candidate filter exists (ADR-0062, item 8)."""
+"""The most positions a sequence holds until the indexer's candidate filter exists (ADR-0074, item 8)."""
 VOCAB = 129_280
 STEP_MAX_ROWS = 8
 
@@ -23,7 +23,7 @@ EOS_IDS = (EOS,)
 USER = 128_803
 ASSISTANT = 128_804
 
-# Per sequence, on each card: the KV head and the indexer are whole on both (ADR-0062, item 2).
+# Per sequence, on each card: the KV head and the indexer are whole on both (ADR-0074, item 2).
 WINDOW_CELLS = 136
 """The window of 128 positions and one step's rows, so a step never overwrites a cell an earlier row still reads."""
 WINDOW_BYTES = LAYERS * WINDOW_CELLS * 512 * 2

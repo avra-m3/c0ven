@@ -1,6 +1,6 @@
 // One scalar definition of each deepseek41 operation the kernels compute, for the kernel tests to compare against
 // (ADR-0012 item 4). Each follows DeepSeek's inference/model.py (M) or kernel.py (K) and names its section of the
-// deepseek41 forward-pass spec; the arithmetic is upstream llama.cpp's (ADR-0062 item 11): fp32 values, no FP8 or FP4
+// deepseek41 forward-pass spec; the arithmetic is upstream llama.cpp's (ADR-0074 item 11): fp32 values, no FP8 or FP4
 // simulation, and a BF16 product's input in bf16 where a function says so. Sums and dot products accumulate in double.
 #pragma once
 

@@ -1,4 +1,4 @@
-"""How each tensor is laid over the two cards (ADR-0023 as ADR-0062, item 2, changes it). Each card runs every layer.
+"""How each tensor is laid over the two cards (ADR-0023 as ADR-0074, item 2, changes it). Each card runs every layer.
 
 `SplitKind` names the direction of a cut; where the cut is unequal, the core's slot classes hold the sizes. This is the
 table `open` passes; the layer program in the core and its kernels follow it.

@@ -54,7 +54,7 @@ def test_the_model_memory():
 
 
 def test_the_vram_tier_near_the_estimate():
-    """ADR-0062 estimates about 133 experts a layer at layers 0-19 and 128 at 20-39. A layer holds whole slot pairs."""
+    """ADR-0074 estimates about 133 experts a layer at layers 0-19 and 128 at 20-39. A layer holds whole slot pairs."""
     p = memory_plan(TABLE, mem_available(64))
     t = p.tiers
     assert t is not None

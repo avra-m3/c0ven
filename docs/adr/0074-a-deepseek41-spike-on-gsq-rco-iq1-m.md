@@ -1,4 +1,4 @@
-# ADR-0062: a deepseek41 spike on GSQ-RCO's IQ1_M file, its experts in VRAM, an arena and the SSD
+# ADR-0074: a deepseek41 spike on GSQ-RCO's IQ1_M file, its experts in VRAM, an arena and the SSD
 
 **Status:** draft, 2026-11-01; not accepted. For `deepseek41` only, it departs
 from items 2-4 of [ADR-0006](0006-scope.md) (item 2 as
