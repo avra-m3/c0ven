@@ -4,7 +4,7 @@ import pytest
 
 from engine.api.interface import PageOp
 from engine.seqstate.checkpoints import CheckpointPool
-from engine.seqstate.manager import SeqState, pages_for
+from engine.seqstate.manager import SeqState, Sequence, pages_for
 from engine.seqstate.pages import HIGH_BLOCK, PagePool, PoolExhausted
 
 
@@ -46,23 +46,75 @@ def test_take_needs_a_reservation():
         PagePool(2).take()
 
 
-def test_admission_reserves_the_whole_sequence():
+def admit(s: SeqState, prompt: tuple[int, ...], max_new: int) -> Sequence:
+    a = s.plan_admission(prompt, max_new)
+    assert a is not None
+    return s.admit(a, prompt, max_new)
+
+
+def test_admission_reserves_the_prompt_and_a_block():
     s = SeqState(slots=2, pages=16, checkpoints=2)
     prompt = tuple(range(10))
-    admission = s.plan_admission(prompt, max_new=6)
+    admission = s.plan_admission(prompt, max_new=100, ahead=4)
     assert admission is not None
-    assert admission.pages == pages_for(16) == 4
-    seq = s.admit(admission, prompt, 6)
+    assert admission.pages == pages_for(14) == 4
+    short = s.plan_admission(prompt, max_new=1, ahead=4)
+    assert short is not None
+    assert short.pages == pages_for(11), "the block stops at max_new"
+    seq = s.admit(admission, prompt, 100)
     assert s.pool.available == 12
-    s.grow(seq.slot, 10)
-    assert len(seq.pages) == 3
-    s.grow(seq.slot, 1000)
-    assert len(seq.pages) == 4, "growth stops at the reservation"
+    assert s.grow(seq.slot, 14)
+    assert (len(seq.pages), seq.reserved) == (4, [0])
     changes = s.take_changes(100)
     assert [c.logical for c in changes] == [0, 1, 2, 3]
     assert all(c.op is PageOp.ASSIGN for c in changes)
     s.release(seq.slot)
     assert (s.pool.free, s.pool.reserved, s.free_slots) == (16, 0, 2)
+
+
+@pytest.mark.parametrize("classes", [1, 2])
+def test_growth_reserves_a_block_at_a_time(classes: int):
+    s = SeqState(slots=2, pages=16, checkpoints=2, classes=classes)
+    prompt = tuple(range(10))
+    a = s.plan_admission(prompt, 100, ahead=2)
+    assert a is not None
+    seq = s.admit(a, prompt, 100)
+    assert s.grow(seq.slot, 12)
+    assert s.pool.available == 13
+    assert s.grow(seq.slot, 40), "pages past the admission are reserved as the slot grows"
+    assert (len(seq.pages), s.pool.available, sum(seq.reserved)) == (10, 6, 0)
+    assert not s.grow(seq.slot, 100), "a block the pool cannot give changes nothing"
+    assert len(seq.pages) == 10
+    assert s.grow(seq.slot, 64)
+    assert [p % classes for p in seq.pages] == [i % classes for i in range(16)]
+    s.release(seq.slot)
+    assert (s.pool.free, s.pool.reserved) == (16, 0)
+
+
+def test_growth_evicts_only_checkpoints_that_free_pages():
+    s = SeqState(slots=3, pages=12, checkpoints=4)
+    a = admit(s, tuple(range(16)), 8)
+    s.grow(a.slot, 16)
+    shared = s.checkpoint(a.slot, 8, kept=False)  # its pages are a's too: evicting it frees none
+    c = admit(s, tuple(range(100, 116)), 8)
+    s.grow(c.slot, 16)
+    alone = s.checkpoint(c.slot, 16, kept=False)
+    assert shared is not None
+    assert alone is not None
+    shared.ready = alone.ready = True
+    s.checkpoints.touch(alone)  # least recent use alone would pick `shared`
+    s.release(c.slot)
+    s.take_changes(100)
+    b = admit(s, tuple(range(200, 216)), 8)
+    s.grow(b.slot, 16)
+    assert s.pool.available == 0
+    alone.users.add(c.slot)
+    assert not s.grow(b.slot, 20), "a checkpoint being restored from stays"
+    assert s.drops == []
+    alone.users.clear()
+    assert s.grow(b.slot, 20)
+    assert s.drops == [alone.id]
+    assert list(s.checkpoints) == [shared]
 
 
 def test_no_slot_no_admission():
@@ -87,7 +139,7 @@ def test_resume_shares_full_pages_and_copies_the_partial_one():
     ck.ready = True
 
     p2 = (*range(10), 99, 98)
-    b = s.plan_admission(p2, 4)
+    b = s.plan_admission(p2, 4, ahead=4)
     assert b is not None
     assert b.checkpoint is ck
     assert b.pages == pages_for(16) - 2, "two full pages are shared"
