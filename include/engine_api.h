@@ -192,11 +192,12 @@ typedef struct {
   uint32_t value;
 } engine_event;
 
-/* One timing record (docs/DESIGN.md, section 7): a prompt piece or a decode step, as the engine ran it. */
+/* One timing record (docs/DESIGN.md, section 7): a prompt piece, a decode step or round, or the draft pass after one, as the engine ran it. */
 typedef enum {
   ENGINE_TIMING_PROMPT = 1,
   ENGINE_TIMING_DECODE = 2,
-  ENGINE_TIMING_ROUND = 3      /* a draft round: rows = the window's rows, misses as decode */
+  ENGINE_TIMING_ROUND = 3,     /* a draft round: rows = the window's rows, misses as decode */
+  ENGINE_TIMING_DRAFT = 4      /* the rest of a plan's decode after its step or round: the draft layer's pass; rows 0 */
 } engine_timing_kind;
 
 typedef struct {

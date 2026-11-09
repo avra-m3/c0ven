@@ -142,6 +142,7 @@ struct engine_ctx {
   bool running = false;  // a plan is being run
   bool idle_due = false;  // with swaps on, a plan has run since the idle rounds last settled (idle_rounds)
   bool prompt_ended = false;  // the plan being run read some slot's last prompt token
+  uint64_t step_end_ns = 0;   // where the plan's decode step or round ended; 0 until it has run one
   uint32_t writers = 0;  // the slots the plan being run decoded
   uint32_t shared_choices = 0;  // shared_most's choices, for its kSharedCheck; under mu
   engine::WindowTimes window_times;  // decode steps of one slot and rounds of any number, by their rows
@@ -162,6 +163,7 @@ struct engine_ctx {
   void record(engine_timing t) {
     if (timing.size() == kTimingRing) timing.pop_front();
     timing.push_back(t);
+    if (t.kind == ENGINE_TIMING_DECODE || t.kind == ENGINE_TIMING_ROUND) step_end_ns = t.end_ns;
   }
 
   bool media(int32_t tok) const { return engine::is_media(image_shape, tok); }
@@ -1103,6 +1105,7 @@ struct engine_ctx {
         seq = ++plans_taken;
         running = true;
         prompt_ended = false;
+        step_end_ns = 0;
         writers = 0;
       }
       const uint64_t t_plan = now_ns();
@@ -1114,6 +1117,12 @@ struct engine_ctx {
         apply_pages(pages);
         prompt_pieces(seq, plan);
         decode(seq, plan);
+        {
+          // What the plan's decode did after its step or round: the sampling and the draft layer's pass. It is part
+          // of the plan's time, which the owed time counts (docs/adr/0071-writers-draft-while-a-slot-reads-its-prompt.md).
+          std::lock_guard<std::mutex> lk(mu);
+          if (step_end_ns) record({ENGINE_TIMING_DRAFT, seq, 0, 0, step_end_ns, now_ns()});
+        }
         idle_due = swaps;
         // A swap round after a plan that ended a prompt, and otherwise once the time the CPU's misses have cost since
         // the last round reaches that round's time, within 4 to 16 plans of it (api/swap_cadence.h); 4 and 16 until

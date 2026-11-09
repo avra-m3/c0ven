@@ -17,7 +17,7 @@ Version 6 adds `engine_image.frames` for video (ADR-0034). Version 7 adds min-p 
 Version 11 adds `engine_cards`, the cards listed before open (ADR-0057); version 12 the workers' read rate of the
 arena to `engine_info`; version 13 the loader's threads, the n-gram table in RAM (`NGRAM_RAM`) and the cards' copy
 rates; version 19 the arena in reserved huge pages (`HUGETLB`); version 20 the counters of steps and rounds run while
-a slot reads its prompt (ADR-0071).
+a slot reads its prompt and the timing record of the draft pass (ADR-0071).
 """
 
 from __future__ import annotations
@@ -79,6 +79,7 @@ class CTimingKind(IntEnum):
     PROMPT = 1
     DECODE = 2
     ROUND = 3
+    DRAFT = 4
 
 
 class CConfig(ctypes.Structure):

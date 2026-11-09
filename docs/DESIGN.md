@@ -402,7 +402,7 @@ weights in RAM, so a wake reads only the cards' part of the model again
 ## 7. Timing and debugging
 
 The core keeps its last 4,096 timing records, one for each prompt piece, decode step or draft round, with its rows
-and the experts the CPU computed. `engine_read_timing` takes them out. The core stores only these small binary
+and the experts the CPU computed, and one for the draft pass after a plan's step or round (rows 0). `engine_read_timing` takes them out. The core stores only these small binary
 records. Python adds them up and formats them.
 
 The core also keeps counters since open, `engine_stats` in [`include/engine_api.h`](../include/engine_api.h): plans
