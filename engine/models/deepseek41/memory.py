@@ -44,7 +44,6 @@ def model_memory(table: TensorTable, cards: int = 2) -> ModelMemory:
         checkpoint_bytes=numbers.STATE_BYTES,
         max_context=numbers.CONTEXT,
         ngram_bytes=table.bytes_of(Category.NGRAM),
-        reference_vram=numbers.USABLE_VRAM,
         card_weights=weights,
         layer_expert_bytes=tuple(table.expert_bytes(n) for n in range(numbers.LAYERS)),
         ssd_tier=True,

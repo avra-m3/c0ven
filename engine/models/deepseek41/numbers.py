@@ -38,8 +38,6 @@ INDEXER_CELL_BYTES = 640
 """Compressed rows' index keys a position, f16: 2 x 128, by the same count of sources."""
 
 # Per card, outside the layers' weights.
-USABLE_VRAM = 24_385_683_456
-"""Measured on each B60 (docs/measurements/MEASUREMENTS.md#2026-10-11-device-memory)."""
 RESERVE_PER_CARD = 2**29
 """What Sysman must still show free after the fill: past it, device allocations spill to host memory."""
 BUFFERS_PER_CARD = 3 * 2**28

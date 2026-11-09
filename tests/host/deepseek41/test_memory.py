@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from engine import fit
+from engine.api.mock import CARD_MEMORY
 from engine.host import Host
 from engine.memory_plan import GIB, PlanError, PlanOptions, plan
 from engine.models.deepseek41 import numbers
@@ -33,7 +34,7 @@ def mem_available(gib: int) -> PlanOptions:
         cpu_flags=frozenset(),
         cpu_model="Test CPU",
     )
-    return PlanOptions(slots=1, context=16_384, cards=2, host_memory=host.memory_limit)
+    return PlanOptions(slots=1, context=16_384, cards=2, host_memory=host.memory_limit, usable_vram=CARD_MEMORY)
 
 
 def test_the_model_memory():
@@ -134,24 +135,25 @@ def test_the_fit_report_has_the_tiers_at_uniform_routing():
 
 def test_each_slot_costs_its_rows_and_rings():
     one = memory_plan(TABLE, mem_available(64))
-    two = memory_plan(TABLE, PlanOptions(slots=2, context=16_384, cards=2, host_memory=64 * GIB))
+    options = PlanOptions(slots=2, context=16_384, cards=2, host_memory=64 * GIB, usable_vram=CARD_MEMORY)
+    two = memory_plan(TABLE, options)
     assert two.free_per_card == one.free_per_card - (16_384 * 3_200 + 5_767_168)
     assert two.reserve_per_sequence == one.reserve_per_sequence == 16_384 * 3_200 + 5_767_168
 
 
 def test_the_models_limits():
-    p = memory_plan(TABLE, PlanOptions())
+    p = memory_plan(TABLE, PlanOptions(usable_vram=CARD_MEMORY))
     assert p.options.context == numbers.CONTEXT
     assert p.draft_per_card == 0
     assert not p.options.draft
     assert p.streamed_kv_bytes == 0
     with pytest.raises(PlanError, match="two cards"):
-        memory_plan(TABLE, PlanOptions(cards=1))
-    assert memory_plan(TABLE, PlanOptions(ngram_in_ram=True)) == p
+        memory_plan(TABLE, PlanOptions(cards=1, usable_vram=CARD_MEMORY))
+    assert memory_plan(TABLE, PlanOptions(ngram_in_ram=True, usable_vram=CARD_MEMORY)) == p
 
 
 def test_qwen4exps_plan_is_unchanged():
     """With this package imported. tests/host/test_memory_tiers.py holds the whole plan's literals."""
-    p = plan(qwen_memory(qwen_table()), PlanOptions())
-    assert (p.weights_per_card, p.experts_cached, p.arena_bytes) == (2_341_860_608, 18_674, 12_077_852_800)
+    p = plan(qwen_memory(qwen_table()), PlanOptions(usable_vram=CARD_MEMORY))
+    assert (p.weights_per_card, p.experts_cached, p.arena_bytes) == (2_341_860_608, 15_706, 18_151_568_000)
     assert p.tiers is None

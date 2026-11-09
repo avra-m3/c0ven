@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from engine.api.interface import SplitKind, Tensor
+from engine.api.mock import CARD_MEMORY
 from engine.memory_plan import GIB, PlanError, PlanOptions, ngram_fits
 from engine.models import ModelSetup
 from engine.models.deepseek41 import setup
@@ -30,7 +31,7 @@ def test_no_drafter_and_no_images_even_beside_the_files(tmp_path: Path):
 
 
 def test_the_open_config_without_a_model():
-    options = PlanOptions(slots=2, context=262_144, checkpoints=3, host_memory=64 * GIB)
+    options = PlanOptions(slots=2, context=262_144, checkpoints=3, host_memory=64 * GIB, usable_vram=CARD_MEMORY)
     config, plan = setup.open_config(None, options, deterministic=True, cpu_workers=7)
     assert config.tensors == ()
     assert config.max_context == 16_384
@@ -41,11 +42,8 @@ def test_the_open_config_without_a_model():
     assert config.cpu_workers == 7
     assert config.kv_resident_cells == 16_384
     assert config.experts_cached == plan.experts_cached
-    assert config.arena_bytes == plan.arena_bytes > 0
-    assert config.working_bytes == plan.working_per_card
     assert config.eos_ids == (1,)
     assert config.vocab_size == 129_280
-    assert config.ngram_cache_rows == 1 << 20
     assert config.draft_dir == ""
     assert not config.ngram_in_ram
 
@@ -65,7 +63,9 @@ def test_the_open_config_passes_each_tensor_of_the_file(tmp_path: Path, monkeypa
     monkeypatch.setattr(setup, "CORE_HAS_MODEL", True)
     monkeypatch.setattr(setup, "from_gguf_cached", read)
     monkeypatch.setenv("ENGINE_CPU_WORKERS", "5")
-    config, _ = setup.open_config(paths[0], PlanOptions(host_memory=64 * GIB), table_cache=tmp_path, cpu_workers=7)
+    config, _ = setup.open_config(
+        paths[0], PlanOptions(host_memory=64 * GIB, usable_vram=CARD_MEMORY), table_cache=tmp_path, cpu_workers=7
+    )
     assert config.shard_paths == tuple(str(p) for p in paths)
     assert config.cpu_workers == 5
     by_name = {t.name: t for t in config.tensors}
@@ -80,7 +80,7 @@ def test_the_open_config_passes_each_tensor_of_the_file(tmp_path: Path, monkeypa
 
 def test_the_engram_table_stays_on_the_ssd_when_the_host_has_room():
     """The engine process asks for the table in RAM by itself when `ngram_fits` says there is room."""
-    roomy = PlanOptions(host_memory=384 * GIB)
+    roomy = PlanOptions(host_memory=384 * GIB, usable_vram=CARD_MEMORY)
     config, plan = setup.open_config(None, roomy)
     assert ngram_fits(plan, 384 * GIB)
     asked_config, asked_plan = setup.open_config(None, replace(roomy, ngram_in_ram=True))

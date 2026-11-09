@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 from dataclasses import replace
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from engine.api.interface import OpenConfig, Tensor
 from engine.memory_plan import MemoryPlan, PlanError, PlanOptions
@@ -19,11 +20,13 @@ from engine.models.deepseek41.split import split_of
 from engine.models.deepseek41.tensors import TensorTable, from_gguf_cached, from_tsv
 from engine.models.deepseek41.turns import checkpoint_positions
 
-__all__ = ["checkpoint_positions", "draft_dir", "memory_plan", "open_config", "vision_file"]
+if TYPE_CHECKING:
+    from engine.scheduler import CheckpointRule
+
+__all__ = ["checkpoint_rule", "draft_dir", "memory_plan", "open_config", "vision_file"]
 
 CPU_WORKERS = 16
 """One per core of the test machine's 7945HX: the count when the host is not read (the mock and the reference)."""
-TIMING_RECORDS = 1 << 16
 CORE_HAS_MODEL = False
 """Whether the core runs deepseek41 (issue #28). Until it does, a model file stops here with that reason, and the mock
 and the plan from the committed table still work."""
@@ -35,6 +38,13 @@ def memory_plan(table: TensorTable, options: PlanOptions) -> MemoryPlan:
     when the options do not fit."""
     limited = replace(options, draft=False, ngram_in_ram=False, context=min(options.context, numbers.CONTEXT))
     return slot_pair_plan(model_memory(table, options.cards), limited)
+
+
+def checkpoint_rule(model: Path | None, table_cache: Path | None = None) -> CheckpointRule:
+    """Where to checkpoint a prompt (turns.py). The chat token ids are numbers.py's: the committed table has no
+    tokenizer fields to read them from. model and table_cache: as `open_config`'s, unused."""
+    del model, table_cache
+    return checkpoint_positions
 
 
 def draft_dir(model: Path) -> Path | None:
@@ -85,11 +95,7 @@ def open_config(
         checkpoints=options.checkpoints,
         kv_resident_cells=mp.kv_resident_cells,
         experts_cached=mp.experts_cached,
-        arena_bytes=mp.arena_bytes,
-        working_bytes=mp.working_per_card,
         cpu_workers=int(os.environ.get("ENGINE_CPU_WORKERS", cpu_workers)),
-        ngram_cache_rows=numbers.ENGRAM_CACHE_ROWS,
-        timing_records=TIMING_RECORDS,
         eos_ids=numbers.EOS_IDS,
         vocab_size=numbers.VOCAB,
         deterministic=deterministic,
