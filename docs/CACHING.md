@@ -30,9 +30,10 @@ All requests share one token cache of a fixed size, set by `--kv-tokens`. With `
 four requests run at once, and together they hold at most 512K tokens. The cache is cut into pages of 4 tokens, so a
 request holds whatever pages it needs, wherever they are.
 
-When a request starts, the server holds room for its whole prompt plus the most it may write: its `max_tokens`, or
-`--default-max-tokens` when it gives none. The room is held up front so that a request never runs out of space
-halfway through an answer. If the room is not there, the request waits.
+When a request starts, the server holds room for its prompt and the first few hundred tokens of its answer. If that
+room is not there, the request waits. Its answer takes more room as it is written, a few hundred tokens at a time,
+so a large `max_tokens` holds no room the answer does not use
+([ADR-0068](adr/0068-kv-pages-are-reserved-as-a-sequence-grows.md)).
 
 ## Reusing the beginning of a prompt
 
@@ -91,8 +92,7 @@ The model is made of many small parts called experts, and each token uses only a
 them all, so they keep the most used ones, the **expert cache**, and the computer's processor works out the rest,
 which is slower. The more experts the cards hold, the faster the server writes.
 
-The part of the token cache that holds nothing is lent to the expert cache. Room held for an answer that has not been
-written yet is lent too, until the answer needs it. With 4 slots and 512K tokens, lending the free room let the cards
+The part of the token cache that holds nothing is lent to the expert cache. With 4 slots and 512K tokens, lending the free room let the cards
 hold 331 experts a layer instead of 248, and one request wrote 16% faster
 ([measured](measurements/MEASUREMENTS.md#2026-10-20-kv-pool-and-expert-cache-share)). With `--deterministic`, nothing
 is lent.
@@ -115,15 +115,22 @@ reading the whole conversation again. When no checkpoint is extended by a later 
 agent sessions, this rule reads 60% fewer prompt tokens again than pushing out the one used longest ago
 ([replayed](measurements/MEASUREMENTS.md#2026-10-28-checkpoints-spread)).
 
-The second is room. A request that cannot get its room drops checkpoints, the one used longest ago first and the kept
-ones last, until it fits. It never drops the checkpoint it is about to start from. If dropping the others still does
-not make room, it waits for a running request to end.
+The second is room. A request that cannot get the room to start drops checkpoints, the one used longest ago first and
+the kept ones last, until it fits. It never drops the checkpoint it is about to start from. If dropping the others
+still does not make room, it waits for a running request to end.
+
+A running answer that needs more room drops checkpoints the same way, but only those whose dropping frees room: a
+checkpoint whose tokens a running request or another checkpoint also holds frees nothing. If no checkpoint is left to
+drop, the newest running request pauses. It gives its room back and waits ahead of the requests that came after it.
+When there is room again, it reads its prompt and the part of the answer it had written, and goes on writing. The
+client sees a delay in the answer, and no token twice. While a running answer waits for room, no new request starts,
+so the room that comes free goes to that answer first.
 
 ```mermaid
 flowchart TD
     A[A request arrives] --> B{Does a checkpoint match<br/>the start of its prompt?}
-    B -- yes --> C[Room needed: the new tokens<br/>plus the most it may write]
-    B -- no --> D[Room needed: the whole prompt<br/>plus the most it may write]
+    B -- yes --> C[Room needed: the new tokens<br/>and the answer's first tokens]
+    B -- no --> D[Room needed: the whole prompt<br/>and the answer's first tokens]
     C --> E{Is that much room free?}
     D --> E
     E -- yes --> F[It starts]
@@ -141,22 +148,22 @@ The server runs with `--slots 4 --kv-tokens 512k --default-max-tokens 32k`. Thre
 checkpoint where its last answer started: chat A at 100K tokens, B at 60K and C at 30K. C was used longest ago, A most
 recently. The checkpoints hold 190K of the 512K tokens, and the other 322K is free and lent to the expert cache.
 
-Four agents then send requests at once, each with a 70K-token prompt and no `max_tokens`, so each needs 70K + 32K =
-102K tokens of room:
+Four agents then send requests at once, each with a 70K-token prompt and no `max_tokens`, so each may write 32K:
 
-1. Agents 1, 2 and 3 fit in the free room. 16K is left.
-2. Agent 4 needs 102K. The server drops C's checkpoint (46K free), then B's (106K free), and agent 4 starts.
-   A's checkpoint stays. 4K is left.
+1. All four start, since their prompts fit in the free room. They take 280K, and 42K is left. No checkpoint is
+   dropped.
+2. Their answers grow into the 42K. If each writes 10K or less, they all fit and every checkpoint stays.
+3. If each writes its full 32K, the answers need 128K. As the room runs out, the server drops C's checkpoint (72K
+   free), then B's (132K free). A's checkpoint stays, and 4K is left when the answers end.
 
 ![A 512K-token cache as four agents arrive](images/caching-room-under-load.svg)
 
-While the agents run, the users of A and B come back, each with a 2K-token question. Neither fits in the 4K left, so
-both wait. When the first agent ends, 106K is free:
+In the third case, the users of A and B then come back, each with a 2K-token question. When the first agent ends,
+102K is free:
 
-- A still has its checkpoint. It needs only 2K + 32K = 34K of room, starts at once, and reads 2K tokens.
-- B lost its checkpoint. It needs its whole 62K-token prompt + 32K = 94K of room, but only 72K is left after A, so it
-  waits for another agent to end. Then it reads all 62K tokens, about 37 seconds of reading (*estimate*: 63,488
-  tokens at the 1,713 tokens a second
+- A still has its checkpoint. It needs room for only its 2K new tokens, starts at once, and reads 2K tokens.
+- B lost its checkpoint. It needs room for its whole 62K-token prompt, which fits, and reads all 62K tokens, about
+  37 seconds of reading (*estimate*: 63,488 tokens at the 1,713 tokens a second
   [measured](measurements/MEASUREMENTS.md#2026-10-20-kv-pool-and-expert-cache-share) for a 179,969-token prompt).
 
 On a quiet server, the same follow-up from B would have read 2K tokens.
@@ -185,8 +192,8 @@ their whole prompt again.
 
 ## What this means for settings
 
-A `max_tokens` close to what a request really writes holds less room, so more requests run at once and fewer
-checkpoints are dropped to make room. `--default-max-tokens` does the same for requests that give none.
+`max_tokens` and `--default-max-tokens` limit how long an answer may run. They hold no room, so a large limit does
+not stop requests from running at once or push checkpoints out.
 
 A larger `--kv-tokens` gives checkpoints more room to stay. Room that nothing uses is lent to the expert cache, but
 the cards always keep enough memory free to give the whole token cache back, so a larger cache leaves fewer experts

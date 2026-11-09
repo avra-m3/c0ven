@@ -7,8 +7,8 @@ sequence resumed from it holds them too.
 The pages fall in classes, one per card: the indexer's keys are split by position, so a sequence's logical page i
 must be a page of class i % classes (`include/engine_api.h`). Each class has its own free list and reservations.
 
-A sequence reserves, at admission, every page it can ever need (prompt plus `max_new`), and takes them one by one
-as it grows. So a running sequence never finds the pool empty.
+A sequence reserves its prompt and a first block of cells at admission, and more a block at a time as it writes
+(`SeqState.grow`). It takes its reserved pages one by one as it grows.
 
 A page is taken lowest id first, so the pages in use stay at the bottom of the pool: the core lends the memory of
 the pages from `high` up to the expert cache (DESIGN.md, section 6).
@@ -76,6 +76,10 @@ class PagePool:
     @property
     def reserved(self) -> int:
         return sum(self._reserved)
+
+    def spare(self) -> tuple[int, ...]:
+        """Pages per class that can still be reserved."""
+        return tuple(len(f) - r for f, r in zip(self._free, self._reserved, strict=True))
 
     def can_reserve(self, n: Counts) -> bool:
         return all(k <= len(f) - r for k, f, r in zip(self._counts(n), self._free, self._reserved, strict=True))
