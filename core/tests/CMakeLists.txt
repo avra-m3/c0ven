@@ -30,6 +30,8 @@ engine_test(open_model_test SOURCES open_model_test.cpp)
 engine_test(shape_test SOURCES shape_test.cpp)
 engine_test(model_values_test SOURCES model_values_test.cpp)
 engine_test(step_in_test SOURCES step_in_test.cpp)
+# The C ABI's code itself, on a model of the test's own (api/open_engine.h).
+engine_test(engine_thread_test SOURCES engine_thread_test.cpp ${CMAKE_SOURCE_DIR}/core/api/engine_api.cpp)
 engine_test(ze_smoke_test GPU SOURCES ze_smoke_test.cpp)
 engine_test(matvec_test GPU SOURCES matvec_test.cpp)
 engine_test(moe_test GPU SOURCES moe_test.cpp)

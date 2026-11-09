@@ -22,6 +22,11 @@ target_include_directories(engine_core PRIVATE ${ENGINE_GGML_SRC_DIR})
 target_link_libraries(engine_core PUBLIC PkgConfig::LEVEL_ZERO Threads::Threads PRIVATE engine_warnings)
 target_compile_definitions(engine_core PUBLIC ENGINE_KERNEL_DIR="${ENGINE_KERNEL_DIR}"
                            ENGINE_KERNEL_SPIRV_DIR="${ENGINE_KERNEL_SPIRV_DIR}")
+# A command list called from a second thread while one is inside it throws (ze/ze.h, List). On in builds without NDEBUG.
+option(ENGINE_CHECK_LISTS "Check that one thread at a time calls each command list" OFF)
+if(ENGINE_CHECK_LISTS)
+  target_compile_definitions(engine_core PRIVATE ENGINE_CHECK_LISTS)
+endif()
 
 # Each architecture adds its own sources (ADR-0061); models/open.cpp picks one by the file's general.architecture.
 add_subdirectory(models/qwen4exp)

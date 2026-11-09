@@ -9,9 +9,18 @@ from dataclasses import dataclass, field, replace
 import pytest
 
 import protocol
-from engine.api.interface import Event, EventKind, OpenConfig, StepPlan
+from engine.api.interface import (
+    NO_SLOT,
+    ErrorCode,
+    Event,
+    EventKind,
+    Image,
+    OpenConfig,
+    SlotSettings,
+    StepPlan,
+)
 from engine.api.mock import MockEngine, Script
-from engine.scheduler import CheckpointRule, Phase, Scheduler, SchedulerOptions, every_16k
+from engine.scheduler import CheckpointRule, EngineFailed, Phase, Scheduler, SchedulerOptions, every_16k
 from engine.seqstate.manager import pages_for
 from tests.helpers import facts_of, open_config
 
@@ -213,6 +222,33 @@ class LateStepDone(SpyEngine):
         for e in super().wait(timeout_s, max_events):
             (self.held if e.kind is EventKind.STEP_DONE else events).append(e)
         return events
+
+
+class ResetFails(SpyEngine):
+    """The core resets an admitted slot on its engine thread before the next plan (ADR-0072). Here that reset fails,
+    so the plan after the admission ends with the core's error, which the native engine reports with no slot."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.failing = False
+
+    def admit(self, slot: int, settings: SlotSettings, prompt: tuple[int, ...], images: tuple[Image, ...] = ()) -> None:
+        super().admit(slot, settings, prompt, images)
+        self.failing = True
+
+    def wait(self, timeout_s: float, max_events: int = 256) -> list[Event]:
+        if self.failing:
+            return [Event(EventKind.ERROR, NO_SLOT, 0, ErrorCode.INTERNAL)]
+        return super().wait(timeout_s, max_events)
+
+
+def test_a_reset_that_fails_after_the_admit_fails_the_engine():
+    engine = ResetFails()
+    engine.open(open_config())
+    run = Run(engine, Scheduler(engine, facts_of(open_config()), None, every_16k))
+    run.add(1, prompt(4), 4)
+    with pytest.raises(EngineFailed, match="error 7"):
+        run.tick()
 
 
 def test_a_prompt_step_waits_for_the_decode_the_step_before_owes():

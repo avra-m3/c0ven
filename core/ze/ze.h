@@ -5,11 +5,13 @@
 
 #include <level_zero/ze_api.h>
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
 #include <map>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace engine::ze {
@@ -143,6 +145,9 @@ class EventPool {
 // as wanted on the card's queue). Each command waits for the ones before it, but in a list made with in_order false
 // the launches recorded between together(true) and together(false) may run at the same time, and the next command
 // waits for all of them (docs/measurements/MEASUREMENTS.md#2026-10-16-decode-launches-together).
+// One thread at a time may call a list, its fence included: Level Zero does not lock them
+// (docs/adr/0072-one-thread-uses-the-cards.md). A build with ENGINE_CHECK_LISTS, or without NDEBUG, throws from a
+// call made while another thread is inside one.
 class List {
  public:
   enum Kind { immediate, regular };
@@ -183,6 +188,16 @@ class List {
   Kind kind() const { return kind_; }
 
  private:
+  // Marks the thread inside the list's calls (ENGINE_CHECK_LISTS): another thread's call throws, and the same
+  // thread's nested calls pass.
+  struct OneUser {
+    explicit OneUser(List &l);
+    ~OneUser();
+    List &l;
+    bool outer = false;
+  };
+  std::atomic<std::thread::id> user_{};
+
   Runtime &rt_;
   uint32_t card_;
   Kind kind_;

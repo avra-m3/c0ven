@@ -1,8 +1,8 @@
 /* The C ABI end to end, from C: chat-hashmap's greedy tokens against llama.cpp's (reference/). Also a second request
  * after release, a stop token, short pieces as decode windows, a longer prompt by the prompt path, two requests in one
- * step, checkpoints restored into a slot that shares the first slot's pages, one token after a restore, the timing
- * records, drafting, adaptive swaps, the pool and the cache sharing memory, a sleep and a wake. Each slot maps its own
- * pages unless it shares. api_test <first shard> */
+ * step, admits beside the plans, checkpoints restored into a slot that shares the first slot's pages, one token after a
+ * restore, the timing records, drafting, adaptive swaps, the pool and the cache sharing memory, a sleep and a wake.
+ * Each slot maps its own pages unless it shares. api_test <first shard> */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -234,6 +234,46 @@ int main(int argc, char **argv) {
   CHECK(n == 32 && n1 == 32, "two slots: %d and %d tokens", n, n1);
   for (int i = 0; i < 32; i++) CHECK(out[i] == ref[i] && out1[i] == ref[i], "two slots, token %d", i);
   printf("two requests decoding in one step: both give the 32 tokens\n");
+
+  /* Slot 1 admitted and released between slot 0's plans, two of them queued ahead, so each admit lands while the
+   * engine thread runs one: the reset goes to the engine thread (ADR-0072), and slot 0 still gives the 32 tokens. */
+  CHECK(engine_release(e, 0) == ENGINE_OK && engine_release(e, 1) == ENGINE_OK, "release both");
+  CHECK(admit(e, 0, &s, prompt, np) == ENGINE_OK, "admit slot 0");
+  {
+    int done = 0, queued = 0, admitted = 0;
+    n = 0;
+    while (!done || queued) {
+      for (; !done && queued < 2; queued++) {
+        engine_step_plan plan;
+        memset(&plan, 0, sizeof plan);
+        plan.nslots = 1;
+        plan.kv_free = kv_free;
+        CHECK(engine_submit(e, &plan) == ENGINE_OK, "submit");
+      }
+      if (admitted)
+        CHECK(engine_release(e, 1) == ENGINE_OK, "release slot 1");
+      else
+        CHECK(engine_admit(e, 1, &s, prompt, np) == ENGINE_OK, "admit slot 1 beside a plan: %s", engine_last_error(e));
+      admitted = !admitted;
+      for (int step_done = 0; !step_done;) {
+        CHECK(engine_wait(e, 60000) == ENGINE_OK, "no event within 60 s");
+        engine_event ev[16];
+        uint32_t got = 0;
+        CHECK(engine_poll(e, ev, 16, &got) == ENGINE_OK, "poll");
+        for (uint32_t i = 0; i < got; i++) {
+          CHECK(ev[i].kind != ENGINE_EVENT_ERROR, "engine error: %s", engine_last_error(e));
+          if (ev[i].kind == ENGINE_EVENT_TOKEN && ev[i].slot == 0 && n < 64) out[n++] = ev[i].token;
+          if (ev[i].kind == ENGINE_EVENT_DONE && ev[i].slot == 0) done = 1;
+          if (ev[i].kind == ENGINE_EVENT_STEP) step_done = 1;
+        }
+      }
+      queued--;
+    }
+    if (admitted) CHECK(engine_release(e, 1) == ENGINE_OK, "release slot 1");
+  }
+  CHECK(n == 32, "beside admits: %d tokens", n);
+  for (int i = 0; i < 32; i++) CHECK(out[i] == ref[i], "beside admits, token %d: %d, expected %d", i, out[i], ref[i]);
+  printf("slot 1 admitted and released beside each of slot 0's plans: slot 0 gives the 32 tokens\n");
 
   /* A checkpoint of slot 0 after 22 prompt positions, restored into slot 1 for the same prompt: slot 1 maps slot 0's
    * first 5 pages, the 6th copied (its first 2 cells), then its own. */

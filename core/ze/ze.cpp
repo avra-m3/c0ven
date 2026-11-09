@@ -410,6 +410,25 @@ List::List(Runtime &rt, uint32_t card, Kind kind, bool copy_engine, bool in_orde
   }
 }
 
+#if defined(ENGINE_CHECK_LISTS) || !defined(NDEBUG)
+#define ONE_USER OneUser one_user_(*this)
+#else
+#define ONE_USER (void)0
+#endif
+
+List::OneUser::OneUser(List &list) : l(list) {
+  const std::thread::id me = std::this_thread::get_id();
+  std::thread::id none{};
+  if (l.user_.compare_exchange_strong(none, me)) {
+    outer = true;
+  } else if (none != me) {
+    throw std::logic_error("card " + std::to_string(l.card_) + ": a command list called from two threads at once");
+  }
+}
+List::OneUser::~OneUser() {
+  if (outer) l.user_.store(std::thread::id{});
+}
+
 List::~List() {
   if (queue_stuck) return;
   if (fence_) zeFenceDestroy(fence_);
@@ -420,6 +439,7 @@ List::~List() {
 void List::launch(ze_kernel_handle_t k, std::initializer_list<Arg> args, uint32_t gx, uint32_t gy, uint32_t gz,
                   uint32_t lx, uint32_t ly, uint32_t lz, ze_event_handle_t signal,
                   std::initializer_list<ze_event_handle_t> wait) {
+  ONE_USER;
   uint32_t i = 0;
   for (const Arg &a : args) {
     ze_result_t r = zeKernelSetArgumentValue(k, i, a.size, a.value);
@@ -450,6 +470,7 @@ void List::launch(ze_kernel_handle_t k, std::initializer_list<Arg> args, uint32_
 }
 
 void List::trace(uint64_t *ts, size_t cap) {
+  ONE_USER;
   trace_ = ts;
   trace_cap_ = cap;
   trace_names_.clear();
@@ -458,6 +479,7 @@ void List::trace(uint64_t *ts, size_t cap) {
 
 void List::copy(void *dst, const void *src, size_t bytes, ze_event_handle_t signal,
                 std::initializer_list<ze_event_handle_t> wait) {
+  ONE_USER;
   std::vector<ze_event_handle_t> w(wait);
   ZE_CHECK(zeCommandListAppendMemoryCopy(list_, dst, src, bytes, signal, (uint32_t)w.size(),
                                          w.empty() ? nullptr : w.data()));
@@ -465,6 +487,7 @@ void List::copy(void *dst, const void *src, size_t bytes, ze_event_handle_t sign
 }
 
 void List::copy_rows(void *dst, size_t dst_pitch, const void *src, size_t src_pitch, size_t width, size_t rows) {
+  ONE_USER;
   const ze_copy_region_t region = {0, 0, 0, (uint32_t)width, (uint32_t)rows, 1};
   ZE_CHECK(zeCommandListAppendMemoryCopyRegion(list_, dst, &region, (uint32_t)dst_pitch, 0, src, &region,
                                                (uint32_t)src_pitch, 0, nullptr, 0, nullptr));
@@ -472,34 +495,49 @@ void List::copy_rows(void *dst, size_t dst_pitch, const void *src, size_t src_pi
 }
 
 void List::fill(void *dst, const void *pattern, size_t pattern_size, size_t bytes) {
+  ONE_USER;
   ZE_CHECK(zeCommandListAppendMemoryFill(list_, dst, pattern, pattern_size, bytes, nullptr, 0, nullptr));
   if (!in_order_) barrier();
 }
 
 void List::wait(std::initializer_list<ze_event_handle_t> events) {
+  ONE_USER;
   std::vector<ze_event_handle_t> w(events);
   ZE_CHECK(zeCommandListAppendWaitOnEvents(list_, (uint32_t)w.size(), w.data()));
 }
 
-void List::signal(ze_event_handle_t e) { ZE_CHECK(zeCommandListAppendSignalEvent(list_, e)); }
-void List::reset(ze_event_handle_t e) { ZE_CHECK(zeCommandListAppendEventReset(list_, e)); }
-void List::barrier() { ZE_CHECK(zeCommandListAppendBarrier(list_, nullptr, 0, nullptr)); }
+void List::signal(ze_event_handle_t e) {
+  ONE_USER;
+  ZE_CHECK(zeCommandListAppendSignalEvent(list_, e));
+}
+void List::reset(ze_event_handle_t e) {
+  ONE_USER;
+  ZE_CHECK(zeCommandListAppendEventReset(list_, e));
+}
+void List::barrier() {
+  ONE_USER;
+  ZE_CHECK(zeCommandListAppendBarrier(list_, nullptr, 0, nullptr));
+}
 
 void List::together(bool on) {
+  ONE_USER;
   if (in_order_) return;
   if (!on && together_ && !trace_) barrier();  // while tracing, each launch already had its own
   together_ = on;
 }
 
 void List::timestamp(uint64_t *dst) {
+  ONE_USER;
   ZE_CHECK(zeCommandListAppendWriteGlobalTimestamp(list_, dst, nullptr, 0, nullptr));
 }
 
 void List::close() {
+  ONE_USER;
   if (kind_ == regular) ZE_CHECK(zeCommandListClose(list_));
 }
 
 void List::execute() {
+  ONE_USER;
   if (kind_ != regular) throw std::runtime_error("execute() on an immediate list");
   if (submitted_) ZE_CHECK(zeFenceReset(fence_));
   ZE_CHECK(zeCommandQueueExecuteCommandLists(queue_, 1, &list_, fence_));
@@ -511,6 +549,7 @@ void List::execute() {
 constexpr uint64_t kListWaitNs = 60'000'000'000ull;
 
 void List::synchronize() {
+  ONE_USER;
   if (kind_ != immediate && !submitted_) return;
   const ze_result_t r = kind_ == immediate ? zeCommandListHostSynchronize(list_, kListWaitNs)
                                            : zeFenceHostSynchronize(fence_, kListWaitNs);
@@ -524,6 +563,7 @@ void List::synchronize() {
 }
 
 void List::reset_list() {
+  ONE_USER;
   if (kind_ == regular) ZE_CHECK(zeCommandListReset(list_));
 }
 

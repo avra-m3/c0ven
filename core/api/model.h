@@ -146,8 +146,9 @@ struct NgramStats {
   uint64_t reads = 0;   // read from the SSD
 };
 
-// The calls the C ABI's code makes on an open model. They run on one thread at a time; "between steps" means no step,
-// prompt chunk or draft pass is running.
+// The calls the C ABI's code makes on an open model. They run on one thread at a time: the engine thread, or a C ABI
+// call's while the engine thread waits idle (docs/adr/0072-one-thread-uses-the-cards.md). "Between steps" means no
+// step, prompt chunk or draft pass is running.
 class Model {
  public:
   virtual ~Model() = default;

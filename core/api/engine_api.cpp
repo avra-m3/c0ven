@@ -1,7 +1,8 @@
 // The C ABI over the core (include/engine_api.h). One engine thread runs the queued step plans, in order: a plan's
 // page changes, its prompt pieces through the prompt path, then one decode step for its decode slots, batched. The
 // caller's thread only copies requests in, queues plans, takes events out, asks for checkpoints and puts the engine to
-// sleep and wakes it.
+// sleep and wakes it. It calls the model only once the engine thread is idle (drain), and hands it other model work
+// (Slot::reset_due), since the model's lists take one thread at a time (docs/adr/0072-one-thread-uses-the-cards.md).
 #include "engine_api.h"
 
 #include <algorithm>
@@ -15,6 +16,7 @@
 #include <exception>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -23,6 +25,7 @@
 
 #include "api/lookup.h"
 #include "api/model.h"
+#include "api/open_engine.h"
 #include "api/sampling.h"
 #include "api/swap_cadence.h"
 #include "cpu/features.h"
@@ -75,6 +78,9 @@ struct Slot {
   engine_slot_stats stats{};
   uint64_t last_ns = 0;         // when a plan last computed it
   bool resident = false;        // its pages count for the streamed pool's ring (kv_resident)
+  // Admit's and admit_images' work on the model, which the engine thread does before its next plan (set_up): the
+  // slot's state reset, and the model given images.
+  bool reset_due = false, images_due = false;
 };
 
 // A used slot no plan has computed for this long leaves the streamed pool's resident ring (kv_resident): the cards'
@@ -1118,6 +1124,12 @@ struct engine_ctx {
       }
       const uint64_t t_plan = now_ns();
       try {
+        std::vector<SetUp> work;
+        {
+          std::lock_guard<std::mutex> lk(mu);
+          work = take_set_up();
+        }
+        set_up(work);
         std::vector<std::pair<uint32_t, uint32_t>> drops;
         const uint32_t resident = kv_resident(plan, pages, t_plan, drops);
         for (auto [s, n] : drops) model->kvs_drop(s, n);
@@ -1183,7 +1195,8 @@ struct engine_ctx {
         return;
       }
       if (cv.wait_for(lk, kIdleStep, [&] { return stop || !plans.empty(); })) return;
-      if (std::chrono::steady_clock::now() - last < kIdleAfter || !model->swaps_ready()) continue;
+      // A sleep may have come while it waited: the loop's top then waits for the wake.
+      if (asleep || std::chrono::steady_clock::now() - last < kIdleAfter || !model->swaps_ready()) continue;
       if (ran && model->swaps_settled()) {
         idle_due = false;
         continue;
@@ -1227,6 +1240,38 @@ struct engine_ctx {
     idle_cv.wait(lk, [&] { return plans.empty() && !running; });
   }
 
+  // A slot's work on the model that admit and admit_images hand over (Slot::reset_due, images_due).
+  struct SetUp {
+    uint32_t slot;
+    bool reset;
+    std::optional<std::vector<SlotImage>> images;
+  };
+
+  // Takes the work due for slot `only`, or for every admitted slot. Under mu.
+  std::vector<SetUp> take_set_up(uint32_t only = UINT32_MAX) {
+    std::vector<SetUp> work;
+    for (uint32_t s = 0; s < slots.size(); s++) {
+      Slot &sl = slots[s];
+      if ((only != UINT32_MAX && s != only) || !sl.used || !(sl.reset_due || sl.images_due)) continue;
+      work.push_back({s, sl.reset_due, sl.images_due ? std::optional(sl.images) : std::nullopt});
+      sl.reset_due = sl.images_due = false;
+    }
+    return work;
+  }
+
+  // Does it on the model: the state reset first, as it forgets the images. On the engine thread before a plan, not
+  // under mu; or under mu by a call that has drained, so the engine thread is idle.
+  void set_up(const std::vector<SetUp> &work) {
+    for (const SetUp &w : work) {
+      if (w.reset) model->reset_slot(w.slot);
+      if (!w.images) continue;
+      std::vector<engine::Image> mi;
+      for (const SlotImage &im : *w.images)
+        mi.push_back({im.first, im.frames, im.grid_h, im.grid_w, im.pixels->data()});
+      model->set_images(w.slot, mi.data(), (uint32_t)mi.size());
+    }
+  }
+
   // Whether the engine sleeps, with the error saying so. Under mu.
   bool sleeping() {
     if (asleep) error = "the engine is asleep";
@@ -1249,9 +1294,9 @@ struct engine_ctx {
   }
 };
 
-extern "C" {
+namespace engine {
 
-engine_status engine_open(const engine_config *config, engine_info *info, engine_ctx **out) {
+engine_status open_engine(const engine_config *config, engine_info *info, engine_ctx **out, OpenModel opener) {
   if (!config || !config->model_path || !out) return ENGINE_BAD_ARGUMENT;
   try {
     if (const std::string missing = engine::missing_cpu_features(ENGINE_CPU_FEATURES); !missing.empty())
@@ -1276,7 +1321,7 @@ engine_status engine_open(const engine_config *config, engine_info *info, engine
     opt.ngram_in_ram = (config->flags & ENGINE_CONFIG_NGRAM_RAM) != 0;
     opt.hugetlb_arena = (config->flags & ENGINE_CONFIG_HUGETLB) != 0;
     auto e = std::make_unique<engine_ctx>();
-    e->model = engine::open_model(config->model_path, opt);
+    e->model = opener(config->model_path, opt);
     e->image_shape = e->model->image_shape();
     const auto &li = e->model->info();
     e->info.api_version = ENGINE_API_VERSION;
@@ -1344,6 +1389,14 @@ engine_status engine_open(const engine_config *config, engine_info *info, engine
   }
 }
 
+}  // namespace engine
+
+extern "C" {
+
+engine_status engine_open(const engine_config *config, engine_info *info, engine_ctx **out) {
+  return engine::open_engine(config, info, out, engine::open_model);
+}
+
 engine_status engine_admit(engine_ctx *e, uint32_t slot, const engine_settings *settings, const int32_t *prompt,
                            uint32_t n_prompt) {
   if (!e || !settings || (!prompt && n_prompt) || n_prompt == 0) return ENGINE_BAD_ARGUMENT;
@@ -1355,15 +1408,9 @@ engine_status engine_admit(engine_ctx *e, uint32_t slot, const engine_settings *
   if (e->sleeping()) return ENGINE_ERROR;
   Slot &sl = e->slots[slot];
   if (sl.used) return ENGINE_BUSY;
-  try {
-    // Nothing runs on the slot: the engine thread skips unused slots, and the slot was free.
-    e->model->reset_slot(slot);
-  } catch (const std::exception &ex) {
-    e->error = ex.what();
-    return ENGINE_ERROR;
-  }
   sl = Slot{};
   sl.used = true;
+  sl.reset_due = true;  // the engine thread may be running a plan on the lists the reset uses
   sl.settings = *settings;
   e->mapped[slot] = e->queued_mapped[slot] = 0;
   sl.prompt.assign(prompt, prompt + n_prompt);
@@ -1382,7 +1429,6 @@ engine_status engine_admit_images(engine_ctx *e, uint32_t slot, const engine_ima
     return ENGINE_BAD_ARGUMENT;
   }
   std::vector<SlotImage> ims;
-  std::vector<engine::Image> mi;
   const engine::ImageShape &sh = e->image_shape;
   uint32_t end = 0;
   for (uint32_t i = 0; i < n; i++) {
@@ -1404,16 +1450,10 @@ engine_status engine_admit_images(engine_ctx *e, uint32_t slot, const engine_ima
     auto px = std::make_shared<const std::vector<uint8_t>>(im.pixels,
                                                            im.pixels + engine::image_bytes(sh, tokens, im.frames));
     ims.push_back({im.first, im.grid_h, im.grid_w, im.frames, px});
-    mi.push_back({im.first, im.frames, im.grid_h, im.grid_w, px->data()});
   }
-  try {
-    // Nothing runs on the slot: it has read nothing yet, and the engine thread reads a slot's images only for it.
-    e->model->set_images(slot, mi.data(), n);
-  } catch (const std::exception &ex) {
-    e->error = ex.what();
-    return ENGINE_BAD_ARGUMENT;
-  }
+  // The checks above are all that the model's set_images makes, which runs on the engine thread (set_up).
   sl.images = std::move(ims);
+  sl.images_due = true;
   return ENGINE_OK;
 }
 
@@ -1491,6 +1531,7 @@ engine_status engine_checkpoint(engine_ctx *e, uint32_t slot, uint32_t id) {
   if (!sl.used) return ENGINE_BAD_ARGUMENT;
   Checkpoint &ck = e->checkpoints[id];
   try {
+    e->set_up(e->take_set_up(slot));  // drained: the engine thread is idle
     e->model->save_slot(slot, ck.data);
   } catch (const std::exception &ex) {
     e->error = ex.what();
@@ -1518,6 +1559,7 @@ engine_status engine_restore(engine_ctx *e, uint32_t slot, uint32_t id) {
     return ENGINE_BAD_ARGUMENT;
   if (images_before(sl.images, (uint32_t)ck.tokens.size()) != ck.images) return ENGINE_BAD_ARGUMENT;
   try {
+    e->set_up(e->take_set_up(slot));  // drained: the engine thread is idle
     e->model->load_slot(slot, ck.data);
   } catch (const std::exception &ex) {
     e->error = ex.what();
@@ -1620,7 +1662,14 @@ engine_status engine_wake(engine_ctx *e, engine_info *info) {
   return ENGINE_OK;
 }
 
-const char *engine_last_error(const engine_ctx *e) { return e ? e->error.c_str() : open_error.c_str(); }
+// A copy of the error, taken under mu, as the engine thread sets it when a plan fails.
+const char *engine_last_error(const engine_ctx *e) {
+  if (!e) return open_error.c_str();
+  thread_local std::string copy;
+  std::lock_guard<std::mutex> lk(const_cast<engine_ctx *>(e)->mu);
+  copy = e->error;
+  return copy.c_str();
+}
 
 void engine_close(engine_ctx *e) {
   if (!e) return;
