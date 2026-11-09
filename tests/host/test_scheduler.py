@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import itertools
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 
 import pytest
@@ -11,6 +12,7 @@ import protocol
 from engine.api.interface import PROMPT_RUNS, Event, EventKind, OpenConfig, StepPlan
 from engine.api.mock import MockEngine, Script
 from engine.scheduler import CheckpointRule, Phase, Scheduler, SchedulerOptions, every_16k
+from engine.seqstate.manager import pages_for
 from tests.helpers import facts_of, open_config
 
 
@@ -518,3 +520,127 @@ def test_decode_never_runs_out_of_pages(lookahead: int):
     run.until_idle()
     assert run.errors() == []
     assert len(run.tokens(1)) == 200
+
+
+def history(tokens: Sequence[int]) -> int:
+    """A token from the position and the tokens before it, never EOS: a resumed request that lost or doubled a token
+    writes different tokens."""
+    return 3 + (len(tokens) * 31 + tokens[-1] * 7 + tokens[-2]) % 900
+
+
+def test_admission_reserves_the_prompt_and_a_block():
+    o = SchedulerOptions()
+    run = make(open_config(slots=1, context=65536))
+    run.add(1, prompt(1000), 60_000)
+    run.tick()
+    seq = run.scheduler.state.sequences[0]
+    assert len(seq.pages) + sum(seq.reserved) == pages_for(1000 + o.decode_lookahead + o.decode_batch)
+
+
+def test_a_writing_slot_reserves_a_block_at_a_time():
+    o = SchedulerOptions()
+    run = make(open_config(slots=1, context=8192), script=history)
+    run.add(1, prompt(100), 3000)
+    held: list[int] = []
+    while not run.scheduler.idle:
+        run.tick()
+        if (seq := run.scheduler.state.sequences.get(0)) is not None:
+            r = run.scheduler.by_slot[0]
+            held.append(len(seq.pages) + sum(seq.reserved))
+            assert held[-1] <= pages_for(len(r.prompt) + r.generated + 2 * (o.decode_lookahead + o.decode_batch))
+    assert run.errors() == []
+    assert len(run.tokens(1)) == 3000
+    assert held[-1] == pages_for(3100)
+
+
+def test_a_full_pool_evicts_checkpoints_before_it_stops_a_slot():
+    run = make(open_config(slots=2, context=2048, pages=512, checkpoints=4), rule=marks_at(1200), script=history)
+    run.add(1, prompt(1300, start=50), 1)
+    run.until_idle()
+    assert len(run.scheduler.state.checkpoints) == 1, "the first conversation's checkpoint holds 300 pages"
+    run.add(2, prompt(200), 1500)
+    run.until_idle()
+    assert run.errors() == []
+    assert len(run.tokens(2)) == 1500
+    assert len(run.scheduler.state.checkpoints) == 0, "evicted for the writer's pages"
+    assert all(not p.stop for p in run.engine.plans), "no slot was preempted"
+
+
+def test_writers_that_outgrow_the_pool_all_finish_with_their_own_tokens():
+    small = SchedulerOptions(decode_lookahead=8, decode_batch=32)  # three admissions of 80 cells fit
+    alone = make(open_config(slots=1, context=512), options=small, script=history)
+    for rid in range(3):
+        alone.add(rid, prompt(40, start=100 * rid + 3), 400)
+        alone.until_idle()
+    run = make(open_config(slots=3, context=512, pages=128), options=small, script=history)
+    for rid in range(3):
+        run.add(rid, prompt(40, start=100 * rid + 3), 400)
+    run.until_idle()
+    assert run.errors() == []
+    assert any(p.stop for p in run.engine.plans), "three writers of 440 cells do not fit 512 cells"
+    for rid in range(3):
+        assert run.tokens(rid) == alone.tokens(rid), "a preempted request's tokens are neither lost nor sent twice"
+        d = run.done(rid)
+        assert (d.generated, d.prompt, d.finish) == (400, 40, protocol.Finish.LENGTH)
+    assert run.scheduler.state.pool.free == run.scheduler.state.pool.size
+
+
+def test_a_preempted_request_cancelled_while_it_waits_ends_with_its_tokens():
+    small = SchedulerOptions(decode_lookahead=8, decode_batch=32)
+    run = make(open_config(slots=2, context=512, pages=128), options=small, script=history)
+    run.add(1, prompt(40), 400)
+    run.add(2, prompt(40, start=300), 400)
+    for _ in range(10_000):
+        if any(r.phase is Phase.WAITING and r.written for r in run.scheduler.by_rid.values()):
+            break
+        run.tick()
+    (r,) = [r for r in run.scheduler.by_rid.values() if r.phase is Phase.WAITING]
+    assert run.scheduler.refuse_waiting("asleep") == [], "it is admitted, waiting again"
+    run.events += run.scheduler.cancel(r.rid)
+    run.until_idle()
+    d = run.done(r.rid)
+    assert (d.generated, d.prompt, d.finish) == (len(run.tokens(r.rid)), 40, protocol.Finish.CANCEL)
+
+
+def test_the_deployed_pool_admits_three_long_conversations_with_large_max_new():
+    """Three slots of 262,144 tokens and a 589,824-cell pool: admission counts the prompts, not max_new."""
+    context = 262_144
+    run = make(open_config(slots=3, context=context, pages=589_824 // 4, checkpoints=32))
+    for rid, n in enumerate((68_000, 103_000, 138_000, 154_000)):
+        run.add(rid, prompt(n, start=rid + 3), min(131_072, context - n))
+    run.tick()
+    phases = [run.scheduler.by_rid[rid].phase for rid in range(4)]
+    assert phases == [Phase.PREFILL, Phase.PREFILL, Phase.PREFILL, Phase.WAITING]
+
+
+@pytest.mark.parametrize("writers", [1, 2])
+def test_a_reading_slot_stopped_for_a_stalled_writer_does_not_take_its_pages_back(writers: int):
+    """The stalled writer has first claim on the pages the stopped reader frees. Admitting the reader into them again
+    would stop it again on every tick."""
+    small = SchedulerOptions(decode_lookahead=8, decode_batch=32, chunk_rows=4)
+    reqs = {rid: (prompt(40, start=300 * rid + 3), 400) for rid in range(writers)}
+    reqs[9] = (prompt(150, start=603), 100)
+    alone = make(open_config(slots=1, context=512), options=small, script=history)
+    for rid, (p, n) in reqs.items():
+        alone.add(rid, p, n)
+        alone.until_idle()
+    run = make(open_config(slots=3, context=512, pages=128), options=small, script=history)
+    for rid in range(writers):
+        run.add(rid, *reqs[rid])
+    while run.scheduler.state.pool.available * 4 >= 230:  # the reader's 190 cells fit, and little more
+        run.tick()
+    run.add(9, *reqs[9])
+    run.tick()
+    assert run.scheduler.by_rid[9].phase is Phase.PREFILL, "admitted into the last spare pages"
+    read_stopped = False
+    for _ in range(3000):
+        if run.scheduler.idle:
+            break
+        r = run.scheduler.by_rid.get(9)
+        read_stopped |= r is not None and r.preempting and r.phase is Phase.PREFILL
+        run.tick()
+    assert run.scheduler.idle, "the scheduler did not finish"
+    assert read_stopped, "the reading slot was the one stopped"
+    assert run.errors() == []
+    for rid in reqs:
+        assert run.tokens(rid) == alone.tokens(rid)
