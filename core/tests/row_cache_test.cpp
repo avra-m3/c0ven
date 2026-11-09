@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <initializer_list>
 #include <vector>
 
 #include "models/qwen4exp/row_cache.h"
@@ -33,7 +34,7 @@ int main() {
   c.init(reinterpret_cast<uint8_t *>(mem.data()), kSlots, kRow);
   CHECK(c.slots() == kSlots, "slots");
   uint8_t row[kRow];
-  for (uint64_t id : {0ull, 7ull, kRows - 1, (1ull << 40) + 3}) {
+  for (uint64_t id : std::initializer_list<uint64_t>{0, 7, kRows - 1, (1ull << 40) + 3}) {
     CHECK(c.find(id) == nullptr, "an empty cache holds no row");
     std::memset(row, (int)(id & 0xff) ^ 0x5a, kRow);
     c.put(id, row);
