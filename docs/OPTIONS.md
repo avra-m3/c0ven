@@ -24,11 +24,12 @@ The arguments after the image name in `docker run` are the server's options. The
 | `--version` | | Print the version and exit. |
 
 `--kv-tokens` sets the KV cache's size apart from `--slots`. With `--slots 4 --kv-tokens 512k`, four requests run
-at once, and their prompts and answers together may hold up to 524,288 tokens. A request reserves its prompt plus
-`max_tokens`, cut to the rest of the context, when it starts, and waits while the cache cannot hold that. A request without `max_tokens` reserves the
-rest of the context, so with a shared cache set `--default-max-tokens` too: with `--kv-tokens 512k
---default-max-tokens 32k`, short requests without `max_tokens` run four at once. One that reaches the limit ends with
-the finish reason `length`.
+at once, and their prompts and answers together may hold up to 524,288 tokens. A request holds room for its prompt
+when it starts, and for its answer as it writes it, so a large `max_tokens` holds nothing until it is written. A
+request waits while the cache cannot hold its prompt. When the running answers outgrow the cache, the newest request
+pauses and starts again from where it was once there is room, rereading its prompt and the tokens it has written
+([CACHING.md](CACHING.md#the-shared-room-for-the-token-cache)). One that reaches `max_tokens`, or
+`--default-max-tokens` without it, ends with the finish reason `length`.
 
 The KV cache streams: each request keeps up to 32,768 tokens of K and V in VRAM, the cells its steps read, and the
 whole of it in host memory, and the VRAM the rest would take caches experts. The host copy is
