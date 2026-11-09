@@ -1,5 +1,5 @@
 // The whole deepseek41 forward pass on the CPU, one token at a time, from ref_ops.h and ggml's dot products: what the
-// card's layers are compared with, and what is itself compared with upstream llama.cpp (ADR-0062 items 6 and 11). It
+// card's layers are compared with, and what is itself compared with upstream llama.cpp (ADR-0074 items 6 and 11). It
 // reads the model through GgufModel's table with O_DIRECT, so nothing of the file enters the page cache: the dense
 // tensors once into anonymous memory (5.31 GiB for GSQ-RCO's IQ1_M file), a token's experts and Engram rows as needed.
 // Text tokens only: no image spans.

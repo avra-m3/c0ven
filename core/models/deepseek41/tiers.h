@@ -1,4 +1,4 @@
-// deepseek41's experts off the cards (ADR-0062 items 3-5): the anonymous arena, the O_DIRECT reader and its staging
+// deepseek41's experts off the cards (ADR-0074 items 3-5): the anonymous arena, the O_DIRECT reader and its staging
 // ring, the job that sums a layer's misses on the CPU, and the thread that bounds a list's wait on a host event.
 #pragma once
 
@@ -22,7 +22,7 @@ namespace engine::deepseek41 {
 
 constexpr uint64_t kArenaPieceBytes = 1ull << 30;
 constexpr uint64_t kHugeBytes = 2ull << 20;
-constexpr uint16_t kPartABlocks = 5, kPartBBlocks = 4;  // a down row's blocks in each card's part (ADR-0062 item 2)
+constexpr uint16_t kPartABlocks = 5, kPartBBlocks = 4;  // a down row's blocks in each card's part (ADR-0074 item 2)
 constexpr std::chrono::seconds kHostWaitLimit{10};      // the longest the host sleeps on a read or a job
 
 // Where a matrix of expert 0 starts: a shard's index and the byte in it.
@@ -157,7 +157,7 @@ class SsdReader {
   DirectReader &direct() { return reader_; }
   uint64_t rounds() const { return rounds_; }        // rounds started
   uint64_t pool_runs() const { return pool_runs_; }  // the pool's runs, after wait: one a round
-  // Reads past 1 s, counted and logged as errors (ADR-0062 item 5's bound is near); the round still lands.
+  // Reads past 1 s, counted and logged as errors (ADR-0074 item 5's bound is near); the round still lands.
   uint64_t slow_reads() const { return slow_reads_; }
   // Called on the reading thread before each piece's read. For tests.
   void set_read_hook(std::function<void()> hook) { read_hook_ = std::move(hook); }
@@ -225,7 +225,7 @@ class MissJobs {
   MissJobs &operator=(const MissJobs &) = delete;
 
   // Throws on a bad record, a read that failed or passed the reader's wait_limit, or a ring that cannot hold the round;
-  // the flag is then not raised, the card's bounded wait gives up and the step fails (ADR-0062 item 5).
+  // the flag is then not raised, the card's bounded wait gives up and the step fails (ADR-0074 item 5).
   MissCounts run_layer(const MissAsk &ask);
   void submit(const MissAsk &ask);  // takes no lock longer than a queue push, never reads
   // Sleeps until every submitted job is done. Throws the first failure since the last wait, naming its layer. Past
@@ -277,7 +277,7 @@ class DeadlineEvent {
   virtual void signal() = 0;   // lets the list go on; may be called after the host signalled it too
 };
 
-// The host deadline thread of ADR-0062 item 5. It holds events; limit after a held event's list reaches it, it sets
+// The host deadline thread of ADR-0074 item 5. It holds events; limit after a held event's list reaches it, it sets
 // the event's stuck flag and then signals it, so the list goes on and the step fails cleanly. Sleeps while it holds
 // nothing and polls a millisecond apart otherwise.
 class HostDeadlines {

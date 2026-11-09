@@ -738,7 +738,7 @@ int main(int argc, char **argv) {
   EXPECT(argc == 2, "usage: ds41_tiers_test <tensors.tsv>");
   namespace fs = std::filesystem;
   check_memlock();
-  // The sandbox's memory lock is too small for the arena.
+  // A container's default memory lock is too small for the arena.
   setenv("ENGINE_UNLOCKED_ARENA", "1", 0);
   check_widest_ring(argv[1]);
   check_deadlines();

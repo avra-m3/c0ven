@@ -31,7 +31,7 @@ struct Mat {
   size_t row_bytes = 0;
 };
 
-// The value a f16 cache holds for x (ADR-0062 item 11): nearest, as ggml's cast.
+// The value a f16 cache holds for x (ADR-0074 item 11): nearest, as ggml's cast.
 float round_f16(float x) { return ggml_fp16_to_fp32(ggml_fp32_to_fp16(x)); }
 
 std::string blk(uint32_t il, const char *name) { return "blk." + std::to_string(il) + "." + name; }
