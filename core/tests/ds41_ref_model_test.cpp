@@ -3,9 +3,6 @@
 // widths with a small vocabulary and Engram table, 26 layers (each kind of layer) and random weights in the file's
 // types. Layers share their large tensors' bytes, and experts past the 8th are holes the router's bias never picks.
 // It checks the order of the steps, the caches and what layers share; only the real file can check the numbers.
-//
-//   ds41_ref_model_test --dump <file> --model <first shard>  compares RefModel with upstream's values in a dump, as
-//   reference/deepseek41/refgen.cpp writes them, and prints each step's worst relative RMS. Fails above 1e-3.
 #include <fcntl.h>
 #include <unistd.h>
 
@@ -13,9 +10,11 @@
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <functional>
 #include <limits>
 #include <map>
 #include <random>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -604,47 +603,216 @@ void compare_with_walk(const Model &m, uint32_t T, const std::vector<int32_t> &t
   EXPECT(threw, "a token outside the vocabulary");
 }
 
+constexpr double kDumpBound = 1e-3;  // relative RMS at which RefModel fails against upstream's dump
+
+struct DumpResult {
+  uint32_t positions = 0;
+  uint64_t compared = 0, problems = 0;
+  std::map<std::string, double> worst;  // relative RMS by step; NaN stays NaN
+  std::vector<std::string> notes;       // the first problems
+  bool pass() const { return positions > 0 && compared > 0 && problems == 0; }
+};
+
+// Adds RefModel's choices to a position's values under upstream's names: each layer's routes, each index source's top-k.
+void add_choices(const RefModel &model, Values &got) {
+  for (uint32_t il = 0; il < model.layers(); il++) {
+    const int li = (int)il;
+    const ref::Route &route = model.route(il);
+    got[{"ffn_moe_topk", li}].assign(route.id, route.id + D41_USED);
+    const std::vector<uint32_t> &tk = model.top_k(il);
+    if (D41_IDX_SRC(li) == li && !tk.empty()) got[{"idx_top_k", li}].assign(tk.begin(), tk.end());
+  }
+}
+
 // Each record: u32 magic, u32 position, i32 token, i32 layer, u32 name bytes, u32 values; the name, then f32 values. A
-// tensor's name is upstream's, layer -1 outside a layer. Returns the worst relative RMS over the steps, printing each.
-double compare_dump(const std::string &dump, const std::string &model_path) {
+// tensor's name is upstream's, layer -1 outside a layer. Every record must match a value of RefModel's at its position
+// and every value of RefModel's must have a record, with equal sizes, except that idx_score and idx_top_k cover
+// upstream's whole cache.
+DumpResult compare_dump(const std::string &dump, RefModel &model) {
   FILE *f = std::fopen(dump.c_str(), "rb");
   EXPECT(f, "cannot read %s", dump.c_str());
-  RefModel model(model_path);
-  std::map<std::string, double> worst;
-  uint32_t pos = 0xffffffffu;
+  DumpResult r;
+  uint32_t pos = 0xffffffffu, head[6];
   Values got;
-  uint32_t head[6];
-  while (std::fread(head, sizeof head, 1, f) == 1) {
-    EXPECT(head[0] == 0x44343144u, "%s: not a record", dump.c_str());
+  std::set<std::pair<std::string, int>> seen;
+  const auto problem = [&](const std::string &what) {
+    r.problems++;
+    if (r.notes.size() < 20) r.notes.push_back("position " + std::to_string(pos) + ": " + what);
+  };
+  const auto at = [](const std::string &name, int layer) { return name + " at layer " + std::to_string(layer); };
+  const auto end_position = [&] {
+    for (const auto &entry : got)
+      if (!seen.count(entry.first)) problem("the dump has no " + at(entry.first.first, entry.first.second));
+  };
+  for (;;) {
+    const size_t head_bytes = std::fread(head, 1, sizeof head, f);
+    if (head_bytes == 0) break;
+    EXPECT(head_bytes == sizeof head && head[0] == 0x44343144u, "%s: not a record", dump.c_str());
     if (head[1] != pos) {
+      end_position();
       if (head[1] == 0) model.reset();
       EXPECT(head[1] == model.position(), "dump at position %u, the model at %u", head[1], model.position());
       got.clear();
+      seen.clear();
       model.decode((int32_t)head[2], nullptr, capture(got));
+      add_choices(model, got);
       pos = head[1];
+      r.positions++;
     }
     std::string name(head[4], '\0');
     std::vector<float> v(head[5]);
     EXPECT(std::fread(name.data(), 1, head[4], f) == head[4], "%s: short", dump.c_str());
     EXPECT(std::fread(v.data(), 4, head[5], f) == head[5], "%s: short", dump.c_str());
-    const auto it = got.find({name, (int32_t)head[3]});
-    if (it == got.end()) continue;
-    // Upstream's index score covers its whole cache, the rows past the visible ones at -inf.
-    const size_t n = std::min(v.size(), it->second.size());
-    double &w = worst[name];
-    w = std::max(w, rel_rms(it->second.data(), v.data(), n));
+    const int layer = (int32_t)head[3];
+    const std::pair<std::string, int> key{name, layer};
+    seen.insert(key);
+    const auto it = got.find(key);
+    const auto score = got.find({"idx_score", layer});
+    const size_t visible = score == got.end() ? 0 : score->second.size();
+
+    if (name == "ffn_moe_topk" || name == "idx_top_k") {
+      // Upstream's order is not fixed, and its top-k takes rows past the visible ones when too few are visible. A row a
+      // candidate filter left out ties with others at -inf, so a dump longer than the top-k could pick another.
+      if (name == "idx_top_k") v.erase(std::remove_if(v.begin(), v.end(), [&](float id) { return id >= (float)visible; }), v.end());
+      std::vector<float> want;
+      if (it != got.end()) want = it->second;
+      std::sort(v.begin(), v.end());
+      std::sort(want.begin(), want.end());
+      if (v != want) problem("other ids in " + at(name, layer));
+      r.compared++;
+      continue;
+    }
+    if (name == "idx_score") {
+      // RefModel's scores are the visible rows; upstream's go on to the end of its cache at -inf.
+      if (v.size() < visible) {
+        problem(std::to_string(v.size()) + " rows in " + at(name, layer) + ", " + std::to_string(visible) + " visible");
+        continue;
+      }
+      const float inf = std::numeric_limits<float>::infinity();
+      if (!std::all_of(v.begin() + (std::ptrdiff_t)visible, v.end(), [&](float x) { return x == -inf; }))
+        problem("rows past the visible ones are not -inf in " + at(name, layer));
+      if (it == got.end()) continue;
+      v.resize(visible);
+    }
+    if (it == got.end()) {
+      problem("RefModel gave no " + at(name, layer));
+    } else if (v.size() != it->second.size()) {
+      problem(std::to_string(v.size()) + " values in " + at(name, layer) + ", RefModel " + std::to_string(it->second.size()));
+    } else {
+      const double e = rel_rms(it->second.data(), v.data(), v.size());
+      double &w = r.worst[name];
+      if (std::isnan(e) || e > w) w = e;
+      if (!(e <= kDumpBound)) problem(at(name, layer) + " differs by " + std::to_string(e));
+      r.compared++;
+    }
+  }
+  end_position();
+  std::fclose(f);
+  return r;
+}
+
+struct Record {
+  uint32_t pos;
+  int32_t token;
+  std::string name;
+  int layer;
+  std::vector<float> v;
+};
+
+// T positions of RefModel's own values as upstream's dump holds them, four cache rows past the visible ones.
+std::vector<Record> own_dump(RefModel &model, const std::vector<int32_t> &tokens, uint32_t T) {
+  constexpr uint32_t pad = 4;
+  model.reset();
+  std::vector<Record> rs;
+  for (uint32_t t = 0; t < T; t++) {
+    std::vector<Record> at;
+    model.decode(tokens[t], nullptr, [&](const char *name, int layer, const float *v, size_t n) {
+      at.push_back({t, tokens[t], name, layer, std::vector<float>(v, v + n)});
+    });
+    for (uint32_t il = 0; il < model.layers(); il++) {
+      const int li = (int)il;
+      const ref::Route &route = model.route(il);
+      at.push_back({t, tokens[t], "ffn_moe_topk", li, std::vector<float>(route.id, route.id + D41_USED)});
+      if (D41_RATIO(li) == 0 || D41_IDX_SRC(li) != li) continue;
+      const std::vector<uint32_t> &tk = model.top_k(il);
+      const auto n = (uint32_t)tk.size();
+      const auto scored = std::find_if(at.begin(), at.end(), [&](const Record &r) { return r.name == "idx_score" && r.layer == li; });
+      if (scored == at.end()) at.push_back({t, tokens[t], "idx_score", li, {}});
+      Record &score = scored == at.end() ? at.back() : *scored;
+      EXPECT(score.v.size() == n, "the top-k holds every visible row of a short dump");
+      score.v.resize(n + pad, -std::numeric_limits<float>::infinity());
+      std::vector<float> ids(tk.rbegin(), tk.rend());
+      for (uint32_t i = 0; i < pad; i++) ids.push_back((float)(n + i));
+      at.push_back({t, tokens[t], "idx_top_k", li, std::move(ids)});
+    }
+    rs.insert(rs.end(), at.begin(), at.end());
+  }
+  return rs;
+}
+
+void write_dump(const std::string &path, const std::vector<Record> &rs) {
+  FILE *f = std::fopen(path.c_str(), "wb");
+  EXPECT(f, "cannot write %s", path.c_str());
+  for (const Record &r : rs) {
+    const uint32_t head[6] = {0x44343144u, r.pos, (uint32_t)r.token, (uint32_t)r.layer, (uint32_t)r.name.size(), (uint32_t)r.v.size()};
+    std::fwrite(head, sizeof head, 1, f);
+    std::fwrite(r.name.data(), 1, r.name.size(), f);
+    std::fwrite(r.v.data(), 4, r.v.size(), f);
   }
   std::fclose(f);
-  double all = 0;
-  for (const auto &[name, w] : worst) {
-    std::printf("%-20s worst relative RMS %.2e\n", name.c_str(), w);
-    all = std::max(all, w);
-  }
-  return all;
+}
+
+// RefModel passes against its own dump, and fails against that dump with any one thing wrong in it.
+void check_compare_dump(const Model &m, const std::vector<int32_t> &tokens, const std::string &path) {
+  RefModel model(m.path, RefOptions{8, 1024});
+  const std::vector<Record> good = own_dump(model, tokens, 5);
+  write_dump(path, good);
+  const DumpResult own = compare_dump(path, model);
+  for (const std::string &note : own.notes) std::fprintf(stderr, "%s\n", note.c_str());
+  EXPECT(own.pass() && own.positions == 5 && own.compared > 0, "RefModel against its own dump");
+  for (const auto &[name, w] : own.worst) EXPECT(w == 0.0, "%s against its own dump: %g", name.c_str(), w);
+
+  using Rs = std::vector<Record>;
+  const auto one = [](Rs &rs, const char *name, int layer, uint32_t pos) -> Record & {
+    for (Record &r : rs)
+      if (r.name == name && r.layer == layer && r.pos == pos) return r;
+    EXPECT(false, "no %s at layer %d, position %u in the dump", name, layer, pos);
+    std::exit(1);
+  };
+  const auto drop = [](Rs &rs, const auto &pred) { rs.erase(std::remove_if(rs.begin(), rs.end(), pred), rs.end()); };
+  const auto fails = [&](const char *note, const std::function<void(Rs &)> &edit) {
+    Rs rs = good;
+    edit(rs);
+    write_dump(path, rs);
+    const DumpResult r = compare_dump(path, model);
+    EXPECT(!r.pass(), "a dump with %s passed", note);
+    EXPECT(r.positions == 0 || r.notes.at(0).find(note) != std::string::npos, "expected %s, got: %s", note, r.notes.at(0).c_str());
+  };
+  const float nan = std::numeric_limits<float>::quiet_NaN();
+
+  fails("no records", [&](Rs &rs) { rs.clear(); });
+  fails("the dump has no q at", [&](Rs &rs) { drop(rs, [](const Record &r) { return r.name == "q"; }); });
+  fails("the dump has no l_out at layer 2", [&](Rs &rs) { drop(rs, [](const Record &r) { return r.name == "l_out" && r.layer == 2 && r.pos == 1; }); });
+  fails("RefModel gave no renamed", [&](Rs &rs) { one(rs, "kv", 0, 0).name = "renamed"; });
+  fails("RefModel gave no attn_out at layer 9", [&](Rs &rs) { one(rs, "attn_out", 0, 0).layer = 9; });
+  fails("attn_out at layer 2 differs by nan", [&](Rs &rs) { one(rs, "attn_out", 2, 1).v[3] = nan; });
+  fails("result_output at layer -1 differs by nan", [&](Rs &rs) { one(rs, "result_output", -1, 0).v[0] = nan; });
+  fails("hc_init at layer -1 differs", [&](Rs &rs) { for (float &x : one(rs, "hc_init", -1, 2).v) x *= 1.01f; });
+  fails("values in ffn_out at layer 1", [&](Rs &rs) { one(rs, "ffn_out", 1, 0).v.pop_back(); });
+  fails("values in ffn_out at layer 1", [&](Rs &rs) { one(rs, "ffn_out", 1, 0).v.push_back(0.0f); });
+  fails("visible", [&](Rs &rs) { one(rs, "idx_score", 2, 4).v.resize(1); });
+  fails("are not -inf", [&](Rs &rs) { one(rs, "idx_score", 2, 4).v.back() = 0.0f; });
+  fails("are not -inf", [&](Rs &rs) { one(rs, "idx_score", 2, 0).v[0] = 0.0f; });
+  fails("other ids in ffn_moe_topk at layer 0", [&](Rs &rs) { one(rs, "ffn_moe_topk", 0, 3).v[0] = (float)(kLive + 1); });
+  fails("other ids in idx_top_k at layer 2", [&](Rs &rs) { one(rs, "idx_top_k", 2, 4).v[0] = 1000.0f; });
+  fails("the dump has no idx_top_k at layer 2", [&](Rs &rs) { drop(rs, [](const Record &r) { return r.name == "idx_top_k" && r.pos == 4; }); });
+  std::printf("compare_dump: %llu records of RefModel's own dump exact, 16 wrong dumps refused\n", (unsigned long long)own.compared);
 }
 
 }  // namespace
 
+//   ds41_ref_model_test --dump <file> --model <first shard>  compares RefModel with upstream's values in a dump, as
+//   reference/deepseek41/refgen.cpp writes them, and prints each step's worst relative RMS. compare_dump says when it fails.
 int main(int argc, char **argv) {
 #define NEEDS(f) \
   if (!__builtin_cpu_supports(f)) return test::skip("the CPU lacks " f ", which the ggml build uses")
@@ -659,8 +827,12 @@ int main(int argc, char **argv) {
 #undef NEEDS
   ggml_cpu_init();  // product below reads its f16 table
   if (argc == 5 && std::string(argv[1]) == "--dump" && std::string(argv[3]) == "--model") {
-    const double w = compare_dump(argv[2], argv[4]);
-    return w <= 1e-3 ? 0 : 1;
+    RefModel model(argv[4]);
+    const DumpResult r = compare_dump(argv[2], model);
+    for (const auto &[name, w] : r.worst) std::printf("%-20s worst relative RMS %.2e\n", name.c_str(), w);
+    std::printf("%u positions, %llu records compared, %llu problems\n", r.positions, (unsigned long long)r.compared, (unsigned long long)r.problems);
+    for (const std::string &note : r.notes) std::fprintf(stderr, "%s\n", note.c_str());
+    return r.pass() ? 0 : 1;
   }
 
   namespace fs = std::filesystem;
@@ -692,23 +864,7 @@ int main(int argc, char **argv) {
   write_model(m, (dir / "tiny3.gguf").string());
   compare_with_walk(m, D41_WIN + 7, tokens);
 
-  // The dump comparison, on a dump of RefModel itself.
-  const std::string dump = (dir / "dump.bin").string();
-  {
-    FILE *f = std::fopen(dump.c_str(), "wb");
-    EXPECT(f, "cannot write %s", dump.c_str());
-    RefModel model(m.path, RefOptions{8, 1024});
-    for (uint32_t t = 0; t < 3; t++) {
-      model.decode(tokens[t], nullptr, [&](const char *name, int layer, const float *v, size_t n) {
-        const uint32_t head[6] = {0x44343144u, t, (uint32_t)tokens[t], (uint32_t)layer, (uint32_t)std::strlen(name), (uint32_t)n};
-        std::fwrite(head, sizeof head, 1, f);
-        std::fwrite(name, 1, head[4], f);
-        std::fwrite(v, 4, n, f);
-      });
-    }
-    std::fclose(f);
-  }
-  EXPECT(compare_dump(dump, m.path) == 0.0, "RefModel against its own dump");
+  check_compare_dump(m, tokens, (dir / "dump.bin").string());
 
   fs::remove_all(dir);
   std::printf("ds41_ref_model_test: ok\n");
