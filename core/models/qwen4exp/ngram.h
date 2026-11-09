@@ -1,5 +1,5 @@
 // The n-gram embedding's rows (docs/spec/MODEL_IO.md, 1.2 and 1.4): the hash of a token and the two before it, and
-// the 16 rows of the table it names. The table stays on the SSD (ADR-0015), read with O_DIRECT 4 KiB reads past the
+// the kNgramHeads rows of the table it names. The table stays on the SSD (ADR-0015), read with O_DIRECT 4 KiB reads past the
 // page cache by a pool of reader threads, many because the SSD needs many reads in flight
 // (docs/measurements/MEASUREMENTS.md#2026-10-15-ngram-gather), and rows already read are cached in RAM. Where the host
 // has room, the control plane asks for the whole table in RAM instead (ADR-0057).
@@ -21,6 +21,9 @@ namespace engine::qwen4exp {
 using engine::kNoToken;
 using engine::NgramStats;
 
+// The table's rows a token takes: the hash's heads. The file's ple.head_vocab_sizes has to have this many.
+constexpr uint32_t kNgramHeads = 16;
+
 class Ngram {
  public:
   // cache_rows: rows the cache holds (raw, ~100 B each); readers: threads reading the SSD. in_ram: read the whole
@@ -31,7 +34,7 @@ class Ngram {
 
   // The 16 row ids for token t at a position whose two predecessors are p1 (just before) and p2 (kNoToken when
   // there is none).
-  std::array<uint64_t, 16> rows(int32_t t, int32_t p1, int32_t p2) const;
+  std::array<uint64_t, kNgramHeads> rows(int32_t t, int32_t p1, int32_t p2) const;
 
   // u: 16 rows of the table's width w, the file's embedding, row h at u[w h], dequantised from IQ4_NL.
   void gather(int32_t t, int32_t p1, int32_t p2, float *u);
@@ -56,7 +59,8 @@ class Ngram {
   size_t ram_bytes_ = 0;
   uint64_t rows_ = 0;
   uint64_t mult_[3];
-  uint64_t vocab_[16], offset_[16];
+  uint64_t vocab_[kNgramHeads], offset_[kNgramHeads];
+  uint32_t per_ngram_ = 0;  // ple.heads_per_ngram: the first this many heads hash two tokens, the rest three
   int64_t reset_;
   int fd_ = -1;
   uint64_t data_offset_ = 0, row_bytes_ = 0, row_values_ = 0;

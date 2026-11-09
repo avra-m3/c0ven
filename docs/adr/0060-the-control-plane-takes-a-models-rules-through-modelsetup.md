@@ -12,7 +12,7 @@ host tier, an SSD tier, an Engram cache term. Its change extends `ModelMemory`.
   DeepSeek-V4.1-Flash, GGUF architecture `deepseek41`, is to be added beside `qwen4exp`
   ([#28](https://github.com/avra-m3/c0ven/issues/28)).
 - The engine process and `tools/plan.py` import `engine.models.<arch>.setup` by the file's `general.architecture`
-  (ADR-0024, item 3). They call four of its functions: `open_config`, `draft_dir`, `checkpoint_positions`, and
+  (ADR-0024, item 3). They call four of its functions: `open_config`, `draft_dir`, `checkpoint_rule`, and
   `vision_file` once it moves there. Each call went through a `cast`, so the type checker did not check the module.
 - Generic code held Flash-Next's rules: the image encoder's file name (`mmproj-*.gguf`) in `engine/process.py`, and
   its working memory estimate as `PlanOptions`' default. Header reads opened the path given, which holds the metadata
@@ -22,7 +22,7 @@ host tier, an SSD tier, an Engram cache term. Its change extends `ModelMemory`.
 
 1. `engine/models/__init__.py` defines `ModelSetup`, a `Protocol` with four functions: `open_config` (the config for
    `open` and its memory plan), `draft_dir` (the drafter beside the model), `vision_file` (the image encoder beside
-   the model) and `checkpoint_positions` (where a prompt is checkpointed).
+   the model) and `checkpoint_rule` (where a prompt is checkpointed).
 2. Each `engine/models/<arch>/setup.py` is a module of plain functions that matches `ModelSetup`.
    `engine.process.model_module` imports it by the architecture's name and returns it as a `ModelSetup`. A host test
    assigns each setup module to a `ModelSetup`, so basedpyright checks it.

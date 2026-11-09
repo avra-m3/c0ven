@@ -1,4 +1,3 @@
-# context_length 262144
 name	type	ggml_type	shape	bytes	shard	data_offset	category
 output.weight	Q6_K	14	2560x248320	521472000	2	23584	head
 output_hc_down.weight	Q8_0	8	10240x320	3481600	2	521495584	head

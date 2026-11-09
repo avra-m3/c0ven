@@ -126,6 +126,7 @@ Model::Model(const std::string &path, const Options &opt) : opt_(opt), gguf_(pat
   auto t0 = std::chrono::steady_clock::now();
   if (gguf_.get_string("general.architecture") != "qwen4exp") throw std::runtime_error("not a qwen4exp model");
   shape_ = read_shape(gguf_.metadata(), gguf_.tensors());
+  image_shape_ = image_shape_of(gguf_.metadata());
   if (const auto bad = shape_mismatches(shape_, gguf_.tensors()); !bad.empty()) {
     std::string why = bad[0];
     for (size_t i = 1; i < std::min<size_t>(bad.size(), 5); i++) why += "; " + bad[i];
@@ -219,6 +220,8 @@ Model::Model(const std::string &path, const Options &opt) : opt_(opt), gguf_(pat
   }
   if (!opt_.mtp_dir.empty() && !init_dflash()) {
     mtp_on_ = true;
+    mtp_experts_ = mtp_expert_count(opt_.mtp_dir, shape_.embd);
+    mtp_module_ = expert_module("qwen4exp", mtp_experts_);
     mplan_ = static_cast<StepPlan *>(rt_->alloc_host(sizeof(StepPlan)));
     std::memset(mplan_, 0, sizeof(StepPlan));
     mrest_ = static_cast<StepPlan *>(rt_->alloc_host(sizeof(StepPlan)));
@@ -407,13 +410,35 @@ static uint64_t free_huge_blocks() {
   return bytes;
 }
 
+// One arena piece from the host's reserved huge pages (vm.nr_hugepages), of the default huge page size; null when
+// too few are free. The kernel never moves or swaps these pages, so the cards' bindings of them stay valid and need no
+// lock. A private mapping reserves its pages at mmap, so a short pool fails here and not at a later fault.
+void *Model::hugetlb_piece() {
+  void *m = mmap(nullptr, kArenaPiece, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
+  if (m != MAP_FAILED) return m;
+  if (!hugetlb_short_) {
+    const int e = errno;
+    std::fprintf(stderr,
+                 "engine: the arena: no reserved huge pages for piece %zu (mmap: %s); it and the pieces after it "
+                 "are in the process's own memory\n",
+                 anon_pieces_.size(), std::strerror(e));
+    hugetlb_short_ = true;
+  }
+  return nullptr;
+}
+
 // need bytes of the arena, in pieces of 1 GiB, as small pieces are slower to allocate and to read
 // (docs/measurements/MEASUREMENTS.md#2026-10-13-design-inputs). With Options::anon_arena (the default, ADR-0035) a piece is the
 // process's own memory, 2 MiB aligned for huge pages, which the driver cannot take from the CPU; without it, the
-// driver's host memory (DESIGN.md, section 6).
+// driver's host memory (DESIGN.md, section 6). With Options::hugetlb_arena a piece comes from the host's reserved huge
+// pages first, and from the process's own memory once they run out.
 uint8_t *Model::arena_piece(uint64_t need) {
   if (arena_left_ < need) {
-    if (opt_.anon_arena) {
+    void *reserved = opt_.anon_arena && opt_.hugetlb_arena ? hugetlb_piece() : nullptr;
+    if (reserved) {
+      arena_at_ = static_cast<uint8_t *>(reserved);
+      anon_pieces_.push_back({reserved, kArenaPiece, arena_at_, 0, false, true});
+    } else if (opt_.anon_arena) {
       const uint64_t huge = 2ull << 20, bytes = kArenaPiece + huge;
       void *m = mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
       if (m == MAP_FAILED) throw std::runtime_error("anon_arena: mmap of a piece failed");
@@ -432,13 +457,14 @@ uint8_t *Model::arena_piece(uint64_t need) {
         if (!arena_lock_errno_) arena_lock_errno_ = e;
       }
       arena_at_ = reinterpret_cast<uint8_t *>((reinterpret_cast<uintptr_t>(m) + huge - 1) & ~(huge - 1));
-      // The pieces that may take huge pages: settled at the first piece, before any is filled.
-      if (anon_pieces_.empty()) {
+      // The pieces that may take huge pages: settled at the first such piece, before any is filled.
+      if (!thp_settled_) {
         const uint64_t blocks = free_huge_blocks();
         huge_pieces_ = blocks > kKeepFreeHuge ? (blocks - kKeepFreeHuge) / kArenaPiece : 0;
+        thp_settled_ = true;
       }
-      const bool in_huge = anon_pieces_.size() < huge_pieces_;
-      anon_pieces_.push_back({m, bytes, arena_at_, 0, in_huge});
+      const bool in_huge = thp_pieces_++ < huge_pieces_;
+      anon_pieces_.push_back({m, bytes, arena_at_, 0, in_huge, false});
       madvise(arena_at_, kArenaPiece, in_huge ? MADV_HUGEPAGE : MADV_NOHUGEPAGE);
     } else {
       arena_at_ = static_cast<uint8_t *>(rt_->alloc_host(kArenaPiece));
@@ -459,14 +485,21 @@ void Model::settle_arena() {
   const uint64_t huge = 2ull << 20;
   const auto t0 = std::chrono::steady_clock::now();
   uint64_t ranges = 0, collapsed = 0;
+  uint64_t reserved = 0;
   for (const AnonPiece &a : anon_pieces_)
-    for (uint64_t o = 0; o + huge <= a.used; o += huge, ranges++)
-      if (a.in_huge && madvise(a.at + o, huge, MADV_COLLAPSE) == 0) collapsed++;
+    if (a.reserved)
+      reserved++;
+    else
+      for (uint64_t o = 0; o + huge <= a.used; o += huge, ranges++)
+        if (a.in_huge && madvise(a.at + o, huge, MADV_COLLAPSE) == 0) collapsed++;
   const std::string lock = arena_lock_errno_ ? std::string("not locked (mlock2: ") + std::strerror(arena_lock_errno_) +
                                                    "), so the kernel may swap it out"
                                              : "locked in memory";
-  std::fprintf(stderr, "engine: the arena: %llu of %llu 2 MiB ranges in huge pages, in %.2f s; %s\n",
-               (unsigned long long)collapsed, (unsigned long long)ranges,
+  std::fprintf(stderr,
+               "engine: the arena: %llu of %llu pieces in reserved huge pages; of the rest, %llu of %llu 2 MiB ranges "
+               "in huge pages, in %.2f s; %s\n",
+               (unsigned long long)reserved, (unsigned long long)anon_pieces_.size(), (unsigned long long)collapsed,
+               (unsigned long long)ranges,
                std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(), lock.c_str());
 }
 
@@ -714,7 +747,7 @@ void Model::load_card(Card &card) {
       L.A = gather_f32(blk(l, "ssm_a"), vh, 1);
       L.dt = gather_f32(blk(l, "ssm_dt.bias"), vh, 1);
       L.ssm_norm = f32(blk(l, "ssm_norm.weight"));
-      L.conv_stride = 3ull * card.nch;
+      L.conv_stride = (uint64_t)(shape_.gdn_conv - 1) * card.nch;  // the conv's history: its kernel less one row
       L.S_stride = (uint64_t)card.nvh * shape_.gdn_d * shape_.gdn_d;
       L.conv_state = upload<float>(card, nullptr, S * L.conv_stride * 4);
       L.wu = upload<float>(card, nullptr, (size_t)STEP_MAX_ROWS * card.nch * 4);
@@ -851,7 +884,7 @@ void Model::load_card(Card &card) {
   card.blocks = upload<uint32_t>(card, nullptr, W * (shape_.idx_blocks() + 1) * 4);
   card.cells = upload<uint32_t>(card, nullptr, W * shape_.idx_cells() * 4);
   card.ncells = upload<uint32_t>(card, nullptr, W * 4);
-  card.rl = fbuf(std::max(shape_.experts, kMtpExperts) + 1);  // the main layers' routers and the draft layer's
+  card.rl = fbuf(std::max(shape_.experts, mtp_experts_) + 1);  // the main layers' routers and the draft layer's
   card.w = fbuf(shape_.used);
   card.ids = upload<int32_t>(card, nullptr, W * shape_.used * 4);
   card.merged = fbuf(2 * (shape_.idx_blocks() + 1));
@@ -1148,7 +1181,7 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
   const uint32_t c = card.c, C = ncards_;
   auto common = [&](const char *name) { return kernel(c, "common", name); };
   auto q4 = [&](const char *name) { return kernel(c, layer_module_, name); };
-  const float one = 1.0f, quarter = 0.25f;
+  const float one = 1.0f, quarter = 1.0f / (float)shape_.hc;  // the hyper-connections' 1 / hc (4 streams: a quarter)
   const uint32_t zero = 0, mode_silu = 1;
   // The kernels read the plan from the card's copy: a word in host memory makes each launch slower
   // (docs/measurements/MEASUREMENTS.md#2026-10-16-bf16-products-occupancy).
@@ -1374,7 +1407,7 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
              normed ? card.layers[l + 1].hc_norm[0] : nullptr);
     // DFlash 2 reads the layer's output (dflash.cpp).
     for (uint32_t k = 0; df_on_ && k < DF_LAYERS; k++)
-      if (l == kDfTargetLayers[k])
+      if (l == dfc_.targets[k])
         L.launch(kernel(c, "qwen4exp_dflash", "df_feat"), {card.R, k, plan, card.df->feat}, shape_.embd / 64, W, 1, 64);
   }
   record_head(L, card, plan, W);
@@ -1427,7 +1460,7 @@ void Model::record_head(ze::List &L, Card &card, const StepPlan *plan, uint32_t 
   const uint32_t c = card.c;
   auto common = [&](const char *name) { return kernel(c, "common", name); };
   auto q4 = [&](const char *name) { return kernel(c, layer_module_, name); };
-  const float one = 1.0f, quarter = 0.25f;
+  const float one = 1.0f, quarter = 1.0f / (float)shape_.hc;  // the hyper-connections' 1 / hc (4 streams: a quarter)
   const uint32_t zero = 0, mode_silu = 1, gs = shape_.embd;
   uint16_t *no_bf16 = nullptr;
   L.launch(q4("rms_norm"), {card.R, card.out_norm, plan, card.n, no_bf16}, shape_.hc, W, 1, 256);

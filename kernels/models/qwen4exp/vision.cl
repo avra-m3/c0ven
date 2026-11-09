@@ -3,17 +3,10 @@
 // v_norm, v_qkv and v_attn make a layer's attention, v_bias_gelu its MLP's GELU, and v_residual adds to the residual;
 // v_bias gives the merger's output.
 #include "builtins.h"
+#include "vision_sizes.h"
 
-#define V_D 1152     // the residual's width
-#define V_H 16       // heads
-#define V_HD 72      // a head's dimensions
-#define V_ROT 36     // rotated pairs per head: (k, k + 36)
-#define V_SEC 18     // pairs turned by the row; the next 18 by the column
-#define V_PATCH 768  // 3 channels x 16 x 16 pixels: one frame of a patch
-#define V_GRID 48    // the position table's side
-
-#ifndef V_HDP
-#define V_HDP 80     // a head's dimensions in the fp16 Q, K and V, padded with zeros to a multiple of 16
+#if V_MERGE != 2
+#error "patch_rc and the merge windows take 2 x 2 patches"
 #endif
 #define V_QKV_W (V_H * V_HDP)
 
@@ -44,8 +37,9 @@ __kernel void v_embed(__global const uchar *pix, uint n, uint first, uint gh, ui
     barrier(CLK_LOCAL_MEM_FENCE);
     for (uint i = li; i < V_EMB_PATCHES * V_PATCH; i += V_EMB_WI) {
       const uint j = i / V_PATCH, k = i % V_PATCH;
-      // As llama.cpp: v / 255, then (v - mean) / std with mean and std 0.5 (tools/mtmd/clip-impl.h:726-735).
-      p[j][k] = j < np ? ((float)pix[((ulong)(p0 + j) * frames + f) * V_PATCH + k] / 255.0f - 0.5f) / 0.5f : 0.0f;
+      // As llama.cpp: v / 255, then (v - mean) / std (tools/mtmd/clip-impl.h:726-735).
+      p[j][k] = j < np ? ((float)pix[((ulong)(p0 + j) * frames + f) * V_PATCH + k] / 255.0f - V_PIX_MEAN) / V_PIX_STD
+                       : 0.0f;
     }
     barrier(CLK_LOCAL_MEM_FENCE);
     __global const float *wf = wt + (ulong)f * V_PATCH * V_D;
@@ -91,7 +85,7 @@ REQD_SG __kernel void v_norm(__global const float *x, uint n, __global const flo
     const float d = xr[i] - mean;
     v += d * d;
   }
-  const float inv = 1.0f / sqrt(sg_sum(v) / V_D + 1e-6f);
+  const float inv = 1.0f / sqrt(sg_sum(v) / V_D + V_EPS);
   for (uint i = lane; i < V_D; i += 16) out[(ulong)t * V_D + i] = f32_to_bf16((xr[i] - mean) * inv * g[i] + b[i]);
 }
 

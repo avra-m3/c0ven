@@ -40,8 +40,9 @@ uint32_t max_tiles(uint32_t T, uint32_t used, uint32_t experts) {
   return (T * used + MOE_TILE - 1) / MOE_TILE + experts;
 }
 
-// The hyper-connections' down and inject products in one: 324 values per row, stored 336 apart (64-byte rows).
-constexpr uint32_t kLriW = 336;
+// The hyper-connections' down and inject products in one: low_rank + count values per row (324), stored a multiple of
+// 16 apart (336: 64-byte rows).
+uint32_t lri_w(const Shape &s) { return (s.hc_lr + s.hc + 15) / 16 * 16; }
 
 }  // namespace
 
@@ -70,7 +71,7 @@ void Model::load_prompt(Card &card) {
   P.R = f32(T * shape_.hc_dim());
   P.inj[0] = f32(T * shape_.hc);
   P.inj[1] = f32(T * shape_.hc);
-  P.lr = f32(T * kLriW);
+  P.lr = f32(T * lri_w(shape_));
   P.rr = f32(T * shape_.hc);
   P.lrb = u16(T * shape_.hc_lr);
   P.x16 = u16(T * shape_.embd);
@@ -179,7 +180,7 @@ void Model::record_prompt_copy(Card &card) {
   PromptCard &P = *card.pc;
   for (auto &hl : host_layers_) P.stage_slot = std::max<uint64_t>(P.stage_slot, hl->pieces.size() * hl->stg_bytes);
   if (P.stage_slot)
-    P.stage = static_cast<uint8_t *>(rt_->alloc_device_mapped(card.c, 2 * P.stage_slot, P.stage_cpu));
+    P.stage = static_cast<uint8_t *>(rt_->alloc_device_mapped(card.c, 2 * P.stage_slot + QUANT_FILE_PAD, P.stage_cpu));
   for (uint32_t l = 0; l < shape_.layers; l++)
     P.stage_map.push_back(upload<int32_t>(card, host_layers_[l]->stage_of.data(), shape_.experts * 4));
   P.copy = prompt_copies(card, staging_now(), copy_count_);
@@ -415,14 +416,15 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
     // Tiles of 4 tokens: faster with K or N short (docs/measurements/MEASUREMENTS.md#2026-10-15-prompt-gemm-tiles). From 1,024
     // rows one work-group takes all 324 columns, reading its tokens once (docs/measurements/MEASUREMENTS.md#2026-10-17-hc-lowrank).
     const uint16_t *nb = P.nb + (size_t)r0 * shape_.hc_dim();
-    float *lr = P.lr + (size_t)r0 * kLriW;
-    if (rows >= 1024)
-      gemm(true, Ly.hc_down[i], shape_.hc_lr + shape_.hc, shape_.hc_dim(), nb, shape_.hc_dim(), lr, kLriW, false, 0, one,
-           nullptr, 4, 2, nullptr, 11, nown, rows);
+    const uint32_t lrw = lri_w(shape_), lr_cols = shape_.hc_lr + shape_.hc;
+    float *lr = P.lr + (size_t)r0 * lrw;
+    if (rows >= 1024)  // every column in one work-group: a tile of 32 columns for each 32 of them (11 for 324)
+      gemm(true, Ly.hc_down[i], lr_cols, shape_.hc_dim(), nb, shape_.hc_dim(), lr, lrw, false, 0, one, nullptr, 4, 2,
+           nullptr, (lr_cols + 31) / 32, nown, rows);
     else
-      gemm(true, Ly.hc_down[i], shape_.hc_lr + shape_.hc, shape_.hc_dim(), nb, shape_.hc_dim(), lr, kLriW, false, 0, one,
-           nullptr, 4, 1, nullptr, 4, nown, rows);
-    L.launch(q4("p_hc_lr"), {P.lr, kLriW, pp, P.lrb, P.inj[i], r0, r1}, (shape_.hc_lr + shape_.hc + 63) / 64, rows, 1,
+      gemm(true, Ly.hc_down[i], lr_cols, shape_.hc_dim(), nb, shape_.hc_dim(), lr, lrw, false, 0, one, nullptr, 4, 1,
+           nullptr, 4, nown, rows);
+    L.launch(q4("p_hc_lr"), {P.lr, lrw, pp, P.lrb, P.inj[i], r0, r1}, (lr_cols + 63) / 64, rows, 1,
              64);
     gemm(true, Ly.hc_up[i], shape_.hc_dim(), shape_.hc_lr, P.lrb + (size_t)r0 * shape_.hc_lr, shape_.hc_lr,
          P.a + (size_t)r0 * shape_.hc_dim(), shape_.hc_dim(), true, 0, one, nullptr, 4, 2, nullptr, 4, nown, rows);
@@ -580,7 +582,7 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
     exchange(l, 1, P.inj[1], l >= 1 && l + 1 < shape_.layers ? card.layers[l + 1].hc_norm[0] : nullptr);
     // DFlash 2 reads each run's last rows of the layer's output (dflash.cpp), from the card that holds them.
     for (uint32_t k = 0; df_on_ && k < DF_LAYERS; k++) {
-      if (l != kDfTargetLayers[k]) continue;
+      if (l != dfc_.targets[k]) continue;
       const uint32_t f0 = split || c == 0 ? r0 : 0, f1 = split || c == 0 ? r1 : 0;
       L.launch(kernel(c, "qwen4exp_dflash", "p_df_feat"), {P.R, runs_p, k, f0, f1, pfeat_}, shape_.embd / 64,
                STEP_MAX_ROWS, runs, 64);

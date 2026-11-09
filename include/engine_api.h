@@ -20,7 +20,7 @@ extern "C" {
 #define ENGINE_API
 #endif
 
-#define ENGINE_API_VERSION 18
+#define ENGINE_API_VERSION 19
 
 typedef enum {
   ENGINE_OK = 0,
@@ -67,6 +67,8 @@ typedef struct {
                                          lend their memory to the expert cache, so it holds more experts while the
                                          pool holds less */
 #define ENGINE_CONFIG_NGRAM_RAM 16u   /* the whole n-gram table read into RAM at open, rows served from it */
+#define ENGINE_CONFIG_HUGETLB 32u     /* the expert arena in the host's reserved huge pages (vm.nr_hugepages) while they
+                                         last, the rest in the process's own memory; the log says how many pieces */
 
 /* What open reports. */
 typedef struct {

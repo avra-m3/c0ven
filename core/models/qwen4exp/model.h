@@ -43,9 +43,21 @@ using engine::StepIn;
 using engine::StepStats;
 using engine::TraceRow;
 
-// The image and video tokens, and 16-pixel patches of 768 bytes merged 2 x 2 (docs/spec/MODEL_VISION.md, sections 2,
-// 4.1 and 6).
-constexpr ImageShape kImageShape{248056, 248057, 768, 2};
+// The image and video tokens, the file's `<|image_pad|>` and `<|video_pad|>` (kNoToken for one it lacks), and the
+// patches the encoder is built for: 16 pixels a side, 768 bytes, merged 2 x 2 (docs/spec/MODEL_VISION.md, sections 2,
+// 4.1 and 6; vision_sizes.h). meta: the model file's metadata.
+ImageShape image_shape_of(const std::map<std::string, GgufValue> &meta);
+// What DFlash 2's config.json gives beyond its tensors' sizes, from dflash-config.txt (tools/dflash_fetch.py).
+struct DfConfig {
+  int32_t mask_token = 0;                     // the token of a block's rows after its first: mask_token_id
+  std::array<uint32_t, DF_LAYERS> targets{};  // the main layers whose outputs it reads, in its features' order
+};
+// dir's dflash-config.txt, checked against the sizes the drafter's kernels are built for (layout.h). Throws when the
+// file is missing or a size differs.
+DfConfig read_df_config(const std::string &dir);
+// The MTP layer's routed experts: its router's rows, from the size of its file in dir. Throws when the file is not a
+// whole number of rows of embd values, or the count has no kernels.
+uint32_t mtp_expert_count(const std::string &dir, uint32_t embd);
 // The drafts a round makes by default: the draft layer's; DFlash 2 drafts a whole window in one pass.
 constexpr uint32_t kDraftMaxLayer = 3, kDraftMaxCap = STEP_MAX_ROWS - 1;
 
@@ -66,7 +78,7 @@ class Model final : public engine::Model {
   std::array<uint32_t, 3> position(uint32_t slot, uint32_t cell) const;
   // The most tokens an image may have: 0 without Options::vision_path.
   uint32_t image_tokens_max() const override { return vmax_tokens_; }
-  ImageShape image_shape() const override { return kImageShape; }
+  ImageShape image_shape() const override { return image_shape_; }
   // An image's rows of the text model's input (vision.cpp), image_tokens rows of 2,560 into out: what the prompt path
   // reads at the image's block. For tests; prompt() runs it itself.
   void encode_image(const Image &im, float *out);
@@ -310,6 +322,7 @@ class Model final : public engine::Model {
   void release_expert(uint32_t l, uint32_t e);               // its pages of the file back to the host
   uint8_t *spare_piece(uint64_t need);
   uint8_t *arena_piece(uint64_t need);
+  void *hugetlb_piece();
   double measure_host_read();
   unsigned loader_threads();
   double measure_copy(uint32_t card);
@@ -319,6 +332,7 @@ class Model final : public engine::Model {
 
   Options opt_;
   GgufModel gguf_;
+  ImageShape image_shape_;
   Shape shape_;  // the file's sizes; those still fixed at build time equal it once the constructor has checked them
   std::string layer_module_, prompt_module_;  // the kernels built for shape_.experts
   std::unique_ptr<ze::Runtime> rt_;
@@ -368,6 +382,9 @@ class Model final : public engine::Model {
   std::unique_ptr<ze::EventPool> mevents_;
   // DFlash 2's plans, block embeddings, exchange events and candidates (dflash.cpp).
   bool df_on_ = false;
+  DfConfig dfc_;             // with df_on_
+  uint32_t mtp_experts_ = 0;  // with mtp_on_: the MTP layer's routed experts
+  std::string mtp_module_;    // with mtp_on_: the kernel module built for that count
   DraftPlan *dfcplan_ = nullptr, *dfbplan_ = nullptr;
   float *dfembed_ = nullptr;
   float *dfex_ = nullptr;  // the exchanges' partial sums, [2 DF_LAYERS][card][STEP_MAX_ROWS][DF_EMBD]
@@ -439,6 +456,7 @@ class Model final : public engine::Model {
     uint8_t *at;       // the piece: 2 MiB aligned, kArenaPiece bytes
     uint64_t used;     // bytes of it arena_piece has handed out
     bool in_huge;      // it may take huge pages (kKeepFreeHuge)
+    bool reserved;     // from the host's reserved huge pages (hugetlb_piece), never moved, swapped or locked
   };
   std::vector<AnonPiece> anon_pieces_;  // Options::anon_arena
   // The host's free 2 MiB blocks the arena leaves alone. A host with too few of them in its free memory compacts and
@@ -447,6 +465,9 @@ class Model final : public engine::Model {
   // nothing moves them while the host has blocks to spare.
   static constexpr uint64_t kKeepFreeHuge = 5ull << 30;
   uint64_t huge_pieces_ = 0;
+  uint64_t thp_pieces_ = 0;    // the pieces not from reserved huge pages, which huge_pieces_ counts
+  bool thp_settled_ = false;   // huge_pieces_ is set
+  bool hugetlb_short_ = false;  // the reserved huge pages ran out, and the log said so
   int arena_lock_errno_ = 0;            // why mlock2 failed for a piece; 0: every piece is locked
   uint32_t tmax_ = 0;
   uint32_t last_width_ = 1;  // the width of the last decode step

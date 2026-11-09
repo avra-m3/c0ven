@@ -47,6 +47,28 @@ def test_a_table_of_fewer_layers():
     assert [i for i, k in enumerate(kinds) if k is LayerKind.ATTENTION] == list(range(3, 24, 4))
 
 
+def test_the_context_length_is_the_files():
+    """Both committed tables carry their file's fields, `qwen4exp.context_length` among them."""
+    assert TABLE.architecture == "qwen4exp"
+    assert TABLE.context_length == from_tsv(TSV_UD_IQ4_XS).context_length == 262_144
+
+
+def test_generation_stops_at_the_files_end_tokens():
+    """`tokenizer.ggml.eos_token_id` is <|im_end|>; <|endoftext|> follows it."""
+    assert TABLE.eos_ids == from_tsv(TSV_UD_IQ4_XS).eos_ids == (248_046, 248_044)
+
+
+def test_a_token_the_file_lacks_says_which():
+    table = tensors.TensorTable(TABLE.tensors, fields={**TABLE.fields, tensors.TOKEN_IDS: {"system": None}})
+    with pytest.raises(ValueError, match="system"):
+        table.token_id("system")
+
+
+def test_a_field_the_file_lacks_says_which():
+    with pytest.raises(ValueError, match=r"general\.architecture"):
+        _ = tensors.TensorTable(TABLE.tensors).context_length
+
+
 def test_a_size_with_no_tensor_says_which():
     table = tensors.TensorTable(tuple(t for t in TABLE.tensors if t.name != "output.weight"))
     with pytest.raises(ValueError, match=r"output\.weight"):
@@ -93,7 +115,7 @@ def test_the_table_is_read_from_the_gguf_once(tmp_path: Path, monkeypatch: pytes
 
     def from_gguf(path: Path) -> tensors.TensorTable:
         reads.append(path)
-        return tensors.TensorTable(from_tsv().tensors, shard_paths(path), 262_144)
+        return tensors.TensorTable(from_tsv().tensors, shard_paths(path), from_tsv().fields)
 
     monkeypatch.setattr(tensors, "from_gguf", from_gguf)
     cache = tmp_path / "cache"
@@ -102,11 +124,7 @@ def test_the_table_is_read_from_the_gguf_once(tmp_path: Path, monkeypatch: pytes
     assert reads == [first]
     assert b == a
     assert b.shard_paths == shard_paths(first)
-    assert b.context_length == 262_144
+    assert b.fields == a.fields == from_tsv().fields
     first.write_bytes(b"changed")
     from_gguf_cached(first, cache)
     assert reads == [first, first]
-    for kept in cache.glob("*.tsv"):
-        kept.write_text(kept.read_text().split("\n", 1)[1])
-    assert from_gguf_cached(first, cache).context_length == 262_144
-    assert reads == [first, first, first]

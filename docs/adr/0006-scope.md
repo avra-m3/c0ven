@@ -2,7 +2,7 @@
 
 **Status:** accepted, 2026-10-09. Item 1 superseded in part (one machine), and item 2, by
 [ADR-0056](0056-the-aim-is-the-fastest-performance-on-battlemage.md) (draft). Item 3 superseded in part, for contexts
-past 262,144 tokens, by [ADR-0066](0066-past-the-trained-context-the-rotation-is-scaled-by-yarn.md) (draft).
+past 262,144 tokens, by [ADR-0073](0073-past-the-trained-context-the-rotation-is-scaled-by-yarn.md) (draft).
 **Revisit when:** the machine changes (another card, more RAM), or a model family is added.
 
 ## Context

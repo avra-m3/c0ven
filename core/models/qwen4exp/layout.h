@@ -14,6 +14,8 @@
 #endif
 
 #define Q_HC_DIM (Q_HC * Q_EMBD)    // 10,240
+#define Q_HC_MEAN (1.0f / Q_HC)     // the streams' mean, and the scale of the hyper-connections' down and inject products
+#define Q_ATT_SCALE (1.0f / 16.0f)  // attention's 1 / sqrt(Q_ATT_D); shape.cpp asserts it
 
 #define Q_ATT_SLOTS 16  // p_attn_xmx's query slots a KV head: its 12 heads, rounded up to 8 (prompt_attn.cl)
 
@@ -22,7 +24,8 @@
 
 // Q_EXPERTS is a build option of the modules that route experts (kernels/models/qwen4exp/CMakeLists.txt, ADR-0063).
 
-#define Q_PLE_HIST (Q_PLE_DIL * (Q_GDN_CONV - 1))  // 9 positions of history
+#define Q_GDN_HIST (Q_GDN_CONV - 1)               // the conv's rows of history: 3
+#define Q_PLE_HIST (Q_PLE_DIL * Q_GDN_HIST)       // 9 positions of history
 
 // The DFlash 2 drafter (docs/MODEL_FILES.md, "The DFlash 2 drafter"): Qwen3-shaped layers that read the main
 // model's hidden states at five layers. Its norms take no +1.
@@ -39,7 +42,6 @@
 #define DF_RING 2112                  // K and V cells per slot: the window and a pass's rows past it
 #define DF_ROPE_BASE 10000.0f
 #define DF_EPS 1e-6f
-#define DF_MASK 248077                // the token of a block's rows after its first
 #ifdef __OPENCL_C_VERSION__
 #if Q_EMBD != DF_EMBD
 #error "dflash.cl mixes the main model's embedding with the drafter's hidden size"

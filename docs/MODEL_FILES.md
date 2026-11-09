@@ -204,11 +204,15 @@ model's hidden states and propose up to 7 tokens in one pass. It comes from
 python -m tools.dflash_fetch --out <model dir>/dflash
 ```
 
-The tool downloads the file, checks its size and sha256, writes each tensor's bytes, as they are, to
-`dflash/<tensor name>` (raw little-endian BF16, no header), and writes `dflash/dflash-manifest.json` last, with each
-tensor's dtype, shape, byte range and sha256. It leaves out the tensors whose names start with `candidate_selector.`:
-the engine does not use the checkpoint's candidate selector. The temporary download is deleted.
+The tool downloads the file and its `config.json`, checks their sha256 (and the file's size), writes each tensor's
+bytes, as they are, to `dflash/<tensor name>` (raw little-endian BF16, no header), writes the config's values the
+engine reads to `dflash/dflash-config.txt` (a line each: the key, then its values), and writes
+`dflash/dflash-manifest.json` last, with the same values and each tensor's dtype, shape, byte range and sha256. It
+leaves out the tensors whose names start with `candidate_selector.`: the engine does not use the checkpoint's candidate
+selector. The temporary download is deleted. A `dflash/` fetched before `dflash-config.txt` existed has to be fetched
+again.
 
-The engine reads the drafter's shape from its code, not from `config.json`: hidden size 2,560, 32 query and 8 KV
-heads of 128, MLP 7,680, RMS norms with eps 1e-6 and no +1, RoPE base 10,000, a block of 8 rows, mask token 248,077,
-and the main model's layers 5, 15, 25, 35 and 45 as its input (`core/models/qwen4exp/layout.h`, `model_impl.h`).
+The engine takes the mask token (248,077) and the main model's layers it reads (5, 15, 25, 35 and 45) from
+`dflash-config.txt`. Its kernels are built for the drafter's sizes (`core/models/qwen4exp/layout.h`): hidden size
+2,560, 32 query and 8 KV heads of 128, MLP 7,680, RMS norms with eps 1e-6 and no +1, RoPE base 10,000, a window of
+2,048, a block of 8 rows. The load checks each against `dflash-config.txt` and stops when one differs.

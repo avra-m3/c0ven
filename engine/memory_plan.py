@@ -20,6 +20,8 @@ from engine.api.interface import PAGE_CELLS
 GIB = 2**30
 
 SSD_TIER_HEADROOM = 24 * GIB
+ARENA_PIECE = GIB
+"""The core takes its arena in pieces of this many bytes (the core's kArenaPiece)."""
 """What a plan with an SSD tier leaves free on the host, bytes: the 22 GiB default of `tools/check.py --mem-floor` and
 2 GiB, so a timed run does not stop at the floor."""
 
@@ -57,6 +59,9 @@ class ModelMemory:
     checkpoint_bytes: int
     """A checkpoint: the running state only; the KV of its positions stays in its pages (ADR-0033)."""
     max_context: int
+    """The longest context a slot may have."""
+    trained_context: int
+    """The context the model was trained on: what `--context` defaults to. Above it the rotation is scaled."""
     ngram_bytes: int
     """The n-gram table, which stays in the file unless the plan holds it in RAM."""
     working_of: Callable[[PlanOptions, int], int] | None = None
@@ -102,7 +107,9 @@ class ModelMemory:
 @dataclass(frozen=True, slots=True)
 class PlanOptions:
     slots: int = 1
-    context: int = 262_144
+    context: int = 0
+    """Each slot's context, in tokens; 0: the model's trained context (ModelMemory.trained_context), which `plan` puts
+    in its MemoryPlan.options."""
     cards: int = 2
     """Cards the engine runs on: the tensor split's two, or one holding every weight whole."""
     usable_vram: int | None = None
@@ -131,6 +138,9 @@ class PlanOptions:
     """`--ram-max`: a limit the user sets on the host memory the plan may take; None: none."""
     ngram_in_ram: bool = False
     """The whole n-gram table in RAM, counted in the host total."""
+    hugetlb_pool: int | None = None
+    """`--hugepages`: the host's free reserved huge pages, bytes. The arena's pieces take them first, and what they
+    hold is not counted against host_memory, which leaves them out. None: the arena is all in host memory."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -251,11 +261,20 @@ class MemoryPlan:
         return self.experts_cached // self.layers
 
     @property
+    def arena_reserved_bytes(self) -> int:
+        """The part of the arena in reserved huge pages (PlanOptions.hugetlb_pool): the core's whole pieces that fit
+        in them."""
+        if self.options.hugetlb_pool is None:
+            return 0
+        return min(self.arena_bytes, self.options.hugetlb_pool // ARENA_PIECE * ARENA_PIECE)
+
+    @property
     def host_bytes(self) -> int:
-        """The host memory the engine takes: the pinned total, the working estimate, and the n-gram table when it is
-        in RAM."""
+        """The host memory the engine takes: the pinned total but for the arena's part in reserved huge pages, the
+        working estimate, and the n-gram table when it is in RAM."""
         return (
             self.pinned_bytes
+            - self.arena_reserved_bytes
             + self.options.host_working
             + (self.ngram_bytes if self.options.ngram_in_ram else 0)
             + self.host_caches_bytes
@@ -291,6 +310,11 @@ class MemoryPlan:
             ("free for experts per card", gib(self.free_per_card)),
             ("experts cached", f"{self.experts_cached:,} of {self.experts_total:,}"),
             ("host arena", gib(self.arena_bytes)),
+            *(
+                [("host arena in reserved huge pages", gib(self.arena_reserved_bytes))]
+                if o.hugetlb_pool is not None
+                else []
+            ),
             ("streamed KV", gib(self.streamed_kv_bytes)),
             ("checkpoints", f"{o.checkpoints} x {self.checkpoint_bytes // o.checkpoints if o.checkpoints else 0:,} B"),
             ("pinned host memory", gib(self.pinned_bytes)),
@@ -363,6 +387,8 @@ def reserve_per_sequence(m: ModelMemory, context: int) -> int:
 def plan(m: ModelMemory, o: PlanOptions) -> MemoryPlan:
     """The plan for the options. Raises PlanError, with options that fit where there are some, when the cards or the
     host's memory are too small."""
+    if o.context == 0:
+        o = replace(o, context=m.trained_context)
     try:
         p = _plan(m, o)
     except PlanError as exc:
@@ -451,13 +477,15 @@ def _fill(budget: int, sizes: Sequence[int], caps: Sequence[int]) -> tuple[int, 
 
 
 def _arena_budget(m: ModelMemory, o: PlanOptions, pinned_outside_arena: int) -> int:
-    """What a model with an SSD tier may give its arena; 0 when the host has none to spare, or is not known."""
+    """What a model with an SSD tier may give its arena: the reserved huge pages' whole pieces, and what the host can
+    spare; the host's part is 0 when it has none to spare, or is not known."""
+    reserved = (o.hugetlb_pool or 0) // ARENA_PIECE * ARENA_PIECE
     limit = host_limit(o)
     if limit is None:
-        return 0
+        return reserved
     ngram = m.ngram_bytes if o.ngram_in_ram else 0
     caches = m.engram_cache + m.ssd_staging_ring + m.prompt_host_ring
-    return max(0, limit - pinned_outside_arena - o.host_working - ngram - caches - SSD_TIER_HEADROOM)
+    return reserved + max(0, limit - pinned_outside_arena - o.host_working - ngram - caches - SSD_TIER_HEADROOM)
 
 
 def _layer_experts(

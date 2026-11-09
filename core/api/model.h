@@ -39,6 +39,9 @@ struct Options {
   // shared system USM: the driver's buffers, which xe moves out of GTT under reclaim and so stalls the CPU's experts
   // (docs/measurements/MEASUREMENTS.md#2026-10-17-decode-stalls-eviction).
   bool anon_arena = true;
+  // The arena's pieces from the host's reserved huge pages (vm.nr_hugepages) while they last, then as anon_arena's:
+  // pages the kernel never moves, so it never stops a card to bind one again. Needs anon_arena.
+  bool hugetlb_arena = false;
   bool ngram_in_ram = false;                // the whole n-gram table in RAM
   // A profile to choose the cached experts by (tools/route_profile.cpp); empty: the first experts of each layer;
   // none: the model's own.

@@ -1,20 +1,22 @@
 """The GGUF tensor table: every tensor's name, type, shard, offset and size (ADR-0004: read with llama.cpp's `gguf`).
 
 The control plane reads the table and passes offsets and types to the core in `open`; the core never parses the
-file. A TSV's first line holds the file's `context_length`. The committed docs/model/tensors-IQ3_S.tsv holds the same
-rows for the IQ3_S file, so tests run without it; tensors-UD-IQ4_XS.tsv holds them for Unsloth's UD-IQ4_XS file, an
-experiment: `from_tsv(TSV_UD_IQ4_XS)`.
+file. The committed docs/model/tensors-IQ3_S.tsv holds the same rows for the IQ3_S file, so tests run without it;
+tensors-UD-IQ4_XS.tsv holds them for Unsloth's UD-IQ4_XS file, an experiment: `from_tsv(TSV_UD_IQ4_XS)`. Each TSV
+has a JSON beside it with the first shard's short fields (`fields`), such as `qwen4exp.context_length`.
 """
 
 from __future__ import annotations
 
 import csv
 import hashlib
+import json
 import os
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
+from typing import cast
 
 import gguf
 
@@ -22,9 +24,19 @@ from engine.gguf_files import shard_paths
 
 TABLES = Path(__file__).resolve().parents[3] / "docs" / "model"
 TSV = TABLES / "tensors-IQ3_S.tsv"
-CONTEXT_LINE = "# context_length "
 TSV_UD_IQ4_XS = TABLES / "tensors-UD-IQ4_XS.tsv"
 _LAYER = re.compile(r"^blk\.(\d+)\.")
+FIELD_ARRAY_MAX = 64
+"""The longest array `fields` keeps: the per-layer and per-head lists, not the tokenizer's."""
+FIELD_TEXT_MAX = 256
+"""The longest string `fields` keeps: names and labels, not the chat template."""
+TOKEN_TEXTS = ("<|im_start|>", "<|im_end|>", "<|endoftext|>", "system", "assistant", "\u010a")
+"""The tokens the control plane finds by their text in `tokenizer.ggml.tokens`: the chat template's markers and roles,
+and the newline, which the tokenizer writes as `\u010a`."""
+TOKEN_IDS = "c0ven.token_ids"
+"""Not a field of the file: the key under which `fields` keeps the ids of TOKEN_TEXTS."""
+_CACHE_FORM = 2
+"""Part of the cache's key: raised when what the cache keeps changes, so an older cache is read again."""
 
 
 class Category(StrEnum):
@@ -83,8 +95,8 @@ class FileTensor:
 class TensorTable:
     tensors: tuple[FileTensor, ...]
     shard_paths: tuple[Path, ...] = ()
-    context_length: int = 0
-    """The context the model was trained on, from the file; 0 in a table kept before it was read."""
+    fields: dict[str, object] = field(default_factory=dict, compare=False)
+    """The first shard's key-value fields that are numbers, short strings or short arrays (`read_fields`)."""
 
     def __post_init__(self) -> None:
         names = [t.name for t in self.tensors]
@@ -99,6 +111,36 @@ class TensorTable:
             if t.name == name:
                 return t.shape
         raise ValueError(f"tensor missing from the model: {name}")
+
+    def field(self, key: str) -> object:
+        """The file's field `key`. Raises ValueError when the file has none."""
+        if key not in self.fields:
+            raise ValueError(f"field missing from the model: {key}")
+        return self.fields[key]
+
+    @property
+    def architecture(self) -> str:
+        return str(self.field("general.architecture"))
+
+    @property
+    def context_length(self) -> int:
+        """The longest context the model was trained for: `<arch>.context_length`."""
+        return int(cast("int", self.field(f"{self.architecture}.context_length")))
+
+    def token_id(self, text: str) -> int:
+        """The id of the token `text`, one of TOKEN_TEXTS. Raises ValueError when the file has no such token."""
+        ids = cast("dict[str, int | None]", self.field(TOKEN_IDS))
+        if (found := ids.get(text)) is None:
+            raise ValueError(f"token missing from the model: {text!r}")
+        return found
+
+    @property
+    def eos_ids(self) -> tuple[int, ...]:
+        """The tokens generation stops at: the file's `tokenizer.ggml.eos_token_id`, then `<|im_end|>` and
+        `<|endoftext|>` (generation_config.json, spec/MODEL_IO.md, section 2.3) where they are others."""
+        ids = [int(cast("int", self.field("tokenizer.ggml.eos_token_id")))]
+        ids += [self.token_id(t) for t in ("<|im_end|>", "<|endoftext|>")]
+        return tuple(dict.fromkeys(ids))
 
     @property
     def layers(self) -> int:
@@ -135,15 +177,14 @@ class TensorTable:
         return total // self.experts_per_layer
 
 
+def fields_path(tsv: Path) -> Path:
+    """The JSON of the table's fields, beside its TSV."""
+    return tsv.with_suffix(".json")
+
+
 def from_tsv(path: Path = TSV) -> TensorTable:
     rows: list[FileTensor] = []
-    context = 0
     with path.open(newline="") as f:
-        first = f.readline()
-        if first.startswith(CONTEXT_LINE):
-            context = int(first.removeprefix(CONTEXT_LINE))
-        else:
-            f.seek(0)
         for row in csv.DictReader(f, delimiter="\t"):
             rows.append(
                 FileTensor(
@@ -156,20 +197,43 @@ def from_tsv(path: Path = TSV) -> TensorTable:
                     int(row["data_offset"]),
                 )
             )
-    return TensorTable(tuple(rows), context_length=context)
+    fields = fields_path(path)
+    return TensorTable(tuple(rows), fields=json.loads(fields.read_text()) if fields.is_file() else {})
+
+
+def read_fields(reader: gguf.GGUFReader) -> dict[str, object]:
+    """The reader's fields that are numbers, strings up to FIELD_TEXT_MAX characters, or arrays of those up to
+        FIELD_ARRAY_MAX long: what the control plane reads, without the tokenizer's lists or the chat template. Under
+    TOKEN_IDS, the ids of TOKEN_TEXTS from the tokenizer's list (None for one it lacks)."""
+    out: dict[str, object] = {}
+    for key, f in reader.fields.items():
+        if key.startswith("GGUF."):
+            continue
+        value = f.contents()
+        if isinstance(value, list):
+            items = cast("list[object]", value)
+            if len(items) > FIELD_ARRAY_MAX or any(isinstance(v, str) and len(v) > FIELD_TEXT_MAX for v in items):
+                continue
+        elif isinstance(value, str) and len(value) > FIELD_TEXT_MAX:
+            continue
+        out[key] = value
+    tokens = reader.get_field("tokenizer.ggml.tokens")
+    if tokens is not None:
+        index: dict[str, int] = {}
+        for i, text in enumerate(cast("list[str]", tokens.contents())):
+            index.setdefault(text, i)
+        out[TOKEN_IDS] = {t: index.get(t) for t in TOKEN_TEXTS}
+    return out
 
 
 def from_gguf(path: Path) -> TensorTable:
     paths = shard_paths(path)
     rows: list[FileTensor] = []
-    context = 0
+    fields: dict[str, object] = {}
     for shard, p in enumerate(paths, start=1):
         reader = gguf.GGUFReader(p)
         if shard == 1:
-            field = reader.get_field("qwen4exp.context_length")
-            if field is None:
-                raise ValueError(f"{p} has no qwen4exp.context_length")
-            context = int(field.contents())
+            fields = read_fields(reader)
         for t in reader.tensors:
             kind = gguf.GGMLQuantizationType(int(t.tensor_type))
             rows.append(
@@ -183,35 +247,36 @@ def from_gguf(path: Path) -> TensorTable:
                     int(t.data_offset),
                 )
             )
-    return TensorTable(tuple(rows), paths, context)
+    return TensorTable(tuple(rows), paths, fields)
 
 
 def to_tsv(table: TensorTable, path: Path) -> None:
-    """The table in the committed file's form, which `from_tsv` reads."""
+    """The table in the committed file's form, with its fields in the JSON beside it, which `from_tsv` reads."""
     with path.open("w", newline="") as f:
-        f.write(f"{CONTEXT_LINE}{table.context_length}\n")
         w = csv.writer(f, delimiter="\t", lineterminator="\n")
         w.writerow(["name", "type", "ggml_type", "shape", "bytes", "shard", "data_offset", "category"])
         for t in table.tensors:
             shape = "x".join(map(str, t.shape))
             w.writerow([t.name, t.type_name, t.ggml_type, shape, t.nbytes, t.shard, t.offset, t.category])
+    fields_path(path).write_text(json.dumps(table.fields, indent=1) + "\n")
 
 
 def from_gguf_cached(path: Path, cache: Path | None) -> TensorTable:
-    """`from_gguf`, kept in `cache` as a TSV named by each shard's path, size and modification time. A start after
-    the first reads the TSV, much faster than the GGUF's header."""
+    """`from_gguf`, kept in `cache` as a TSV and its fields' JSON, named by each shard's path, size and modification
+    time. A start after the first reads them, much faster than the GGUF's header."""
     if cache is None:
         return from_gguf(path)
     paths = shard_paths(path)
-    key = "\n".join(f"{p.resolve()} {p.stat().st_size} {p.stat().st_mtime_ns}" for p in paths)
+    key = "\n".join(
+        [f"form {_CACHE_FORM}"] + [f"{p.resolve()} {p.stat().st_size} {p.stat().st_mtime_ns}" for p in paths]
+    )
     file = cache / f"tensors-{hashlib.sha256(key.encode()).hexdigest()[:16]}.tsv"
-    if file.is_file():
-        kept = from_tsv(file)
-        if kept.context_length:
-            return replace(kept, shard_paths=paths)
+    if file.is_file() and fields_path(file).is_file():
+        return replace(from_tsv(file), shard_paths=paths)
     table = from_gguf(path)
     cache.mkdir(parents=True, exist_ok=True)
-    tmp = file.with_name(f"{file.name}.{os.getpid()}.tmp")
+    tmp = file.with_name(f"{file.stem}.{os.getpid()}.tsv")
     to_tsv(table, tmp)
+    fields_path(tmp).replace(fields_path(file))
     tmp.replace(file)
     return table
