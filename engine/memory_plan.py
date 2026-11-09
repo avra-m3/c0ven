@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from itertools import pairwise
 from pathlib import Path
@@ -20,6 +20,8 @@ from engine.api.interface import PAGE_CELLS
 GIB = 2**30
 
 SSD_TIER_HEADROOM = 24 * GIB
+ARENA_PIECE = GIB
+"""The core takes its arena in pieces of this many bytes (the core's kArenaPiece)."""
 """What a plan with an SSD tier leaves free on the host, bytes: the 22 GiB default of `tools/check.py --mem-floor` and
 2 GiB, so a timed run does not stop at the floor."""
 
@@ -38,7 +40,7 @@ class ModelMemory:
     draft_per_card: int
     working_per_card: int
     """*Estimate*: each card's memory outside the weights, the draft layer, the sequences' reserve and the expert
-    cache, which the plan takes unless PlanOptions.working_per_card gives the core's figure."""
+    cache that no option changes. PlanOptions.working_per_card, the core's figure, replaces this and `working_of`."""
     layers: int
     experts: int
     expert_bytes: int
@@ -59,6 +61,8 @@ class ModelMemory:
     max_context: int
     ngram_bytes: int
     """The n-gram table, which stays in the file unless the plan holds it in RAM."""
+    working_of: Callable[[PlanOptions, int], int] | None = None
+    """*Estimate*: what the options add to `working_per_card`, given them and the KV pool in tokens; None: nothing."""
     card_weights: tuple[int, ...] = ()
     """Each card's weights, bytes, where the cards differ, in place of `weights_per_card`; empty: all hold that."""
     layer_expert_bytes: tuple[int, ...] = ()
@@ -72,6 +76,9 @@ class ModelMemory:
     """The ring decode's SSD reads fill, host bytes."""
     prompt_staging_per_card: int = 0
     """Each card's prompt staging slots, bytes, taken before the experts."""
+    staging_per_uncached: int = 0
+    """Each card's prompt staging for one expert a layer it does not cache, bytes. The core takes it from what the
+    experts have, so fewer cached experts cost more of it; `free_per_card` stays the memory before it."""
     prompt_host_ring: int = 0
     """The ring prompts stage SSD-tier experts through, host bytes, taken before the arena."""
     routes_per_row: int = 0
@@ -97,7 +104,9 @@ class ModelMemory:
 @dataclass(frozen=True, slots=True)
 class PlanOptions:
     slots: int = 1
-    context: int = 262_144
+    context: int = 0
+    """Each slot's context, in tokens; 0: the model's whole context (ModelMemory.max_context), which `plan` puts in
+    its MemoryPlan.options."""
     cards: int = 2
     """Cards the engine runs on: the tensor split's two, or one holding every weight whole."""
     usable_vram: int | None = None
@@ -126,6 +135,9 @@ class PlanOptions:
     """`--ram-max`: a limit the user sets on the host memory the plan may take; None: none."""
     ngram_in_ram: bool = False
     """The whole n-gram table in RAM, counted in the host total."""
+    hugetlb_pool: int | None = None
+    """`--hugepages`: the host's free reserved huge pages, bytes. The arena's pieces take them first, and what they
+    hold is not counted against host_memory, which leaves them out. None: the arena is all in host memory."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -246,11 +258,20 @@ class MemoryPlan:
         return self.experts_cached // self.layers
 
     @property
+    def arena_reserved_bytes(self) -> int:
+        """The part of the arena in reserved huge pages (PlanOptions.hugetlb_pool): the core's whole pieces that fit
+        in them."""
+        if self.options.hugetlb_pool is None:
+            return 0
+        return min(self.arena_bytes, self.options.hugetlb_pool // ARENA_PIECE * ARENA_PIECE)
+
+    @property
     def host_bytes(self) -> int:
-        """The host memory the engine takes: the pinned total, the working estimate, and the n-gram table when it is
-        in RAM."""
+        """The host memory the engine takes: the pinned total but for the arena's part in reserved huge pages, the
+        working estimate, and the n-gram table when it is in RAM."""
         return (
             self.pinned_bytes
+            - self.arena_reserved_bytes
             + self.options.host_working
             + (self.ngram_bytes if self.options.ngram_in_ram else 0)
             + self.host_caches_bytes
@@ -286,6 +307,11 @@ class MemoryPlan:
             ("free for experts per card", gib(self.free_per_card)),
             ("experts cached", f"{self.experts_cached:,} of {self.experts_total:,}"),
             ("host arena", gib(self.arena_bytes)),
+            *(
+                [("host arena in reserved huge pages", gib(self.arena_reserved_bytes))]
+                if o.hugetlb_pool is not None
+                else []
+            ),
             ("streamed KV", gib(self.streamed_kv_bytes)),
             ("checkpoints", f"{o.checkpoints} x {self.checkpoint_bytes // o.checkpoints if o.checkpoints else 0:,} B"),
             ("pinned host memory", gib(self.pinned_bytes)),
@@ -358,6 +384,8 @@ def reserve_per_sequence(m: ModelMemory, context: int) -> int:
 def plan(m: ModelMemory, o: PlanOptions) -> MemoryPlan:
     """The plan for the options. Raises PlanError, with options that fit where there are some, when the cards or the
     host's memory are too small."""
+    if o.context == 0:
+        o = replace(o, context=m.max_context)
     try:
         p = _plan(m, o)
     except PlanError as exc:
@@ -446,13 +474,15 @@ def _fill(budget: int, sizes: Sequence[int], caps: Sequence[int]) -> tuple[int, 
 
 
 def _arena_budget(m: ModelMemory, o: PlanOptions, pinned_outside_arena: int) -> int:
-    """What a model with an SSD tier may give its arena; 0 when the host has none to spare, or is not known."""
+    """What a model with an SSD tier may give its arena: the reserved huge pages' whole pieces, and what the host can
+    spare; the host's part is 0 when it has none to spare, or is not known."""
+    reserved = (o.hugetlb_pool or 0) // ARENA_PIECE * ARENA_PIECE
     limit = host_limit(o)
     if limit is None:
-        return 0
+        return reserved
     ngram = m.ngram_bytes if o.ngram_in_ram else 0
     caches = m.engram_cache + m.ssd_staging_ring + m.prompt_host_ring
-    return max(0, limit - pinned_outside_arena - o.host_working - ngram - caches - SSD_TIER_HEADROOM)
+    return reserved + max(0, limit - pinned_outside_arena - o.host_working - ngram - caches - SSD_TIER_HEADROOM)
 
 
 def _layer_experts(
@@ -481,7 +511,12 @@ def _plan(m: ModelMemory, o: PlanOptions) -> MemoryPlan:
     if vram is None:
         raise PlanError("no card was read and --card-memory is not set")
     draft = m.draft_per_card if o.draft else 0
-    working = o.working_per_card if o.working_per_card is not None else m.working_per_card
+    pages_per_slot = -(-o.context // PAGE_CELLS)
+    pages = -(-o.kv_tokens // PAGE_CELLS) if o.kv_tokens else o.slots * pages_per_slot + o.cached_prefix_pages
+    if o.working_per_card is not None:
+        working = o.working_per_card
+    else:
+        working = m.working_per_card + (m.working_of(o, pages * PAGE_CELLS) if m.working_of else 0)
     weights = m.weights
     per_sequence = reserve_per_sequence(m, o.context)
     reserve = o.slots * per_sequence
@@ -494,22 +529,30 @@ def _plan(m: ModelMemory, o: PlanOptions) -> MemoryPlan:
             f"{max(weights) / GIB:.2f}, the draft layer {draft / GIB:.2f}, working memory "
             f"{working / GIB:.2f}{staging} and {o.slots} x {o.context:,} positions {reserve / GIB:.2f}."
         )
-    pages_per_slot = -(-o.context // PAGE_CELLS)
     if 0 < o.kv_tokens < o.context:
         raise PlanError(f"a KV pool of {o.kv_tokens:,} tokens holds no sequence of {o.context:,}")
-    pages = -(-o.kv_tokens // PAGE_CELLS) if o.kv_tokens else o.slots * pages_per_slot + o.cached_prefix_pages
     # The host holds every page's K and V (the core's kv_host), and each slot's draft ring.
     streamed = pages * PAGE_CELLS * m.kv_cell_host + o.slots * m.draft_kv_host
     checkpoints = o.checkpoints * m.checkpoint_bytes
     on_cards: tuple[tuple[int, ...], ...] = ()
     tiers: Tiers | None = None
+    staging_per_card = 0
     if m.layer_expert_bytes or m.ssd_tier:
         on_cards, tiers = _layer_experts(m, o, card_free, streamed + checkpoints)
         cached = sum(tiers.vram)
         arena = tiers.bytes_of(tiers.arena)
     else:
         share = -(-m.expert_bytes // m.cards)
-        cached = min(m.experts, free // share)
+        stage = m.staging_per_uncached
+        in_layer = m.experts // m.layers
+        if free < in_layer * stage:
+            raise PlanError(
+                f"the cards are {in_layer * stage - free:,} B short of the prompt path's staging: "
+                f"{in_layer * stage / GIB:.2f} GiB with no expert cached, and {free / GIB:.2f} GiB is free."
+            )
+        # n experts a layer take n x layers x share + (in_layer - n) x stage.
+        cached = min(m.experts, (free - in_layer * stage) * m.layers // (share * m.layers - stage))
+        staging_per_card = (m.experts - cached) * stage // m.layers
         arena = (m.experts - cached) * m.expert_bytes
     return MemoryPlan(
         options=o,
@@ -537,5 +580,5 @@ def _plan(m: ModelMemory, o: PlanOptions) -> MemoryPlan:
         engram_cache_bytes=m.engram_cache,
         ssd_staging_bytes=m.ssd_staging_ring,
         prompt_host_ring_bytes=m.prompt_host_ring,
-        prompt_staging_per_card=m.prompt_staging_per_card,
+        prompt_staging_per_card=m.prompt_staging_per_card + staging_per_card,
     )

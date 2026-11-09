@@ -1275,6 +1275,7 @@ engine_status engine_open(const engine_config *config, engine_info *info, engine
     opt.rare_on_cpu = opt.adapt_swaps;  // both change a request's rounding; --deterministic turns both off
     opt.share_kv = (config->flags & ENGINE_CONFIG_SHARE_KV) != 0;
     opt.ngram_in_ram = (config->flags & ENGINE_CONFIG_NGRAM_RAM) != 0;
+    opt.hugetlb_arena = (config->flags & ENGINE_CONFIG_HUGETLB) != 0;
     auto e = std::make_unique<engine_ctx>();
     e->model = engine::open_model(config->model_path, opt);
     e->image_shape = e->model->image_shape();

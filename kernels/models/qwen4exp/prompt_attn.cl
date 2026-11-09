@@ -203,7 +203,7 @@ REQD_SG __kernel void p_attn_rows(__global const float *Q, __global const uchar 
       float part_ = 0.0f;
       for (uint t = 0; t < 16; t++) part_ += qh[t] * kv[t];
       float dot = sub_group_reduce_add(db * part_);
-      if (lane == 0) p[h][i] = dot * (1.0f / 16.0f);
+      if (lane == 0) p[h][i] = dot * Q_ATT_SCALE;
     }
   }
   barrier(CLK_LOCAL_MEM_FENCE);
@@ -269,18 +269,17 @@ __kernel void p_attn_rows_merge(__global const float *Q, uint nq, __global const
   o16[((ulong)r * nq + lh) * Q_ATT_D + d] = convert_half(acc / sum * sigmoid(gate));
 }
 
-// The prompt indexer's scores (p_idx_score's, same rows, blocks and stores) on the XMX units. Each operand is split
-// in two fp16 terms, x = hi + lo, and a score is hi hi + hi lo + lo hi summed in f32 (three DPAS calls): plain fp16
-// changes a row's chosen blocks one row in six, the split as often as summing the f32 products in another order (on
-// long-256k's queries and keys of layers 3, 23 and 47: 0 to 2 rows of 4,352 differ, by one block of 512). At
-// position 239,360, 10.5 ms a layer against p_idx_score's 21.2; a 255k prompt's 8.9 s become 4.3 s.
+// The prompt indexer's scores on the XMX units: scores[t][lb] = sum_h relu(iq_h . K_b) for this card's blocks complete
+// at row t's position, by local index lb (block lb C + c), rows nb_max apart. Each operand is split in two fp16 terms,
+// x = hi + lo, and a score is hi hi + hi lo + lo hi summed in f32 (three DPAS calls): plain fp16 changes a row's chosen
+// blocks one row in six, the split as often as summing the f32 products in another order (on long-256k's queries and
+// keys of layers 3, 23 and 47: 0 to 2 rows of 4,352 differ, by one block of 512).
 // A work-group takes IDX_XMX_ROWS rows of a run, as 8 tiles of 2 rows by 4 heads (the queries split by p_idx_qsplit:
 // qh, ql [chunk row][Q_IDX_D][Q_IDX_H]); each sub-group takes 16 IDX_XMX_TB blocks, their keys split by p_idx_ksplit
 // (kh, kl: [local page][Q_IDX_D]). Groups
-// (ceil(nb_max / (16 IDX_XMX_TB IDX_XMX_SG)), ceil(T / IDX_XMX_ROWS), runs), 16 IDX_XMX_SG.
+// (ceil(nb_max / (16 IDX_XMX_TB kIdxXmxSg)), ceil(T / IDX_XMX_ROWS), runs), 16 kIdxXmxSg (model_impl.h).
 #define IDX_XMX_ROWS 16
 #define IDX_XMX_TB 2
-#define IDX_XMX_SG 4
 #if Q_IDX_H != 4 || Q_IDX_D % 16
 #error "p_idx_score_xmx tiles 2 rows by the indexer's 4 heads, and 16 dimensions a step"
 #endif

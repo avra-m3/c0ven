@@ -17,10 +17,8 @@ namespace detail {
 
 using Ranges = std::vector<std::pair<uint64_t, uint64_t>>;  // [start, start + count)
 
-inline constexpr uint32_t kMtpExperts = 512;  // the draft layer's checkpoint has its own count (docs/MODEL_FILES.md)
 inline constexpr uint32_t kSgSize = 16;  // the kernels' SG_SIZE
 inline constexpr uint32_t kAttXmxSubGroups = 16;  // p_attn_xmx's sub-groups a work-group (prompt_attn.cl)
-inline constexpr uint32_t kIdxScoreRows = 8;  // prompt.cl's IDX_SCORE_ROWS
 // The fewest rows of a prompt chunk at which the two cards split the hyper-connections
 // (docs/measurements/MEASUREMENTS.md#2026-10-17-hc-split).
 inline constexpr uint32_t kHcSplitRows = 2048;
@@ -30,7 +28,7 @@ inline constexpr uint32_t kFetchRows = 1024;
 // In such a chunk on one card, an uncached expert that this many rows or fewer picked is computed by the CPU instead of
 // copied to the card (prompt.cpp, rare_experts; docs/measurements/MEASUREMENTS.md#2026-11-05-rare-experts-on-the-cpu).
 inline constexpr uint32_t kCpuRows = 3;
-// p_idx_score_xmx's work-group (prompt_attn.cl): IDX_XMX_ROWS rows by IDX_XMX_SG sub-groups of 16 IDX_XMX_TB blocks.
+// p_idx_score_xmx's work-group (prompt_attn.cl): IDX_XMX_ROWS rows by kIdxXmxSg sub-groups of 16 IDX_XMX_TB blocks.
 inline constexpr uint32_t kIdxXmxRows = 16, kIdxXmxSg = 4, kIdxXmxBlocks = 16 * 2 * kIdxXmxSg;
 // The streamed pool (kvs_claim): the logical pages a claim takes past each row's, so the steps that open them need
 // no claim; the pages a step's rows can claim at most, its miss list; and what a width's list without the claim adds
@@ -50,9 +48,6 @@ inline uint32_t step_width(uint32_t n) {
 // A prompt token's weight in the swap counts against a written token's 1: there are many, and decode is what the
 // cache serves.
 inline constexpr float kPromptRouting = 0.05f;
-// The main layers whose outputs DFlash 2 reads, in the order of its features (zero-based; the model's
-// target_layer_ids).
-inline constexpr uint32_t kDfTargetLayers[DF_LAYERS] = {5, 15, 25, 35, 45};
 
 inline uint64_t a8_bytes(uint64_t K) { return K + K / 8; }
 inline uint64_t align256(uint64_t x) { return (x + 255) & ~255ull; }
@@ -307,13 +302,12 @@ struct Model::PromptCard {
   uint32_t *prof = nullptr;  // [layer][expert] rows routed, with Options::profile_routing (card 0)
   // The experts the cards do not cache, streamed in on the copy engine: two layers' worth, used in turn.
   uint8_t *stage = nullptr;
-  uint8_t *stage_cpu = nullptr;  // the same memory, for the CPU's writes; null where it could not be mapped
+  uint8_t *stage_cpu = nullptr;  // the same memory, mapped for the CPU's writes
   uint64_t stage_slot = 0;
   std::vector<int32_t *> stage_map;  // per layer: expert -> staging slot, or -1
   std::unique_ptr<ze::List> copy;
-  // Chunks of kFetchRows and under: the immediate list the host fetches experts on, and each layer's routing counts
-  // (p_moe_count's), copied to host memory as the router finishes: [layer][expert].
-  std::unique_ptr<ze::List> fetch;
+  // Chunks of kFetchRows and under: each layer's routing counts (p_moe_count's), copied to host memory as the router
+  // finishes: [layer][expert].
   uint32_t *routed = nullptr;
   // The same chunks on one card: each layer's xg copied to host memory for the CPU, and the CPU's mapping of yg for its
   // results. Null where the CPU computes no expert of a chunk.

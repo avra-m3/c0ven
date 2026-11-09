@@ -200,17 +200,17 @@ shaftTex.wrapT = THREE.RepeatWrapping;
 const shaftM = new THREE.MeshBasicMaterial({ map: shaftTex, fog: false });
 const glassOut = mat(0x10141b, { metalness: 0.3, roughness: 0.15 });
 
-// The floor marks on a lift's dial: G, 1, 2, 3 are spaced wide, the closed floors run up to 48 in what is left.
+// The floor marks on a lift's dial: G and the open floors are spaced wide, the closed floors run up to 48 in what is left.
 export const dialAngle = (level) => {
-  const stops = [-1.32, -0.84, -0.36, 0.12];
-  if (level <= 3) { const i = Math.floor(level), f = level - i; return i >= 3 ? stops[3] : stops[i] + (stops[i + 1] - stops[i]) * f; }
-  return 0.12 + (Math.min(level, 48) - 3) / 45 * 1.2;
+  const stops = [-1.32, -0.96, -0.6, -0.24, 0.12], last = stops.length - 1;
+  if (level <= last) { const i = Math.floor(level), f = level - i; return i >= last ? stops[last] : stops[i] + (stops[i + 1] - stops[i]) * f; }
+  return 0.12 + (Math.min(level, 48) - last) / (48 - last) * 1.2;
 };
 const dialFace = canvasTex(256, 128, (g, w, h) => {
   g.fillStyle = "#b39055"; g.beginPath(); g.moveTo(10, h); g.arc(w / 2, h, 118, Math.PI, 0); g.closePath(); g.fill();
   g.fillStyle = "#1a1d22"; g.beginPath(); g.moveTo(20, h); g.arc(w / 2, h, 108, Math.PI, 0); g.closePath(); g.fill();
   g.textAlign = "center"; g.textBaseline = "middle"; g.font = "600 22px 'Barlow Condensed', Arial Narrow, sans-serif"; g.fillStyle = "#e9e2cf";
-  [["G", 0], ["1", 1], ["2", 2], ["3", 3], ["48", 48]].forEach(([s, lv]) => {
+  [["G", 0], ["1", 1], ["2", 2], ["3", 3], ["4", 4], ["48", 48]].forEach(([s, lv]) => {
     const a = dialAngle(lv); g.fillText(s, w / 2 + Math.sin(a) * 88, h - Math.cos(a) * 88);
   });
   g.fillStyle = "rgba(233,226,207,0.5)";
@@ -286,6 +286,16 @@ export function makeHoist(parent, x, z, top) {
       chain.position.set(x, (t + b) / 2, z); chain.scale.y = Math.max(0.01, t - b);
     },
   };
+}
+
+// A side wall from z0 to z1, cut away towards the front so a room stays open to a camera above it.
+export function cutawayWall(parent, x, m, z0, z1, back, front) {
+  const sh = new THREE.Shape();
+  sh.moveTo(z0, 0); sh.lineTo(z1, 0); sh.lineTo(z1, front); sh.lineTo(z0, back); sh.closePath();
+  const w = new THREE.Mesh(new THREE.ExtrudeGeometry(sh, { depth: 0.12, bevelEnabled: false }), m);
+  // The shape's x runs along z, back to front; the extrusion is the wall's thickness, along -x.
+  w.rotation.y = -Math.PI / 2; w.position.set(x + 0.06, 0, 0); w.castShadow = w.receiveShadow = true;
+  parent.add(w); return w;
 }
 
 // A wall from x0 to x1, h tall, its front face at z, with a hole for lift doors at doorX. doorY is how far above the

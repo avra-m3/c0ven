@@ -100,7 +100,8 @@ A load locks the arena in memory and stops if it cannot, so the container needs 
 daemon that cannot raise the limit, such as one inside another container, refuses that flag. There, set
 `ENGINE_UNLOCKED_ARENA=1` to load with the arena unlocked. The kernel may then swap out or move arena pages the copy
 engines read, and under the host's reclaim a copy can reset a card's copy engine
-([ADR-0035](adr/0035-the-arena-in-the-engines-own-memory.md)). Do not time runs that way.
+([ADR-0035](adr/0035-the-arena-in-the-engines-own-memory.md)). Do not time runs that way. Arena pieces in reserved
+huge pages (`--hugepages`, [server options](OPTIONS.md#reserved-huge-pages)) are not locked.
 
 `ZE_AFFINITY_MASK=0` limits a run to card 0. The model then runs whole on one card, with fewer experts cached.
 
@@ -155,15 +156,14 @@ consecutive tokens of up to four sequences (`Model::prompt_runs`):
   by the swap counts, until the layer's router has run, then the rest the router picked. The chunk's list waits for
   them after the cached experts' and the shared expert's products
   ([ADR-0046](adr/0046-a-short-chunk-fetches-the-experts-its-router-picks.md),
-  [ADR-0065](adr/0065-a-short-chunk-writes-through-a-mapping.md)). Where the system will not map the buffer the thread
-  copies through an immediate list, which the runtime makes from the anonymous arena with the CPU
-  ([measurements/LEVEL_ZERO.md](measurements/LEVEL_ZERO.md) row 31;
-  [the record](measurements/MEASUREMENTS.md#2026-10-21-short-chunk-fetch)).
+  [ADR-0065](adr/0065-a-short-chunk-writes-through-a-mapping.md)). A load where the system will not export or map
+  the buffer fails. The log gives each card's touch of the buffer at load and, after a chunk, any page faults its
+  writes took.
 - On one card, in those chunks, an uncached expert that three rows or fewer picked is not staged (`kCpuRows`):
   `p_moe_scan` gives it no tiles and `rare_experts`, on the engine thread and the workers, computes it. The chunk's list
   copies each layer's `xg` to host memory, and waits before the staged products until the CPU has written its rows of
   `yg` through its mapping of the region
-  ([ADR-0066](adr/0066-on-one-card-the-cpu-computes-a-short-chunks-rarest-experts.md)).
+  ([ADR-0072](adr/0072-on-one-card-the-cpu-computes-a-short-chunks-rarest-experts.md)).
 - The cards exchange fp16 partial sums. The kernel that makes a card's partial sum also writes it into the other
   card's memory while it computes, 64 bytes per store. Stores of 32 bytes or less cross at a tenth of the rate
   ([the record](measurements/MEASUREMENTS.md#2026-10-15-prompt-exchange-stores)).

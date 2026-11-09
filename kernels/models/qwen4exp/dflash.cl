@@ -19,13 +19,15 @@ static inline float wg_sum(float v, __local float *red) {
   return t;
 }
 
-// Row r's features from the residual's four streams after one of the five layers (k): their mean, as bf16, into
+// Row r's features from the residual's streams after one of the five layers (k): their mean, as bf16, into
 // out[r][k * Q_EMBD ..]. The decode step's rows. Groups (Q_EMBD / 64, width), 64.
 __kernel void df_feat(__global const float *R, uint k, __global const StepPlan *plan, __global ushort *out) {
   uint i = get_global_id(0), r = get_group_id(1);
   if (r >= plan->nrows) return;
   __global const float *x = R + (ulong)r * Q_HC_DIM + i;
-  float m = (x[0] + x[Q_EMBD] + x[2 * Q_EMBD] + x[3 * Q_EMBD]) * 0.25f;
+  float m = x[0];
+  for (uint s = 1; s < Q_HC; s++) m += x[s * Q_EMBD];
+  m *= Q_HC_MEAN;
   out[(ulong)r * DF_FEAT + k * Q_EMBD + i] = f32_to_bf16(m);
 }
 
@@ -41,7 +43,9 @@ __kernel void p_df_feat(__global const float *R, __global const PromptPlan *runs
   const uint t = pp->row0 + n - m + j;
   if (t < r0 || t >= r1) return;
   __global const float *x = R + (ulong)t * Q_HC_DIM + i;
-  float v = (x[0] + x[Q_EMBD] + x[2 * Q_EMBD] + x[3 * Q_EMBD]) * 0.25f;
+  float v = x[0];
+  for (uint s = 1; s < Q_HC; s++) v += x[s * Q_EMBD];
+  v *= Q_HC_MEAN;
   out[(ulong)j * DF_FEAT + k * Q_EMBD + i] = f32_to_bf16(v);
 }
 

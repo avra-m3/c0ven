@@ -23,5 +23,7 @@ engine_add_kernel_module(qwen4exp_gdn SOURCE kernels/models/qwen4exp/prompt_gdn.
 engine_add_kernel_module(qwen4exp_dflash SOURCE kernels/models/qwen4exp/dflash.cl
                          OPTIONS -I${CMAKE_SOURCE_DIR}/core/models/qwen4exp)
 # The image encoder's steps between its products (docs/spec/MODEL_VISION.md).
-engine_add_kernel_module(qwen4exp_vision SOURCE kernels/models/qwen4exp/vision.cl)
-engine_add_kernel_module(qwen4exp_vision_attn SOURCE kernels/models/qwen4exp/vision.cl OPTIONS -cl-intel-256-GRF-per-thread)
+engine_add_kernel_module(qwen4exp_vision SOURCE kernels/models/qwen4exp/vision.cl
+                         OPTIONS -I${CMAKE_SOURCE_DIR}/core/models/qwen4exp)
+engine_add_kernel_module(qwen4exp_vision_attn SOURCE kernels/models/qwen4exp/vision.cl
+                         OPTIONS -cl-intel-256-GRF-per-thread -I${CMAKE_SOURCE_DIR}/core/models/qwen4exp)

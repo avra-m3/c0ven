@@ -27,23 +27,23 @@ RUN apt-get update \
 # The GPU stack and uv, from their release pages, checked against ADR-0002's checksums.
 WORKDIR /tmp/debs
 RUN set -e; \
-    cr=https://github.com/intel/compute-runtime/releases/download/26.35.39758.10; \
-    igc=https://github.com/intel/intel-graphics-compiler/releases/download/v2.41.5; \
+    cr=https://github.com/intel/compute-runtime/releases/download/26.40.40196.8; \
+    igc=https://github.com/intel/intel-graphics-compiler/releases/download/v2.42.6; \
     ze=https://github.com/oneapi-src/level-zero/releases/download/v1.32.0; \
-    curl -fsSLO "$cr/libze-intel-gpu1_26.35.39758.10-0_amd64.deb"; \
-    curl -fsSLO "$cr/libigdgmm12_22.10.0_amd64.deb"; \
-    curl -fsSLO "$cr/intel-ocloc_26.35.39758.10-0_amd64.deb"; \
-    curl -fsSLO "$igc/intel-igc-core-2_2.41.5+22716_amd64.deb"; \
-    curl -fsSLO "$igc/intel-igc-opencl-2_2.41.5+22716_amd64.deb"; \
+    curl -fsSLO "$cr/libze-intel-gpu1_26.40.40196.8-0_amd64.deb"; \
+    curl -fsSLO "$cr/libigdgmm12_22.10.2_amd64.deb"; \
+    curl -fsSLO "$cr/intel-ocloc_26.40.40196.8-0_amd64.deb"; \
+    curl -fsSLO "$igc/intel-igc-core-2_2.42.6+23070_amd64.deb"; \
+    curl -fsSLO "$igc/intel-igc-opencl-2_2.42.6+23070_amd64.deb"; \
     curl -fsSLO "$ze/libze1_1.32.0+u24.04_amd64.deb"; \
     curl -fsSLO "$ze/libze-dev_1.32.0+u24.04_amd64.deb"; \
     curl -fsSLO https://github.com/astral-sh/uv/releases/download/0.12.22/uv-x86_64-unknown-linux-gnu.tar.gz; \
     printf '%s\n' \
-      'c19a641b953d55aebbf1d51bec364a84bf629f985e02fbbe6dc70224c0e88470  libze-intel-gpu1_26.35.39758.10-0_amd64.deb' \
-      '6031a63d6e8a12ce61c14efc15f2c8e727061286e3820b8594e6d00615e04d54  libigdgmm12_22.10.0_amd64.deb' \
-      'c64bff586edf2bd9b49f3e4c9c2be25e05c43466e4dafa2a2c3948d498c736b7  intel-ocloc_26.35.39758.10-0_amd64.deb' \
-      '0a6e64a663ae65a0fa02d6912ae3b6b37cf85b90c21cc423fd9fef70aaf4f628  intel-igc-core-2_2.41.5+22716_amd64.deb' \
-      '779e1b9e88098eb25711e9a8f67c2752665bad22f134aa40ed5649f6e1b87058  intel-igc-opencl-2_2.41.5+22716_amd64.deb' \
+      'd9c86b2bb195baea6936c2708846cd1fceeadc39bc5e167f728858a5ca6fb86e  libze-intel-gpu1_26.40.40196.8-0_amd64.deb' \
+      '053fceadb84a1d2f9a30a0d1bc9b16424b3f1a90cc49900fcd80aadcf25c8a4d  libigdgmm12_22.10.2_amd64.deb' \
+      'b2868d6d7958cc5ca28fa9b48a7d39961760ee39ef07673d5b58894dd53d6b4e  intel-ocloc_26.40.40196.8-0_amd64.deb' \
+      'e20539632f2d99875d8f8b225d5da58b31f98baa54bb47c6328aa98ec473ab9d  intel-igc-core-2_2.42.6+23070_amd64.deb' \
+      '7f5593cf828503ffb8450967768bde9209e22753bc576296e846b5a751011fa3  intel-igc-opencl-2_2.42.6+23070_amd64.deb' \
       '3c846af24f84a89150f6a4c6adcb4ea4ebef74dc119fe44f4e269bfaa72c7ba6  libze1_1.32.0+u24.04_amd64.deb' \
       '4b783ed5fb937a55a7a0f3a8bc66af252f362e82476ebc0304da36173c9f2eb8  libze-dev_1.32.0+u24.04_amd64.deb' \
       'b9980552309f09c15172b8be828555e375097f16deb459795ce7bfd200380f0b  uv-x86_64-unknown-linux-gnu.tar.gz' \

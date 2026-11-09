@@ -50,11 +50,12 @@ static inline float rope(__local const float *x, uint d, uint pos) {
   return d < Q_ROT / 2 ? x[i] * c - x[i + Q_ROT / 2] * s : x[i] * s + x[i + Q_ROT / 2] * c;
 }
 
-// Interleaved M-RoPE (docs/spec/MODEL_VISION.md, section 4.2): pair i turns by the height position when i % 3 is 1,
-// by the width position when i % 3 is 2 and i < 30, by the time position otherwise. With t = h = w it is rope().
+// Interleaved M-RoPE (docs/spec/MODEL_VISION.md, section 4.2): pair i turns by the height position when i % 3 is 1
+// and i < 3 Q_ROPE_SEC_H, by the width position when i % 3 is 2 and i < 3 Q_ROPE_SEC_W (30), by the time position
+// otherwise. With t = h = w it is rope().
 static inline float rope3(__local const float *x, uint d, uint t, uint h, uint w) {
   uint i = d % (Q_ROT / 2), m = i % 3;
-  return rope(x, d, m == 1 ? h : (m == 2 && i < 30) ? w : t);
+  return rope(x, d, (m == 1 && i < 3 * Q_ROPE_SEC_H) ? h : (m == 2 && i < 3 * Q_ROPE_SEC_W) ? w : t);
 }
 
 // One Q8_0 block of 32 values from local memory into dst (d = max|x| / 127, q = round(x / d)).
@@ -112,47 +113,13 @@ __kernel void hc_mix(__global const float *n, __global const float *a, __global 
   float acc = 0.0f;
   for (uint s = 0; s < Q_HC; s++)
     acc += n[(ulong)r * Q_HC_DIM + s * Q_EMBD + i] * sigmoid(a[(ulong)r * Q_HC_DIM + i * Q_HC + s]);
-  x[(ulong)r * Q_EMBD + i] = acc * 0.25f;
+  x[(ulong)r * Q_EMBD + i] = acc * Q_HC_MEAN;
 }
 
-// The up projection (BF16, Q_HC_DIM rows of K = Q_HC_LR, value-major) and hc_mix in one: a sub-group takes rows
-// 4i .. 4i+3, four lanes per row as matvec_bf16 with lpr 4, so it holds a_s[i] for every stream and writes x[i]
-// with hc_mix's sum. lr rows lr_stride apart. Groups (Q_EMBD / 4, 1), 64; rows up to plan->nrows.
-#define UPM_LPR 4
-REQD_SG __kernel void hc_up_mix(__global const ushort *W, __global const float *lr, uint lr_stride,
-                                __global const float *n, __global const StepPlan *plan, __global float *x) {
-  const uint lane = sg_lane(), sub = lane % UPM_LPR;
-  const uint i = get_group_id(0) * 4 + sg_id();
-  const uint row = Q_HC * i + lane / UPM_LPR;
-  __global const ushort *w = W + (ulong)row * Q_HC_LR;
-  const uint ntok = plan->nrows;
-  float acc[STEP_MAX_ROWS];
-  for (uint t = 0; t < STEP_MAX_ROWS; t++) acc[t] = 0.0f;
-  for (uint k = 8 * sub; k < Q_HC_LR; k += 8 * UPM_LPR) {
-    ushort8 wv = vload8(0, w + k);
-    float8 wf = (float8)(bf16_to_f32(wv.s0), bf16_to_f32(wv.s1), bf16_to_f32(wv.s2), bf16_to_f32(wv.s3),
-                         bf16_to_f32(wv.s4), bf16_to_f32(wv.s5), bf16_to_f32(wv.s6), bf16_to_f32(wv.s7));
-    for (uint t = 0; t < STEP_MAX_ROWS; t++) {
-      if (t >= ntok) break;
-      float8 xv = vload8(0, lr + (ulong)t * lr_stride + k);
-      acc[t] += dot(wf.lo, xv.lo) + dot(wf.hi, xv.hi);
-    }
-  }
-  for (uint t = 0; t < STEP_MAX_ROWS; t++) {
-    if (t >= ntok) break;
-    float a = acc[t];
-    for (uint m = 1; m < UPM_LPR; m <<= 1) a += sub_group_shuffle_xor(a, m);
-    float mix = 0.0f;
-    for (uint s = 0; s < Q_HC; s++)
-      mix += n[(ulong)t * Q_HC_DIM + s * Q_EMBD + i] * sigmoid(sub_group_shuffle(a, UPM_LPR * s));
-    if (lane == 0) x[(ulong)t * Q_EMBD + i] = mix * 0.25f;
-  }
-}
-
-// hc_up_mix on the XMX units: dpas up projection of lrb (8 bf16 rows of Q_HC_LR, all read; to_bf16_rows), 16 of W's
-// value-major rows a sub-group (4 values' a for the 4 streams), then hc_mix's sum in stream order. A work-group's 8
-// sub-groups write 32 values of x, also as bf16 into xb (rows Q_EMBD apart) and as a8 into xa (a8.h; rows
-// Q_EMBD + Q_EMBD / 8 bytes apart, sub-group m storing row m). Groups (Q_HC_DIM / 128), 128.
+// The up projection and hc_mix in one, on the XMX units: dpas up projection of lrb (8 bf16 rows of Q_HC_LR, all read;
+// to_bf16_rows), 16 of W's value-major rows a sub-group (4 values' a for the 4 streams), then hc_mix's sum in stream
+// order. A work-group's 8 sub-groups write 32 values of x, also as bf16 into xb (rows Q_EMBD apart) and as a8 into xa
+// (a8.h; rows Q_EMBD + Q_EMBD / 8 bytes apart, sub-group m storing row m). Groups (Q_HC_DIM / 128), 128.
 #define UPM_SGS 8
 REQD_SG __kernel void hc_up_mix_xmx(__global const ushort *W, __global const ushort *lrb, __global const float *n,
                                     __global const StepPlan *plan, __global float *x, __global uchar *xa,
@@ -177,9 +144,9 @@ REQD_SG __kernel void hc_up_mix_xmx(__global const ushort *W, __global const ush
     float mix = 0.0f;
     for (uint q = 0; q < Q_HC; q++) mix += sub_group_shuffle(term, (lane & ~3u) + q);
     if (s == 0) {
-      x[(ulong)m * Q_EMBD + i] = mix * 0.25f;
-      xb[(ulong)m * Q_EMBD + i] = f32_to_bf16(mix * 0.25f);
-      xs[m][i % 32] = mix * 0.25f;
+      x[(ulong)m * Q_EMBD + i] = mix * Q_HC_MEAN;
+      xb[(ulong)m * Q_EMBD + i] = f32_to_bf16(mix * Q_HC_MEAN);
+      xs[m][i % 32] = mix * Q_HC_MEAN;
     }
   }
   barrier(CLK_LOCAL_MEM_FENCE);
@@ -196,7 +163,7 @@ __kernel void hc_combine(__global const float *P, uint ncards, uint width, __glo
   float y = 0.0f;
   for (uint c = 0; c < ncards; c++) y += P[((ulong)c * width + r) * Q_EMBD + i];
   for (uint s = 0; s < Q_HC; s++)
-    R[(ulong)r * Q_HC_DIM + s * Q_EMBD + i] += 2.0f * sigmoid(inject[r * inj_stride + s] * 0.25f) * y;
+    R[(ulong)r * Q_HC_DIM + s * Q_EMBD + i] += 2.0f * sigmoid(inject[r * inj_stride + s] * Q_HC_MEAN) * y;
 }
 
 // hc_combine, then rms_norm of the block that follows (gamma) into out and outb, in one pass: the same sums in the
@@ -207,7 +174,7 @@ __kernel void hc_combine_norm(__global const float *P, uint ncards, uint width, 
   __local float red[64];
   uint s = get_group_id(0), r = get_group_id(1);
   ROW_OR_RETURN(r)
-  const float g = 2.0f * sigmoid(inject[r * inj_stride + s] * 0.25f);
+  const float g = 2.0f * sigmoid(inject[r * inj_stride + s] * Q_HC_MEAN);
   ulong base = (ulong)r * Q_HC_DIM + (ulong)s * Q_EMBD;
   // Every load first, so they are in flight together (P may be in host memory), then the updates.
   float v[Q_EMBD / 256], y[Q_EMBD / 256], y1[Q_EMBD / 256];
@@ -256,22 +223,22 @@ __kernel void gdn_conv(__global const float *m, __global const float *w, __globa
   for (uint r = 0; r < plan->nrows; r++) {
     uint pos = plan->rows[r].pos;
     __global float *st = state + plan->rows[r].slot * slot_stride;
-    float mv[3];
-    for (uint d = 1; d <= 3; d++)
-      mv[3 - d] = window && r >= d && plan->rows[r - d].slot == plan->rows[r].slot ? m[(ulong)(r - d) * nch + ch]
-                                                                                 : st[((pos + 3 - d) % 3) * nch + ch];
+    float mv[Q_GDN_HIST];
+    for (uint d = 1; d <= Q_GDN_HIST; d++)
+      mv[Q_GDN_HIST - d] = window && r >= d && plan->rows[r - d].slot == plan->rows[r].slot
+                               ? m[(ulong)(r - d) * nch + ch]
+                               : st[((pos + Q_GDN_HIST - d) % Q_GDN_HIST) * nch + ch];
     float mt = m[(ulong)r * nch + ch];
     float acc = k[0] * mv[0];
-    acc += k[1] * mv[1];
-    acc += k[2] * mv[2];
-    acc += k[3] * mt;
+    for (uint j = 1; j < Q_GDN_HIST; j++) acc += k[j] * mv[j];
+    acc += k[Q_GDN_HIST] * mt;
     float v = silu(acc);
     if (norm) v = v * rsqrt(wg_sum(v * v, red) + Q_EPS);
     u[(ulong)r * nch + ch] = v;
     if (window)
       wm[(ulong)r * nch + ch] = mt;
     else
-      st[(pos % 3) * nch + ch] = mt;
+      st[(pos % Q_GDN_HIST) * nch + ch] = mt;
   }
 }
 
@@ -284,7 +251,8 @@ __kernel void gdn_conv_commit(__global const float *wm, __global float *state, u
   for (uint k = 0; k < cp->nruns; k++) {
     __global const CommitRun *run = cp->runs + k;
     __global float *st = state + run->slot * slot_stride;
-    for (uint r = 0; r < run->n; r++) st[((run->pos0 + r) % 3) * nch + ch] = wm[(ulong)(run->row0 + r) * nch + ch];
+    for (uint r = 0; r < run->n; r++)
+      st[((run->pos0 + r) % Q_GDN_HIST) * nch + ch] = wm[(ulong)(run->row0 + r) * nch + ch];
   }
 }
 
@@ -704,7 +672,7 @@ REQD_SG __kernel void attn_split(__global const float *Q, __global const uchar *
       float part_ = 0.0f;
       for (uint t = 0; t < 16; t++) part_ += qh[t] * kv[t];
       float dot = sub_group_reduce_add(db * part_);
-      if (lane == 0) p[h][i] = dot * (1.0f / 16.0f);
+      if (lane == 0) p[h][i] = dot * Q_ATT_SCALE;
     }
   }
   barrier(CLK_LOCAL_MEM_FENCE);
@@ -1094,19 +1062,18 @@ __kernel void ple_conv(__global const float *N, __global const float *v, __globa
   for (uint r = 0; r < plan->nrows; r++) {
     uint pos = plan->rows[r].pos;
     __global float *h = hist + plan->rows[r].slot * slot_stride;
-    float nv[3];
-    for (uint jj = 0; jj < 3; jj++) {
-      uint d = Q_PLE_DIL * (3 - jj);
+    float nv[Q_GDN_HIST];
+    for (uint jj = 0; jj < Q_GDN_HIST; jj++) {
+      uint d = Q_PLE_DIL * (Q_GDN_HIST - jj);
       nv[jj] = window && r >= d && plan->rows[r - d].slot == plan->rows[r].slot
                    ? N[(ulong)(r - d) * Q_HC_DIM + ch]
                    : h[((pos + Q_PLE_HIST - d) % Q_PLE_HIST) * Q_HC_DIM + ch];
     }
     float nt = N[(ulong)r * Q_HC_DIM + ch];
     float acc = k[0] * nv[0];
-    acc += k[1] * nv[1];
-    acc += k[2] * nv[2];
-    acc += k[3] * nt;
-    if (!window) h[(pos % 9) * Q_HC_DIM + ch] = nt;
+    for (uint j = 1; j < Q_GDN_HIST; j++) acc += k[j] * nv[j];
+    acc += k[Q_GDN_HIST] * nt;
+    if (!window) h[(pos % Q_PLE_HIST) * Q_HC_DIM + ch] = nt;
     R[(ulong)r * Q_HC_DIM + ch] += gates[r * Q_HC + ch / Q_EMBD] * v[(ulong)r * Q_EMBD + ch % Q_EMBD] + silu(acc);
   }
 }

@@ -39,6 +39,9 @@ class Host:
     cpu_flags: frozenset[str]
     """The first CPU's flags in `/proc/cpuinfo`."""
     cpu_model: str
+    huge_pages_free: int | None = None
+    """The reserved huge pages (`vm.nr_hugepages`) no process holds or has reserved: (`HugePages_Free` -
+    `HugePages_Rsvd`) x `Hugepagesize`, bytes."""
 
     @property
     def memory_limit(self) -> int | None:
@@ -106,6 +109,14 @@ def meminfo(path: Path) -> dict[str, int]:
         if fields and fields[0].isdigit():
             out[key] = int(fields[0]) * (1024 if len(fields) > 1 and fields[1] == "kB" else 1)
     return out
+
+
+def huge_pages_free(mi: dict[str, int]) -> int | None:
+    """The free reserved huge pages in `/proc/meminfo`'s values (`meminfo`), bytes."""
+    free, reserved, size = mi.get("HugePages_Free"), mi.get("HugePages_Rsvd", 0), mi.get("Hugepagesize")
+    if free is None or size is None:
+        return None
+    return max(0, free - reserved) * size
 
 
 def cgroup_dir(proc_cgroup: Path, root: Path) -> Path | None:
@@ -178,6 +189,7 @@ def read(root: Path = Path("/"), affinity: set[int] | None = None) -> Host:
         mem_total=mi.get("MemTotal"),
         mem_available=mi.get("MemAvailable"),
         swap_total=mi.get("SwapTotal"),
+        huge_pages_free=huge_pages_free(mi),
         cgroup_memory_max=_limit(cg / "memory.max") if cg else None,
         cgroup_swap_max=_limit(cg / "memory.swap.max") if cg else None,
         memlock=None if soft == resource.RLIM_INFINITY else soft,

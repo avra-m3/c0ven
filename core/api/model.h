@@ -33,7 +33,7 @@ struct Options {
   bool trace = false;                       // the model times every kernel of its lists
   bool profile_routing = false;             // the prompt path counts each expert's rows
   bool adapt_swaps = false;                 // count the routing, for Model::swap_round
-  // On one card, the CPU computes a short chunk's rarest uncached experts (ADR-0066). Its rows round differently from
+  // On one card, the CPU computes a short chunk's rarest uncached experts (ADR-0072). Its rows round differently from
   // the card's, so a run's numbers then depend on what shares its chunk: off where they must repeat exactly.
   bool rare_on_cpu = true;
   // The pages of the KV pool not in use lend their memory to the expert cache; needs adapt_swaps.
@@ -42,6 +42,9 @@ struct Options {
   // shared system USM: the driver's buffers, which xe moves out of GTT under reclaim and so stalls the CPU's experts
   // (docs/measurements/MEASUREMENTS.md#2026-10-17-decode-stalls-eviction).
   bool anon_arena = true;
+  // The arena's pieces from the host's reserved huge pages (vm.nr_hugepages) while they last, then as anon_arena's:
+  // pages the kernel never moves, so it never stops a card to bind one again. Needs anon_arena.
+  bool hugetlb_arena = false;
   bool ngram_in_ram = false;                // the whole n-gram table in RAM
   // A profile to choose the cached experts by (tools/route_profile.cpp); empty: the first experts of each layer;
   // none: the model's own.

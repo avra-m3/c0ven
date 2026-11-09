@@ -1,4 +1,4 @@
-# ADR-0066: on one card, the CPU computes a short chunk's rarest experts
+# ADR-0072: on one card, the CPU computes a short chunk's rarest experts
 
 **Status:** draft, 2026-11-06; not accepted. Depends on [ADR-0065](0065-a-short-chunk-writes-through-a-mapping.md).
 **Revisit when:** a copy of an expert to the card costs much less or much more than 94 µs, the CPU's cost per row changes,

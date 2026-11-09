@@ -117,11 +117,7 @@ def open_config(slots: int = 2, context: int = 4096, pages: int | None = None, c
         checkpoints=checkpoints,
         kv_resident_cells=0,
         experts_cached=0,
-        arena_bytes=0,
-        working_bytes=0,
         cpu_workers=0,
-        ngram_cache_rows=0,
-        timing_records=0,
         eos_ids=(2,),
         vocab_size=1000,
     )

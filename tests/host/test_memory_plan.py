@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from engine.api.interface import CORE_RESERVE
+from engine.api.mock import CARD_MEMORY
 from engine.memory_plan import (
     PlanError,
     PlanOptions,
@@ -18,21 +20,46 @@ from engine.memory_plan import (
     working_file,
     write_working,
 )
-from engine.models.qwen4exp import numbers
 from engine.models.qwen4exp.draft import draft_per_card, read_shapes
-from engine.models.qwen4exp.memory import model_memory
-from engine.models.qwen4exp.tensors import Category, TensorTable, from_tsv
+from engine.models.qwen4exp.memory import (
+    deltanet_state_bytes,
+    model_memory,
+    ple_history_bytes,
+)
+from engine.models.qwen4exp.tensors import TSV_UD_IQ4_XS, Category, TensorTable, from_tsv
 from tests.helpers import plan_options
 
 TABLE = from_tsv()
 MODEL = model_memory(TABLE)
 
 
+def test_no_context_given_is_the_models_whole_context():
+    p = plan(MODEL, plan_options(slots=1, context=0))
+    assert MODEL.max_context == TABLE.context_length
+    assert p.options.context == MODEL.max_context
+    assert p == plan(MODEL, plan_options(slots=1, context=MODEL.max_context))
+
+
+def test_the_sizes_per_sequence_are_the_files():
+    """MEMORY_BUDGET.md, "Per sequence", from the file's fields; the UD-IQ4_XS file's are the same."""
+    for table in (TABLE, from_tsv(TSV_UD_IQ4_XS)):
+        assert model_memory(table).kv_cell_host == 12 * 1_088
+        assert deltanet_state_bytes(table) == 3_268_608
+        assert ple_history_bytes(table) == 368_640
+    assert MODEL.draft_kv_host == 32_768 * 1_088
+
+
+def test_a_dflash_drafter_counts_the_mtp_layers_ring():
+    """DFlash 2's manifest has no MTP layer: its ring is counted as the MTP layer's, as before."""
+    dflash = {"layers.0.self_attn.k_proj.weight": (1024, 2560), "fc.weight": (2560, 12800)}
+    assert model_memory(TABLE, draft_shapes=dflash).draft_kv_host == MODEL.draft_kv_host
+
+
 def test_the_sizes_follow_the_layers():
     """MEMORY_BUDGET.md's sizes for this file. Half its layers are 6 attention and 18 DeltaNet."""
     assert (MODEL.layers, MODEL.experts) == (48, 48 * 512)
     assert (MODEL.kv_cell_host, MODEL.checkpoint_bytes) == (13_056, 118_038_528)
-    half = model_memory(TensorTable(tuple(t for t in TABLE.tensors if t.layer < 24)))
+    half = model_memory(TensorTable(tuple(t for t in TABLE.tensors if t.layer < 24), fields=TABLE.fields))
     assert (half.layers, half.experts) == (24, 24 * 512)
     assert half.kv_cell_host == 6 * 1_088
     assert half.indexer_cell_per_card == 6 * 136 // 2
@@ -53,11 +80,14 @@ def test_reserve_per_sequence(context: int, expected: int):
     [(1, 32_768, 18_940), (2, 32_768, 18_629), (4, 32_768, 18_009), (1, 262_144, 18_757), (4, 262_144, 17_277)],
 )
 def test_experts_with_every_weight_halved(slots: int, context: int, cached: int):
-    """MEMORY_BUDGET.md halves every weight outside the experts; with its figure the plan gives its counts."""
+    """MEMORY_BUDGET.md halves every weight outside the experts; with its figures the plan gives its counts."""
     halves = (
         TABLE.bytes_of(Category.DENSE) + TABLE.bytes_of(Category.PLE) + TABLE.bytes_of(Category.EMBEDDING)
     ) // 2 + TABLE.bytes_of(Category.HEAD) // 2
-    p = plan(replace(MODEL, weights_per_card=halves), plan_options(slots=slots, context=context))
+    model = replace(
+        MODEL, weights_per_card=halves, working_per_card=1_600_663_296, working_of=None, staging_per_uncached=0
+    )
+    p = plan(model, plan_options(slots=slots, context=context))
     assert p.experts_cached == cached
 
 
@@ -67,8 +97,8 @@ def test_the_split_rules_keep_some_weights_whole():
     p = plan(MODEL, plan_options(slots=1, context=262_144))
     assert MODEL.weights_per_card > 2_257_086_720
     assert p.experts_cached < 18_757
-    assert p.free_per_card == 24_385_683_456 - MODEL.weights_per_card - 831_015_936 - 1_600_663_296 - 504_664_064
-    assert p.experts_cached == p.free_per_card // (MODEL.expert_bytes // 2)
+    assert p.free_per_card == 24_385_683_456 - MODEL.weights_per_card - 831_015_936 - p.working_per_card - 504_664_064
+    assert p.experts_cached // 48 * (MODEL.expert_bytes // 2) * 48 + p.prompt_staging_per_card <= p.free_per_card
 
 
 def test_the_draft_layer_as_the_core_stores_it():
@@ -216,11 +246,75 @@ def test_the_ngram_table_moves_into_ram_only_with_room_to_spare():
 
 
 def test_the_working_memory_is_the_models_estimate_unless_the_options_give_one():
-    assert MODEL.working_per_card == numbers.WORKING_PER_CARD
-    assert plan(MODEL, plan_options()).working_per_card == numbers.WORKING_PER_CARD
-    given = plan(MODEL, plan_options(working_per_card=numbers.WORKING_PER_CARD + 2**30))
-    assert given.working_per_card == numbers.WORKING_PER_CARD + 2**30
+    estimate = plan(MODEL, plan_options()).working_per_card
+    assert estimate > MODEL.working_per_card
+    given = plan(MODEL, plan_options(working_per_card=estimate + 2**30))
+    assert given.working_per_card == estimate + 2**30
     assert given.free_per_card == plan(MODEL, plan_options()).free_per_card - 2**30
+
+
+MEASURED_RESERVE = 512 * 2**20
+"""The core's reserve when the figures below were measured, on c0ven 212daad and 05cab3e, with cards of CARD_MEMORY."""
+DFLASH_SHAPES = {f"layers.{n}.self_attn.k_proj.weight": (1024, 2560) for n in range(5)}
+
+
+@pytest.mark.parametrize(
+    ("cards", "slots", "context", "kv_tokens", "drafter", "core_gib"),
+    [
+        (2, 1, 262_144, 0, "mtp", 3.37),
+        (2, 4, 262_144, 524_288, "mtp", 3.48),
+        (2, 1, 65_536, 0, "mtp", 2.53),
+        (2, 4, 65_536, 0, "mtp", 2.70),
+        (2, 1, 262_144, 0, "dflash", 3.28),
+        (2, 4, 262_144, 524_288, "dflash", 3.12),
+        (2, 1, 262_144, 0, None, 3.23),
+        (2, 2, 131_072, 524_288, None, 3.21),
+        (2, 1, 4_096, 0, None, 2.29),
+        (1, 1, 65_536, 0, None, 2.22),
+        (1, 1, 262_144, 0, "mtp", 3.95),
+        (1, 2, 65_536, 0, "mtp", 2.40),
+    ],
+)
+def test_the_working_memory_estimate_is_what_the_core_reported(
+    *, cards: int, slots: int, context: int, kv_tokens: int, drafter: str | None, core_gib: float
+):
+    """The core's figure from a load of each set of options, taken with its reserve at 512 MiB. 0.04 GiB is about 1
+    expert a layer."""
+    model = model_memory(TABLE, cards, DFLASH_SHAPES if drafter == "dflash" else None)
+    options = plan_options(cards=cards, slots=slots, context=context, kv_tokens=kv_tokens, draft=drafter is not None)
+    planned = plan(model, options).working_per_card - (CORE_RESERVE - MEASURED_RESERVE)
+    assert planned / 2**30 == pytest.approx(core_gib, abs=0.04)
+
+
+@pytest.mark.parametrize(
+    ("cards", "slots", "context", "draft", "core_experts"),
+    [
+        (2, 1, 262_144, True, 337),
+        (1, 1, 65_536, False, 151),
+        (1, 1, 262_144, True, 110),
+        (1, 2, 65_536, True, 124),
+    ],
+)
+def test_the_plans_experts_are_the_cores_before_it_lends_kv_memory(
+    *, cards: int, slots: int, context: int, draft: bool, core_experts: int
+):
+    """The core's "at least" count a layer, from a load of each set of options, with its 2 layers of staging. The
+    card's memory is the size the core read then, past its reserve then."""
+    options = plan_options(
+        cards=cards,
+        slots=slots,
+        context=context,
+        draft=draft,
+        usable_vram=CARD_MEMORY + CORE_RESERVE - MEASURED_RESERVE,
+    )
+    assert plan(model_memory(TABLE, cards), options).experts_cached // 48 == pytest.approx(core_experts, abs=2)
+
+
+def test_the_working_memory_estimate_does_not_depend_on_the_card_or_the_model_file():
+    """Loads at --card-memory 20 and of UD-IQ4_XS report the same figure as IQ3_S on the whole card."""
+    p = plan(MODEL, plan_options())
+    assert plan(MODEL, plan_options(usable_vram=20 * 2**30)).working_per_card == p.working_per_card
+    assert plan(model_memory(from_tsv(TSV_UD_IQ4_XS)), plan_options()).working_per_card == p.working_per_card
 
 
 def test_the_cores_expert_budget_gives_its_working_memory():
@@ -247,3 +341,15 @@ def test_the_working_memory_is_kept_per_model_and_options(tmp_path: Path):
     assert read_working(a) is None
     a.write_text('{"working_per_card": -1}')
     assert read_working(a) is None
+
+
+def test_the_arena_in_reserved_huge_pages_leaves_the_host_total():
+    gib = 2**30
+    off = plan(MODEL, plan_options(slots=1))
+    assert off.arena_bytes > 4 * gib
+    held = plan(MODEL, plan_options(slots=1, hugetlb_pool=4 * gib + gib // 2))
+    assert held.arena_reserved_bytes == 4 * gib
+    assert held.host_bytes == off.host_bytes - 4 * gib
+    whole = plan(MODEL, plan_options(slots=1, hugetlb_pool=off.arena_bytes + gib))
+    assert whole.arena_reserved_bytes == off.arena_bytes
+    assert plan(MODEL, plan_options(slots=1, hugetlb_pool=0)).host_bytes == off.host_bytes

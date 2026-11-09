@@ -232,6 +232,12 @@ The rules ([ADR-0033](adr/0033-paged-kv-kept-by-python.md)):
 - A slot reads and writes only through its mapped pages. A slot that reaches a position past them waits, and says so
   once with a `STALLED` event, until a plan maps more. The scheduler maps a writing slot's pages at least 64 cells
   ahead, 256 cells at a time, so that few plans carry page changes.
+- An admitted request reserves pages for its prompt and the 320 cells after it (64 + 256). A writing slot reserves
+  each later block when it maps it ([ADR-0068](adr/0068-kv-pages-are-reserved-as-a-sequence-grows.md)). When
+  the pool cannot give a block, the checkpoints that hold the last reference to a page are evicted. If that is not
+  enough and a slot stalls, the newest slot of the lowest priority is stopped. Its request waits again with the
+  tokens it wrote added to its prompt, and the front end gets no token twice. While a slot waits for a page, no
+  request is admitted.
 - A shared prefix reuses its full KV pages and copies the partial last one. Its DeltaNet state can be reused only
   through a checkpoint taken where the prefix ends, so a later request with the same prefix waits for the first
   one's checkpoint ([ADR-0017](adr/0017-scheduling-several-requests.md)). Prefixes are matched by token ids, never by
@@ -317,7 +323,8 @@ Both cards route every token in full, so both know its misses. Card 0 alone hand
 host memory, each with one writer ([ADR-0011](adr/0011-cpu-gpu-signalling.md)). The CPU computes each missed expert
 whole, in place in the arena, and card 0 adds the answer to its partial sum. A decode step copies no expert onto the
 cards. The prompt path and swaps do, through the copy engines (section 9), and a prompt chunk of 1,024 rows or fewer
-through the CPU's writes to a mapping of the staging buffer ([DEVELOPING.md](DEVELOPING.md#how-a-prompt-chunk-runs)).
+through the CPU's writes to a mapping of the staging buffer; a load fails where the system will not map it
+([DEVELOPING.md](DEVELOPING.md#how-a-prompt-chunk-runs)).
 
 The weights are the only large data, about 5.1 GB read per decode token, half on each card
 ([measurements/MEMORY_BUDGET.md](measurements/MEMORY_BUDGET.md#what-one-decode-token-reads-computed)). They never move during decode: each
@@ -333,7 +340,7 @@ No card is kept busy to hold its clock up. In decode both cards stay at 2,400 MH
 | --- | --- |
 | Each card's VRAM (`zeMemAllocDevice`) | The card's half of every layer's weights and of each cached expert, its KV pages and state heads, its buffers and recorded lists |
 | Pinned host memory (`zeMemAllocHost`) | Each card's K and V of every KV page. What both cards or the CPU read: step plans, the misses' jobs and answers, the one-row exchanges, the step's n-gram rows, the cards' candidates, the checkpoints, the image encoder's weights |
-| The expert arena: the engine's own memory, from `mmap` in 1 GiB pieces, in huge pages while the host keeps free 2 MiB blocks | Every expert no card caches, each in one place. The CPU reads it for misses and copies from it for short prompt chunks, and the copy engines read it in place for longer chunks and swaps. The driver cannot move this memory under the host's reclaim, and it counts against the engine's cgroup ([ADR-0035](adr/0035-the-arena-in-the-engines-own-memory.md); [known limits](../README.md#known-limits)) |
+| The expert arena: the engine's own memory, from `mmap` in 1 GiB pieces, in huge pages while the host keeps free 2 MiB blocks; with `--hugepages`, in the host's reserved huge pages while they last ([ADR-0066](adr/0066-the-arena-may-take-reserved-huge-pages.md)) | Every expert no card caches, each in one place. The CPU reads it for misses and copies from it for short prompt chunks, and the copy engines read it in place for longer chunks and swaps. The driver cannot move this memory under the host's reclaim, and it counts against the engine's cgroup ([ADR-0035](adr/0035-the-arena-in-the-engines-own-memory.md); [known limits](../README.md#known-limits)) |
 | RAM | The n-gram rows already read, in a cache; or the whole n-gram table, when the host has room for it ([ADR-0057](adr/0057-the-engine-reads-the-host-it-runs-on.md)) |
 | The SSD | The n-gram table, 28.8 GB, read with `O_DIRECT` past the page cache ([ADR-0015](adr/0015-ngram-table-on-the-ssd.md)), unless it is in RAM |
 
@@ -350,8 +357,10 @@ the plan's figures and the core's, and sends it in INFO as `fit_*` facts. The co
 layer on each card as its physical memory allows, after setting aside `reserve_bytes` (1 GiB) for the driver's own use
 and some free ([ADR-0027](adr/0027-the-c-abi-as-the-core-was-optimised.md), item 3). It reports the memory it had left for them
 (`engine_info.expert_budget`). The plan's working memory per card, everything outside the weights, the draft layer,
-the sequences' reserve and the experts, is an estimate until a load shows the core's: with `ENGINE_CACHE_DIR` set, the core's
+the sequences' reserve and the experts, is an estimate from the slots, the context, the KV pool and the drafter until a load shows the core's: with `ENGINE_CACHE_DIR` set, the core's
 figure is kept for each model file, version and set of options, and the next start plans with it.
+The plan also takes the prompt path's staging from what the experts have, as the core does, and so gives the count the
+core starts from. The core then lends spare KV blocks to the cache, so its final count is higher.
 
 A model with an SSD tier holds its experts in VRAM, the arena and the SSD: its arena takes what the host can spare, and
 an arena that does not fit is a normal plan
@@ -589,7 +598,7 @@ cards (section 6), a round also moves blocks between them: to the pool when the 
 low, and back to the cache, with the most used uncached experts, when many are free. A swap changes which experts the CPU computes, and so their rounding. Tokens repeat
 exactly from run to run only with `--deterministic`, which turns swaps off
 ([ADR-0029](adr/0029-the-engine-process-drafts-and-swaps.md)), and the CPU's part in a short chunk
-([ADR-0066](adr/0066-on-one-card-the-cpu-computes-a-short-chunks-rarest-experts.md)).
+([ADR-0072](adr/0072-on-one-card-the-cpu-computes-a-short-chunks-rarest-experts.md)).
 A round holds the engine thread only to append the halves' copies, switch the maps and wait for the cards' copies,
 about 3 ms; the swap thread chooses the next round's swaps and builds their halves from the arena behind the steps
 ([the record](measurements/MEASUREMENTS.md#2026-10-20-swap-round-behind-the-steps)).
@@ -607,7 +616,7 @@ run on the cards' matrix units (XMX). Each card's copy engine streams the expert
 arena, two layers ahead. That streaming is most of a short chunk's time, and prompts read in one chunk share it
 ([ADR-0017](adr/0017-scheduling-several-requests.md), item 2). On one card, in a chunk of 1,024 rows or fewer, the CPU
 computes the uncached experts that three rows or fewer picked, in place of copying them
-([ADR-0066](adr/0066-on-one-card-the-cpu-computes-a-short-chunks-rarest-experts.md)); otherwise it computes nothing for a
+([ADR-0072](adr/0072-on-one-card-the-cpu-computes-a-short-chunks-rarest-experts.md)); otherwise it computes nothing for a
 prompt. An image's encoder
 runs just before the chunk that holds the image's tokens. Its weights stream through the prompt path's staging slots,
 so it holds no VRAM of its own ([ADR-0031](adr/0031-images-through-the-prompt-path.md)).
