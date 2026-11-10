@@ -312,7 +312,8 @@ int main(int argc, char **argv) {
         (unsigned long long)cs.experts_floor, info.experts_per_layer);
   engine_slot_stats sst;
   CHECK(engine_read_slot_stats(e, info.slots, &sst) == ENGINE_BAD_ARGUMENT, "slot stats of a slot out of range");
-  for (uint32_t i = 0; i < nt; i++) CHECK(tr[i].end_ns >= tr[i].start_ns && tr[i].rows > 0, "timing record %u", i);
+  for (uint32_t i = 0; i < nt; i++)  /* a draft pass has no rows of its own */
+    CHECK(tr[i].end_ns >= tr[i].start_ns && (tr[i].rows > 0 || tr[i].kind == ENGINE_TIMING_DRAFT), "timing record %u", i);
   printf("%u timing records\n", nt);
 
   /* A sleep and a wake (ADR-0032). Asleep, nothing is admitted or run; awake, the cards cache the experts they

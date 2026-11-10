@@ -406,13 +406,14 @@ weights in RAM, so a wake reads only the cards' part of the model again
 ## 7. Timing and debugging
 
 The core keeps its last 4,096 timing records, one for each prompt piece, decode step or draft round, with its rows
-and the experts the CPU computed. `engine_read_timing` takes them out. The core stores only these small binary
+and the experts the CPU computed, and one for the draft pass after a plan's step or round (rows 0). `engine_read_timing` takes them out. The core stores only these small binary
 records. Python adds them up and formats them.
 
 The core also keeps counters since open, `engine_stats` in [`include/engine_api.h`](../include/engine_api.h): plans
 and the engine thread's time in them; prompt chunks and windowed pieces with their rows and time; decode steps that
 verified no drafts, with their rows, time, the experts the CPU computed and the layers that missed; draft rounds the
-same, and each slot's run in a round by the source of its drafts, the draft layer or the slot's own tokens, with the
+same; the steps whose rows all wrote and had no drafts, and of those and of the rounds, the ones run while another slot
+read its prompt; and each slot's run in a round by the source of its drafts, the draft layer or the slot's own tokens, with the
 drafts verified and accepted and the rounds' time; swap rounds, the experts they swapped and their time; stalls,
 checkpoints and restores; the n-gram table's rows, cache hits and SSD reads; and the experts cached per layer at the
 last plan's end, beside the fewest the load keeps room for (ADR-0045). Each counter is one addition where the timing record is already written, so the step pays nothing
@@ -426,7 +427,8 @@ ended. A thread of its own reads that from `pswpout` in `/proc/vmstat` once a se
 the value; a host without the file reports no such counter. Each request's `DONE` line carries its wait for a slot,
 its steps and its drafts. `/metrics` reports both, and the ratios read from the counters (`frontend/metrics.py`): a step's and a
 round's time, misses per decode row, tokens per second of card time in plain steps and in rounds by draft source,
-drafts accepted per run, the engine thread's busy share and the swap rounds' part of it. With `--metrics-log`, the
+drafts accepted per run, the share of the writers' passes beside a reading slot that ran as rounds, the engine
+thread's busy share and the swap rounds' part of it. With `--metrics-log`, the
 `frontend.metrics` logger writes each request's record as it ends, and the counters and ratios at that interval and at
 shutdown, each as one JSON object on a line with an `event` of `request` or `snapshot`. The counters start from zero
 with each process, so a log store is what keeps them.
@@ -564,8 +566,11 @@ When the decoding slots all write, a step is a draft round
 as one window, and the windows of all slots run in one step. The slots share the step's 8 rows: a lone slot takes up to
 7 drafts with DFlash 2 and 3 with the MTP layer, and each of several as many as give the most tokens a millisecond, from the slots' acceptance and the times of
 windows of each width (2 until a window is timed), fewer as there are more of them. Each slot's window is accepted and committed on
-its own. A step of several slots runs no drafts while any slot has prompt left to read, or when it gives one of them its
-second token ([the record](measurements/MEASUREMENTS.md#2026-10-19-draft-rounds-several-writers)). A draft is accepted while it
+its own. A step of several slots runs no drafts when it gives one of them its second token, which already waits for
+the prompt steps after its first. Writing slots draft while another slot reads its prompt: the scheduler owes them a
+share of the prompt steps' time, so a round gives them more tokens in the same time
+([ADR-0071](adr/0071-writers-draft-while-a-slot-reads-its-prompt.md), `core/api/draft_gate.h`). A step whose rows
+include a prompt token, and a writer's row in a prompt chunk, run no drafts. A draft is accepted while it
 equals what the main model samples at its place, and the main model samples one more token after the accepted ones. The
 accepted rows are committed, and the draft layer reads them and drafts again. Drafting stops at a draft whose
 probability under the request's sampler is below 0.5. Drafts never change the tokens, because the main model samples

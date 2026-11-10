@@ -54,6 +54,8 @@ class FakeCore:
     plans: deque[tuple[abi.CStepPlan, list[abi.CPageChange]]] = field(default_factory=deque)
     events: deque[abi.CEvent] = field(default_factory=deque)
     timing: deque[abi.CTiming] = field(default_factory=deque)
+    draft_ns: int = 0
+    """The draft pass's time after each decode step, as the core's timing record for it."""
     checkpoints: dict[int, list[int]] = field(default_factory=lambda: {})
     seq: int = 0
     decode_steps: int = 0
@@ -231,6 +233,10 @@ class FakeCore:
             self._produce(slot, s)
         if rows:
             self.timing.append(abi.CTiming(abi.CTimingKind.DECODE, self.seq, rows, 0, 0, 10_000_000))
+            if self.draft_ns:
+                self.timing.append(
+                    abi.CTiming(abi.CTimingKind.DRAFT, self.seq, 0, 0, 10_000_000, 10_000_000 + self.draft_ns)
+                )
             self.decode_steps += 1
             self.decode_rows += rows
         self._emit(abi.CEventKind.STEP, 0, -1, self.seq)
@@ -502,6 +508,23 @@ def test_step_done_carries_the_rows_and_the_time():
         run.scheduler._plan()  # pyright: ignore[reportPrivateUsage]
     assert (0, 150, 150_000, 1) in steps, "two pieces, the 50-row one read as windows"
     assert (2, 0, 10_000_000, 0) in steps
+
+
+def test_step_done_counts_the_draft_pass_after_the_step():
+    run = make()
+    run.core.draft_ns = 4_000_000
+    run.add(1, prompt_of(50), 3)
+    steps: list[tuple[int, int, int]] = []
+    for _ in range(1000):
+        if run.scheduler.idle:
+            break
+        for e in run.engine.wait(0):
+            if e.kind is EventKind.STEP_DONE:
+                steps.append((e.a, e.b, e.t_ns))
+            run.scheduler._handle(e, run.events)  # pyright: ignore[reportPrivateUsage]
+        run.scheduler._admit(run.events)  # pyright: ignore[reportPrivateUsage]
+        run.scheduler._plan()  # pyright: ignore[reportPrivateUsage]
+    assert (1, 0, 14_000_000) in steps, "a step's 10 ms and its draft pass's 4 ms"
 
 
 def test_done_carries_the_slots_counters_and_the_queue_wait():

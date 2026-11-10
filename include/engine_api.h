@@ -20,7 +20,7 @@ extern "C" {
 #define ENGINE_API
 #endif
 
-#define ENGINE_API_VERSION 20
+#define ENGINE_API_VERSION 21
 
 typedef enum {
   ENGINE_OK = 0,
@@ -192,11 +192,12 @@ typedef struct {
   uint32_t value;
 } engine_event;
 
-/* One timing record (docs/DESIGN.md, section 7): a prompt piece or a decode step, as the engine ran it. */
+/* One timing record (docs/DESIGN.md, section 7): a prompt piece, a decode step or round, or the draft pass after one, as the engine ran it. */
 typedef enum {
   ENGINE_TIMING_PROMPT = 1,
   ENGINE_TIMING_DECODE = 2,
-  ENGINE_TIMING_ROUND = 3      /* a draft round: rows = the window's rows, misses as decode */
+  ENGINE_TIMING_ROUND = 3,     /* a draft round: rows = the window's rows, misses as decode */
+  ENGINE_TIMING_DRAFT = 4      /* the rest of a plan's decode after its step or round: the draft layer's pass; rows 0 */
 } engine_timing_kind;
 
 typedef struct {
@@ -251,6 +252,8 @@ typedef struct {
   uint64_t experts_cached;     /* experts cached per layer at the last plan's end, the mean over the layers */
   uint64_t experts_floor;      /* the fewest the load keeps room for, whatever the KV pool holds (ENGINE_CONFIG_SHARE_KV) */
   uint64_t idle_rounds;        /* of the swap rounds, those run while no plan came */
+  uint64_t reading_steps;      /* of the undrafted steps, those run while another slot read its prompt */
+  uint64_t reading_rounds;     /* of the rounds, those run while another slot read its prompt */
 } engine_stats;
 
 /* One slot's counters since admit: its own decode, not its prompt. */
