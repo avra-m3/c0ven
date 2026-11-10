@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstring>
 #include <stdexcept>
+#include <utility>
 
 #include "ggml.h"
 #include "moe_tile.h"
@@ -26,9 +27,10 @@ constexpr uint32_t kEngKvRows = 2 * E + E / 2;                   // a card's row
 constexpr uint32_t kTopkLocal = 1024;                            // ds_idx_topk's and topk_rows' work-group
 constexpr std::chrono::seconds kPublishLimit{10};
 // The swaps' rule: a routing counts kHeatDecay times less each step; an expert comes in when it leads the one going out
-// by kSwapLead times and kSwapFloor routings; a profile counts as kProfileSteps steps; at most kSwapBatch pairs change at once.
-constexpr float kHeatDecay = 0.998f, kSwapLead = 1.5f, kSwapFloor = 2.0f, kProfileSteps = 200.0f;
-constexpr size_t kSwapBatch = 8;
+// by kSwapLead times and kSwapFloor routings; a profile counts as kProfileSteps steps; at most kSwapBatch pairs change
+// at once, kSwapsALayer of a layer.
+constexpr float kHeatDecay = 0.998f, kSwapLead = 1.0f, kSwapFloor = 0.5f, kProfileSteps = 200.0f;
+constexpr size_t kSwapBatch = 16, kSwapsALayer = 2, kFileSeen = 64;
 const void *const none = nullptr;
 
 std::string blk(uint32_t l, const char *name) { return "blk." + std::to_string(l) + "." + name; }
@@ -193,6 +195,7 @@ Model::Model(const std::string &path, const Options &opt, const Debug &debug) : 
   hash_ = std::make_unique<EngramHash>(EngramParams::from_gguf(gguf_));
   engram_ = std::make_unique<EngramReader>(gguf_);
   eng_f_.resize((size_t)STEP_MAX_ROWS * D41_ENG_G);
+  engram_thread_ = std::thread([this] { engram_work(); });
 
   const auto host = [&](size_t bytes) {
     void *p = rt_->alloc_host(bytes);
@@ -205,6 +208,7 @@ Model::Model(const std::string &path, const Options &opt, const Debug &debug) : 
   jobs_ = static_cast<D41MissJob *>(host((size_t)D41_LAYERS * STEP_MAX_ROWS * sizeof(D41MissJob)));
   cpu_y_ = static_cast<float *>(host((size_t)D41_LAYERS * STEP_MAX_ROWS * E * 4));
   ans_flag_ = static_cast<uint32_t *>(host((size_t)D41_LAYERS * 64));
+  eng_flag_ = static_cast<uint32_t *>(host((size_t)kEngramTables * 64));
   flags_ = static_cast<uint32_t *>(host((size_t)2 * kFlags * 64));
   stuck_ = static_cast<uint32_t *>(host(2 * 64));
   top_idx_ = static_cast<uint32_t *>(host((size_t)2 * STEP_MAX_ROWS * opt_.candidates * 4));
@@ -245,6 +249,14 @@ Model::Model(const std::string &path, const Options &opt, const Debug &debug) : 
 }
 
 Model::~Model() {
+  if (engram_thread_.joinable()) {
+    {
+      std::lock_guard<std::mutex> lk(engram_mu_);
+      engram_stop_ = true;
+    }
+    engram_cv_.notify_all();
+    engram_thread_.join();
+  }
   if (!swapper_.joinable()) return;
   {
     std::lock_guard<std::mutex> lk(swap_mu_);
@@ -252,6 +264,56 @@ Model::~Model() {
   }
   swap_cv_.notify_all();
   swapper_.join();
+}
+
+// A step's Engram rows, a table at a time in the order its layers come: gathered, made a8 in host memory, then the
+// table's flag, which the cards' lists wait for before they copy the rows.
+void Model::engram_work() {
+  uint64_t seen = 0;
+  for (;;) {
+    {
+      std::unique_lock<std::mutex> lk(engram_mu_);
+      engram_cv_.wait(lk, [&] { return engram_stop_ || engram_asked_ != seen; });
+      if (engram_stop_) return;
+      seen = engram_asked_;
+    }
+    const auto t0 = std::chrono::steady_clock::now();
+    try {
+      const uint32_t n = engram_n_;
+      std::vector<uint64_t> ids((size_t)n * D41_ENG_COLS);
+      for (uint32_t e = 0; e < kEngramTables; e++) {
+        for (uint32_t r = 0; r < n; r++) {
+          const StepIn &row = engram_rows_[r];
+          const auto h = hash_->rows(row.token, row.p1, row.p2, row.p3, e);
+          std::copy(h.begin(), h.end(), ids.begin() + (size_t)r * D41_ENG_COLS);
+        }
+        engram_->gather(ids.data(), (uint32_t)ids.size(), eng_f_.data());
+        for (uint32_t r = 0; r < n; r++)
+          a8_row(eng_f_.data() + (size_t)r * D41_ENG_G, D41_ENG_G, eng_a8_[e] + (size_t)r * kEngA8Row);
+        std::atomic_ref<uint32_t>(eng_flag_[16 * e]).store(step_, std::memory_order_release);
+      }
+    } catch (...) {
+      engram_failed_ = std::current_exception();
+    }
+    times_.engram = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    engram_done_.store(seen, std::memory_order_release);
+  }
+}
+
+// Until the thread has finished the step's rows, or failed: the step's rows are the caller's.
+void Model::engram_wait() {
+  uint64_t asked;
+  {
+    std::lock_guard<std::mutex> lk(engram_mu_);
+    asked = engram_asked_;
+  }
+  for (uint32_t k = 0; engram_done_.load(std::memory_order_acquire) != asked; k++) {
+    if (k < 4096) {
+      _mm_pause();
+    } else {
+      std::this_thread::yield();
+    }
+  }
 }
 
 void Model::alloc_buffers(Card &card) {
@@ -428,6 +490,7 @@ void Model::load_experts() {
   info_.experts_per_layer = (uint32_t)(cached / D41_LAYERS);
   if (opt_.adapt_swaps) {
     heat_.assign((size_t)D41_LAYERS * D41_EXPERTS, 0.0f);
+    missed_.assign(D41_LAYERS, {});
     for (uint32_t l = 0; l < D41_LAYERS && !profile.empty(); l++) {
       uint64_t sum = 0;
       for (uint32_t e = 0; e < D41_EXPERTS; e++) sum += profile[(size_t)l * D41_EXPERTS + e];
@@ -545,9 +608,15 @@ void Model::advance_swaps() {
   bool refill = false;
   for (Swap &w : swaps_) {
     if (state == SwapState::loaded) {
-      map_expert(w.l, w.in, (int32_t)w.pair);
-      pairs_[w.l][w.pair] = w.in;
-      w.place = arena_->take(w.l, w.in);
+      if (w.in != kNoExpert) {
+        map_expert(w.l, w.in, (int32_t)w.pair);
+        pairs_[w.l][w.pair] = w.in;
+        w.place = arena_->take(w.l, w.in);
+        // in came from the file: out takes the place of the arena's least used expert of the layer, if used less.
+        const uint32_t cold = w.place ? kNoExpert : coldest_in_arena(w.l);
+        const float *heat = heat_.data() + (size_t)w.l * D41_EXPERTS;
+        if (cold != kNoExpert && heat[cold] < heat[w.out]) w.place = arena_->take(w.l, cold);
+      }
       refill = refill || w.place;
     } else if (w.place) {
       arena_->put(w.l, experts_[w.l], w.out, w.place);
@@ -566,8 +635,17 @@ void Model::advance_swaps() {
   swap_cv_.notify_all();
 }
 
-// After a step of n rows: the routings' counts, and with the swap thread idle the next pairs to change, one a layer:
-// the expert this step missed that leads the layer's least used pair by the most.
+// The arena's least used expert of layer l, or kNoExpert.
+uint32_t Model::coldest_in_arena(uint32_t l) const {
+  const float *heat = heat_.data() + (size_t)l * D41_EXPERTS;
+  uint32_t out = kNoExpert;
+  for (uint32_t e = 0; e < D41_EXPERTS; e++)
+    if (arena_->weights(l, e).gate && (out == kNoExpert || heat[e] < heat[out])) out = e;
+  return out;
+}
+
+// After a step of n rows: the routings' counts, and with the swap thread idle the next changes: the experts missed
+// since the last choice that lead their layer's least used pairs, and the experts the file gave.
 void Model::count_routing(uint32_t n) {
   heat_unit_ /= kHeatDecay;
   if (heat_unit_ > 1e6f) {
@@ -578,6 +656,18 @@ void Model::count_routing(uint32_t n) {
     for (uint32_t r = 0; r < n; r++)
       for (int32_t e : jobs_[(size_t)l * STEP_MAX_ROWS + r].all)
         if (e >= 0) heat_[(size_t)l * D41_EXPERTS + (uint32_t)e] += heat_unit_;
+  for (uint32_t l = 0; l < D41_LAYERS; l++)
+    for (uint32_t r = 0; r < n; r++) {
+      const D41MissJob &job = jobs_[(size_t)l * STEP_MAX_ROWS + r];
+      for (uint32_t i = 0; i < job.nmiss && i < D41_USED; i++) {
+        const auto e = (uint32_t)job.ids[i];
+        if (std::find(missed_[l].begin(), missed_[l].end(), e) == missed_[l].end()) missed_[l].push_back(e);
+        const std::pair<uint32_t, uint32_t> seen{l, e};
+        if (!arena_->weights(l, e).gate && file_seen_.size() < kFileSeen &&
+            std::find(file_seen_.begin(), file_seen_.end(), seen) == file_seen_.end())
+          file_seen_.push_back(seen);
+      }
+    }
   if (swap_state_.load(std::memory_order_acquire) != SwapState::idle) return;
 
   struct Lead {
@@ -587,24 +677,40 @@ void Model::count_routing(uint32_t n) {
   std::vector<Lead> leads;
   for (uint32_t l = 0; l < D41_LAYERS; l++) {
     const float *heat = heat_.data() + (size_t)l * D41_EXPERTS;
-    uint32_t out = kNoExpert;
+    // The experts missed since the last choice, most used first, against the layer's least used pairs.
+    std::vector<uint32_t> in, out;
+    for (uint32_t e : missed_[l])
+      if (std::find(pairs_[l].begin(), pairs_[l].end(), e) == pairs_[l].end()) in.push_back(e);
+    missed_[l].clear();
     for (uint32_t k = 0; k < pairs_[l].size(); k++)
-      if (pairs_[l][k] != kNoExpert && (out == kNoExpert || heat[pairs_[l][k]] < heat[pairs_[l][out]])) out = k;
-    if (out == kNoExpert) continue;
-    Lead best{0.0f, {}};
-    for (uint32_t r = 0; r < n; r++) {
-      const D41MissJob &job = jobs_[(size_t)l * STEP_MAX_ROWS + r];
-      for (uint32_t i = 0; i < job.nmiss && i < D41_USED; i++) {
-        const auto e = (uint32_t)job.ids[i];
-        const float by = heat[e] - kSwapLead * heat[pairs_[l][out]] - kSwapFloor * heat_unit_;
-        if (by > best.by) best = {by, {l, out, e, pairs_[l][out], nullptr}};
-      }
+      if (pairs_[l][k] != kNoExpert) out.push_back(k);
+    const size_t count = std::min({kSwapsALayer, in.size(), out.size()});
+    std::partial_sort(in.begin(), in.begin() + (std::ptrdiff_t)count, in.end(), [&](uint32_t a, uint32_t b) { return heat[a] > heat[b]; });
+    std::partial_sort(out.begin(), out.begin() + (std::ptrdiff_t)count, out.end(),
+                      [&](uint32_t a, uint32_t b) { return heat[pairs_[l][a]] < heat[pairs_[l][b]]; });
+    for (size_t i = 0; i < count; i++) {
+      const uint32_t leaving = pairs_[l][out[i]];
+      const float by = heat[in[i]] - kSwapLead * heat[leaving] - kSwapFloor * heat_unit_;
+      if (by > 0.0f) leads.push_back({by, {l, out[i], in[i], leaving, nullptr}});
     }
-    if (best.by > 0.0f) leads.push_back(best);
   }
-  if (leads.empty()) return;
   std::sort(leads.begin(), leads.end(), [](const Lead &a, const Lead &b) { return a.by > b.by; });
   if (leads.size() > kSwapBatch) leads.resize(kSwapBatch);
+  // An expert the file gave takes the arena place of its layer's least used expert there, once it has been used
+  // more: the swap thread reads it in, so the next step that routes to it finds it in memory.
+  uint32_t admitted = 0;
+  for (const auto &[l, e] : file_seen_) {
+    if (admitted == kSwapBatch) break;
+    const float *heat = heat_.data() + (size_t)l * D41_EXPERTS;
+    const bool coming = std::any_of(leads.begin(), leads.end(), [&, l = l, e = e](const Lead &x) { return x.swap.l == l && x.swap.in == e; });
+    if (coming || arena_->weights(l, e).gate || std::find(pairs_[l].begin(), pairs_[l].end(), e) != pairs_[l].end()) continue;
+    const uint32_t out = coldest_in_arena(l);
+    if (out == kNoExpert || heat[e] <= heat[out]) continue;
+    swaps_.push_back({l, 0, kNoExpert, e, arena_->take(l, out)});
+    admitted++;
+  }
+  file_seen_.clear();
+  if (leads.empty() && swaps_.empty()) return;
   // The pairs' experts leave the cards now: their slots are written while the next steps run.
   for (const Lead &lead : leads) {
     const Swap &w = lead.swap;
@@ -653,6 +759,7 @@ void Model::swap_work() {
           ExpertArena::write(le, m[0], m[1], m[2], w.place);
           continue;
         }
+        if (w.in == kNoExpert) continue;
         const ExpertWeights held = arena_->weights(w.l, w.in);
         const uint8_t *down_b = nullptr;
         if (held.gate) {
@@ -721,6 +828,9 @@ void Model::record_engram(ze::List &L, Card &card, uint32_t l, uint32_t W) {
   const uint32_t e = (uint32_t)D41_ENGRAM((int)l), k = 2 * D41_LAYERS + e;
   const uint32_t c0 = 2 * card.c, c1 = c0 + 2, v0 = card.c * (E / 2), v1 = v0 + E / 2, stride = kEngKvRows;
   const uint32_t in_card = 0;
+  // The host gathers the table's rows while the layers before run.
+  wait(L, card, "wait: Engram rows", nullptr, eng_flag_ + 16 * e);
+  L.copy(card.eng_a8[e], eng_a8_[e], (size_t)W * kEngA8Row);
   matvec(L, card, "engram_kv", ly.engram_kv, card.eng_a8[e], card.ekv, W, 8);
   L.launch(kernel(card, "deepseek41", "ds_engram_gate"),
            {card.X, card.ekv, stride, ly.engram_gate, c0, c1, v0, v1, card.eown[e], other.ein[e]}, c1 - c0, W, 1, 256);
@@ -852,7 +962,6 @@ void Model::record(Card &card, uint32_t W) {
   }
   L.copy(card.plan, plan_, sizeof(StepWords));
   L.copy(card.e, embed_, (size_t)W * E * 4);
-  for (uint32_t e = 0; e < kEngramTables; e++) L.copy(card.eng_a8[e], eng_a8_[e], (size_t)W * kEngA8Row);
   L.launch(kernel(card, "deepseek41", "ds_hc_init"),
            {card.e, card.layers[0].attn_norm, card.X, card.ss, card.xa, card.xb, none}, W, 1, 1, D41_HC_SGS * 16);
   for (uint32_t l = 0; l < D41_LAYERS; l++) {
@@ -889,10 +998,22 @@ std::vector<std::vector<Candidate>> Model::step(const StepIn *rows, uint32_t n, 
   const auto ms = [](Clock::time_point a, Clock::time_point b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
   const auto t_start = Clock::now();
   times_ = {};
+  // The Engram rows' thread starts now; whatever ends the step waits for it, since it reads the caller's rows.
+  struct EngramDone {
+    Model &m;
+    ~EngramDone() { m.engram_wait(); }
+  } engram_done{*this};
+  plan_->step = ++step_;
+  {
+    std::lock_guard<std::mutex> lk(engram_mu_);
+    engram_rows_ = rows;
+    engram_n_ = n;
+    engram_asked_++;
+  }
+  engram_cv_.notify_one();
 
   last_width_ = W;
   plan_->real = n;
-  plan_->step = ++step_;
   plan_->stuck = 0;
   plan_->start = 0;
   const GgufTensor &te = gguf_.tensor("token_embd.weight");
@@ -910,18 +1031,6 @@ std::vector<std::vector<Candidate>> Model::step(const StepIn *rows, uint32_t n, 
     plan_->rows[r] = {rows[r].slot, rows[r].pos, rows[r].pos % D41_RING, prev};
     to_float(te.data + (uint64_t)rows[r].token * te.row_bytes(), embed_ + (size_t)r * E, E);
   }
-  // Both layers' Engram rows before the lists start, which copy them to the cards.
-  for (uint32_t e = 0; e < kEngramTables; e++) {
-    std::vector<uint64_t> ids((size_t)n * D41_ENG_COLS);
-    for (uint32_t r = 0; r < n; r++) {
-      const auto h = hash_->rows(rows[r].token, rows[r].p1, rows[r].p2, rows[r].p3, e);
-      std::copy(h.begin(), h.end(), ids.begin() + (size_t)r * D41_ENG_COLS);
-    }
-    engram_->gather(ids.data(), (uint32_t)ids.size(), eng_f_.data());
-    for (uint32_t r = 0; r < n; r++)
-      a8_row(eng_f_.data() + (size_t)r * D41_ENG_G, D41_ENG_G, eng_a8_[e] + (size_t)r * kEngA8Row);
-  }
-
   auto t_mark = Clock::now();
   times_.before = ms(t_start, t_mark);
   for (auto &card : cards_) card->lists.at(W)->execute();
@@ -954,7 +1063,8 @@ std::vector<std::vector<Candidate>> Model::step(const StepIn *rows, uint32_t n, 
         }
       }
       const auto t_seen = Clock::now();
-      times_.records += ms(t_mark, t_seen);
+      times_.layer_records[l] = (float)ms(t_mark, t_seen);
+      times_.records += times_.layer_records[l];
       MissAsk ask;
       ask.layer = l;
       ask.rows = W;
@@ -965,7 +1075,8 @@ std::vector<std::vector<Candidate>> Model::step(const StepIn *rows, uint32_t n, 
       ask.answer_flag = ans_flag_ + 16 * l;
       const MissCounts c = miss_->run_layer(ask);
       t_mark = Clock::now();
-      times_.answers += ms(t_seen, t_mark);
+      times_.layer_answers[l] = (float)ms(t_seen, t_mark);
+      times_.answers += times_.layer_answers[l];
       counts_.routings += c.routings;
       counts_.arena_jobs += c.arena_jobs;
       counts_.ssd_jobs += c.ssd_jobs;
@@ -982,6 +1093,8 @@ std::vector<std::vector<Candidate>> Model::step(const StepIn *rows, uint32_t n, 
   try {
     for (auto &card : cards_) card->lists.at(W)->synchronize();
     times_.after = ms(t_mark, Clock::now());
+    engram_wait();
+    if (engram_failed_) std::rethrow_exception(std::exchange(engram_failed_, nullptr));
     if (failed) std::rethrow_exception(failed);
   } catch (const std::exception &e) {
     throw std::runtime_error(e.what() + progress());

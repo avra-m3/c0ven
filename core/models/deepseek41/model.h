@@ -36,10 +36,12 @@ struct StepWords {
 
 // Where the host thread's time in the last step went, ms.
 struct StepTimes {
-  double before = 0;   // the embeddings and the Engram rows, before the lists start
+  double before = 0;   // the embeddings, before the lists start
+  double engram = 0;   // gathering the Engram rows, while the lists run
   double records = 0;  // waiting for the layers' routing records: the cards' work up to each router
   double answers = 0;  // the CPU's experts
   double after = 0;    // from the last answer to the lists' end
+  std::array<float, D41_LAYERS> layer_records{}, layer_answers{};  // records and answers by layer
 };
 
 // What the tests ask for beyond Options.
@@ -119,6 +121,8 @@ class Model final : public engine::Model {
   const MissCounts &miss_counts() const { return counts_; }
   const StepTimes &step_times() const { return times_; }
   uint64_t swaps_done() const { return swaps_done_; }
+  // The experts the last step's row routed to at layer, D41_USED ids.
+  const int32_t *routed(uint32_t layer, uint32_t row) const { return jobs_[(size_t)layer * STEP_MAX_ROWS + row].all; }
   // A card's kernels in the last step, with Options::trace: each name's launches and time, in the list's order.
   std::vector<TraceRow> trace(uint32_t card) const;
 
@@ -245,6 +249,19 @@ class Model final : public engine::Model {
   D41MissJob *jobs_ = nullptr;   // [layer][row]
   float *cpu_y_ = nullptr;       // [layer][row][D41_EMBD]
   uint32_t *ans_flag_ = nullptr;  // a 64-byte line a layer
+  uint32_t *eng_flag_ = nullptr;  // a line an Engram table: its rows of this step are in eng_a8_
+  // The Engram rows' thread: it gathers a step's rows from the file while the lists run their first layers.
+  std::thread engram_thread_;
+  std::mutex engram_mu_;
+  std::condition_variable engram_cv_;
+  const StepIn *engram_rows_ = nullptr;
+  uint32_t engram_n_ = 0;
+  uint64_t engram_asked_ = 0;
+  std::atomic<uint64_t> engram_done_{0};
+  std::exception_ptr engram_failed_;
+  bool engram_stop_ = false;
+  void engram_work();
+  void engram_wait();
   uint32_t *flags_ = nullptr;     // [card][exchange], a 64-byte line each
   uint32_t *stuck_ = nullptr;     // a line a card
   uint32_t *top_idx_ = nullptr, *top_n_ = nullptr;
@@ -264,6 +281,7 @@ class Model final : public engine::Model {
   std::vector<std::array<std::array<D41Class, 2>, 2>> tables_;
   // Options::adapt_swaps: an expert the CPU keeps answering takes the pair of the layer's least used one. The step
   // thread chooses and maps between steps; the swap thread loads the slots, then refills the arena places they freed.
+  // With in kNoExpert no pair changes: out comes from the file into place, which an arena expert used less gave up.
   struct Swap {
     uint32_t l, pair, in, out;
     uint8_t *place;  // in's place in the arena, which out takes; null when in came from the file
@@ -272,6 +290,9 @@ class Model final : public engine::Model {
   std::vector<float> heat_;  // [layer][expert]: routings, the older ones counting less
   float heat_unit_ = 1.0f;
   std::vector<Swap> swaps_;
+  std::vector<std::pair<uint32_t, uint32_t>> file_seen_;  // (layer, expert) the file gave since the last choice
+  std::vector<std::vector<uint32_t>> missed_;             // by layer: the experts missed since the last choice
+  uint32_t coldest_in_arena(uint32_t l) const;
   std::atomic<SwapState> swap_state_{SwapState::idle};
   std::mutex swap_mu_;
   std::condition_variable swap_cv_;
