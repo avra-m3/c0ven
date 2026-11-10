@@ -8,8 +8,8 @@ protocol lines. The rules, from ADR-0017:
   that debt is credit against the next one (ADR-0071). A prompt chunk's
   time is mostly a fixed part that each piece pays, so a short prompt is read whole and a long one in pieces sized
   from the fixed part and what decode is worth (`CostModel.piece_ms`), between the budget and `STRETCH` x the budget,
-  at most `whole_rows` of the core's `fetch_rows` (`CostModel.rows_within`). With nobody writing, a prompt takes whole
-  chunks.
+  at most `whole_rows` of the core's `fetch_rows` (`CostModel.rows_within`), or a whole chunk when STRETCH x the
+  budget fits one (`CostModel.whole_chunks`, ADR-0069). With nobody writing, a prompt takes whole chunks.
 - Short prompts are packed into one step, shortest first, and the engine reads up to PROMPT_RUNS of them as one
   chunk. A prompt passed over `max_passes` times goes first.
 - One producer per shared prefix: a request whose prompt starts with a prefix another request will checkpoint waits
@@ -51,7 +51,7 @@ from engine.api.interface import (
     prefix_key,
 )
 from engine.seqstate.manager import SeqState, pages_for
-from engine.timing import STRETCH, CostModel, whole_rows
+from engine.timing import STRETCH, CostModel, short_rows, whole_rows
 
 type CheckpointRule = Callable[[tuple[int, ...]], list[tuple[int, bool]]]
 """Where to checkpoint a prompt: (position, kept) pairs. The model's rule is in models/<arch>/."""
@@ -169,6 +169,7 @@ class Scheduler:
         self.clock = clock
         self.state = SeqState(facts.slots, facts.pages, facts.checkpoints, classes=max(1, facts.cards))
         self.cost = cost or CostModel.initial()
+        self.cost.short_rows = short_rows(facts.fetch_rows)
         self.whole_rows = whole_rows(facts.fetch_rows)
         self.decode_weight = facts.decode_weight
         self.waiting: list[Request] = []
@@ -196,6 +197,8 @@ class Scheduler:
         out["decode_ms"] = f"{self.cost.decode_ms.value:.3f}"
         out["chunk_ms"] = f"{self.cost.chunk_ms:.3f}"
         out["row_ms"] = f"{self.cost.row_ms:.4f}"
+        out["long_chunk_ms"] = f"{self.cost.long_chunk_ms:.3f}"
+        out["long_row_ms"] = f"{self.cost.long_row_ms:.4f}"
         out["owed_ms"] = f"{self.owed_ms:.3f}"
         return out
 
@@ -437,6 +440,11 @@ class Scheduler:
         budget = o.chunk_rows
         window = plan.window_rows
         left_ms = STRETCH * o.prompt_budget_ms
+        # The most rows of a chunk that prompts share: on the fetch path, or a whole chunk if the budget fits one, less
+        # the writers' rows, which the core adds only while the chunk is short of `prompt_chunk` (ADR-0053).
+        room = o.chunk_rows - (PROMPT_RUNS - 1)
+        whole = room if writing and self.cost.whole_chunks(o.prompt_budget_ms, room) else 0
+        limit = max(whole, self.whole_rows)
         marks: list[tuple[Request, int, bool]] = []
         chosen: set[int] = set()
         for r in candidates:
@@ -447,18 +455,24 @@ class Scheduler:
                 # While others write, the first prompt's piece is sized by time and is whole when it is short
                 # (CostModel.rows_within); another prompt joins whole while the plan's prompt time stays in bound.
                 # A longer piece shares the chunk of those before it in its PROMPT_RUNS, and so its fixed part, but
-                # not past `whole_rows`: that chunk would leave the fetch path and hold the writers for longest.
+                # not past `limit`: past `whole_rows` the chunk leaves the fetch path and holds the writers longest.
                 if not plan.prompt:
                     writers = sum(q.phase is Phase.DECODE for q in self.by_slot.values())
                     aim = self.cost.piece_ms(o.prompt_budget_ms, o.decode_share, self.decode_weight, writers)
-                    rows = self.cost.rows_within(o.prompt_budget_ms, rows, self.whole_rows, aim)
+                    rows = self.cost.rows_within(o.prompt_budget_ms, rows, self.whole_rows, aim, whole)
                     ms = self.cost.prompt_ms(rows)
                 else:
                     group = plan.prompt[len(plan.prompt) // PROMPT_RUNS * PROMPT_RUNS :]
                     shared = rows > window and any(span.count > window for span in group)
-                    ms = self.cost.row_ms * rows if shared else self.cost.prompt_ms(rows)
-                    chunk = rows + sum(span.count for span in group if span.count > window)
-                    if rows < r.next_mark() - r.next_pos or ms > left_ms or (shared and chunk > self.whole_rows):
+                    before = sum(span.count for span in group if span.count > window)
+                    chunk = rows + before
+                    # A shared chunk's time grows by its rows, and by the long line's fixed part if they take it there.
+                    ms = (
+                        self.cost.prompt_ms(chunk) - self.cost.prompt_ms(before)
+                        if shared
+                        else self.cost.prompt_ms(rows)
+                    )
+                    if rows < r.next_mark() - r.next_pos or ms > left_ms or (shared and chunk > limit):
                         break
                 left_ms -= ms
             seq = self.state.sequences[r.slot]

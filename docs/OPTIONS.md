@@ -65,3 +65,24 @@ whole when they and the host's memory hold it, or else a row cache of as many ro
 whole in them, reserve 27 GiB more than the arena needs, 13,824 pages of 2 MiB. The fit report's `ngram` and
 `hugetlb` rows say where the table is, how many rows its cache holds, and what each part takes.
 
+## Long prompt pieces beside writers
+
+While a request is writing, a prompt is read in pieces of at most 1,021 rows, each aimed at `--prompt-budget-ms`
+(500 ms by default), and after each piece the writers get half its time (`--decode-share`). A writer's longest gap
+between tokens is then 0.71-0.87 s ([the record](measurements/MEASUREMENTS.md#2026-11-01-full-prompt-pieces)).
+
+Where nobody watches tokens stream, as for an agent's tool calls, a larger budget reads prompts faster beside writers
+at the cost of longer gaps:
+
+```bash
+--engine-arg=--prompt-budget-ms=2000
+```
+
+When a whole chunk costs at most 1.6 times the budget, each piece is a whole chunk of 4,349 rows, which leaves room
+for three writers' rows, or the rest of the prompt ([ADR-0069](adr/0069-a-prompt-piece-may-be-a-whole-chunk-when-the-budget-fits-one.md)). A whole chunk takes
+1,645-1,680 ms at position 0 and 2,748 ms at position 239,360
+([the record](measurements/MEASUREMENTS.md#2026-10-17-prefill-timings)), so 2,000 ms (3,200 ms at 1.6 times) fits
+one with room to spare. A writer's longest gap is then a whole chunk's time plus up to 85 ms
+([the record](measurements/MEASUREMENTS.md#2026-11-01-whole-rows-and-stretch)): about 1.7 s at position 0 and
+2.8 s near position 239k. The writers still get half of each piece's time. With a smaller budget, pieces stay at
+1,021 rows wherever a whole chunk does not fit 1.6 times it, so set the budget for the deepest position served.
