@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import math
+import struct
 from dataclasses import replace
 from pathlib import Path
 
@@ -20,7 +22,7 @@ from engine.memory_plan import (
     working_file,
     write_working,
 )
-from engine.models.qwen4exp.draft import draft_per_card, read_shapes
+from engine.models.qwen4exp.draft import COMMITTED, draft_per_card, read_shapes
 from engine.models.qwen4exp.memory import (
     deltanet_state_bytes,
     model_memory,
@@ -35,9 +37,10 @@ MODEL = model_memory(TABLE)
 
 def test_no_context_given_is_the_models_whole_context():
     p = plan(MODEL, plan_options(slots=1, context=0))
-    assert MODEL.max_context == TABLE.context_length
-    assert p.options.context == MODEL.max_context
-    assert p == plan(MODEL, plan_options(slots=1, context=MODEL.max_context))
+    assert MODEL.trained_context == TABLE.context_length
+    assert MODEL.max_context == 4 * TABLE.context_length
+    assert p.options.context == MODEL.trained_context
+    assert p == plan(MODEL, plan_options(slots=1, context=MODEL.trained_context))
 
 
 def test_the_sizes_per_sequence_are_the_files():
@@ -49,10 +52,15 @@ def test_the_sizes_per_sequence_are_the_files():
     assert MODEL.draft_kv_host == 32_768 * 1_088
 
 
-def test_a_dflash_drafter_counts_the_mtp_layers_ring():
-    """DFlash 2's manifest has no MTP layer: its ring is counted as the MTP layer's, as before."""
+def test_a_dflash_drafter_counts_the_mtp_layers_ring(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    """DFlash 2 has no MTP layer: its ring is counted as the MTP layer's, from the model file's attention widths. A
+    served plan, with DFlash 2 or no drafter, reads nothing under docs/."""
+    monkeypatch.setattr("engine.models.qwen4exp.memory.COMMITTED", tmp_path / "missing")
     dflash = {"layers.0.self_attn.k_proj.weight": (1024, 2560), "fc.weight": (2560, 12800)}
     assert model_memory(TABLE, draft_shapes=dflash).draft_kv_host == MODEL.draft_kv_host
+    none = model_memory(TABLE, draft_shapes={})
+    assert none.draft_kv_host == MODEL.draft_kv_host
+    assert none.draft_per_card == 0
 
 
 def test_the_sizes_follow_the_layers():
@@ -104,25 +112,48 @@ def test_the_split_rules_keep_some_weights_whole():
 def test_the_draft_layer_as_the_core_stores_it():
     """From the committed MTP manifest: IQ4_NL experts, 1,382,400 B a slot on each of two cards, the indexer left
     out, the norms in F32, and the rest split as a main layer's or whole."""
-    shapes = read_shapes()
+    shapes = read_shapes(COMMITTED)
     assert len(shapes) == 31
     assert draft_per_card(shapes, 2) == 831_015_936
     assert draft_per_card(shapes, 1) == 1_593_527_296
     assert MODEL.draft_per_card == 831_015_936
 
 
-def test_a_dflash_manifest(tmp_path: Path):
-    """DFlash 2's manifest lists its tensors; its projections split, its norms and base kernels widen to F32."""
-    tensors = [
-        {"name": "fc.weight", "dtype": "BF16", "shape": [2560, 12800]},
-        {"name": "norm.weight", "dtype": "BF16", "shape": [2560]},
-        {"name": "layers.0.self_attn.q_proj.weight", "dtype": "BF16", "shape": [4096, 2560]},
-        {"name": "layers.0.mlp.down_proj.weight", "dtype": "BF16", "shape": [2560, 7680]},
-        {"name": "layers.0.attention_conv.base_kernel", "dtype": "BF16", "shape": [4, 2560]},
-    ]
-    (tmp_path / "dflash-manifest.json").write_text(json.dumps({"tensors": tensors}))
+def safetensors(path: Path, shapes: dict[str, list[int]]) -> None:
+    """A BF16 safetensors file of zeros with these tensors."""
+    header: dict[str, object] = {"__metadata__": {"format": "pt"}}
+    offset = 0
+    for name, shape in shapes.items():
+        size = math.prod(shape) * 2
+        header[name] = {"dtype": "BF16", "shape": shape, "data_offsets": [offset, offset + size]}
+        offset += size
+    body = json.dumps(header).encode()
+    path.write_bytes(struct.pack("<Q", len(body)) + body + bytes(offset))
+
+
+def test_a_dflash_safetensors_header(tmp_path: Path):
+    """DFlash 2's shapes come from its model.safetensors header, less the candidate selector; its projections split,
+    its norms and base kernels widen to F32."""
+    safetensors(
+        tmp_path / "model.safetensors",
+        {
+            "fc.weight": [2560, 12800],
+            "norm.weight": [2560],
+            "layers.0.self_attn.q_proj.weight": [4096, 2560],
+            "layers.0.mlp.down_proj.weight": [2560, 7680],
+            "layers.0.attention_conv.base_kernel": [4, 2560],
+            "candidate_selector.hidden_projection.weight": [256, 2560],
+        },
+    )
     shapes = read_shapes(tmp_path)
+    assert "candidate_selector.hidden_projection.weight" not in shapes
     assert draft_per_card(shapes, 2) == 2 * 2560 * 12800 + 4 * 2560 + 4096 * 2560 + 2560 * 7680 + 4 * 4 * 2560
+
+
+def test_the_split_dflash_layout_is_refused(tmp_path: Path):
+    (tmp_path / "dflash-manifest.json").write_text("{}")
+    with pytest.raises(FileNotFoundError, match="no longer read"):
+        read_shapes(tmp_path)
 
 
 def test_host_side():
@@ -182,12 +213,25 @@ def test_ram_max_is_a_limit_of_its_own():
     assert "--context 131072" in str(exc.value)
 
 
+def test_past_the_trained_context_the_working_memory_grows():
+    """The prompt's scores and fp16 K and V, and the pooled keys, follow the context past 262,144 tokens."""
+    trained = plan(MODEL, plan_options(slots=1, context=262_144))
+    long = plan(MODEL, plan_options(slots=1, context=1_048_576))
+    assert long.working_per_card > trained.working_per_card
+    assert long.experts_cached < trained.experts_cached
+
+
+def test_the_core_s_working_figure_is_taken_as_it_is_past_the_trained_context():
+    p = plan(MODEL, plan_options(slots=1, context=1_048_576, working_per_card=2_000_000_000))
+    assert p.working_per_card == 2_000_000_000
+
+
 def test_a_limit_nothing_fits_names_a_smaller_file():
     with pytest.raises(PlanError, match="smaller model file"):
         plan(MODEL, plan_options(slots=1, context=4096, host_memory=2**30))
 
 
-@pytest.mark.parametrize("options", [plan_options(slots=0), plan_options(context=300_000), plan_options(slots=40)])
+@pytest.mark.parametrize("options", [plan_options(slots=0), plan_options(context=1_048_580), plan_options(slots=40)])
 def test_impossible_plans(options: PlanOptions):
     with pytest.raises(PlanError):
         plan(MODEL, options)

@@ -19,14 +19,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
-from tools import dflash_fetch
-
 HUB = "https://huggingface.co"
 CHUNK = 1 << 22
 TRIES = 5
 TIMEOUT = 60
 """Seconds without data before a read gives up and the download resumes."""
-DRAFTER_SIZE = dflash_fetch.SIZE
 DEFAULT_DIR = Path("/models")
 START = (
     'docker run --rm --device /dev/dri --group-add "$(stat -c %g /dev/dri/renderD128)" --ulimit memlock=-1:-1 '
@@ -60,6 +57,23 @@ ENCODER_FILE = RemoteFile(
     907_543_008,
     "b1a82259702816a5330d7bd7607cd9676b11780e79ff7348c21103ff3ce49bd0",
 )
+DFLASH = Source("incoai/Qwen3.8-Flash-Next-DFlash2", "a22a1744e85c17364dcc54a6a420af7135d4c7f6")
+DRAFTER_FILES = [
+    RemoteFile(
+        f"{HUB}/{DFLASH.repo}/resolve/{DFLASH.revision}/model.safetensors",
+        "model.safetensors",
+        1_206_140_008,
+        "d6723f2a359eaf33ec0c95f22ae8edda896774020c552296a85e1913b4d3186f",
+    ),
+    RemoteFile(
+        f"{HUB}/{DFLASH.repo}/resolve/{DFLASH.revision}/config.json",
+        "config.json",
+        1_236,
+        "2409575986f9ea24d455343eb469c0e6940def5edab1d1be503bb8eb4cc3b1b9",
+    ),
+]
+"""The DFlash 2 drafter, into dflash/ as published. config.json comes last: the engine takes the directory as the
+drafter once both files are there."""
 MODELS = {
     **dict.fromkeys(("IQ3_S", "IQ3_XXS", "IQ2_XS", "Q2_0"), ISTA),
     **dict.fromkeys(
@@ -189,17 +203,16 @@ def main(argv: list[str] | None = None) -> None:
     for file in model:
         link_shared(file, directory)
     drafter = directory / "dflash"
-    needs_drafter = not (drafter / "dflash-manifest.json").exists()
-    need = missing_bytes(files, directory) + (DRAFTER_SIZE if needs_drafter else 0)
+    drafter.mkdir(exist_ok=True)
+    need = missing_bytes(files, directory) + missing_bytes(DRAFTER_FILES, drafter)
     free = shutil.disk_usage(directory).free
     if need > free:
         raise SystemExit(f"{directory} has {free / 1e9:.1f} GB free and this needs {need / 1e9:.1f} GB.")
 
     for file in files:
         download(file, directory)
-    if needs_drafter:
-        print("DFlash 2 drafter: downloading", flush=True)
-        dflash_fetch.fetch(drafter)
+    for file in DRAFTER_FILES:
+        download(file, drafter)
     print(finished(directory, model[0].name), flush=True)
 
 

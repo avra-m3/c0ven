@@ -33,6 +33,9 @@ struct Options {
   bool trace = false;                       // the model times every kernel of its lists
   bool profile_routing = false;             // the prompt path counts each expert's rows
   bool adapt_swaps = false;                 // count the routing, for Model::swap_round
+  // On one card, the CPU computes a short chunk's rarest uncached experts (ADR-0072). Its rows round differently from
+  // the card's, so a run's numbers then depend on what shares its chunk: off where they must repeat exactly.
+  bool rare_on_cpu = true;
   // The pages of the KV pool not in use lend their memory to the expert cache; needs adapt_swaps.
   bool share_kv = false;
   // The arena in the process's own memory, which the copy engines read in place (ADR-0035). false, or a card without
@@ -43,6 +46,9 @@ struct Options {
   // pages the kernel never moves, so it never stops a card to bind one again. Needs anon_arena.
   bool hugetlb_arena = false;
   bool ngram_in_ram = false;                // the whole n-gram table in RAM
+  // Bytes of the host's reserved huge pages for the n-gram table: with ngram_in_ram its first part, without it the row
+  // cache (models/qwen4exp/ngram.h). A multiple of the huge page size; 0: none.
+  uint64_t ngram_huge_bytes = 0;
   // A profile to choose the cached experts by (tools/route_profile.cpp); empty: the first experts of each layer;
   // none: the model's own.
   std::optional<std::string> routing_profile;
@@ -79,6 +85,8 @@ struct LoadInfo {
   double loader_bytes_per_s = 0;     // their read rate in the probe
   bool ngram_in_ram = false;
   double ngram_read_us = 0;          // one 4 KiB row read from the file, when the table is not in RAM
+  uint64_t ngram_cache_rows = 0;     // rows the n-gram cache holds
+  uint64_t ngram_huge_bytes = 0;     // the n-gram table's or its cache's bytes in reserved huge pages
   double copy_bytes_per_s[2] = {0, 0};  // each card's copy engine reading pinned host memory
 };
 

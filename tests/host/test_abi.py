@@ -28,8 +28,8 @@ def test_fields_do_not_overlap():
 
 def test_sizes_from_the_header():
     """Sizes worked out by hand from engine_api.h, on x86-64."""
-    assert ctypes.sizeof(abi.CConfig) == 88
-    assert ctypes.sizeof(abi.CInfo) == 160
+    assert ctypes.sizeof(abi.CConfig) == 96
+    assert ctypes.sizeof(abi.CInfo) == 176
     assert ctypes.sizeof(abi.CCard) == 120
     assert ctypes.sizeof(abi.CSettings) == 80
     assert ctypes.sizeof(abi.CPageChange) == 20
@@ -39,7 +39,7 @@ def test_sizes_from_the_header():
     assert ctypes.sizeof(abi.CEvent) == 16
     assert ctypes.sizeof(abi.CTiming) == 32
     assert ctypes.sizeof(abi.CImage) == 24
-    assert ctypes.sizeof(abi.CStats) == 8 * 40
+    assert ctypes.sizeof(abi.CStats) == 8 * 42
     assert ctypes.sizeof(abi.CSlotStats) == 8 * 7
     assert ctypes.sizeof(abi.CTimingRing) == 32
 

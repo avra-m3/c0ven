@@ -1,4 +1,4 @@
-# ADR-0067: swap rounds run beside a prompt while a slot writes
+# ADR-0074: swap rounds run beside a prompt while a slot writes
 
 **Status:** draft. 2026-11-08.
 **Revisit when:** an ABBA of writers beside long prompts finds the writers or the prompt slower than with rounds held,

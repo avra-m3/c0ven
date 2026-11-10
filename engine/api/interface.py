@@ -153,6 +153,10 @@ class OpenConfig:
     hugetlb_arena: bool = False
     """The expert arena in the host's reserved huge pages (`vm.nr_hugepages`) while they last, the rest in the
     process's own memory."""
+    ngram_hugetlb: int = 0
+    """Bytes of the host's reserved huge pages for the n-gram table, a multiple of their size: with ngram_in_ram its
+    first part, otherwise its row cache, as many rows as they hold. If the core cannot map them, the table is read from
+    the file with the default cache. 0: none."""
     """The image encoder's file (the mmproj GGUF, spec/MODEL_VISION.md); empty: no images."""
 
 
@@ -181,6 +185,10 @@ class EngineFacts:
     ngram_in_ram: bool = False
     ngram_read_us: float = 0.0
     """One 4 KiB row read from the file, microseconds; 0 with the table in RAM."""
+    ngram_cache_rows: int = 0
+    """The rows the n-gram table's cache holds; 0: not reported."""
+    ngram_huge_bytes: int = 0
+    """The n-gram table's or its cache's bytes in reserved huge pages."""
     copy_bytes_per_s: tuple[float, ...] = ()
     """Each card's copy engine reading pinned host memory, bytes a second."""
     expert_budget: tuple[int, ...] = ()
@@ -394,6 +402,10 @@ class EngineStats:
     experts_floor: int = 0
     idle_rounds: int = 0
     """Of the swap rounds, those run while no plan came."""
+    reading_steps: int = 0
+    """Of the undrafted steps, those run while another slot read its prompt."""
+    reading_rounds: int = 0
+    """Of the rounds, those run while another slot read its prompt (ADR-0071)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -457,4 +469,11 @@ class Engine(Protocol):
         """Loads the cards again after `sleep`. The slots are empty and the checkpoints too."""
         ...
 
-    def close(self) -> None: ...
+    def close(self) -> None:
+        """Frees the cards. Not to be called once `queue_stuck`: it would wait on the stuck queue."""
+        ...
+
+    def queue_stuck(self) -> bool:
+        """True once a command list on the cards has timed out in this process. The driver's calls wait on the stuck
+        queue then, its teardown at a normal exit too, so the process ends with os._exit."""
+        ...

@@ -50,9 +50,12 @@ docker exec engine-dev bash -c 'cd /src/build && ENGINE_EXPECT_GPUS=2 ctest -L g
 | `gguf_test` | 1 | the GGUF reader against the census of the IQ3_S file |
 | `direct_test` | 1 | the loader's thread probe reads the largest shard, and gives 8 threads without reading a file under 1 GiB; no card, no model |
 | `mrope_test` | 1 | the M-RoPE positions an image gives a prompt's cells, against transformers' rule; no card |
+| `yarn_test` | 1 | YaRN's angles and magnitude, against [MODEL_LAYER.md, section 3.3](spec/MODEL_LAYER.md#33-rope-821-832); no card |
+| `yarn_kernel_test` | 3 | the rotation at position 1,000,000 in `idx_prep` and `p_idx_prep`, with and without YaRN, against a scalar reference |
 | `experts_test` | 1 | the CPU's expert products with and without the SwiGLU limit, on both of `compute_many`'s paths, against the formula on ggml's dot products, 1e-5; no card |
 | `quant_test` | 1 | every quantised type's block size and fields against ggml's, the runs layout on random blocks, those blocks' values within the size of the files' weights, and ggml's CPU dot product against its dequantisation; no card |
 | `cpu_experts_test` | 1 | the CPU's expert path keeps its one pool job for every down type of the deepseek41 and Flash-Next files, and its results for several tokens at once equal one token's bit for bit, on random blocks. On ggml's own blocks of the types in its second list, against ggml's dots row by row, bit for bit: the one-job path, seen in the pool jobs a run starts, the three-job path at a K that is no whole number of h's tasks, down read through unequal parts against the whole row, equal parts against one dot per part, a run repeated; no card, no model |
+| `row_cache_test` | 1 | the n-gram table's row cache: a row put is found byte for byte, a row in the same slot replaces it, ids past 2^32, and the rows 17 GiB holds at 90 B a row and an 8-byte tag; no card, no model |
 | `ze_smoke_test` | 2 | a kernel runs on every card, and one card waits on another's event |
 | `matvec_test` | 3 | the weight products of every quantised type on random blocks, and of every type the file holds on its rows, against ggml's dequantisation, 1e-5 |
 | `moe_test` | 3 | the decode step's grouped expert products of `moe.cl` equal `matvec.cl`'s bit for bit, for every type `moe.cl` takes on random blocks and every one the file holds on its experts, and every group size |
@@ -65,7 +68,7 @@ docker exec engine-dev bash -c 'cd /src/build && ENGINE_EXPECT_GPUS=2 ctest -L g
 | `vision_test` | 3 | the image encoder's kernels against double precision: 1e-5 for f32 outputs, 2e-3 for fp16, 1e-2 for bf16 |
 | `encoder_test` | 4 | the image encoder against llama.cpp's rows for the same images and video frame pairs ([images](measurements/MEASUREMENTS.md#2026-10-17-encoder-reference), [pairs](measurements/MEASUREMENTS.md#2026-10-17-video-pair-reference)): mean cosine at least 0.999, least at least 0.95. Needs `$FLASH_REF_DIR/vision` and the `mmproj` file |
 | `batch_test` | 6 | a decode step of several rows (several sequences, a window of one, or windows of several in one step, each committed alone) gives each row exactly its single-row result |
-| `pack_test` | 6 | a prompt chunk of several sequences' runs, one of them from the middle of its prompt, gives each sequence exactly the candidates and the greedy tokens of its prompt read alone; so do runs after a chunk's first that hold an image's block or start past the indexer's 2,051 cells and past 12,288 positions |
+| `pack_test` | 6 | a prompt chunk of several sequences' runs, one of them from the middle of its prompt, gives each sequence exactly the candidates and the greedy tokens of its prompt read alone, with the CPU's part in a short chunk off; so do runs after a chunk's first that hold an image's block or start past the indexer's 2,051 cells and past 12,288 positions |
 | `api_test` | 5 | the C ABI from C: 32 greedy tokens, the first 19 equal to llama.cpp's (token 19 is a near tie), release and admit again, a stop token, short prompt pieces read as decode windows, a 108-token prompt by the prompt path, two requests in one step, a checkpoint restored into another slot that shares the first slot's pages and copies the page the checkpoint ends inside, one token read after a restore, the timing records; with the draft layer's tensors (`FLASH_MTP_DIR`, by default `/models/mtp`), drafting gives the same tokens alone and with two slots drafting in one window; with adaptive swaps, three requests keep their first 16 tokens |
 
 A test whose model is missing skips (exit code 77), except `matvec_test`, `qgemm_test` and `moe_test`, which then
@@ -144,13 +147,13 @@ consecutive tokens of up to four sequences (`Model::prompt_runs`):
 - A run of up to 8 rows (`PROMPT_SHORT_RUN`) attends as the decode step does, from the 8-bit cache over the cells the
   indexer chose (`p_attn_rows`), with no fp16 copy. The core adds writing slots' next tokens to a chunk with runs to
   spare, as runs of one row ([ADR-0053](adr/0053-writers-rows-ride-in-a-prompt-chunk.md)): they get a token from the
-  chunk instead of waiting for it, and the CPU computes none of their experts, since the chunk stages every expert.
+  chunk instead of waiting for it, and their experts come with the chunk's.
 - Products run on the XMX units: BF16 weights directly, quantised dense weights dequantised to fp16 just before
   their product ([`kernels/gemm.cl`](../kernels/gemm.cl), [`kernels/quant/qgemm.cl`](../kernels/quant/qgemm.cl)).
   The experts' assignments are grouped by expert on the card, and each expert's tile of up to 64 rows is computed
   with its weights decoded on the fly.
-- Each card stages the experts it does not cache into a staging buffer on the card, two layers' worth in turn, so
-  the CPU computes nothing for a prompt. For a chunk of more than 1,024 rows a list recorded at load on the card's
+- Each card stages the experts it does not cache into a staging buffer on the card, two layers' worth in turn. For a
+  chunk of more than 1,024 rows a list recorded at load on the card's
   copy engine copies every uncached expert from the arena. For a chunk of 1,024 rows or fewer a thread per card
   writes them through the CPU's mapping of the buffer (`fetch_experts`): each layer's uncached experts, hottest first
   by the swap counts, until the layer's router has run, then the rest the router picked. The chunk's list waits for
@@ -159,6 +162,11 @@ consecutive tokens of up to four sequences (`Model::prompt_runs`):
   [ADR-0065](adr/0065-a-short-chunk-writes-through-a-mapping.md)). A load where the system will not export or map
   the buffer fails. The log gives each card's touch of the buffer at load and, after a chunk, any page faults its
   writes took.
+- On one card, in those chunks, an uncached expert that three rows or fewer picked is not staged (`kCpuRows`):
+  `p_moe_scan` gives it no tiles and `rare_experts`, on the engine thread and the workers, computes it. The chunk's list
+  copies each layer's `xg` to host memory, and waits before the staged products until the CPU has written its rows of
+  `yg` through its mapping of the region
+  ([ADR-0072](adr/0072-on-one-card-the-cpu-computes-a-short-chunks-rarest-experts.md)).
 - The cards exchange fp16 partial sums. The kernel that makes a card's partial sum also writes it into the other
   card's memory while it computes, 64 bytes per store. Stores of 32 bytes or less cross at a tenth of the rate
   ([the record](measurements/MEASUREMENTS.md#2026-10-15-prompt-exchange-stores)).

@@ -9,7 +9,7 @@ from dataclasses import dataclass, field, replace
 import pytest
 
 import protocol
-from engine.api.interface import Event, EventKind, OpenConfig, StepPlan
+from engine.api.interface import NO_SLOT, PROMPT_RUNS, Event, EventKind, OpenConfig, StepPlan
 from engine.api.mock import MockEngine, Script
 from engine.scheduler import CheckpointRule, Phase, Scheduler, SchedulerOptions, every_16k
 from engine.seqstate.manager import pages_for
@@ -17,8 +17,22 @@ from tests.helpers import facts_of, open_config
 
 
 class SpyEngine(MockEngine):
-    def __init__(self, script: Script | None = None, *, prompt_chunk_ms: float = 0.0) -> None:
-        super().__init__(script, prompt_chunk_ms=prompt_chunk_ms)
+    def __init__(
+        self,
+        script: Script | None = None,
+        *,
+        prompt_chunk_ms: float = 0.0,
+        prompt_row_ms: float = 0.46,
+        fetch_rows: int = 0,
+        long_chunk_ms: float | None = None,
+    ) -> None:
+        super().__init__(
+            script,
+            prompt_chunk_ms=prompt_chunk_ms,
+            prompt_row_ms=prompt_row_ms,
+            fetch_rows=fetch_rows,
+            long_chunk_ms=long_chunk_ms,
+        )
         self.plans: list[StepPlan] = []
         self.calls: list[tuple[str, int, int]] = []
         self.submitted_at: list[int] = []
@@ -78,9 +92,17 @@ def make(
     *,
     fetch_rows: int = 0,
     decode_weight: int = 0,
+    prompt_row_ms: float = 0.46,
+    long_chunk_ms: float | None = None,
 ) -> Run:
     config = config or open_config()
-    engine = SpyEngine(script, prompt_chunk_ms=prompt_chunk_ms)
+    engine = SpyEngine(
+        script,
+        prompt_chunk_ms=prompt_chunk_ms,
+        prompt_row_ms=prompt_row_ms,
+        fetch_rows=fetch_rows,
+        long_chunk_ms=long_chunk_ms,
+    )
     facts = replace(engine.open(config), fetch_rows=fetch_rows, decode_weight=decode_weight)
     assert facts_of(config).slots == facts.slots
     return Run(engine, Scheduler(engine, facts, options, rule))
@@ -230,6 +252,57 @@ def test_a_prompt_step_waits_for_the_decode_the_step_before_owes():
     assert min(gaps) >= 4, f"no prompt step before the one before it is done and its decode paid: {gaps}"
 
 
+def step_done(decode_rows: int, prompt_rows: int, ms: float) -> Event:
+    return Event(EventKind.STEP_DONE, NO_SLOT, 0, decode_rows, prompt_rows, int(ms * 1e6))
+
+
+def a_reader_beside_a_writer() -> Run:
+    run = make(open_config(slots=2, context=8192), options=SchedulerOptions(prompt_budget_ms=100.0, decode_share=0.5))
+    run.add(1, prompt(4), 400)
+    run.tick(3)
+    run.add(2, prompt(3000, start=7), 2)
+    run.scheduler._admit(run.events)  # pyright: ignore[reportPrivateUsage]
+    assert run.scheduler.by_rid[2].phase is Phase.PREFILL
+    assert run.scheduler.by_rid[1].phase is Phase.DECODE
+    return run
+
+
+def test_decode_past_what_a_reader_is_owed_is_carried_to_its_next_step():
+    run = a_reader_beside_a_writer()
+    s = run.scheduler
+    s.owed_ms = 50.0
+    for _ in range(3):
+        s._handle(step_done(2, 0, 30.0), run.events)  # pyright: ignore[reportPrivateUsage]
+    assert s.owed_ms == pytest.approx(-40.0), "three 30 ms plans against 50 ms owed: 40 ms past it"
+    s.prompt_step_open = True
+    s._handle(step_done(0, 200, 100.0), run.events)  # pyright: ignore[reportPrivateUsage]
+    assert s.owed_ms == pytest.approx(10.0), "the next prompt step's 50 ms owed, less the 40 ms already given"
+
+
+def test_decode_past_what_a_late_step_done_owes_is_carried_too():
+    run = a_reader_beside_a_writer()
+    s = run.scheduler
+    s.owed_ms = -10.0
+    s.prompt_step_open = True  # a prompt plan is queued behind these plans
+    s._handle(step_done(2, 0, 30.0), run.events)  # pyright: ignore[reportPrivateUsage]
+    assert s.owed_ms == pytest.approx(-40.0)
+
+
+def test_decode_with_nobody_reading_carries_nothing():
+    run = make(open_config(slots=2, context=8192), options=SchedulerOptions(prompt_budget_ms=100.0, decode_share=0.5))
+    run.add(1, prompt(4), 400)
+    run.tick(3)
+    s = run.scheduler
+    s.owed_ms = 50.0
+    for _ in range(3):
+        s._handle(step_done(1, 0, 30.0), run.events)  # pyright: ignore[reportPrivateUsage]
+    assert s.owed_ms == 0.0, "no credit builds up while no prompt waits"
+    run.add(2, prompt(3000, start=7), 2)
+    s._admit(run.events)  # pyright: ignore[reportPrivateUsage]
+    s._handle(step_done(1, 0, 30.0), run.events)  # pyright: ignore[reportPrivateUsage]
+    assert s.owed_ms == -30.0, "a prompt waits now"
+
+
 def test_a_short_prompt_beside_a_writer_is_one_piece():
     options = SchedulerOptions(prompt_budget_ms=500.0)
     run = make(open_config(slots=3, context=8192), options=options, prompt_chunk_ms=600.0, fetch_rows=1024)
@@ -294,6 +367,110 @@ def test_a_long_prompt_beside_a_writer_is_cut_by_what_decode_is_worth():
         assert run.errors() == []
         pieces[weight] = max(s.count for p in run.engine.plans[1:] for s in p.prompt)
     assert pieces[60] < pieces[0], "worth more, decode gets its turn sooner"
+
+
+def pieces_beside_a_writer(run: Run, *lengths: int) -> list[list[tuple[int, int]]]:
+    """The (slot, rows) of each prompt plan after a writer's own, with prompts of `lengths` rows sent together."""
+    run.add(1, prompt(300), 3000)
+    run.tick(3)
+    assert run.scheduler.by_rid[1].phase is Phase.DECODE
+    for i, n in enumerate(lengths):
+        run.add(2 + i, prompt(n, start=7 + 2 * i), 2)
+    run.until_idle()
+    assert run.errors() == []
+    return [[(s.slot, s.count) for s in p.prompt] for p in run.engine.plans[1:] if p.prompt]
+
+
+@pytest.mark.parametrize(
+    ("chunk_ms", "weight", "expected"),
+    [
+        (233.0, 30, [[(3, 200)], [(2, 1021)], [(2, 279)], *[[(1, 1021)]] * 4, [(1, 916)]]),
+        (600.0, 0, [[(3, 200)], [(2, 510)], [(2, 790)], *[[(1, 510)]] * 8, [(1, 920)]]),
+        (60.0, 30, [[(3, 200)], [(2, 956)], [(2, 344)], *[[(1, 956)]] * 5, [(1, 220)]]),
+    ],
+)
+def test_the_default_budget_gives_the_pieces_it_gave_before_whole_chunks(
+    chunk_ms: float, weight: int, expected: list[list[tuple[int, int]]]
+):
+    # `expected` is what the scheduler gave before ADR-0069, on the same load.
+    run = make(
+        open_config(slots=4, context=16384),
+        options=SchedulerOptions(),
+        prompt_chunk_ms=chunk_ms,
+        fetch_rows=1024,
+        decode_weight=weight,
+        long_chunk_ms=chunk_ms + 70.0,
+    )
+    assert pieces_beside_a_writer(run, 5000, 1300, 200) == expected
+
+
+def test_a_budget_that_fits_a_whole_chunk_gives_whole_chunks_beside_a_writer():
+    options = SchedulerOptions(prompt_budget_ms=2000.0)
+    run = make(
+        open_config(slots=2, context=16384),
+        options=options,
+        prompt_chunk_ms=247.0,
+        fetch_rows=1024,
+        decode_weight=30,
+        long_chunk_ms=316.0,
+    )
+    assert pieces_beside_a_writer(run, 10000) == [[(1, 4349)], [(1, 4349)], [(1, 1302)]], "room for 3 writers' rows"
+    cost = run.scheduler.cost
+    assert (cost.chunk_ms, cost.long_chunk_ms) == (pytest.approx(247.0), pytest.approx(316.0)), "a line for each path"
+    steps = [at for at, p in zip(run.engine.submitted_at, run.engine.plans, strict=True) if p.prompt][1:]
+    gaps = [b - a for a, b in itertools.pairwise(steps)]
+    owed = 0.5 * (316.0 + 0.46 * 4349) / 11.0
+    assert min(gaps) >= int(owed), f"decode is still owed half of each whole chunk's time: {gaps}"
+
+
+def test_a_whole_chunk_piece_leaves_the_writers_room_in_its_chunk():
+    # The core adds a writer's row to a chunk only while it is short of the chunk's rows and runs (ADR-0053). The mock
+    # decodes every writer in every plan whatever the chunk holds, so this checks the plans leave the room.
+    options = SchedulerOptions(prompt_budget_ms=2000.0)
+    run = make(
+        open_config(slots=4, context=16384),
+        options=options,
+        prompt_chunk_ms=247.0,
+        fetch_rows=1024,
+        decode_weight=30,
+        long_chunk_ms=316.0,
+    )
+    for rid in (1, 2, 3):
+        run.add(rid, prompt(300, start=rid), 3000)
+    run.tick(6)
+    assert all(run.scheduler.by_rid[rid].phase is Phase.DECODE for rid in (1, 2, 3))
+    run.add(4, prompt(10000, start=17), 2)
+    run.until_idle()
+    assert run.errors() == []
+    after = [p for p in run.engine.plans if p.prompt and all(s.count > 300 for s in p.prompt)]
+    assert [s.count for p in after for s in p.prompt] == [4349, 4349, 1302]
+    for p in after:
+        assert sum(s.count for s in p.prompt) + 3 <= SchedulerOptions().chunk_rows, "three writers' rows fit"
+        assert len(p.prompt) + 3 <= PROMPT_RUNS, "and three runs for them"
+
+
+def test_a_budget_short_of_a_whole_chunk_keeps_pieces_to_the_fetch_path():
+    options = SchedulerOptions(prompt_budget_ms=1000.0)
+    run = make(
+        open_config(slots=2, context=16384), options=options, prompt_chunk_ms=247.0, fetch_rows=1024, decode_weight=30
+    )
+    pieces = [rows for plan in pieces_beside_a_writer(run, 10000) for _, rows in plan]
+    assert sum(pieces) == 10000
+    assert max(pieces) == 1021, "1.6 x 1,000 ms is short of a whole chunk's 2,249 ms"
+
+
+def test_prompts_beside_a_writer_share_a_chunk_past_the_fetch_path_when_the_budget_fits_one():
+    options = SchedulerOptions(prompt_budget_ms=2000.0)
+    run = make(
+        open_config(slots=4, context=16384),
+        options=options,
+        prompt_chunk_ms=247.0,
+        fetch_rows=1024,
+        decode_weight=30,
+        long_chunk_ms=316.0,
+    )
+    assert pieces_beside_a_writer(run, 200, 1300, 700) == [[(1, 200), (3, 700), (2, 1300)]]
+    assert run.engine.stats().prompt_chunks == 2, "the writer's chunk, then one chunk for the three prompts"
 
 
 def test_a_long_prompt_alone_takes_whole_chunks():
@@ -512,7 +689,8 @@ def test_a_reading_slot_stopped_for_a_stalled_writer_does_not_take_its_pages_bac
     for rid, (p, n) in reqs.items():
         alone.add(rid, p, n)
         alone.until_idle()
-    run = make(open_config(slots=3, context=512, pages=128), options=small, script=history)
+    # A row costs as much as a decode step, so the reader's steps are long enough for the writer to grow past its pages.
+    run = make(open_config(slots=3, context=512, pages=128), options=small, script=history, prompt_row_ms=11.0)
     for rid in range(writers):
         run.add(rid, *reqs[rid])
     while run.scheduler.state.pool.available * 4 >= 230:  # the reader's 190 cells fit, and little more

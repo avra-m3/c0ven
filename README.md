@@ -47,7 +47,7 @@ if you have one, try Strata.
 - Splits the work between both cards. The experts used most stay in VRAM, and the rest wait in RAM.
 - Drafts up to 7 tokens a step with DFlash 2 (or 3 with the model's own MTP layer) and checks them in one step.
 - Moves cached experts between RAM and VRAM as the routing of your requests changes.
-- Contexts up to 262,144 tokens.
+- Contexts up to 1,048,576 tokens. Past the 262,144 the model was trained on, positions are scaled by YaRN.
 - Gives the cards back on request and takes them again in about 15 s, so llama-swap can run other models on them
   ([Sharing the cards](#sharing-the-cards-with-other-models)).
 - OpenAI and Anthropic APIs, with streaming.
