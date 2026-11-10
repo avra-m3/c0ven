@@ -97,6 +97,9 @@ same 28.4 GB/s as a kernel. While a prompt runs, each card stages its experts fr
 | Two products fused into one launch, against the two launched together | 1.4-2.4 µs saved a pair | [2026-10-16](#2026-10-16-decode-launches-together) |
 | Recording a copy list of about 35,000 copies | 45 ms; 8 ms of wait when recorded on a thread of its own | <a id="2026-10-16-swaps-and-prompts"></a>[2026-10-16](#2026-10-16-swaps-and-prompts) |
 | Recording every list the engine uses, at load | 0.19 s | <a id="2026-10-16-load-phases"></a>[2026-10-16](#2026-10-16-load-phases) |
+| A process that ends without the driver's teardown 0-2 ms after its last copy-engine copy | the copy engine reset at 3 of 30 exits; at 20 ms, 0 of 15 | <a id="2026-11-06-copy-engine-stuck-after-exit"></a>[2026-11-06](#2026-11-06-copy-engine-stuck-after-exit) |
+| The same with the driver's copy loop kept running (`NEO_EnableDirectSubmissionController=0`) | reset at 6 of 10 exits; 1 of 10 left that card's copy engine unable to run new work, and the next process's first copy never started | [2026-11-06](#2026-11-06-copy-engine-stuck-after-exit) |
+| The same loop kept running, at a normal exit through the driver's teardown | reset at 0 of 15 exits; destroying the context and then ending without the teardown, 4 of 15 | [2026-11-06](#2026-11-06-copy-engine-stuck-after-exit) |
 
 ### Signals between the CPU and a card
 

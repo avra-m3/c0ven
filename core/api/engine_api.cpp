@@ -1634,6 +1634,8 @@ void engine_close(engine_ctx *e) {
   delete e;
 }
 
+int engine_queue_stuck(void) { return engine::ze::queue_stuck() ? 1 : 0; }
+
 engine_status engine_cards(engine_card *cards, uint32_t cap, uint32_t *n) {
   if (!n) return ENGINE_BAD_ARGUMENT;
   try {

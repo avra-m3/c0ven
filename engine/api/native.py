@@ -150,6 +150,7 @@ def load_library(path: Path | None = None) -> ctypes.CDLL:
         "engine_wake": ([_ctx, ctypes.POINTER(abi.CInfo)], ctypes.c_int),
         "engine_last_error": ([_ctx], ctypes.c_char_p),
         "engine_close": ([_ctx], None),
+        "engine_queue_stuck": ([], ctypes.c_int),
         "engine_abi_layout": ([ctypes.POINTER(abi.CAbiRow), _u32], _u32),
         "engine_cards": ([ctypes.POINTER(abi.CCard), _u32, _p_u32], ctypes.c_int),
     }
@@ -220,6 +221,7 @@ class Core(Protocol):
     def wake(self) -> abi.CInfo: ...
     def last_error(self) -> str: ...
     def close(self) -> None: ...
+    def queue_stuck(self) -> bool: ...
 
 
 class CtypesCore:
@@ -319,6 +321,9 @@ class CtypesCore:
     def close(self) -> None:
         self._lib.engine_close(self._ctx)
         self._ctx = _ctx()
+
+    def queue_stuck(self) -> bool:
+        return bool(self._lib.engine_queue_stuck())
 
 
 @dataclass(slots=True)
@@ -608,6 +613,9 @@ class NativeEngine:
         self._asleep = False
         self._slots.clear()
         self._queued.clear()
+
+    def queue_stuck(self) -> bool:
+        return self._core.queue_stuck()
 
     # The adapter.
 
