@@ -47,12 +47,16 @@ using engine::TraceRow;
 // patches the encoder is built for: 16 pixels a side, 768 bytes, merged 2 x 2 (docs/spec/MODEL_VISION.md, sections 2,
 // 4.1 and 6; vision_sizes.h). meta: the model file's metadata.
 ImageShape image_shape_of(const std::map<std::string, GgufValue> &meta);
-// What DFlash 2's config.json gives beyond its tensors' sizes, from dflash-config.txt (tools/dflash_fetch.py).
+// DFlash 2's files in its directory, as incoai/Qwen3.8-Flash-Next-DFlash2 publishes them (docs/MODEL_FILES.md).
+inline constexpr const char *kDfWeights = "model.safetensors", *kDfConfig = "config.json";
+// Whether dir holds DFlash 2: both files. Throws for a directory of its tensors split one a file, the old layout.
+bool is_dflash_dir(const std::string &dir);
+// What DFlash 2's config.json gives beyond its tensors' sizes.
 struct DfConfig {
   int32_t mask_token = 0;                     // the token of a block's rows after its first: mask_token_id
   std::array<uint32_t, DF_LAYERS> targets{};  // the main layers whose outputs it reads, in its features' order
 };
-// dir's dflash-config.txt, checked against the sizes the drafter's kernels are built for (layout.h). Throws when the
+// dir's config.json, checked against the sizes the drafter's kernels are built for (layout.h). Throws when the
 // file is missing or a size differs.
 DfConfig read_df_config(const std::string &dir);
 // The MTP layer's routed experts: its router's rows, from the size of its file in dir. Throws when the file is not a
@@ -247,6 +251,9 @@ class Model final : public engine::Model {
   // A short chunk's staging on card c, on its own thread: each layer's uncached experts in order (hottest first)
   // until the router's counts are in, then the rest it routes to.
   void fetch_experts(uint32_t c, const std::vector<std::vector<uint32_t>> &order);
+  // A short chunk's uncached experts that kCpuRows rows or fewer picked, on one card: each layer's, on this thread and
+  // the workers, as the chunk reads back the layer's inputs.
+  void rare_experts();
   ze::List &prompt_list(Card &card, uint32_t T, uint32_t runs);
   uint32_t pev(uint32_t kind, uint32_t layer, uint32_t c) const;
   Mat mat(Card &card, const GgufTensor &t, const std::vector<std::pair<uint64_t, uint64_t>> &rows,
@@ -348,6 +355,7 @@ class Model final : public engine::Model {
   uint32_t kv_pages_ = 0;  // pages in the pool
   uint32_t kv_res_ = 0;    // streamed (Options::kv_resident): the ring of resident K and V pages a layer on each
                            // card, at most; 0: every page resident
+  uint16_t *xg_host_ = nullptr;  // the inputs of what the CPU computes in a short chunk; kept across sleeps
   std::vector<uint8_t *> kv_host_;  // the host copies of K and V, [card][attention layer][K, V]; kept across sleeps
   std::vector<uint32_t> kvs_to_;    // [slot] the position its pages are claimed through (kvs_claim), 0: not settled
   uint32_t ring_level_ = 0;         // the ring's size on the cards (kst[4])

@@ -1,21 +1,22 @@
 // The DFlash 2 drafter (docs/MODEL_FILES.md, "The DFlash 2 drafter"; ADR-0050): five Qwen3-shaped layers that read
 // the main model's hidden states at five layers and draft a block of positions in one pass. Split by heads and MLP
 // rows as the draft layer is (docs/DESIGN.md, section 5), with two exchanges a layer; each slot keeps the drafter's K
-// and V of its last DF_RING positions. Its BF16 weights come from the files tools/dflash_fetch.py writes.
+// and V of its last DF_RING positions. Its BF16 weights and config are the files as published.
 #include <fcntl.h>
 #include <unistd.h>
 
 #include <algorithm>
 #include <cstring>
 #include <fstream>
+#include <iterator>
 #include <map>
-#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 #include "ggml-cpu.h"
 #include "models/qwen4exp/model_impl.h"
+#include "util/json.h"
 
 namespace engine::qwen4exp {
 
@@ -30,42 +31,80 @@ float bf16f(uint16_t h) {
   return f;
 }
 
-// One tensor of the drafter's directory: raw little-endian BF16, `elements` of them.
-std::vector<uint16_t> df_tensor(const std::string &dir, const std::string &name, size_t elements) {
-  std::string path = dir + "/" + name;
-  int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
-  if (fd < 0) throw std::runtime_error("cannot open the DFlash 2 tensor " + path);
-  std::vector<uint16_t> v(elements);
-  size_t got = 0;
-  while (got < elements * 2) {
-    ssize_t n = ::read(fd, reinterpret_cast<uint8_t *>(v.data()) + got, elements * 2 - got);
-    if (n <= 0) break;
-    got += (size_t)n;
+// The drafter's model.safetensors: each tensor's absolute byte range, from the file's header (an 8-byte length, then
+// JSON). Every tensor the core loads is BF16; the file's others, the candidate selector's, are not read.
+struct DfFile {
+  struct Fd {
+    int v;
+    ~Fd() {
+      if (v >= 0) ::close(v);
+    }
+  };
+  struct Range {
+    uint64_t begin, end;
+    std::string dtype;
+  };
+  std::string path;
+  Fd fd;
+  std::map<std::string, Range> ranges;
+
+  explicit DfFile(const std::string &dir)
+      : path(dir + "/" + kDfWeights), fd{::open(path.c_str(), O_RDONLY | O_CLOEXEC)} {
+    if (fd.v < 0) throw std::runtime_error("cannot open " + path);
+    uint64_t n = 0;
+    if (::pread(fd.v, &n, 8, 0) != 8 || n > (64u << 20)) fail("no safetensors header");
+    std::string text(n, '\0');
+    if (::pread(fd.v, text.data(), n, 8) != (ssize_t)n) fail("a short safetensors header");
+    const Json header = parse_json(text);
+    for (const auto &[name, t] : header.object) {
+      if (name == "__metadata__") continue;
+      const Json &off = t.at("data_offsets");
+      if (off.array.size() != 2) fail(name + " has no data_offsets pair");
+      ranges[name] = {8 + n + (uint64_t)off.array[0].number, 8 + n + (uint64_t)off.array[1].number,
+                      t.at("dtype").string};
+    }
   }
-  bool longer = false;
-  if (got == elements * 2) {
-    uint8_t extra;
-    longer = ::read(fd, &extra, 1) > 0;
+  [[noreturn]] void fail(const std::string &what) const { throw std::runtime_error(path + ": " + what); }
+
+  // The tensor's `elements` BF16 words.
+  std::vector<uint16_t> tensor(const std::string &name, size_t elements) const {
+    auto it = ranges.find(name);
+    if (it == ranges.end()) fail("no tensor " + name);
+    const auto &[begin, end, dtype] = it->second;
+    if (dtype != "BF16") fail(name + " is " + dtype + ", not BF16");
+    if (end - begin != elements * 2) fail("the DFlash 2 tensor " + name + " has the wrong size");
+    std::vector<uint16_t> v(elements);
+    size_t got = 0;
+    while (got < elements * 2) {
+      ssize_t r = ::pread(fd.v, reinterpret_cast<uint8_t *>(v.data()) + got, elements * 2 - got, (off_t)(begin + got));
+      if (r <= 0) fail("a short read of " + name);
+      got += (size_t)r;
+    }
+    ::posix_fadvise(fd.v, (off_t)begin, (off_t)(end - begin), POSIX_FADV_DONTNEED);  // read once a load (ADR-0032)
+    return v;
   }
-  ::posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED);  // read once a load: its pages back to the host (ADR-0032)
-  ::close(fd);
-  if (got != elements * 2 || longer) throw std::runtime_error("the DFlash 2 tensor " + name + " has the wrong size");
-  return v;
-}
+};
 
 }  // namespace
 
 DfConfig read_df_config(const std::string &dir) {
-  const std::string path = dir + "/dflash-config.txt";
+  const std::string path = dir + "/" + kDfConfig;
   std::ifstream f(path);
-  if (!f) throw std::runtime_error(path + " is missing: fetch the drafter again (tools/dflash_fetch.py)");
-  std::map<std::string, std::vector<double>> kv;  // a line: a key, then its values
-  for (std::string line; std::getline(f, line);) {
-    std::istringstream in(line);
-    std::string key;
-    in >> key;
-    for (double x; in >> x;) kv[key].push_back(x);
-  }
+  if (!f) throw std::runtime_error(path + " is missing");
+  const Json config = parse_json(std::string(std::istreambuf_iterator<char>(f), {}));
+  // The values a key holds: config.json's top level, dflash_config's and rope_parameters' together.
+  std::map<std::string, std::vector<double>> kv;
+  auto add = [&](const Json &obj) {
+    for (const auto &[key, v] : obj.object) {
+      if (v.kind == Json::Kind::Number) kv[key] = {v.number};
+      if (v.kind == Json::Kind::Array)
+        for (const Json &x : v.array)
+          if (x.kind == Json::Kind::Number) kv[key].push_back(x.number);
+    }
+  };
+  add(config);
+  add(config.at("dflash_config"));
+  add(config.at("rope_parameters"));
   auto one = [&](const char *key) {
     auto it = kv.find(key);
     if (it == kv.end() || it->second.size() != 1) throw std::runtime_error(path + ": no single value for " + key);
@@ -92,8 +131,17 @@ DfConfig read_df_config(const std::string &dir) {
   return c;
 }
 
+bool is_dflash_dir(const std::string &dir) {
+  if (::access((dir + "/" + kDfWeights).c_str(), R_OK) == 0 && ::access((dir + "/" + kDfConfig).c_str(), R_OK) == 0)
+    return true;
+  if (::access((dir + "/dflash-manifest.json").c_str(), R_OK) == 0)
+    throw std::runtime_error(dir + " holds DFlash 2 split into one file a tensor, which is no longer read: put the "
+                                   "drafter's model.safetensors and config.json there (docs/MODEL_FILES.md)");
+  return false;
+}
+
 bool Model::init_dflash() {
-  if (::access((opt_.mtp_dir + "/dflash-manifest.json").c_str(), R_OK) != 0) return false;
+  if (!is_dflash_dir(opt_.mtp_dir)) return false;
   if (shape_.embd != DF_EMBD)
     throw std::runtime_error("DFlash 2 reads hidden states of " + std::to_string(DF_EMBD) +
                              " values; the model's are " + std::to_string(shape_.embd));
@@ -138,7 +186,8 @@ void Model::load_dflash(Card &card) {
     for (size_t i = 0; i < h.size(); i++) f[i] = bf16f(h[i]);
     return upload<float>(card, f.data(), f.size() * 4);
   };
-  auto tensor = [&](const std::string &n, size_t el) { return df_tensor(dir, n, el); };
+  const DfFile file(dir);
+  auto tensor = [&](const std::string &n, size_t el) { return file.tensor(n, el); };
   auto rows = [&](const std::vector<uint16_t> &w, size_t K, size_t r0, size_t n) {
     return std::vector<uint16_t>(w.begin() + r0 * K, w.begin() + (r0 + n) * K);
   };

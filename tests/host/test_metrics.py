@@ -14,6 +14,8 @@ REPORT = {
     "step_misses": "20000",
     "step_layers_missed": "8000",
     "undrafted_steps": "100",
+    "reading_steps": "30",
+    "reading_rounds": "90",
     "rounds": "500",
     "round_rows": "2000",
     "round_ns": "10000000000",
@@ -58,6 +60,7 @@ def test_derive_divides_what_has_a_divisor():
     assert d["layer_accepted_per_run"] == 2.0
     assert d["lookup_accepted_per_run"] == 4.0
     assert d["undrafted_share"] == 0.25
+    assert d["reading_round_share"] == 0.75
     assert d["busy"] == 0.75
     assert d["swap_share"] == 0.1
     assert d["prompt_rows_per_s"] == 2000.0

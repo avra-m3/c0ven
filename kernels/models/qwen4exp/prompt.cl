@@ -688,16 +688,17 @@ __kernel void p_moe_count(__global const int *ids, __global const PromptPlan *pp
 // One work-group of Q_EXPERTS: each expert's first row (base, an exclusive scan of the counts in expert order),
 // and its tiles of MOE_TILE rows, into the list of cached experts (slot_map[e] >= 0, the cache slot) or of staged
 // experts (stage_map[e] >= 0, the staging slot). Resets the counts and sets the fill cursors.
-// With prof (the routing profile being gathered), adds the counts to it.
+// With prof (the routing profile being gathered), adds the counts to it. An uncached expert of cpu_rows rows or fewer
+// gets no tiles: the CPU computes it and writes its rows of yg.
 __kernel void p_moe_scan(__global uint *cnt, __global const int *slot_map, __global const int *stage_map,
                          __global uint *base, __global uint *cursor, __global MoeTile *tiles_c,
                          __global uint *ntiles_c, __global MoeTile *tiles_s, __global uint *ntiles_s,
-                         __global uint *prof) {
+                         __global uint *prof, uint cpu_rows) {
   __local uint sc[Q_EXPERTS], tc[Q_EXPERTS], ts[Q_EXPERTS];
   uint e = get_local_id(0);
   uint n = cnt[e];
-  uint nt = (n + MOE_TILE - 1) / MOE_TILE;
   bool cached = slot_map[e] >= 0;
+  uint nt = !cached && n <= cpu_rows ? 0 : (n + MOE_TILE - 1) / MOE_TILE;
   sc[e] = n;
   tc[e] = cached ? nt : 0;
   ts[e] = cached ? 0 : nt;
