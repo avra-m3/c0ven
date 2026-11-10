@@ -1,8 +1,8 @@
 // deepseek41's decode step on the cards against RefModel on the CPU, on the real file: the streams after each
-// sublayer, the logits and the first choice, one row a step. Needs two cards and DS41_MODEL, the file's first shard.
-// DS41_STEPS: positions run. DS41_TOKENS: a dump of upstream's whose tokens start the sequence. DS41_ARENA_GIB,
-// DS41_CARD_EXPERTS, DS41_PROFILE: the arena's size, the experts a layer on the cards, a routing profile. DS41_TRACE:
-// the last step's kernels and their times. DS41_SWAPS: experts change tiers by use. DS41_NO_STREAMS: the lists copy no streams out, as a served step.
+// sublayer, the logits and the first choice. Needs two cards and DS41_MODEL, the file's first shard. DS41_STEPS:
+// positions run; DS41_ROWS: positions a step; DS41_TOKENS: a dump of upstream's whose tokens start the sequence;
+// DS41_ARENA_GIB, DS41_CARD_EXPERTS, DS41_PROFILE: the tiers' sizes and a routing profile; DS41_SWAPS: experts change
+// tiers by use; DS41_TRACE: the last step's kernels; DS41_NO_STREAMS: the lists copy no streams out.
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -114,61 +114,74 @@ int run() {
   // Any tokens do: each step feeds RefModel's first choice back, after a fixed start or DS41_TOKENS's, a dump.
   std::vector<int32_t> tokens = {0, 9211, 1418, 344, 31032, 5106};
   if (const char *dump = std::getenv("DS41_TOKENS")) tokens = dump_tokens(dump);
-  std::vector<float> want(vocab);
-  std::map<std::pair<bool, int>, std::vector<float>> streams;
+  const uint32_t rows_a_step = std::min<uint32_t>(env_u32("DS41_ROWS", 1), STEP_MAX_ROWS);
+  EXPECT(rows_a_step > 0, "DS41_ROWS is 1 to %d", STEP_MAX_ROWS);
+  std::vector<std::vector<float>> want(rows_a_step, std::vector<float>(vocab));
+  std::vector<std::map<std::pair<bool, int>, std::vector<float>>> streams(rows_a_step);
   double kl_sum = 0, worst_stream = 0, ms_sum = 0;
   StepTimes parts;
   std::vector<double> kls;
   uint32_t same = 0;
-  for (uint32_t t = 0; t < steps; t++) {
-    streams.clear();
-    ref.decode(tokens[t], want.data(), [&](const char *name, int layer, const float *v, size_t n) {
-      const std::string s = name;
-      if (s == "hc_attn_post" || s == "l_out") streams[{s == "l_out", layer}].assign(v, v + n);
-    });
-    const StepIn row = row_at(0, t, tokens[t], tokens);
+  uint32_t step_count = 0;
+  for (uint32_t t = 0; t < steps;) {
+    // RefModel first, a position at a time: its choice is the next token once the given ones end.
+    const uint32_t n = std::min(rows_a_step, steps - t);
+    std::vector<StepIn> rows;
+    for (uint32_t i = 0; i < n; i++) {
+      ref.decode(tokens[t + i], want[i].data(), [&](const char *name, int layer, const float *v, size_t count) {
+        const std::string s = name;
+        if (s == "hc_attn_post" || s == "l_out") streams[i][{s == "l_out", layer}].assign(v, v + count);
+      });
+      if (tokens.size() <= t + i + 1)
+        tokens.push_back((int32_t)(std::max_element(want[i].begin(), want[i].end()) - want[i].begin()));
+      rows.push_back(row_at(0, t + i, tokens[t + i], tokens));
+    }
     const auto t0 = std::chrono::steady_clock::now();
-    const auto cands = model.step(&row, 1);
+    const auto cands = model.step(rows.data(), n);
     const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     if (t) {
       const StepTimes &p = model.step_times();
       ms_sum += ms;
       parts.before += p.before, parts.records += p.records, parts.answers += p.answers, parts.after += p.after;
+      step_count++;
     }
-
-    double worst = 0;
-    int worst_layer = -1;
-    bool worst_ffn = false;
-    for (const auto &[key, v] : streams) {
-      if (!probes) break;
-      EXPECT(v.size() == D41_HC_DIM, "RefModel's streams hold %zu values", v.size());
-      const double e = rel_rms(model.probe((uint32_t)key.second, key.first), v.data(), v.size());
-      EXPECT(!std::isnan(e), "position %u, layer %d: a stream is not a number", t, key.second);
-      if (e > worst) worst = e, worst_layer = key.second, worst_ffn = key.first;
-      if (std::getenv("DS41_STREAMS")) std::printf("  position %u layer %d %s: %.2e\n", t, key.second, key.first ? "ffn" : "attention", e);
-    }
-    EXPECT(streams.size() == 2 * ref.layers(), "RefModel gave %zu streams", streams.size());
-    worst_stream = std::max(worst_stream, worst);
-
-    const std::vector<float> got = model.logits(0);
-    EXPECT(got.size() == vocab, "the logits hold %zu values", got.size());
-    const double kl = kl_logits(want, got);
-    const auto top_want = (int32_t)(std::max_element(want.begin(), want.end()) - want.begin());
-    const auto top_got = (int32_t)(std::max_element(got.begin(), got.end()) - got.begin());
-    EXPECT(!cands.empty() && !cands[0].empty() && cands[0][0].token == top_got, "the first candidate is the largest logit");
-    kl_sum += kl;
-    kls.push_back(kl);
-    same += top_want == top_got;
     const MissCounts &c = model.miss_counts();
-    std::printf("position %u token %d: %.1f ms, streams worst %.2e (layer %d %s), logits %.2e, KL %.5f, choice %d %s; CPU %llu of %llu routings, %llu from the file, %llu swaps\n",
-                t, tokens[t], ms, worst, worst_layer, worst_ffn ? "ffn" : "attention", rel_rms(got.data(), want.data(), vocab), kl,
-                top_got, top_want == top_got ? "same" : "differs", (unsigned long long)c.routings, (unsigned long long)D41_LAYERS * D41_USED,
-                (unsigned long long)c.ssd_jobs, (unsigned long long)model.swaps_done());
+    EXPECT(cands.size() == n, "the step gave %zu rows of candidates", cands.size());
+    for (uint32_t i = 0; i < n; i++) {
+      double worst = 0;
+      int worst_layer = -1;
+      bool worst_ffn = false;
+      for (const auto &[key, v] : streams[i]) {
+        if (!probes) break;
+        EXPECT(v.size() == D41_HC_DIM, "RefModel's streams hold %zu values", v.size());
+        const double e = rel_rms(model.probe((uint32_t)key.second, key.first) + (size_t)i * D41_HC_DIM, v.data(), v.size());
+        EXPECT(!std::isnan(e), "position %u, layer %d: a stream is not a number", t + i, key.second);
+        if (e > worst) worst = e, worst_layer = key.second, worst_ffn = key.first;
+        if (std::getenv("DS41_STREAMS"))
+          std::printf("  position %u layer %d %s: %.2e\n", t + i, key.second, key.first ? "ffn" : "attention", e);
+      }
+      EXPECT(streams[i].size() == 2 * ref.layers(), "RefModel gave %zu streams", streams[i].size());
+      worst_stream = std::max(worst_stream, worst);
+
+      const std::vector<float> got = model.logits(i);
+      EXPECT(got.size() == vocab, "the logits hold %zu values", got.size());
+      const double kl = kl_logits(want[i], got);
+      const auto top_want = (int32_t)(std::max_element(want[i].begin(), want[i].end()) - want[i].begin());
+      const auto top_got = (int32_t)(std::max_element(got.begin(), got.end()) - got.begin());
+      EXPECT(!cands[i].empty() && cands[i][0].token == top_got, "the first candidate is the largest logit");
+      kl_sum += kl;
+      kls.push_back(kl);
+      same += top_want == top_got;
+      std::printf("position %u token %d: %.1f ms, streams worst %.2e (layer %d %s), logits %.2e, KL %.5f, choice %d %s; CPU %llu of %llu routings, %llu from the file, %llu swaps\n",
+                  t + i, tokens[t + i], ms, worst, worst_layer, worst_ffn ? "ffn" : "attention", rel_rms(got.data(), want[i].data(), vocab),
+                  kl, top_got, top_want == top_got ? "same" : "differs", (unsigned long long)c.routings,
+                  (unsigned long long)D41_LAYERS * D41_USED * n, (unsigned long long)c.ssd_jobs, (unsigned long long)model.swaps_done());
+    }
     std::fflush(stdout);
-    if (tokens.size() <= t + 1) tokens.push_back(top_want);
+    t += n;
   }
   std::sort(kls.begin(), kls.end());
-  const double median = kls[kls.size() / 2], after = steps > 1 ? steps - 1 : 1;
+  const double median = kls[kls.size() / 2], after = step_count ? step_count : 1;
   const auto loose = (uint32_t)(kls.end() - std::upper_bound(kls.begin(), kls.end(), kLooseKl));
   std::printf("%u positions: KL median %.5f, mean %.5f, %u above %.1f; %u first choices the same; streams worst %.2e\n", steps, median,
               kl_sum / steps, loose, kLooseKl, same, worst_stream);
