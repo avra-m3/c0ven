@@ -47,12 +47,16 @@ using engine::TraceRow;
 // patches the encoder is built for: 16 pixels a side, 768 bytes, merged 2 x 2 (docs/spec/MODEL_VISION.md, sections 2,
 // 4.1 and 6; vision_sizes.h). meta: the model file's metadata.
 ImageShape image_shape_of(const std::map<std::string, GgufValue> &meta);
-// What DFlash 2's config.json gives beyond its tensors' sizes, from dflash-config.txt (tools/dflash_fetch.py).
+// DFlash 2's files in its directory, as incoai/Qwen3.8-Flash-Next-DFlash2 publishes them (docs/MODEL_FILES.md).
+inline constexpr const char *kDfWeights = "model.safetensors", *kDfConfig = "config.json";
+// Whether dir holds DFlash 2: both files. Throws for a directory of its tensors split one a file, the old layout.
+bool is_dflash_dir(const std::string &dir);
+// What DFlash 2's config.json gives beyond its tensors' sizes.
 struct DfConfig {
   int32_t mask_token = 0;                     // the token of a block's rows after its first: mask_token_id
   std::array<uint32_t, DF_LAYERS> targets{};  // the main layers whose outputs it reads, in its features' order
 };
-// dir's dflash-config.txt, checked against the sizes the drafter's kernels are built for (layout.h). Throws when the
+// dir's config.json, checked against the sizes the drafter's kernels are built for (layout.h). Throws when the
 // file is missing or a size differs.
 DfConfig read_df_config(const std::string &dir);
 // The MTP layer's routed experts: its router's rows, from the size of its file in dir. Throws when the file is not a

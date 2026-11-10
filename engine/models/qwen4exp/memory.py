@@ -7,7 +7,14 @@ from typing import cast
 from engine.api.interface import CORE_RESERVE, PAGE_CELLS, SplitKind
 from engine.memory_plan import ModelMemory, PlanOptions
 from engine.models.qwen4exp import numbers
-from engine.models.qwen4exp.draft import Q8_BLOCK, draft_kv_cell, draft_per_card, kv_per_slot, read_shapes
+from engine.models.qwen4exp.draft import (
+    COMMITTED,
+    Q8_BLOCK,
+    draft_kv_cell,
+    draft_per_card,
+    kv_per_slot,
+    read_shapes,
+)
 from engine.models.qwen4exp.split import bytes_per_card, split_of
 from engine.models.qwen4exp.tensors import Category, LayerKind, TensorTable
 
@@ -80,7 +87,8 @@ def model_memory(
     table: TensorTable, cards: int = 2, draft_shapes: dict[str, tuple[int, ...]] | None = None
 ) -> ModelMemory:
     """The sizes on one card or each of two: one card holds every weight and every head whole. draft_shapes: the
-    drafter's tensor shapes (draft.read_shapes); None: the committed MTP layer's."""
+    drafter's tensor shapes (draft.read_shapes), empty for no drafter; None: the committed MTP layer's, for the mock
+    and the reference."""
     if cards not in (1, 2):
         raise ValueError(f"the engine runs on one or two cards, not {cards}")
     expert_total = table.bytes_of(Category.EXPERTS)
@@ -97,8 +105,8 @@ def model_memory(
     pooled_key = F32 * key_values // PAGE_CELLS
     split_key = 2 * FP16 * key_values // PAGE_CELLS
     state = kinds.count(LayerKind.DELTANET) * deltanet_state_bytes(table) + ple_history_bytes(table)
-    shapes = draft_shapes if draft_shapes is not None else read_shapes()
-    draft_kv = numbers.DRAFT_WINDOW * _q8(draft_kv_cell(shapes))
+    shapes = draft_shapes if draft_shapes is not None else read_shapes(COMMITTED)
+    draft_kv = numbers.DRAFT_WINDOW * _q8(draft_kv_cell(shapes, kv_values))
     draft_kv_planned = draft_kv // cards
 
     def working_of(o: PlanOptions, pool: int) -> int:

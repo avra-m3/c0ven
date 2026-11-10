@@ -13,6 +13,7 @@ add_library(engine_core STATIC
   load/gguf.cpp
   load/runs.cpp
   models/open.cpp
+  util/json.cpp
   util/parallel.cpp
   ze/ze.cpp)
 target_include_directories(engine_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/shared

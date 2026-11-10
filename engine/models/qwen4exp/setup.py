@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 
 from engine.api.interface import OpenConfig, Tensor
 from engine.memory_plan import MemoryPlan, PlanOptions, plan
-from engine.models.qwen4exp.draft import read_shapes
+from engine.models.qwen4exp.draft import DFLASH_FILES, read_shapes, split_layout_error
 from engine.models.qwen4exp.memory import model_memory
 from engine.models.qwen4exp.split import split_of
 from engine.models.qwen4exp.tensors import TensorTable, from_gguf_cached, from_tsv
@@ -32,9 +32,13 @@ CPU_WORKERS = 16
 the reference)."""
 
 
-def memory_plan(table: TensorTable, options: PlanOptions, draft: Path | None = None) -> MemoryPlan:
-    """draft: the drafter's directory, whose manifest sizes it; None: the committed MTP layer's."""
-    return plan(model_memory(table, options.cards, read_shapes(draft) if draft is not None else None), options)
+def memory_plan(
+    table: TensorTable, options: PlanOptions, draft: Path | None = None, *, served: bool = False
+) -> MemoryPlan:
+    """draft: the drafter's directory, whose files size it. Without one, a served start (`served`, a model file)
+    plans no drafter; the mock and the reference plan the committed MTP layer."""
+    shapes = read_shapes(draft) if draft is not None else ({} if served else None)
+    return plan(model_memory(table, options.cards, shapes), options)
 
 
 @lru_cache(maxsize=4)
@@ -50,13 +54,16 @@ def checkpoint_rule(model: Path | None, table_cache: Path | None = None) -> Chec
 
 
 def draft_dir(model: Path) -> Path | None:
-    """The drafter's directory beside the model file: `dflash/` with its manifest (MODEL_FILES.md, "The DFlash 2
-    drafter"), else `mtp/` with its manifest (MODEL_FILES.md, "The MTP layer"), else None."""
-    for name, manifest in (("dflash", "dflash-manifest.json"), ("mtp", "mtp-manifest.json")):
-        d = model.parent / name
-        if (d / manifest).is_file():
-            return d
-    return None
+    """The drafter's directory beside the model file: `dflash/` with DFlash 2's `model.safetensors` and `config.json`
+    (MODEL_FILES.md, "The DFlash 2 drafter"), else `mtp/` with its manifest (MODEL_FILES.md, "The MTP layer"), else
+    None. A `dflash/` that holds only the split layout (`dflash-manifest.json`) raises FileNotFoundError."""
+    dflash = model.parent / "dflash"
+    if all((dflash / name).is_file() for name in DFLASH_FILES):
+        return dflash
+    if (dflash / "dflash-manifest.json").is_file():
+        raise split_layout_error(dflash)
+    mtp = model.parent / "mtp"
+    return mtp if (mtp / "mtp-manifest.json").is_file() else None
 
 
 def vision_file(model: Path) -> Path | None:
@@ -81,7 +88,7 @@ def open_config(
     table = table_of(model, table_cache)
     if model is not None:
         options = replace(options, draft=draft is not None)
-    mp = memory_plan(table, options, draft)
+    mp = memory_plan(table, options, draft, served=model is not None)
     tensors = (
         tuple(
             Tensor(t.name, t.ggml_type, t.shard - 1, t.offset, t.nbytes, t.shape, split_of(t.name), t.layer)

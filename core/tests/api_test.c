@@ -372,7 +372,7 @@ int main(int argc, char **argv) {
       getenv("FLASH_MTP_DIR") ? getenv("FLASH_MTP_DIR")
       : access("/models/mtp/mtp-manifest.json", R_OK) == 0 ? "/models/mtp" : NULL,
       getenv("FLASH_DFLASH_DIR") ? getenv("FLASH_DFLASH_DIR")
-      : access("/models/dflash/dflash-manifest.json", R_OK) == 0 ? "/models/dflash" : NULL};
+      : access("/models/dflash/config.json", R_OK) == 0 ? "/models/dflash" : NULL};
   for (int dk = 0; dk < 2; dk++) {
     if (!drafters[dk]) continue;
     printf("drafter: %s\n", drafters[dk]);
