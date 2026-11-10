@@ -141,7 +141,8 @@ def model_memory(
         kv_cell_host=kv_cell,
         draft_kv_host=draft_kv,
         checkpoint_bytes=state,
-        max_context=table.context_length,
+        max_context=numbers.MAX_YARN_SCALE * table.context_length,
+        trained_context=table.context_length,
         ngram_bytes=sum(t.nbytes for t in table.tensors if split_of(t.name) is SplitKind.FILE),
         ngram_row_bytes=next(
             (t.nbytes // t.shape[-1] for t in table.tensors if split_of(t.name) is SplitKind.FILE and t.shape), 0

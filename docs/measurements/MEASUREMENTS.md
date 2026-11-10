@@ -450,6 +450,19 @@ One card's value is given first.
 | A short chunk's uncached experts of 3 rows or fewer computed by the CPU, against the mapped staging buffer alone, one card, one slot at 262,144, 137 experts cached a layer | first token long-gen 0.65 (0.64-0.65) → 0.48 (0.47-0.49) s, gpqa-1 1.04 (1.04-1.05) → 0.81 (0.78-0.83) s; prompt reading by the client's clock 133 (133-134) → 179 (175-183) tokens/s, 209 (207-209) → 267 (262-277). doc-4k-qa and doc-32k, whose long chunks do not take this path, level. Decode moves with the drafts the rounding changes: gpqa-1 52.9 → 54.1 tokens/s, long-gen 48.7 → 48.3, doc-4k-qa 53.7 → 53.5, doc-32k at 110 tokens 41.6 → 40.2. `kl_test` at 500 prompt tokens, one card: mean KL 0.1799 → 0.1798 (95%: -0.0070 to +0.0068), top-1 84.12 → 83.68%. Two cards level: short first token 0.35 → 0.34 s, decode 104.4 → 105.0 tokens/s, four 31.6 → 34.8, mixed 38.1 → 38.8 | <a id="2026-11-05-rare-experts-on-the-cpu"></a>[2026-11-05](#2026-11-05-rare-experts-on-the-cpu) |
 | The same with a limit of 0, 1, 2, 3, 4 and 6 rows, 2 runs each | first token long-gen 0.68, 0.56, 0.50-0.51, 0.51-0.53, 0.54-0.58, 0.60-0.64 s; gpqa-1 1.04-1.05, 0.92, 0.85-0.86, 0.82-0.83, 0.80-0.81, 0.88-0.90 s. Reading 127, 154-155, 172-173, 166-171, 150-162, 137-146 tokens/s; 207-210, 238, 253-256, 263-267, 269-271, 244-248. The CPU's part of a chunk: 41-47 experts a layer and about 132 ms at 1 row, 59-73 and 180-218 ms at 2, 77-104 and 266-354 ms at 4 | [2026-11-05](#2026-11-05-rare-experts-on-the-cpu) |
 
+### Past the trained context
+
+The IQ3_S file with `--context 524288`, one slot, and the rotation scaled by YaRN. One request with `max_tokens` 64 on a
+prompt of repeated text. The arena was not locked, so the times are indicative
+([DEVELOPING.md](../DEVELOPING.md) says not to time runs that way), and there was one run.
+
+| Test | Value | Measured |
+| --- | --- | --- |
+| First token, 299,999-token prompt | 133.45 s | <a id="2026-11-02-context-524288"></a>[2026-11-02](#2026-11-02-context-524288) |
+| Prompt reading | 2,260.91 tokens/s | [2026-11-02](#2026-11-02-context-524288) |
+| Decode after it, 64 tokens | 56.66 tokens/s | [2026-11-02](#2026-11-02-context-524288) |
+| Experts cached per layer, plan 363 | 325 at load, 314.3 at the end | [2026-11-02](#2026-11-02-context-524288) |
+
 ### Other quants
 
 ISTA-DASLab's IQ3_XXS, IQ2_XS and Q2_0 files of the same model, each against IQ3_S in its own ABBA series on two

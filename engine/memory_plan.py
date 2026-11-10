@@ -68,6 +68,9 @@ class ModelMemory:
     checkpoint_bytes: int
     """A checkpoint: the running state only; the KV of its positions stays in its pages (ADR-0033)."""
     max_context: int
+    """The longest context a slot may have."""
+    trained_context: int
+    """The context the model was trained on: what `--context` defaults to. Above it the rotation is scaled."""
     ngram_bytes: int
     """The n-gram table, which stays in the file unless the plan holds it in RAM."""
     ngram_row_bytes: int = 0
@@ -116,8 +119,8 @@ class ModelMemory:
 class PlanOptions:
     slots: int = 1
     context: int = 0
-    """Each slot's context, in tokens; 0: the model's whole context (ModelMemory.max_context), which `plan` puts in
-    its MemoryPlan.options."""
+    """Each slot's context, in tokens; 0: the model's trained context (ModelMemory.trained_context), which `plan` puts
+    in its MemoryPlan.options."""
     cards: int = 2
     """Cards the engine runs on: the tensor split's two, or one holding every weight whole."""
     usable_vram: int | None = None
@@ -462,7 +465,7 @@ def plan(m: ModelMemory, o: PlanOptions) -> MemoryPlan:
     """The plan for the options. Raises PlanError, with options that fit where there are some, when the cards or the
     host's memory are too small."""
     if o.context == 0:
-        o = replace(o, context=m.max_context)
+        o = replace(o, context=m.trained_context)
     try:
         p = _plan(m, o)
     except PlanError as exc:
