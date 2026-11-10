@@ -36,7 +36,7 @@ second or its first token worse, than with plain steps; or a writer's row in a p
    before.
 5. The rule is the same for DFlash 2 and the MTP layer.
 6. The core counts the plain steps whose rows all wrote (`undrafted_steps`), and the rounds, run while another slot
-   read its prompt: `engine_stats.reading_steps` and `reading_rounds` (ABI version 20). `/metrics` reports
+   read its prompt: `engine_stats.reading_steps` and `reading_rounds` (ABI version 21). `/metrics` reports
    `reading_round_share`, the rounds' part of the two.
 
 7. The core writes a timing record for what follows a plan's step or round: the sampling and the draft pass

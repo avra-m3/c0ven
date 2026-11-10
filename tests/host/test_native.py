@@ -308,6 +308,9 @@ class FakeCore:
     def close(self) -> None:
         pass
 
+    def queue_stuck(self) -> bool:
+        return False
+
 
 def expected(prompt: Sequence[int], n: int) -> list[int]:
     tokens = list(prompt)

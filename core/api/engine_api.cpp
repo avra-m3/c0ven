@@ -1270,6 +1270,7 @@ engine_status engine_open(const engine_config *config, engine_info *info, engine
     opt.kv_pages = config->kv_pages;
     opt.kv_resident = config->kv_resident_cells;
     opt.adapt_swaps = (config->flags & ENGINE_CONFIG_SWAPS) != 0;
+    opt.rare_on_cpu = opt.adapt_swaps;  // both change a request's rounding; --deterministic turns both off
     opt.share_kv = (config->flags & ENGINE_CONFIG_SHARE_KV) != 0;
     opt.ngram_in_ram = (config->flags & ENGINE_CONFIG_NGRAM_RAM) != 0;
     opt.hugetlb_arena = (config->flags & ENGINE_CONFIG_HUGETLB) != 0;
@@ -1630,6 +1631,8 @@ void engine_close(engine_ctx *e) {
   if (e->thread.joinable()) e->thread.join();
   delete e;
 }
+
+int engine_queue_stuck(void) { return engine::ze::queue_stuck() ? 1 : 0; }
 
 engine_status engine_cards(engine_card *cards, uint32_t cap, uint32_t *n) {
   if (!n) return ENGINE_BAD_ARGUMENT;

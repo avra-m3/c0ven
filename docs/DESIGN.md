@@ -88,9 +88,13 @@ flowchart TB
 
 The front end starts the engine process as its child and talks to it in token ids, one line per message over a pipe
 ([`protocol.py`](../protocol.py)). Every line about a request carries its id. If the engine dies, every request in
-flight gets an error and the next request starts it again. An engine that fails sends `ERR -` and exits with no
-teardown, because a queue on the cards may never finish and the driver's calls would wait on it; the kernel frees the
-cards. A child that has not exited 10 s after `ERR -` is killed. A fault on the cards cannot take down the API
+flight gets an error and the next request starts it again. An engine that fails sends `ERR -` and exits. A child
+that has not exited 10 s after `ERR -` is killed. The engine exits through the driver's teardown, the one step that
+stops the copy loop the driver keeps running on each card after a copy: a process that ends with one running can leave
+that card's copy engine unable to run new work, and the next start then hangs
+([measured](measurements/MEASUREMENTS.md#2026-11-06-copy-engine-stuck-after-exit)). The one exception is a command
+list that timed out: its queue never finishes, the teardown and the driver's other calls would wait on it, so the
+engine skips them and the kernel frees the cards. A fault on the cards cannot take down the API
 ([ADR-0022](adr/0022-two-processes-python-and-cpp.md)).
 
 One engine process drives both cards. Host memory that both cards read must come from one Level Zero context that
@@ -602,7 +606,8 @@ every 4th plan. While several slots write, a round follows every 16th plan. When
 cards (section 6), a round also moves blocks between them: to the pool when the pages backed above those in use run
 low, and back to the cache, with the most used uncached experts, when many are free. A swap changes which experts the CPU computes, and so their rounding. Tokens repeat
 exactly from run to run only with `--deterministic`, which turns swaps off
-([ADR-0029](adr/0029-the-engine-process-drafts-and-swaps.md)).
+([ADR-0029](adr/0029-the-engine-process-drafts-and-swaps.md)), and the CPU's part in a short chunk
+([ADR-0072](adr/0072-on-one-card-the-cpu-computes-a-short-chunks-rarest-experts.md)).
 A round holds the engine thread only to append the halves' copies, switch the maps and wait for the cards' copies,
 about 3 ms; the swap thread chooses the next round's swaps and builds their halves from the arena behind the steps
 ([the record](measurements/MEASUREMENTS.md#2026-10-20-swap-round-behind-the-steps)).
@@ -617,8 +622,11 @@ and a request behind that round would wait for it.
 
 The prompt path reads up to 4,352 tokens in one pass on both cards, from up to four sequences at once. The products
 run on the cards' matrix units (XMX). Each card's copy engine streams the experts the card does not cache from the
-arena, two layers ahead, so the CPU computes nothing for a prompt. That streaming is most of a short chunk's time, and
-prompts read in one chunk share it ([ADR-0017](adr/0017-scheduling-several-requests.md), item 2). An image's encoder
+arena, two layers ahead. That streaming is most of a short chunk's time, and prompts read in one chunk share it
+([ADR-0017](adr/0017-scheduling-several-requests.md), item 2). On one card, in a chunk of 1,024 rows or fewer, the CPU
+computes the uncached experts that three rows or fewer picked, in place of copying them
+([ADR-0072](adr/0072-on-one-card-the-cpu-computes-a-short-chunks-rarest-experts.md)); otherwise it computes nothing for a
+prompt. An image's encoder
 runs just before the chunk that holds the image's tokens. Its weights stream through the prompt path's staging slots,
 so it holds no VRAM of its own ([ADR-0031](adr/0031-images-through-the-prompt-path.md)).
 [DEVELOPING.md](DEVELOPING.md#how-a-prompt-chunk-runs) gives the kernels.

@@ -20,7 +20,7 @@ extern "C" {
 #define ENGINE_API
 #endif
 
-#define ENGINE_API_VERSION 20
+#define ENGINE_API_VERSION 21
 
 typedef enum {
   ENGINE_OK = 0,
@@ -344,9 +344,14 @@ ENGINE_API engine_status engine_wake(engine_ctx *e, engine_info *info);
 ENGINE_API const char *engine_last_error(const engine_ctx *e);
 
 /* Frees everything. Once a command list has timed out ("did not finish a list"), the cards' memory and queues stay,
- * as the driver's calls would wait on the stuck queue. The caller then ends the process with _exit, because the
- * driver's teardown at a normal exit waits on it too. */
+ * as the driver's calls would wait on the stuck queue. */
 ENGINE_API void engine_close(engine_ctx *e);
+
+/* 1 once a command list has timed out in this process, else 0. The driver's teardown at a normal exit waits on the
+ * stuck queue, so the caller then ends the process with _exit. Otherwise it exits normally: the teardown stops the
+ * driver's loop on each card's copy engine, and a process that ends with one running can leave that copy engine unable
+ * to run the next process's work. */
+ENGINE_API int engine_queue_stuck(void);
 
 /* One card the engine can use, as Level Zero reports it (ZE_AFFINITY_MASK applies). */
 typedef struct {
