@@ -603,11 +603,33 @@ void compare_with_walk(const Model &m, uint32_t T, const std::vector<int32_t> &t
   EXPECT(threw, "a token outside the vocabulary");
 }
 
-constexpr double kDumpBound = 1e-3;  // relative RMS at which RefModel fails against upstream's dump
+constexpr double kDumpBound = 1e-3;  // relative RMS at which a value differs
+constexpr double kDumpKl = 0.04;     // ADR-0074's bound on the logits against upstream's, mean nats a position
+
+// strict: every value within kDumpBound and the same choices, as a dump of RefModel's own gives. upstream: a product
+// rounds its input to 8 bits, so a last-bit difference moves a rounding and every value after it; the values before
+// the first rounding must be within kDumpBound, every value finite, and the logits' mean KL within kDumpKl.
+enum class DumpGate { strict, upstream };
+
+// KL(want || got) of two rows of logits, in nats.
+double kl_logits(const std::vector<float> &want, const std::vector<float> &got) {
+  const auto log_sum = [](const std::vector<float> &x) {
+    const double top = *std::max_element(x.begin(), x.end());
+    double z = 0;
+    for (float t : x) z += std::exp((double)t - top);
+    return top + std::log(z);
+  };
+  const double zw = log_sum(want), zg = log_sum(got);
+  double kl = 0;
+  for (size_t i = 0; i < want.size(); i++) kl += std::exp(want[i] - zw) * ((want[i] - zw) - (got[i] - zg));
+  return kl;
+}
 
 struct DumpResult {
   uint32_t positions = 0;
   uint64_t compared = 0, problems = 0;
+  uint64_t loose = 0, other_choices = 0, no_latent = 0;  // what the upstream gate lets through, counted
+  double kl = 0;                                         // the logits' mean KL against the dump's
   std::map<std::string, double> worst;  // relative RMS by step; NaN stays NaN
   std::vector<std::string> notes;       // the first problems
   bool pass() const { return positions > 0 && compared > 0 && problems == 0; }
@@ -628,7 +650,7 @@ void add_choices(const RefModel &model, Values &got) {
 // tensor's name is upstream's, layer -1 outside a layer. Every record must match a value of RefModel's at its position
 // and every value of RefModel's must have a record, with equal sizes, except that idx_score and idx_top_k cover
 // upstream's whole cache.
-DumpResult compare_dump(const std::string &dump, RefModel &model) {
+DumpResult compare_dump(const std::string &dump, RefModel &model, DumpGate gate = DumpGate::strict) {
   FILE *f = std::fopen(dump.c_str(), "rb");
   EXPECT(f, "cannot read %s", dump.c_str());
   DumpResult r;
@@ -640,6 +662,12 @@ DumpResult compare_dump(const std::string &dump, RefModel &model) {
     if (r.notes.size() < 20) r.notes.push_back("position " + std::to_string(pos) + ": " + what);
   };
   const auto at = [](const std::string &name, int layer) { return name + " at layer " + std::to_string(layer); };
+  // The values no rounded product's difference can reach: the first layer of the first position, and the table rows.
+  const auto tight = [&](const std::string &name, int layer) {
+    return gate == DumpGate::strict || (pos == 0 && layer == 0) || name == "hc_init" || name == "engram_rows" || name == "engram_kv";
+  };
+  double kl_sum = 0;
+  uint32_t kl_rows = 0;
   const auto end_position = [&] {
     for (const auto &entry : got)
       if (!seen.count(entry.first)) problem("the dump has no " + at(entry.first.first, entry.first.second));
@@ -678,7 +706,8 @@ DumpResult compare_dump(const std::string &dump, RefModel &model) {
       if (it != got.end()) want = it->second;
       std::sort(v.begin(), v.end());
       std::sort(want.begin(), want.end());
-      if (v != want) problem("other ids in " + at(name, layer));
+      if (v != want && tight(name, layer)) problem("other ids in " + at(name, layer));
+      if (v != want && !tight(name, layer)) r.other_choices++;
       r.compared++;
       continue;
     }
@@ -694,7 +723,9 @@ DumpResult compare_dump(const std::string &dump, RefModel &model) {
       if (it == got.end()) continue;
       v.resize(visible);
     }
-    if (it == got.end()) {
+    if (it == got.end() && gate == DumpGate::upstream && name == "comp_latent") {
+      r.no_latent++;  // upstream writes the latent at every position, RefModel when a row is whole
+    } else if (it == got.end()) {
       problem("RefModel gave no " + at(name, layer));
     } else if (v.size() != it->second.size()) {
       problem(std::to_string(v.size()) + " values in " + at(name, layer) + ", RefModel " + std::to_string(it->second.size()));
@@ -702,12 +733,16 @@ DumpResult compare_dump(const std::string &dump, RefModel &model) {
       const double e = rel_rms(it->second.data(), v.data(), v.size());
       double &w = r.worst[name];
       if (std::isnan(e) || e > w) w = e;
-      if (!(e <= kDumpBound)) problem(at(name, layer) + " differs by " + std::to_string(e));
+      if (std::isnan(e) || (e > kDumpBound && tight(name, layer))) problem(at(name, layer) + " differs by " + std::to_string(e));
+      if (e > kDumpBound && !tight(name, layer)) r.loose++;
+      if (name == "result_output" && !std::isnan(e)) kl_sum += kl_logits(v, it->second), kl_rows++;
       r.compared++;
     }
   }
   end_position();
   std::fclose(f);
+  r.kl = kl_rows ? kl_sum / kl_rows : 0;
+  if (!(r.kl <= kDumpKl)) problem("the logits' mean KL is " + std::to_string(r.kl));
   return r;
 }
 
@@ -780,11 +815,11 @@ void check_compare_dump(const Model &m, const std::vector<int32_t> &tokens, cons
     std::exit(1);
   };
   const auto drop = [](Rs &rs, const auto &pred) { rs.erase(std::remove_if(rs.begin(), rs.end(), pred), rs.end()); };
-  const auto fails = [&](const char *note, const std::function<void(Rs &)> &edit) {
+  const auto fails = [&](const char *note, const std::function<void(Rs &)> &edit, DumpGate gate = DumpGate::strict) {
     Rs rs = good;
     edit(rs);
     write_dump(path, rs);
-    const DumpResult r = compare_dump(path, model);
+    const DumpResult r = compare_dump(path, model, gate);
     EXPECT(!r.pass(), "a dump with %s passed", note);
     EXPECT(r.positions == 0 || r.notes.at(0).find(note) != std::string::npos, "expected %s, got: %s", note, r.notes.at(0).c_str());
   };
@@ -806,7 +841,31 @@ void check_compare_dump(const Model &m, const std::vector<int32_t> &tokens, cons
   fails("other ids in ffn_moe_topk at layer 0", [&](Rs &rs) { one(rs, "ffn_moe_topk", 0, 3).v[0] = (float)(kLive + 1); });
   fails("other ids in idx_top_k at layer 2", [&](Rs &rs) { one(rs, "idx_top_k", 2, 4).v[0] = 1000.0f; });
   fails("the dump has no idx_top_k at layer 2", [&](Rs &rs) { drop(rs, [](const Record &r) { return r.name == "idx_top_k" && r.pos == 4; }); });
-  std::printf("compare_dump: %llu records of RefModel's own dump exact, 16 wrong dumps refused\n", (unsigned long long)own.compared);
+
+  // The upstream gate: a value past the first rounding may differ, a table row, the logits and a NaN may not.
+  const auto moved = [&](Rs &rs) { for (float &x : one(rs, "l_out", 2, 1).v) x *= 1.01f; };
+  fails("l_out at layer 2 differs", moved);
+  {
+    Rs rs = good;
+    moved(rs);
+    one(rs, "ffn_moe_topk", 1, 3).v[0] = (float)(kLive + 1);
+    drop(rs, [](const Record &r) { return r.name == "q" && r.pos == 4; });
+    write_dump(path, rs);
+    const DumpResult r = compare_dump(path, model, DumpGate::upstream);
+    EXPECT(!r.pass() && r.problems == model.layers() && r.loose == 1 && r.other_choices == 1, "the upstream gate: %llu problems, %llu loose, %llu choices",
+           (unsigned long long)r.problems, (unsigned long long)r.loose, (unsigned long long)r.other_choices);
+    moved(rs = good);
+    write_dump(path, rs);
+    EXPECT(compare_dump(path, model, DumpGate::upstream).pass(), "the upstream gate refused a value past the first rounding");
+  }
+  fails("hc_init at layer -1 differs", [&](Rs &rs) { for (float &x : one(rs, "hc_init", -1, 2).v) x *= 1.01f; }, DumpGate::upstream);
+  fails("l_out at layer 0 differs", [&](Rs &rs) { for (float &x : one(rs, "l_out", 0, 0).v) x *= 1.01f; }, DumpGate::upstream);
+  fails("attn_out at layer 2 differs by nan", [&](Rs &rs) { one(rs, "attn_out", 2, 1).v[3] = nan; }, DumpGate::upstream);
+  fails("the logits' mean KL", [&](Rs &rs) {
+    for (Record &r : rs)
+      if (r.name == "result_output") std::reverse(r.v.begin(), r.v.end());
+  }, DumpGate::upstream);
+  std::printf("compare_dump: %llu records of RefModel's own dump exact, 21 wrong dumps refused\n", (unsigned long long)own.compared);
 }
 
 }  // namespace
@@ -828,9 +887,11 @@ int main(int argc, char **argv) {
   ggml_cpu_init();  // product below reads its f16 table
   if (argc == 5 && std::string(argv[1]) == "--dump" && std::string(argv[3]) == "--model") {
     RefModel model(argv[4]);
-    const DumpResult r = compare_dump(argv[2], model);
+    const DumpResult r = compare_dump(argv[2], model, DumpGate::upstream);
     for (const auto &[name, w] : r.worst) std::printf("%-20s worst relative RMS %.2e\n", name.c_str(), w);
-    std::printf("%u positions, %llu records compared, %llu problems\n", r.positions, (unsigned long long)r.compared, (unsigned long long)r.problems);
+    std::printf("%u positions, %llu records compared, %llu problems; past the first rounding %llu values differ and %llu choices; mean KL %.5f\n",
+                r.positions, (unsigned long long)r.compared, (unsigned long long)r.problems, (unsigned long long)r.loose,
+                (unsigned long long)r.other_choices, r.kl);
     for (const std::string &note : r.notes) std::fprintf(stderr, "%s\n", note.c_str());
     return r.pass() ? 0 : 1;
   }
