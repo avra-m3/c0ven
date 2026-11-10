@@ -43,6 +43,9 @@ struct Options {
   // pages the kernel never moves, so it never stops a card to bind one again. Needs anon_arena.
   bool hugetlb_arena = false;
   bool ngram_in_ram = false;                // the whole n-gram table in RAM
+  // deepseek41: host memory its routed experts may take, hottest first; the rest are read from the file as a step asks
+  // for them (ADR-0074).
+  uint64_t arena_bytes = 0;
   // A profile to choose the cached experts by (tools/route_profile.cpp); empty: the first experts of each layer;
   // none: the model's own.
   std::optional<std::string> routing_profile;

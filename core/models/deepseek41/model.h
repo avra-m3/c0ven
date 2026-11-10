@@ -1,0 +1,222 @@
+// deepseek41's decode step on two cards (ADR-0074): each card runs one recorded list a step, the two exchange their
+// partial sums through each other's memory, and the CPU answers the routed experts the cards do not hold. Prompts are
+// read as decode steps; the model has no drafter and reads no images.
+#pragma once
+
+#include <map>
+#include <memory>
+#include <string>
+#include <vector>
+
+#include "api/model.h"
+#include "load/gguf.h"
+#include "load/runs.h"
+#include "models/deepseek41/engram.h"
+#include "models/deepseek41/layout.h"
+#include "models/deepseek41/tiers.h"
+#include "ze/library.h"
+
+namespace engine::deepseek41 {
+
+// The step as a card reads it, copied from host memory when its list starts; the copy zeroes stuck and start.
+struct StepWords {
+  uint32_t real;  // rows that hold a token; the list's other rows are padded
+  uint32_t step;
+  uint32_t stuck;  // a wait gave up (ADR-0074 item 5)
+  uint32_t pad;
+  uint64_t start;  // ds_wait's clock at the list's first polling wait
+  uint64_t pad2;
+  D41Row rows[STEP_MAX_ROWS];
+};
+
+// What the tests ask for beyond Options.
+struct Debug {
+  bool probes = false;  // card 0 copies the streams out after every sublayer
+};
+
+class Model final : public engine::Model {
+ public:
+  Model(const std::string &path, const Options &opt, const Debug &debug = {});
+  ~Model() override;
+
+  void reset_slot(uint32_t) override {}
+  void set_images(uint32_t slot, const Image *images, uint32_t n) override;
+  uint32_t image_tokens_max() const override { return 0; }
+  ImageShape image_shape() const override { return {}; }
+
+  std::vector<std::vector<Candidate>> step(const StepIn *rows, uint32_t n, bool window = false,
+                                           bool prompt = false) override;
+  // Every cache is indexed by position, so a rejected row's cells are written again and nothing waits for a commit.
+  void commit(uint32_t, uint32_t, uint32_t) override {}
+  void commit_runs(const CommitRun *, uint32_t) override {}
+
+  bool drafting() const override { return false; }
+  bool dflash() const override { return false; }
+  uint32_t draft_max_default() const override { return 0; }
+  uint32_t draft_max_cap() const override { return 0; }
+  std::vector<std::vector<Candidate>> mtp_catchup(const StepIn *, uint32_t, const std::vector<uint32_t> &,
+                                                  const uint32_t *) override;
+  std::vector<Candidate> mtp_draft(uint32_t, uint32_t, int32_t, uint32_t) override;
+  std::vector<std::vector<Candidate>> mtp_drafts(const StepIn *, uint32_t, const uint32_t *) override;
+  std::vector<std::vector<Candidate>> mtp_catchup_prompt(const StepIn *, uint32_t, uint32_t,
+                                                         const std::vector<uint32_t> &) override;
+  std::vector<std::vector<std::vector<Candidate>>> df_pass(const StepIn *, uint32_t, const DraftBlock *,
+                                                           uint32_t) override;
+  void df_context_prompt(const StepIn *, uint32_t, uint32_t) override;
+  void draft_start(uint32_t, uint32_t) override {}
+
+  std::vector<std::vector<Candidate>> prompt_runs(const PromptRun *, uint32_t, const int32_t *, uint32_t) override;
+  uint32_t prompt_chunk() const override { return 0; }
+  uint32_t fetch_rows() const override { return 0; }
+  uint32_t decode_weight() const override { return 1; }
+
+  uint64_t slot_state_bytes() override;
+  void save_slot(uint32_t slot, uint8_t *dst) override;
+  void load_slot(uint32_t slot, const uint8_t *src) override;
+  void *alloc_pinned(size_t bytes) override { return rt_->alloc_host(bytes); }
+  void free_pinned(void *p) override { rt_->free(p); }
+
+  void sleep() override;
+  void wake() override;
+
+  uint32_t kv_pages() const override { return kv_pages_; }
+  uint32_t pages_per_slot() const override { return npp_; }
+  void set_pages(uint32_t slot, uint32_t first, const uint32_t *pages, uint32_t n) override;
+  void copy_cells(uint32_t from, uint32_t to, uint32_t cells) override;
+  void kv_need(uint32_t, uint32_t) override {}
+  void kv_ahead() override {}
+  void kvs_drop(uint32_t, uint32_t) override {}
+
+  void note_prompt_routing() override {}
+  uint32_t swap_round(uint32_t, bool) override { return 0; }
+  bool swaps_ready() const override { return true; }
+  bool swaps_settled() const override { return true; }
+
+  const LoadInfo &info() const override { return info_; }
+  const StepStats &last_stats() const override { return stats_; }
+  uint32_t experts_cached() const override { return 0; }
+  uint32_t experts_floor() const override { return 0; }
+  NgramStats ngram_stats() const override { return engram_->stats(); }
+
+  // For tests. logits: a row of the last step, every token's. probe: the streams of the last step's rows after layer's
+  // attention (ffn false) or its MoE block, D41_HC_DIM values a row; needs Debug::probes.
+  std::vector<float> logits(uint32_t row);
+  const float *probe(uint32_t layer, bool ffn) const;
+  // What the CPU answered in the last step, summed over its layers.
+  const MissCounts &miss_counts() const { return counts_; }
+
+ private:
+  // A card's share of a matrix, in the runs layout.
+  struct Mat {
+    uint8_t *p = nullptr;
+    uint32_t type = 0, rows = 0, K = 0, bpr = 0;
+  };
+  struct Layer {
+    float *attn_fn, *attn_scale, *attn_base, *ffn_fn, *ffn_scale, *ffn_base;
+    float *attn_norm, *ffn_norm, *q_norm, *kv_norm, *sinks, *bias;
+    Mat q_a, kv, q_b, out_a, out_b, sh_gu, sh_down;
+    uint32_t sh_ff = 0;  // the card's rows of the shared expert
+    uint16_t *gate_inp;
+    uint16_t *comp_kv = nullptr, *comp_gate = nullptr, *attn_k = nullptr, *idx_q_b = nullptr, *idx_proj = nullptr;
+    float *comp_norm = nullptr, *k_norm = nullptr;
+    Mat engram_kv;
+    float *engram_gate = nullptr;  // the card's two streams' rows
+    uint16_t *ring;                // the window, [slot][D41_RING][D41_HD] f16
+    uint16_t *pool = nullptr;      // a KV source's compressed rows, by page
+    float *cr = nullptr;           // a ratio-2 source's compressor ring
+  };
+  struct Card {
+    uint32_t c = 0;
+    std::unique_ptr<ze::List> up;
+    uint8_t *grids;
+    StepWords *plan;
+    uint32_t *pt;
+    float *e;
+    uint8_t *eng_a8[kEngramTables];
+    float *X, *X1, *ss, *m;
+    D41HcMix *amix, *fmix;
+    uint8_t *xa;
+    uint16_t *xb;
+    float *qr, *kv, *q, *ckv, *csc, *iq, *iw, *score, *part, *y;
+    uint8_t *qa, *oa, *aa;
+    uint16_t *qb;
+    uint32_t *idx;
+    float *in[2];  // the other card's partial sums, even and odd exchanges
+    float *ekv;
+    D41EngramSend *eown[kEngramTables], *ein[kEngramTables];
+    float *rlogits, *w, *sgu, *shared, *y6, *out;
+    int32_t *ids, *slots, *slot_map;
+    uint32_t *nmiss, *ngroups;
+    D41Group *groups;
+    uint8_t *sha;
+    float *out_norm, *logits;
+    Mat head;
+    uint32_t vocab0 = 0, vocab_n = 0;
+    std::vector<Layer> layers;
+    std::map<uint32_t, std::unique_ptr<ze::List>> lists;  // by width
+  };
+
+  template <class T>
+  T *dev(Card &card, size_t n);
+  template <class T>
+  T *upload(Card &card, const T *src, size_t n);
+  float *upload_floats(Card &card, const std::string &name, std::initializer_list<uint64_t> shape, size_t first = 0,
+                       size_t n = 0);
+  uint16_t *upload_bf16(Card &card, const std::string &name, std::initializer_list<uint64_t> shape);
+  Mat mat(Card &card, uint32_t type, uint32_t K, const std::vector<SliceSpec> &specs);
+  const GgufTensor &tensor(const std::string &name, std::initializer_list<uint64_t> shape) const;
+  const uint8_t *held(const GgufTensor &t);
+  void load_layer(uint32_t l);
+  void load_experts();
+  void alloc_buffers(Card &card);
+
+  ze_kernel_handle_t kernel(Card &card, const char *module, const char *name);
+  void matvec(ze::List &L, Card &card, const Mat &m, const uint8_t *act, float *y, uint32_t W, uint32_t lanes,
+              uint32_t ks = 0);
+  void product_bf16(ze::List &L, Card &card, const uint16_t *w, uint32_t N, uint32_t K, const uint16_t *xb, float *y);
+  void wait(ze::List &L, Card &card, uint32_t *raise, const uint32_t *flag, const uint32_t *nmiss = nullptr,
+            uint32_t W = 0);
+  void record(Card &card, uint32_t W);
+  void record_engram(ze::List &L, Card &card, uint32_t l, uint32_t W);
+  void record_attention(ze::List &L, Card &card, uint32_t l, uint32_t W);
+  void record_ffn(ze::List &L, Card &card, uint32_t l, uint32_t W);
+  uint32_t *flag(uint32_t card, uint32_t k) const { return flags_ + ((size_t)card * kFlags + k) * 16; }
+
+  // An exchange a sublayer, then one for each Engram layer.
+  static constexpr uint32_t kFlags = 2 * D41_LAYERS + kEngramTables;
+
+  Options opt_;
+  Debug debug_;
+  GgufModel gguf_;
+  std::unique_ptr<ze::Runtime> rt_;
+  std::unique_ptr<ze::Library> lib_;
+  std::unique_ptr<Pool> pool_;
+  std::unique_ptr<ExpertArena> arena_;
+  std::unique_ptr<SsdReader> ssd_;
+  std::unique_ptr<MissJobs> miss_;
+  std::unique_ptr<EngramHash> hash_;
+  std::unique_ptr<EngramReader> engram_;
+  std::vector<LayerExperts> experts_;
+  std::unique_ptr<Card> cards_[2];
+  std::map<std::pair<uint32_t, uint64_t>, AlignedBuffer> held_;  // a tensor's bytes while its layer loads
+
+  uint32_t vocab_ = 0, npp_ = 0, kv_pages_ = 0, step_ = 0;
+  StepWords *plan_ = nullptr;
+  float *embed_ = nullptr;
+  uint8_t *eng_a8_[kEngramTables] = {};
+  D41MissJob *jobs_ = nullptr;   // [layer][row]
+  float *cpu_y_ = nullptr;       // [layer][row][D41_EMBD]
+  uint32_t *ans_flag_ = nullptr;  // a 64-byte line a layer
+  uint32_t *flags_ = nullptr;     // [card][exchange], a 64-byte line each
+  uint32_t *stuck_ = nullptr;     // a line a card
+  uint32_t *top_idx_ = nullptr, *top_n_ = nullptr;
+  float *top_val_ = nullptr;
+  float *probe_ = nullptr;        // [sublayer][layer][row][D41_HC_DIM]
+  std::vector<uint32_t> pt_;      // [slot][page]
+  std::vector<float> eng_f_;
+  LoadInfo info_;
+  StepStats stats_;
+  MissCounts counts_;
+};
+
+}  // namespace engine::deepseek41

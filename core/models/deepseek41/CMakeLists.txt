@@ -2,6 +2,7 @@
 
 target_sources(engine_core PRIVATE
   engram.cpp
+  model.cpp
   ref_ops.cpp
   reference.cpp
   tiers.cpp)

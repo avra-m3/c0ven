@@ -77,8 +77,13 @@ int main() {
   write_gguf(ds, "deepseek41");
   EXPECT(engine::gguf_architecture(ds) == "deepseek41", "architecture of the first shard");
   const std::string e = open_error(ds);
-  EXPECT(e.find("deepseek41") != std::string::npos, "an architecture the engine does not run is named: '%s'",
-         e.c_str());
+  EXPECT(!e.empty() && e.find("does not run") == std::string::npos, "deepseek41 reaches its model: '%s'", e.c_str());
+
+  const std::string other = d + "/other.gguf";
+  write_gguf(other, "llama");
+  const std::string refused = open_error(other);
+  EXPECT(refused.find("does not run architecture llama") != std::string::npos,
+         "an architecture the engine does not run is named: '%s'", refused.c_str());
 
   const std::string qw = d + "/one.gguf";
   write_gguf(qw, "qwen4exp");
@@ -89,7 +94,7 @@ int main() {
   EXPECT(open_error(none).find("no general.architecture") != std::string::npos, "a file without the key");
   EXPECT(open_error(d + "/missing.gguf").find("cannot open") != std::string::npos, "a missing file");
 
-  for (const std::string &p : {ds, qw, none}) std::remove(p.c_str());
+  for (const std::string &p : {ds, other, qw, none}) std::remove(p.c_str());
   rmdir(dir);
   std::printf("open_model_test: ok\n");
   return 0;
