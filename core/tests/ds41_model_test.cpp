@@ -1,7 +1,8 @@
 // deepseek41's decode step on the cards against RefModel on the CPU, on the real file: the streams after each
 // sublayer, the logits and the first choice, one row a step. Needs two cards and DS41_MODEL, the file's first shard.
 // DS41_STEPS: positions run. DS41_TOKENS: a dump of upstream's whose tokens start the sequence. DS41_ARENA_GIB,
-// DS41_CARD_EXPERTS, DS41_PROFILE: the arena's size, the experts a layer on the cards, a routing profile.
+// DS41_CARD_EXPERTS, DS41_PROFILE: the arena's size, the experts a layer on the cards, a routing profile. DS41_TRACE:
+// the last step's kernels and their times. DS41_NO_STREAMS: the lists copy no streams out, as a served step.
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -86,8 +87,10 @@ int run() {
   opt.hugetlb_arena = std::getenv("ENGINE_HUGETLB_ARENA") != nullptr;
   opt.experts_per_layer = std::getenv("DS41_CARD_EXPERTS") ? std::atoi(std::getenv("DS41_CARD_EXPERTS")) : -1;
   if (const char *profile = std::getenv("DS41_PROFILE")) opt.routing_profile = profile;
+  opt.trace = std::getenv("DS41_TRACE") != nullptr;
+  const bool probes = std::getenv("DS41_NO_STREAMS") == nullptr;
   const auto t_load = std::chrono::steady_clock::now();
-  deepseek41::Model model(path, opt, Debug{true});
+  deepseek41::Model model(path, opt, Debug{probes});
   std::printf("loaded in %.1f s: %u cards with %u experts a layer and %.1f, %.1f GiB in use, arena %.1f GiB\n",
               std::chrono::duration<double>(std::chrono::steady_clock::now() - t_load).count(), model.info().cards,
               model.info().experts_per_layer, (double)model.info().device_bytes[0] / (1ull << 30),
@@ -136,6 +139,7 @@ int run() {
     int worst_layer = -1;
     bool worst_ffn = false;
     for (const auto &[key, v] : streams) {
+      if (!probes) break;
       EXPECT(v.size() == D41_HC_DIM, "RefModel's streams hold %zu values", v.size());
       const double e = rel_rms(model.probe((uint32_t)key.second, key.first), v.data(), v.size());
       EXPECT(!std::isnan(e), "position %u, layer %d: a stream is not a number", t, key.second);
@@ -169,6 +173,14 @@ int run() {
               kl_sum / steps, loose, kLooseKl, same, worst_stream);
   std::printf("a step after the first: %.1f ms; before the lists %.1f, waiting for records %.1f, the CPU's experts %.1f, to the lists' end %.1f\n",
               ms_sum / after, parts.before / after, parts.records / after, parts.answers / after, parts.after / after);
+  for (uint32_t c = 0; c < 2 && opt.trace; c++) {
+    std::vector<TraceRow> rows = model.trace(c);
+    double sum = 0;
+    for (const TraceRow &r : rows) sum += r.ms;
+    std::sort(rows.begin(), rows.end(), [](const TraceRow &a, const TraceRow &b) { return a.ms > b.ms; });
+    std::printf("card %u, the last step's list: %.2f ms\n", c, sum);
+    for (const TraceRow &r : rows) std::printf("  %-40s %4u launches %7.3f ms\n", r.kernel.c_str(), r.launches, r.ms);
+  }
   EXPECT(median <= kMedianKl, "the logits' median KL against RefModel is %.5f, above %.2f", median, kMedianKl);
   EXPECT(loose <= steps / kLooseOf + 1, "%u of %u positions have a KL above %.1f", loose, steps, kLooseKl);
   EXPECT(same * 10 >= steps * 9, "%u of %u first choices are RefModel's", same, steps);

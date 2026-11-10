@@ -487,8 +487,9 @@ ze_kernel_handle_t Model::kernel(Card &card, const char *module, const char *nam
   return lib_->get(card.c, module, name);
 }
 
-void Model::matvec(ze::List &L, Card &card, const Mat &m, const uint8_t *act, float *y, uint32_t W, uint32_t lanes,
-                   uint32_t ks) {
+void Model::matvec(ze::List &L, Card &card, const char *name, const Mat &m, const uint8_t *act, float *y, uint32_t W,
+                   uint32_t lanes, uint32_t ks) {
+  L.label(name);
   const uint32_t stride = m.K + m.K / 8, rps = 16 / lanes;
   const std::string mod = mv_module(m.type, lanes);
   if (ks) {
@@ -501,15 +502,18 @@ void Model::matvec(ze::List &L, Card &card, const Mat &m, const uint8_t *act, fl
 }
 
 // y[t][n] = w[n] . xb[t] for the step's real rows; xb holds STEP_MAX_ROWS rows, all read.
-void Model::product_bf16(ze::List &L, Card &card, const uint16_t *w, uint32_t N, uint32_t K, const uint16_t *xb,
-                         float *y) {
+void Model::product_bf16(ze::List &L, Card &card, const char *name, const uint16_t *w, uint32_t N, uint32_t K,
+                         const uint16_t *xb, float *y) {
+  L.label(name);
   const uint32_t zero = 0, ks = D41_RT_KS;
   const float one = 1.0f;
   L.launch(kernel(card, "common", "mv_xmx_bf16"), {w, N, K, K, xb, &card.plan->real, y, N, zero, one, zero, ks, none},
            (N + 15) / 16, 1, 1, 16 * ks);
 }
 
-void Model::wait(ze::List &L, Card &card, uint32_t *raise, const uint32_t *flag, const uint32_t *nmiss, uint32_t W) {
+void Model::wait(ze::List &L, Card &card, const char *name, uint32_t *raise, const uint32_t *flag, const uint32_t *nmiss,
+                 uint32_t W) {
+  L.label(name);
   L.launch(kernel(card, "deepseek41", "ds_wait"),
            {raise, none, flag, &card.plan->step, nmiss, W, &card.plan->stuck, &card.plan->start, none}, 1, 1, 1, 1);
 }
@@ -522,10 +526,10 @@ void Model::record_engram(ze::List &L, Card &card, uint32_t l, uint32_t W) {
   const uint32_t e = (uint32_t)D41_ENGRAM((int)l), k = 2 * D41_LAYERS + e;
   const uint32_t c0 = 2 * card.c, c1 = c0 + 2, v0 = card.c * (E / 2), v1 = v0 + E / 2, stride = kEngKvRows;
   const uint32_t in_card = 0;
-  matvec(L, card, ly.engram_kv, card.eng_a8[e], card.ekv, W, 8);
+  matvec(L, card, "engram_kv", ly.engram_kv, card.eng_a8[e], card.ekv, W, 8);
   L.launch(kernel(card, "deepseek41", "ds_engram_gate"),
            {card.X, card.ekv, stride, ly.engram_gate, c0, c1, v0, v1, card.eown[e], other.ein[e]}, c1 - c0, W, 1, 256);
-  wait(L, card, flag(card.c, k), flag(other.c, k));
+  wait(L, card, "wait: other card, Engram", flag(card.c, k), flag(other.c, k));
   L.launch(kernel(card, "deepseek41", "ds_engram_apply"),
            {card.X, card.ekv, stride, c0, c1, v0, v1, card.eown[e], card.ein[e], in_card, card.fmix, ly.attn_norm,
             card.ss, card.xa, card.xb, none},
@@ -548,16 +552,16 @@ void Model::record_attention(ze::List &L, Card &card, uint32_t l, uint32_t W) {
            16 * D41_HC_KSPLIT);
   L.launch(kernel(card, "deepseek41", "ds_hc_sinkhorn"), {card.m, ly.attn_scale, ly.attn_base, card.amix}, W, 1, 1, 16);
 
-  matvec(L, card, ly.q_a, card.xa, card.qr, W, 4, 4);
-  matvec(L, card, ly.kv, card.xa, card.kv, W, 8, 4);
+  matvec(L, card, "attn_q_a", ly.q_a, card.xa, card.qr, W, 4, 4);
+  matvec(L, card, "attn_kv", ly.kv, card.xa, card.kv, W, 8, 4);
   if (kv_src) {
-    product_bf16(L, card, ly.comp_kv, D41_HD, E, card.xb, card.ckv);
-    if (ratio == 2) product_bf16(L, card, ly.comp_gate, D41_HD, E, card.xb, card.csc);
+    product_bf16(L, card, "compressor_kv", ly.comp_kv, D41_HD, E, card.xb, card.ckv);
+    if (ratio == 2) product_bf16(L, card, "compressor_gate", ly.comp_gate, D41_HD, E, card.xb, card.csc);
   }
   const void *qb = idx_src ? card.qb : nullptr;
   L.launch(attn("ds_qkv_norm"), {card.qr, ly.q_norm, card.kv, ly.kv_norm, rows, yarn, card.qa, qb, none, ly.ring, none},
            2, W, 1, D41_QKV_SGS * 16);
-  matvec(L, card, ly.q_b, card.qa, card.q, W, 4);
+  matvec(L, card, "attn_q_b", ly.q_b, card.qa, card.q, W, 4);
   if (kv_src) {
     const void *sc = ratio == 2 ? card.csc : nullptr, *cr = ly.cr;
     L.launch(attn("ds_compress"),
@@ -565,8 +569,8 @@ void Model::record_attention(ze::List &L, Card &card, uint32_t l, uint32_t W) {
              256);
   }
   if (idx_src) {
-    product_bf16(L, card, ly.idx_q_b, D41_IDX_H * D41_IDX_D, D41_QLR, card.qb, card.iq);
-    product_bf16(L, card, ly.idx_proj, D41_IDX_H, E, card.xb, card.iw);
+    product_bf16(L, card, "indexer q_b", ly.idx_q_b, D41_IDX_H * D41_IDX_D, D41_QLR, card.qb, card.iq);
+    product_bf16(L, card, "indexer proj", ly.idx_proj, D41_IDX_H, E, card.xb, card.iw);
     L.launch(attn("ds_idx_score"), {card.iq, card.iw, rows, ratio, card.pt, npp_, pool, card.score}, D41_IDX_WGS, W, 1,
              D41_IDX_WG_ROWS);
     L.launch(attn("ds_idx_topk"), {card.score, rows, ratio, card.idx}, W, 1, 1, kTopkLocal);
@@ -576,11 +580,11 @@ void Model::record_attention(ze::List &L, Card &card, uint32_t l, uint32_t W) {
   L.launch(attn("ds_attn_merge"), {card.part, ly.sinks, first_head, rows, ratio, card.oa, none}, kHeads, W, 1, 256);
   L.launch(kernel(card, "deepseek41_og", "ds_output_groups"), {ly.out_a.p, ly.out_a.bpr, card.oa, W, card.aa, none},
            D41_OLR / D41_OG_WG_ROWS, kGroups, 1, D41_OG_WG_ROWS / (16 / D41_OG_LANES) * 16);
-  matvec(L, card, ly.out_b, card.aa, card.y, W, 8);
+  matvec(L, card, "attn_output_b", ly.out_b, card.aa, card.y, W, 8);
 
   const uint32_t k = 2 * l, in_card = 0;
   L.launch(kernel(card, "deepseek41", "ds_exch_send"), {card.y, other.in[0]}, W, 1, 1, D41_EX_SGS * 16);
-  wait(L, card, flag(card.c, k), flag(other.c, k));
+  wait(L, card, "wait: other card, attention", flag(card.c, k), flag(other.c, k));
   const void *job = l % 2 == card.c ? jobs_ + (size_t)l * STEP_MAX_ROWS : nullptr;
   L.launch(kernel(card, "deepseek41", "ds_hc_post_norm"),
            {card.X, card.y, card.in[0], in_card, card.amix, ly.ffn_norm, card.X1, card.ss, card.xa, card.xb, none, job},
@@ -600,7 +604,7 @@ void Model::record_ffn(ze::List &L, Card &card, uint32_t l, uint32_t W) {
            16 * D41_HC_KSPLIT);
   L.launch(kernel(card, "deepseek41", "ds_hc_sinkhorn"), {card.m, ly.ffn_scale, ly.ffn_base, card.fmix}, W, 1, 1, 16);
 
-  product_bf16(L, card, ly.gate_inp, D41_EXPERTS, E, card.xb, card.rlogits);
+  product_bf16(L, card, "router product", ly.gate_inp, D41_EXPERTS, E, card.xb, card.rlogits);
   const void *jobs = posts ? jobs_ + (size_t)l * STEP_MAX_ROWS : nullptr;
   L.launch(kernel(card, "deepseek41", "ds_router"),
            {card.rlogits, ly.bias, ly.slot_map, W, ly.split, ly.flip, &card.plan->real, &card.plan->step, card.ids, card.w,
@@ -619,18 +623,18 @@ void Model::record_ffn(ze::List &L, Card &card, uint32_t l, uint32_t W) {
              {ly.cache, ly.classes, card.groups, card.ngroups, E, card.ha, hs, card.y6, card.grids}, E / MOE_WG_ROWS, nasg,
              1, lxd);
   }
-  matvec(L, card, ly.sh_gu, card.xa, card.sgu, W, 8);
+  matvec(L, card, "shared gate and up", ly.sh_gu, card.xa, card.sgu, W, 8);
   L.launch(kernel(card, "deepseek41", "ds_swiglu_clamp_a8"), {card.sgu, card.sgu + ff, two_ff, ff, card.sha}, W, 1, 1,
            D41_SWIGLU_SGS * 16);
-  matvec(L, card, ly.sh_down, card.sha, card.shared, W, 4);
+  matvec(L, card, "shared down", ly.sh_down, card.sha, card.shared, W, 4);
 
   const void *cpu = posts ? cpu_y_ + (size_t)l * STEP_MAX_ROWS * E : nullptr;
-  if (posts) wait(L, card, nullptr, ans_flag_ + 16 * l, card.nmiss, W);
+  if (posts) wait(L, card, "wait: CPU experts", nullptr, ans_flag_ + 16 * l, card.nmiss, W);
   L.launch(kernel(card, "deepseek41", "ds_moe_combine"),
            {card.y6, card.w, card.slots, card.shared, cpu, card.nmiss, card.out, other.in[1]}, W, 1, 1,
            D41_CMB_SGS(W) * 16);
   const uint32_t k = 2 * l + 1;
-  wait(L, card, flag(card.c, k), flag(other.c, k));
+  wait(L, card, "wait: other card, MoE", flag(card.c, k), flag(other.c, k));
 
   // Before an Engram layer only the streams are made: its injection comes before the collapse.
   const bool last = l + 1 == D41_LAYERS, engram = !last && D41_ENGRAM((int)l + 1) >= 0;
@@ -646,6 +650,11 @@ void Model::record_ffn(ze::List &L, Card &card, uint32_t l, uint32_t W) {
 void Model::record(Card &card, uint32_t W) {
   auto list = std::make_unique<ze::List>(*rt_, card.c, ze::List::regular, false, false);
   ze::List &L = *list;
+  if (opt_.trace) {
+    constexpr size_t cap = 4096;
+    card.trace_ts[W] = static_cast<uint64_t *>(rt_->alloc_host(cap * 8));
+    L.trace(card.trace_ts[W], cap);
+  }
   L.copy(card.plan, plan_, sizeof(StepWords));
   L.copy(card.e, embed_, (size_t)W * E * 4);
   for (uint32_t e = 0; e < kEngramTables; e++) L.copy(card.eng_a8[e], eng_a8_[e], (size_t)W * kEngA8Row);
@@ -656,7 +665,7 @@ void Model::record(Card &card, uint32_t W) {
     record_attention(L, card, l, W);
     record_ffn(L, card, l, W);
   }
-  matvec(L, card, card.head, card.xa, card.logits, W, 4);
+  matvec(L, card, "output", card.head, card.xa, card.logits, W, 4);
   L.launch(kernel(card, "common", "topk_rows"),
            {card.logits, card.vocab_n, card.vocab_n, opt_.candidates, card.vocab0, &card.plan->real,
             top_idx_ + (size_t)card.c * STEP_MAX_ROWS * opt_.candidates,
@@ -685,6 +694,7 @@ std::vector<std::vector<Candidate>> Model::step(const StepIn *rows, uint32_t n, 
   const auto t_start = Clock::now();
   times_ = {};
 
+  last_width_ = W;
   plan_->real = n;
   plan_->step = ++step_;
   plan_->stuck = 0;
@@ -807,6 +817,22 @@ std::vector<float> Model::logits(uint32_t row) {
     card->up->synchronize();
   }
   return v;
+}
+
+std::vector<TraceRow> Model::trace(uint32_t c) const {
+  const Card &card = *cards_[c];
+  const auto ts = card.trace_ts.find(last_width_);
+  if (ts == card.trace_ts.end()) throw std::runtime_error("the last step was not traced");
+  const std::vector<std::string> &names = card.lists.at(last_width_)->trace_names();
+  const ze::Card &dev = rt_->cards()[c];
+  std::vector<TraceRow> rows;
+  for (size_t i = 0; i < names.size(); i++) {
+    auto row = std::find_if(rows.begin(), rows.end(), [&](const TraceRow &r) { return r.kernel == names[i]; });
+    if (row == rows.end()) row = rows.insert(rows.end(), TraceRow{names[i], 0, 0});
+    row->launches++;
+    row->ms += (double)((ts->second[i + 1] - ts->second[i]) & dev.timestamp_mask) * 1e3 / (double)dev.timer_hz;
+  }
+  return rows;
 }
 
 const float *Model::probe(uint32_t layer, bool ffn) const {

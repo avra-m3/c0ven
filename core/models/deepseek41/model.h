@@ -114,6 +114,8 @@ class Model final : public engine::Model {
   // What the CPU answered in the last step, summed over its layers.
   const MissCounts &miss_counts() const { return counts_; }
   const StepTimes &step_times() const { return times_; }
+  // A card's kernels in the last step, with Options::trace: each name's launches and time, in the list's order.
+  std::vector<TraceRow> trace(uint32_t card) const;
 
  private:
   // A card's share of a matrix, in the runs layout.
@@ -172,6 +174,7 @@ class Model final : public engine::Model {
     uint32_t vocab0 = 0, vocab_n = 0;
     std::vector<Layer> layers;
     std::map<uint32_t, std::unique_ptr<ze::List>> lists;  // by width
+    std::map<uint32_t, uint64_t *> trace_ts;               // a traced list's timestamps
   };
 
   template <class T>
@@ -190,11 +193,12 @@ class Model final : public engine::Model {
   void alloc_buffers(Card &card);
 
   ze_kernel_handle_t kernel(Card &card, const char *module, const char *name);
-  void matvec(ze::List &L, Card &card, const Mat &m, const uint8_t *act, float *y, uint32_t W, uint32_t lanes,
-              uint32_t ks = 0);
-  void product_bf16(ze::List &L, Card &card, const uint16_t *w, uint32_t N, uint32_t K, const uint16_t *xb, float *y);
-  void wait(ze::List &L, Card &card, uint32_t *raise, const uint32_t *flag, const uint32_t *nmiss = nullptr,
-            uint32_t W = 0);
+  void matvec(ze::List &L, Card &card, const char *name, const Mat &m, const uint8_t *act, float *y, uint32_t W,
+              uint32_t lanes, uint32_t ks = 0);
+  void product_bf16(ze::List &L, Card &card, const char *name, const uint16_t *w, uint32_t N, uint32_t K,
+                    const uint16_t *xb, float *y);
+  void wait(ze::List &L, Card &card, const char *name, uint32_t *raise, const uint32_t *flag,
+            const uint32_t *nmiss = nullptr, uint32_t W = 0);
   void record(Card &card, uint32_t W);
   void record_engram(ze::List &L, Card &card, uint32_t l, uint32_t W);
   void record_attention(ze::List &L, Card &card, uint32_t l, uint32_t W);
@@ -219,7 +223,7 @@ class Model final : public engine::Model {
   std::unique_ptr<Card> cards_[2];
   std::map<std::pair<uint32_t, uint64_t>, AlignedBuffer> held_;  // a tensor's bytes while its layer loads
 
-  uint32_t vocab_ = 0, npp_ = 0, kv_pages_ = 0, step_ = 0;
+  uint32_t vocab_ = 0, npp_ = 0, kv_pages_ = 0, step_ = 0, last_width_ = 0;
   StepWords *plan_ = nullptr;
   float *embed_ = nullptr;
   uint8_t *eng_a8_[kEngramTables] = {};
