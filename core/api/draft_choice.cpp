@@ -56,19 +56,7 @@ void DraftEstimate::refit() {
 }
 
 std::vector<uint32_t> share_drafts(const std::vector<DraftOdds> &slots, const std::vector<uint32_t> &caps,
-                                   uint32_t rows, uint32_t max_rows, const WindowTimes &times) {
-  std::vector<uint32_t> d = share_rows(slots, caps, rows, max_rows);
-  if (times.seen() < 2) return d;
-  std::vector<std::vector<double>> survival(d.size());
-  for (size_t i = 0; i < d.size(); i++)
-    for (uint32_t j = 0; j < d[i]; j++) survival[i].push_back(std::pow(slots[i].layer_rate(), j + 1));
-  const std::vector<uint32_t> keep = choose_verified(survival, rows, max_rows, times);
-  for (size_t i = 0; i < d.size(); i++) d[i] = std::min(d[i], keep[i] + 1);
-  return d;
-}
-
-std::vector<uint32_t> share_rows(const std::vector<DraftOdds> &slots, const std::vector<uint32_t> &caps,
-                                 uint32_t rows, uint32_t max_rows) {
+                                   uint32_t rows, uint32_t max_rows) {
   const size_t n = slots.size();
   std::vector<uint32_t> d(n, 0);
   uint32_t spare = max_rows > rows ? max_rows - rows : 0;

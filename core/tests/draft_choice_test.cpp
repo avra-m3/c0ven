@@ -13,7 +13,6 @@ using engine::choose_verified;
 using engine::DraftEstimate;
 using engine::DraftOdds;
 using engine::share_drafts;
-using engine::share_rows;
 using engine::WindowTimes;
 
 namespace {
@@ -65,39 +64,18 @@ int main() {
     const DraftOdds sure = odds(3, 3), half = odds(1, 2), never = odds(0, 3);
     // Three slots in a 16-row step: 13 spare rows. The sure slot takes its cap of 7; the other two share the rest by
     // their acceptance.
-    EXPECT(same(share_rows({sure, half, half}, {7, 7, 7}, 3, 16), {7, 3, 3}), "sure and two halves");
-    EXPECT(same(share_rows({half, sure, never}, {7, 7, 7}, 3, 16), {5, 7, 1}), "a slot that never accepts keeps one");
+    EXPECT(same(share_drafts({sure, half, half}, {7, 7, 7}, 3, 16), {7, 3, 3}), "sure and two halves");
+    EXPECT(same(share_drafts({half, sure, never}, {7, 7, 7}, 3, 16), {5, 7, 1}), "a slot that never accepts keeps one");
     // Equal slots share alike, the lower slot first.
-    EXPECT(same(share_rows({half, half, half}, {7, 7, 7}, 3, 16), {5, 4, 4}), "equal slots");
-    EXPECT(same(share_rows({sure, sure}, {7, 7}, 2, 16), {7, 7}), "two slots, their caps");
+    EXPECT(same(share_drafts({half, half, half}, {7, 7, 7}, 3, 16), {5, 4, 4}), "equal slots");
+    EXPECT(same(share_drafts({sure, sure}, {7, 7}, 2, 16), {7, 7}), "two slots, their caps");
     // A cap holds a slot short: 1 token left to write, or none.
-    EXPECT(same(share_rows({sure, sure}, {1, 0}, 2, 16), {1, 0}), "caps");
+    EXPECT(same(share_drafts({sure, sure}, {1, 0}, 2, 16), {1, 0}), "caps");
     // No row to spare, and fewer spare rows than slots.
-    EXPECT(same(share_rows({sure, sure}, {7, 7}, 16, 16), {0, 0}), "a full step");
-    EXPECT(same(share_rows({half, sure, sure}, {7, 7, 7}, 14, 16), {1, 1, 0}), "two spare rows");
+    EXPECT(same(share_drafts({sure, sure}, {7, 7}, 16, 16), {0, 0}), "a full step");
+    EXPECT(same(share_drafts({half, sure, sure}, {7, 7, 7}, 14, 16), {1, 1, 0}), "two spare rows");
     // Rows other slots take in the step leave fewer to share.
-    EXPECT(same(share_rows({sure}, {7}, 12, 16), {4}), "one writer beside 11 other rows");
-  }
-
-  // The drafts each slot makes: its rows, cut to one more than the round would verify by its acceptance.
-  {
-    const DraftOdds sure = odds(3, 3), half = odds(1, 2), never = odds(0, 3);
-    WindowTimes w;
-    const double t[] = {0, 15.5, 19.25, 21.9, 25.6, 0, 34.5, 0, 42.3};
-    for (uint32_t r = 1; r <= 8; r++)
-      if (t[r] > 0) w.add(r, t[r]);
-    // Fewer than two widths timed: the whole share.
-    EXPECT(same(share_drafts({half, half}, {7, 7}, 2, 16, WindowTimes{}), {7, 7}), "no times");
-    // Half-sure slots: the round would verify at most the first of each, so each drafts at most two, not 7.
-    const std::vector<uint32_t> hh = share_drafts({half, half}, {7, 7}, 2, 16, w);
-    EXPECT(hh.size() == 2 && hh[0] >= 1 && hh[0] <= 2 && hh[1] >= 1 && hh[1] <= 2, "two half-sure slots: %u %u",
-           hh[0], hh[1]);
-    // A slot that never accepts still drafts one, so that its acceptance stays measured.
-    const std::vector<uint32_t> sn = share_drafts({sure, never}, {7, 7}, 2, 16, w);
-    EXPECT(sn.size() == 2 && sn[0] == 7 && sn[1] == 1, "one never accepts: %u %u", sn[0], sn[1]);
-    // Sure slots keep their share; the cut never adds to it, and caps hold.
-    EXPECT(same(share_drafts({sure, sure}, {7, 7}, 2, 16, w), {7, 7}), "two sure slots");
-    EXPECT(same(share_drafts({sure, sure}, {1, 0}, 2, 16, w), {1, 0}), "caps hold under the cut");
+    EXPECT(same(share_drafts({sure}, {7}, 12, 16), {4}), "one writer beside 11 other rows");
   }
 
   // The drafts a round verifies, with times like the cards' (1 row 15.5 ms, 2 19.25, 3 21.9, 4 25.6, 6 34.5, 8 42.3).

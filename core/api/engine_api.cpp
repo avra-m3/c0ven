@@ -449,7 +449,7 @@ struct engine_ctx {
     std::vector<engine::DraftOdds> odds;
     std::vector<uint32_t> caps;
     for (uint32_t s : who) odds.push_back(slots[s].odds), caps.push_back(draft_cap(slots[s]));
-    return engine::share_drafts(odds, caps, rows, STEP_MAX_ROWS, window_times);
+    return engine::share_drafts(odds, caps, rows, STEP_MAX_ROWS);
   }
 
   // Before a round of several slots: each keeps the first of its drafts that the round verifies, the drafts of all of
