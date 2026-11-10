@@ -469,8 +469,9 @@ struct engine_ctx {
     return n;
   }
 
-  // A step or round of several slots: its window of rows from t0 to t1, and the draft layer's drafts after it, up to
-  // now, for a block of block rows. Under mu.
+  // A step or round of several slots: its window of rows from t0 to t1, when its rows' tokens are sampled (a round's
+  // and a step's alike, or a step would look cheaper than a round by the sampling), and the draft layer's drafts
+  // after it, up to now, for a block of block rows. Under mu.
   void time_several(uint32_t rows, uint64_t t0, uint64_t t1, uint32_t block) {
     several_times.add(rows, (t1 - t0) * 1e-6);
     drafter_times.add(std::max(rows, block), (now_ns() - t1) * 1e-6);
@@ -894,10 +895,10 @@ struct engine_ctx {
     uint64_t t0 = now_ns();
     auto out = model->step(rows.data(), (uint32_t)rows.size());
     std::vector<StepIn> mr;  // the draft layer's catch-up: each row with the token after it
-    uint64_t t1;
+    uint64_t sampled;  // the rows' tokens sampled: the end of the window as a round of several slots times it
     {
       std::lock_guard<std::mutex> lk(mu);
-      t1 = now_ns();
+      const uint64_t t1 = now_ns();
       const engine::StepStats &ss = model->last_stats();
       record({ENGINE_TIMING_DECODE, plan, (uint32_t)rows.size(), ss.misses, t0, t1});
       if (rows.size() == 1) window_times.add(1, (t1 - t0) * 1e-6);
@@ -926,6 +927,7 @@ struct engine_ctx {
         sl.drafts.clear(), sl.draft_p.clear();
         mr.push_back({s, rows[i].pos, sl.next, kNoToken, kNoToken});
       }
+      sampled = now_ns();
     }
     // The draft layer reads every computed row, so its cells stay whole; writing slots get drafts.
     if (!model->drafting() || mr.empty()) return;
@@ -950,7 +952,7 @@ struct engine_ctx {
         Slot &sl = slots[seeds[i].slot];
         if (sl.used && !sl.done) set_drafts(sl, std::move(d[i]));
       }
-      if (rows.size() > 1) time_several((uint32_t)rows.size(), t0, t1, block_rows(seeds));
+      if (rows.size() > 1) time_several((uint32_t)rows.size(), t0, sampled, block_rows(seeds));
       return;
     }
     std::vector<uint32_t> keep;  // the rows that may draft: the writing slots'
@@ -982,7 +984,7 @@ struct engine_ctx {
         Slot &sl = slots[seeds[i].slot];
         if (sl.used && !sl.done) set_drafts(sl, std::move(d[i]));
       }
-      if (rows.size() > 1) time_several((uint32_t)rows.size(), t0, t1, block_rows(seeds));
+      if (rows.size() > 1) time_several((uint32_t)rows.size(), t0, sampled, block_rows(seeds));
       return;
     }
     std::unique_lock<std::mutex> lk(mu);
