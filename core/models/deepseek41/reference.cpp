@@ -10,29 +10,15 @@
 
 #include "api/model.h"
 #include "cpu/experts.h"
-#include "ggml-cpu.h"
-#include "ggml.h"
-#include "load/direct.h"
-#include "load/gguf.h"
 #include "models/deepseek41/engram.h"
+#include "models/deepseek41/ref_file.h"
 #include "util/parallel.h"
 
 namespace engine::deepseek41 {
 
 namespace {
 
-// Rows of a product given to one pool job.
-constexpr uint32_t kRowChunk = 64;
-
-// A matrix in the file's layout: rows rows of k values, row_bytes apart.
-struct Mat {
-  const uint8_t *data = nullptr;
-  uint32_t type = 0, k = 0, rows = 0;
-  size_t row_bytes = 0;
-};
-
-// The value a f16 cache holds for x (ADR-0074 item 11): nearest, as ggml's cast.
-float round_f16(float x) { return ggml_fp16_to_fp32(ggml_fp32_to_fp16(x)); }
+using Mat = RefMat;
 
 std::string blk(uint32_t il, const char *name) { return "blk." + std::to_string(il) + "." + name; }
 
@@ -48,10 +34,9 @@ struct RefModel::Impl {
     const GgufTensor *gate_exps = nullptr, *up_exps = nullptr, *down_exps = nullptr;
   };
 
-  GgufModel model;
   RefOptions opt;
   Pool pool;
-  DirectReader reader;
+  RefFile file;
   CpuExperts experts;
   EngramHash hash;
   RefStats stats;
@@ -60,9 +45,6 @@ struct RefModel::Impl {
   Mat output;
   std::vector<float> output_norm;
   std::vector<Layer> layer;
-  // One buffer for each place in the file, so that tensors a generated model places together share it.
-  std::map<std::pair<uint32_t, uint64_t>, AlignedBuffer> held;
-
   uint32_t pos = 0;
   std::array<int32_t, 3> history{kNoToken, kNoToken, kNoToken};  // the last token first
   std::vector<float> window;                                     // [layer][D41_WIN][D41_HD], at f16's values
@@ -71,22 +53,22 @@ struct RefModel::Impl {
   std::vector<std::vector<uint32_t>> topk;
   std::vector<uint8_t> keep;                                     // the candidate filter's rows, this step
   std::vector<ref::Route> routes;
-  std::vector<uint8_t> xq;
-  AlignedBuffer small;
-  AlignedBuffer expert_buf;
-  uint64_t expert_buf_bytes = 0;
+  std::vector<float> inputs;                                     // [layer][D41_EMBD]: the streams' mean entering it
 
   Impl(const std::string &path, const RefOptions &o);
 
-  const GgufTensor &tensor(const std::string &name, std::initializer_list<uint64_t> shape) const;
-  const uint8_t *hold(const GgufTensor &t);
-  Mat mat(const std::string &name, uint32_t k, uint32_t rows_);
-  std::vector<float> floats(const std::string &name, std::initializer_list<uint64_t> shape);
+  const GgufTensor &tensor(const std::string &name, std::initializer_list<uint64_t> shape) const {
+    return file.tensor(name, shape);
+  }
+  Mat mat(const std::string &name, uint32_t k, uint32_t rows_) { return file.mat(name, k, rows_); }
+  std::vector<float> floats(const std::string &name, std::initializer_list<uint64_t> shape) {
+    return file.floats(name, shape);
+  }
   void load_layer(uint32_t il);
 
-  void mul(const Mat &m, uint32_t first, uint32_t n, const float *x, float *y);
-  void mul(const Mat &m, const float *x, float *y) { mul(m, 0, m.rows, x, y); }
-  void read_row(const GgufTensor &t, uint64_t row, float *out);
+  void mul(const Mat &m, uint32_t first, uint32_t n, const float *x, float *y) { file.mul(m, first, n, x, y); }
+  void mul(const Mat &m, const float *x, float *y) { file.mul(m, x, y); }
+  void read_row(const GgufTensor &t, uint64_t row, float *out) { file.read_row(t, row, out); }
   void attention(uint32_t il, const float *x, float *attn, const RefProbe &probe);
   void run_experts(uint32_t il, const ref::Route &r, const float *x, float *y);
   void decode(int32_t token, float *logits, const RefProbe &probe);
@@ -94,19 +76,17 @@ struct RefModel::Impl {
 };
 
 RefModel::Impl::Impl(const std::string &path, const RefOptions &o)
-    : model(path),
-      opt(o),
+    : opt(o),
       pool(o.threads > 0 ? o.threads - 1 : 0),
-      reader(model.files(), std::max(o.threads, 1u)),
+      file(path, o.threads, pool),
       experts(pool),
-      hash(EngramParams::from_gguf(model)),
-      n_layer((uint32_t)model.get_int("deepseek41.block_count")),
-      small(aligned_buffer(4 * DirectReader::kAlign)) {
+      hash(EngramParams::from_gguf(file.model)),
+      n_layer((uint32_t)file.model.get_int("deepseek41.block_count")) {
   if (n_layer == 0 || n_layer > D41_LAYERS) throw std::runtime_error("deepseek41: a block count outside 1 to 40");
-  embd = &model.tensor("token_embd.weight");
+  embd = &file.model.tensor("token_embd.weight");
   if (embd->shape.size() != 2 || embd->shape[0] != D41_EMBD) throw std::runtime_error("token_embd.weight: its shape");
   n_vocab = (uint32_t)embd->shape[1];
-  table = &model.tensor("per_layer_token_embd.weight");
+  table = &file.model.tensor("per_layer_token_embd.weight");
   if (table->shape.size() != 2 || table->shape[0] != D41_ENG_ROW) {
     throw std::runtime_error("per_layer_token_embd.weight: its shape");
   }
@@ -120,41 +100,7 @@ RefModel::Impl::Impl(const std::string &path, const RefOptions &o)
   state_sc.resize((size_t)n_layer * 2 * D41_HD);
   topk.resize(n_layer);
   routes.resize(n_layer);
-}
-
-const GgufTensor &RefModel::Impl::tensor(const std::string &name, std::initializer_list<uint64_t> shape) const {
-  const GgufTensor &t = model.tensor(name);
-  if (!std::equal(t.shape.begin(), t.shape.end(), shape.begin(), shape.end())) {
-    throw std::runtime_error(name + ": not the shape the layout gives");
-  }
-  return t;
-}
-
-const uint8_t *RefModel::Impl::hold(const GgufTensor &t) {
-  auto [it, fresh] = held.try_emplace({t.shard, t.offset});
-  if (fresh) {
-    it->second = aligned_buffer(DirectReader::span(t.offset, t.bytes));
-    stats.dense_bytes += DirectReader::span(t.offset, t.bytes);
-    reader.read(t.shard, t.offset, t.bytes, it->second.get());
-  }
-  return it->second.get() + t.offset % DirectReader::kAlign;
-}
-
-Mat RefModel::Impl::mat(const std::string &name, uint32_t k, uint32_t rows_) {
-  const GgufTensor &t = tensor(name, {k, rows_});
-  return Mat{hold(t), t.type, k, rows_, ggml_row_size((ggml_type)t.type, k)};
-}
-
-std::vector<float> RefModel::Impl::floats(const std::string &name, std::initializer_list<uint64_t> shape) {
-  const GgufTensor &t = tensor(name, shape);
-  std::vector<float> v(t.elements());
-  const uint8_t *d = hold(t);
-  if (t.type == GGML_TYPE_F32) {
-    std::memcpy(v.data(), d, t.bytes);
-  } else {
-    ggml_get_type_traits((ggml_type)t.type)->to_float(d, v.data(), (int64_t)v.size());
-  }
-  return v;
+  inputs.resize((size_t)n_layer * D41_EMBD);
 }
 
 void RefModel::Impl::load_layer(uint32_t il) {
@@ -203,26 +149,6 @@ void RefModel::Impl::load_layer(uint32_t il) {
   l.up_exps = &tensor(blk(il, "ffn_up_exps.weight"), {D41_EMBD, D41_FF, D41_EXPERTS});
   l.down_exps = &tensor(blk(il, "ffn_down_exps.weight"), {D41_FF, D41_EMBD, D41_EXPERTS});
   if (l.gate_exps->type != l.up_exps->type) throw std::runtime_error(blk(il, "ffn_up_exps.weight") + ": not gate's type");
-}
-
-// As ggml's mul_mat: x converted once to the weight type's dot-product type, then a dot product a row.
-void RefModel::Impl::mul(const Mat &m, uint32_t first, uint32_t n, const float *x, float *y) {
-  const auto *wt = ggml_get_type_traits_cpu((ggml_type)m.type);
-  const auto *xt = ggml_get_type_traits_cpu(wt->vec_dot_type);
-  if (!wt->vec_dot || !xt->from_float) throw std::runtime_error("ggml has no CPU dot product for a weight type");
-  xq.resize(ggml_row_size(wt->vec_dot_type, m.k));
-  xt->from_float(x, xq.data(), m.k);
-  pool.run((n + kRowChunk - 1) / kRowChunk, [&](uint64_t c) {
-    const uint32_t r1 = std::min(n, ((uint32_t)c + 1) * kRowChunk);
-    for (uint32_t r = (uint32_t)c * kRowChunk; r < r1; r++)
-      wt->vec_dot((int)m.k, y + r, 0, m.data + (first + r) * m.row_bytes, 0, xq.data(), 0, 1);
-  });
-}
-
-void RefModel::Impl::read_row(const GgufTensor &t, uint64_t row, float *out) {
-  const uint64_t bytes = t.row_bytes();
-  const uint8_t *p = reader.read_one(t.shard, t.offset + row * bytes, bytes, small.get());
-  ggml_get_type_traits((ggml_type)t.type)->to_float(p, out, (int64_t)t.shape[0]);
 }
 
 void RefModel::Impl::attention(uint32_t il, const float *x, float *attn, const RefProbe &probe) {
@@ -330,34 +256,7 @@ void RefModel::Impl::attention(uint32_t il, const float *x, float *attn, const R
 
 void RefModel::Impl::run_experts(uint32_t il, const ref::Route &r, const float *x, float *y) {
   const Layer &l = layer[il];
-  const GgufTensor *mats[3] = {l.gate_exps, l.up_exps, l.down_exps};
-  uint64_t need = 0;
-  for (const GgufTensor *t : mats) need += D41_USED * (t->bytes / D41_EXPERTS + 2 * DirectReader::kAlign);
-  if (need > expert_buf_bytes) {
-    expert_buf = aligned_buffer(need);
-    expert_buf_bytes = need;
-  }
-  std::vector<ExpertWeights> ew(D41_USED);
-  std::vector<float> w(D41_USED);
-  uint8_t *at = expert_buf.get();
-  for (uint32_t k = 0; k < D41_USED; k++) {
-    const uint8_t *got[3];
-    for (uint32_t i = 0; i < 3; i++) {
-      const uint64_t eb = mats[i]->bytes / D41_EXPERTS, off = mats[i]->offset + (uint64_t)r.id[k] * eb;
-      got[i] = reader.read(mats[i]->shard, off, eb, at);
-      at += DirectReader::span(off, eb);
-      stats.expert_bytes += eb;
-    }
-    ew[k] = ExpertWeights{got[0], got[1], got[2], 1};
-    w[k] = r.w[k];
-  }
-  ExpertShape s;
-  s.gate_type = l.gate_exps->type;
-  s.down_type = l.down_exps->type;
-  s.n_embd = D41_EMBD;
-  s.n_ff = D41_FF;
-  s.swiglu_limit = D41_SWIGLU_LIMIT;
-  experts.compute(s, ew, w, x, y);
+  file.routed(experts, *l.gate_exps, *l.up_exps, *l.down_exps, D41_EXPERTS, r.id, r.w, D41_USED, x, y);
 }
 
 void RefModel::Impl::decode(int32_t token, float *logits, const RefProbe &probe) {
@@ -389,6 +288,12 @@ void RefModel::Impl::decode(int32_t token, float *logits, const RefProbe &probe)
       ref::engram_gate(X.data(), kv.data(), l.engram_gate.data(), gates);
       show("engram_gate", (int)il, gates, D41_HC);
       show("engram_out", (int)il, X.data(), X.size());
+    }
+    float *in = inputs.data() + (size_t)il * D41_EMBD;
+    for (uint32_t d = 0; d < D41_EMBD; d++) {
+      double sum = 0;
+      for (uint32_t c = 0; c < D41_HC; c++) sum += X[(size_t)c * D41_EMBD + d];
+      in[d] = (float)(sum / D41_HC);
     }
 
     const ref::HcMix am = ref::hc_mixes(X.data(), l.attn_fn.data(), l.attn_scale.data(), l.attn_base.data());
@@ -457,7 +362,20 @@ void RefModel::decode(int32_t token, float *logits, const RefProbe &probe) { imp
 uint32_t RefModel::position() const { return impl_->pos; }
 uint32_t RefModel::layers() const { return impl_->n_layer; }
 uint32_t RefModel::vocab() const { return impl_->n_vocab; }
-const RefStats &RefModel::stats() const { return impl_->stats; }
+const RefStats &RefModel::stats() const {
+  impl_->stats.dense_bytes = impl_->file.dense_bytes;
+  impl_->stats.expert_bytes = impl_->file.expert_bytes;
+  return impl_->stats;
+}
+const float *RefModel::layer_input(uint32_t layer) const {
+  if (layer >= impl_->n_layer) throw std::runtime_error("deepseek41 reference: no such layer");
+  return impl_->inputs.data() + (size_t)layer * D41_EMBD;
+}
+void RefModel::embedding(int32_t token, float *out) {
+  if (token < 0 || (uint32_t)token >= impl_->n_vocab) throw std::runtime_error("deepseek41 reference: a token outside the vocabulary");
+  impl_->read_row(*impl_->embd, (uint64_t)token, out);
+}
+void RefModel::head(const float *x, float *logits) { impl_->mul(impl_->output, x, logits); }
 const ref::Route &RefModel::route(uint32_t layer) const { return impl_->routes.at(layer); }
 const std::vector<uint32_t> &RefModel::top_k(uint32_t layer) const { return impl_->topk.at(layer); }
 

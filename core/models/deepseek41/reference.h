@@ -65,6 +65,13 @@ class RefModel {
   const ref::Route &route(uint32_t layer) const;
   const std::vector<uint32_t> &top_k(uint32_t layer) const;
 
+  // What the drafter takes from the model (drafter.h). Of the last decode, D41_EMBD values: the mean of the 4 streams
+  // entering the layer, after its Engram rows.
+  const float *layer_input(uint32_t layer) const;
+  // A token's embedding (D41_EMBD values), and the output head on an x already normed (vocab() logits).
+  void embedding(int32_t token, float *out);
+  void head(const float *x, float *logits);
+
  private:
   struct Impl;
   std::unique_ptr<Impl> impl_;
