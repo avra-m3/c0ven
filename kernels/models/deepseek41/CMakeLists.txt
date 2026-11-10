@@ -13,7 +13,13 @@ engine_add_kernel_module(deepseek41_check SOURCE kernels/models/deepseek41/check
 engine_add_kernel_module(deepseek41_og SOURCE kernels/models/deepseek41/output.cl
                          OPTIONS -DQTYPE=QT_Q5_K -DLANES=4 -I${CMAKE_SOURCE_DIR}/kernels/quant
                          ${DEEPSEEK41_KERNEL_INCLUDES})
-set(deepseek41_modules deepseek41 deepseek41_attn deepseek41_check deepseek41_og)
+# The drafter's layers: the router and the combine at its expert counts, and attn_output_a in Q8_0.
+engine_add_kernel_module(deepseek41_dsp SOURCE kernels/models/deepseek41/layer.cl
+                         OPTIONS -DD41_DRAFTER ${DEEPSEEK41_KERNEL_INCLUDES})
+engine_add_kernel_module(deepseek41_og_q8_0 SOURCE kernels/models/deepseek41/output.cl
+                         OPTIONS -DQTYPE=QT_Q8_0 -DLANES=4 -I${CMAKE_SOURCE_DIR}/kernels/quant
+                         ${DEEPSEEK41_KERNEL_INCLUDES})
+set(deepseek41_modules deepseek41 deepseek41_attn deepseek41_check deepseek41_og deepseek41_dsp deepseek41_og_q8_0)
 
 # The routed experts' products at the file's types, one module per kernel, type and largest group:
 # deepseek41_moe_gate_up_<type>_g<a> and deepseek41_moe_down_<type>_g<a>. The down modules read the codebook through

@@ -5,7 +5,7 @@
 // tiers by use; DS41_TRACE: the last step's kernels; DS41_NO_STREAMS: no streams, RefModel first, then the steps back
 // to back; DS41_LAYERS: the host's waits by layer; DS41_CPU_THREADS: the CPU's expert workers; DS41_ROUTES: a file
 // that gets each position's routed experts; DS41_NO_REF: no RefModel, the step's own first choice goes on, nothing is
-// compared and the test skips.
+// compared and the test skips; DS41_DRAFTER: the drafter's file, loaded so that each step stores its keys.
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -119,6 +119,7 @@ int run() {
   if (const char *profile = std::getenv("DS41_PROFILE")) opt.routing_profile = profile;
   opt.trace = std::getenv("DS41_TRACE") != nullptr;
   opt.adapt_swaps = std::getenv("DS41_SWAPS") != nullptr;
+  if (const char *drafter = std::getenv("DS41_DRAFTER")) opt.mtp_dir = drafter;
   opt.cpu_threads = env_u32("DS41_CPU_THREADS", opt.cpu_threads);
   FILE *routes = std::getenv("DS41_ROUTES") ? std::fopen(std::getenv("DS41_ROUTES"), "w") : nullptr;
   const auto t_load = std::chrono::steady_clock::now();

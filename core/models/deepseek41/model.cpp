@@ -51,9 +51,34 @@ uint64_t align256(uint64_t v) { return (v + 255) / 256 * 256; }
 
 // The slot class of rows rows of gate and up, and the same columns of down, with its slots from base on.
 D41Class slot_class(uint32_t gate_type, uint32_t down_type, uint32_t rows, uint64_t base) {
-  const uint64_t g = align256(runs_bytes(gate_type, (uint64_t)rows * (E / 256)));
-  const uint64_t d = align256(runs_bytes(down_type, (uint64_t)E * (rows / 256)));
+  const uint64_t g = align256(runs_bytes(gate_type, (uint64_t)rows * (E / quant_block_values(gate_type))));
+  const uint64_t d = align256(runs_bytes(down_type, (uint64_t)E * (rows / quant_block_values(down_type))));
   return {base, 2 * g + d, g, 2 * g, rows, {}};
+}
+
+// A layer's kind. The drafter's layers, D41_LAYERS and on, are window-only and have no Engram.
+bool drafter_layer(uint32_t l) { return l >= D41_LAYERS; }
+uint32_t ratio_of(uint32_t l) { return drafter_layer(l) ? 0 : (uint32_t)D41_RATIO((int)l); }
+bool kv_source(uint32_t l) { return !drafter_layer(l) && D41_KV_SRC((int)l) == (int)l; }
+bool idx_source(uint32_t l) { return ratio_of(l) != 0 && D41_IDX_SRC((int)l) == (int)l; }
+int engram_of(uint32_t l) { return drafter_layer(l) ? -1 : D41_ENGRAM((int)l); }
+uint32_t experts_of(uint32_t l) { return drafter_layer(l) ? D41_DSP_EXPERTS : D41_EXPERTS; }
+uint32_t used_of(uint32_t l) { return drafter_layer(l) ? D41_DSP_USED : D41_USED; }
+// The kernels built for a layer's expert counts.
+const char *layer_module(uint32_t l) { return drafter_layer(l) ? "deepseek41_dsp" : "deepseek41"; }
+
+// attn_output_a's kernels, by its type.
+const char *og_module(uint32_t type) {
+  if (type == QT_Q5_K) return "deepseek41_og";
+  if (type == QT_Q8_0) return "deepseek41_og_q8_0";
+  throw std::runtime_error("attn_output_a.weight: the engine reads it as Q5_K or Q8_0 only");
+}
+
+// x as bf16, to the nearest, ties to even.
+uint16_t to_bf16(float x) {
+  uint32_t b;
+  std::memcpy(&b, &x, 4);
+  return (uint16_t)((b + 0x7fffu + ((b >> 16) & 1u)) >> 16);
 }
 
 // The recorded width that holds n rows: the routed experts' kernels are built for these.
@@ -102,7 +127,7 @@ T *Model::upload(Card &card, const T *src, size_t n) {
 }
 
 const GgufTensor &Model::tensor(const std::string &name, std::initializer_list<uint64_t> shape) const {
-  const GgufTensor &t = gguf_.tensor(name);
+  const GgufTensor &t = source().tensor(name);
   if (!std::equal(t.shape.begin(), t.shape.end(), shape.begin(), shape.end()))
     throw std::runtime_error(name + ": not the shape deepseek41's layout gives");
   return t;
@@ -113,7 +138,7 @@ const uint8_t *Model::held(const GgufTensor &t) {
   auto [it, fresh] = held_.try_emplace({t.shard, t.offset});
   if (fresh) {
     it->second = aligned_buffer(DirectReader::span(t.offset, t.bytes));
-    ssd_->direct().read(t.shard, t.offset, t.bytes, it->second.get());
+    reader().read(t.shard, t.offset, t.bytes, it->second.get());
   }
   return it->second.get() + t.offset % DirectReader::kAlign;
 }
@@ -132,8 +157,13 @@ float *Model::upload_floats(Card &card, const std::string &name, std::initialize
 
 uint16_t *Model::upload_bf16(Card &card, const std::string &name, std::initializer_list<uint64_t> shape) {
   const GgufTensor &t = tensor(name, shape);
-  if (t.type != QT_BF16) throw std::runtime_error(name + ": the engine reads it as BF16 only");
-  return upload<uint16_t>(card, reinterpret_cast<const uint16_t *>(held(t)), t.elements());
+  if (t.type == QT_BF16) return upload<uint16_t>(card, reinterpret_cast<const uint16_t *>(held(t)), t.elements());
+  // The drafter's router is F32 in its file; the cards' product reads bf16.
+  if (t.type != QT_F32) throw std::runtime_error(name + ": the engine reads it as BF16 or F32 only");
+  const float *f = reinterpret_cast<const float *>(held(t));
+  std::vector<uint16_t> v(t.elements());
+  for (size_t i = 0; i < v.size(); i++) v[i] = to_bf16(f[i]);
+  return upload<uint16_t>(card, v.data(), v.size());
 }
 
 Model::Mat Model::mat(Card &card, uint32_t type, uint32_t K, const std::vector<SliceSpec> &specs) {
@@ -156,7 +186,6 @@ Model::Model(const std::string &path, const Options &opt, const Debug &debug) : 
   if (opt_.slots == 0) throw std::runtime_error("deepseek41 needs a slot");
   if (opt_.max_ctx == 0 || opt_.max_ctx > D41_CTX_CAP || opt_.max_ctx % KV_PAGE_CELLS)
     throw std::runtime_error("deepseek41 reads at most 16,384 positions a sequence, a multiple of 4");
-  if (!opt_.mtp_dir.empty()) throw std::runtime_error("deepseek41 has no drafter");
   if (!opt_.vision_path.empty()) throw std::runtime_error("deepseek41 reads no images");
   if (opt_.max_cards < 2) throw std::runtime_error("deepseek41 runs on two cards");
   rt_ = std::make_unique<ze::Runtime>(2);
@@ -214,7 +243,22 @@ Model::Model(const std::string &path, const Options &opt, const Debug &debug) : 
   top_idx_ = static_cast<uint32_t *>(host((size_t)2 * STEP_MAX_ROWS * opt_.candidates * 4));
   top_val_ = static_cast<float *>(host((size_t)2 * STEP_MAX_ROWS * opt_.candidates * 4));
   top_n_ = static_cast<uint32_t *>(host(2 * STEP_MAX_ROWS * 4));
-  if (debug_.probes) probe_ = static_cast<float *>(host((size_t)2 * D41_LAYERS * STEP_MAX_ROWS * D * 4));
+  if (debug_.probes) probe_ = static_cast<float *>(host((size_t)2 * kAllLayers * STEP_MAX_ROWS * D * 4));
+  if (!opt_.mtp_dir.empty()) {
+    dsp_ = std::make_unique<Drafter>(opt_.mtp_dir);
+    dsp_->x = static_cast<float *>(host((size_t)STEP_MAX_ROWS * D * 4));
+    dsp_->mix = static_cast<D41HcMix *>(host(STEP_MAX_ROWS * sizeof(D41HcMix)));
+    dsp_->r = static_cast<uint16_t *>(host((size_t)STEP_MAX_ROWS * D41_DSP_RANK * 2));
+    dsp_->words = static_cast<uint32_t *>(host(64));
+    if (debug_.probes) {
+      dsp_->probe_x = static_cast<float *>(host((size_t)STEP_MAX_ROWS * E * 4));
+      dsp_->probe_kv = static_cast<float *>(host((size_t)D41_DSP_LAYERS * STEP_MAX_ROWS * D41_HD * 4));
+      dsp_->probe_ids = static_cast<int32_t *>(host((size_t)D41_DSP_LAYERS * STEP_MAX_ROWS * D41_DSP_USED * 4));
+    }
+  }
+  pairs_.resize(kAllLayers);
+  split_.resize(kAllLayers);
+  tables_.resize(kAllLayers);
   pt_.assign((size_t)opt_.slots * npp_, D41_NO_PAGE);
 
   for (uint32_t c = 0; c < 2; c++) {
@@ -223,7 +267,7 @@ Model::Model(const std::string &path, const Options &opt, const Debug &debug) : 
     card.c = c;
     card.up = std::make_unique<ze::List>(*rt_, c, ze::List::immediate);
     card.grids = upload<uint8_t>(card, codebooks().data(), QGRID_BYTES);
-    card.layers.resize(D41_LAYERS);
+    card.layers.resize(dsp_ ? kAllLayers : D41_LAYERS);
     alloc_buffers(card);
   }
   for (uint32_t l = 0; l < D41_LAYERS; l++) load_layer(l);
@@ -239,6 +283,8 @@ Model::Model(const std::string &path, const Options &opt, const Debug &debug) : 
     }
     held_.clear();
   }
+  // Before the model's experts, which take the room that is left.
+  if (dsp_) load_drafter();
   load_experts();
 
   info_.cards = 2;
@@ -362,11 +408,21 @@ void Model::alloc_buffers(Card &card) {
   card.shared = dev<float>(card, R * E);
   card.y6 = dev<float>(card, R * D41_USED * E);
   card.out = dev<float>(card, R * E);
+  if (!dsp_) return;
+  card.fa = dev<uint8_t>(card, R * D41_DSP_A8_ROW);
+  card.dmain = dev<float>(card, R * E);
+  card.dxa = dev<uint8_t>(card, R * D41_A8_ROW);
+  card.dkv = dev<float>(card, R * D41_HD);
+  if (debug_.probes) {
+    card.dxf = dev<float>(card, R * E);
+    card.dkvf = dev<float>(card, D41_DSP_LAYERS * R * D41_HD);
+  }
 }
 
+// A drafter layer's tensors are numbered from 0 in its own file, which dsp_loading_ selects.
 void Model::load_layer(uint32_t l) {
-  const int li = (int)l;
-  const auto name = [&](const char *n) { return blk(l, n); };
+  const auto name = [&](const char *n) { return blk(drafter_layer(l) ? l - D41_LAYERS : l, n); };
+  const uint32_t n_experts = experts_of(l);
   for (auto &cp : cards_) {
     Card &card = *cp;
     Layer &L = card.layers[l];
@@ -389,16 +445,16 @@ void Model::load_layer(uint32_t l) {
     L.q_norm = upload_floats(card, name("attn_q_a_norm.weight"), {D41_QLR});
     L.kv_norm = upload_floats(card, name("attn_kv_a_norm.weight"), {D41_HD});
     L.sinks = upload_floats(card, name("attn_sinks.weight"), {D41_H});
-    L.bias = upload_floats(card, name("exp_probs_b.bias"), {D41_EXPERTS});
+    L.bias = upload_floats(card, name("exp_probs_b.bias"), {n_experts});
     L.q_a = slice("attn_q_a.weight", E, D41_QLR, 0, D41_QLR);
     L.kv = slice("attn_kv.weight", E, D41_HD, 0, D41_HD);
     L.q_b = slice("attn_q_b.weight", D41_QLR, D41_H * D41_HD, (uint64_t)card.c * kHeads * D41_HD, kHeads * D41_HD);
     L.out_a = slice("attn_output_a.weight", D41_OG_K, D41_OG * D41_OLR, (uint64_t)card.c * kGroups * D41_OLR,
                     kGroups * D41_OLR);
-    if (L.out_a.type != QT_Q5_K) throw std::runtime_error(name("attn_output_a.weight") + ": the engine reads it as Q5_K only");
+    og_module(L.out_a.type);
     L.out_b = slice("attn_output_b.weight", D41_OG * D41_OLR, E, 0, E, (uint64_t)card.c * kGroups * D41_OLR,
                     kGroups * D41_OLR);
-    L.gate_inp = upload_bf16(card, name("ffn_gate_inp.weight"), {E, D41_EXPERTS});
+    L.gate_inp = upload_bf16(card, name("ffn_gate_inp.weight"), {E, n_experts});
     {
       // The larger part of the shared expert on the card that does not post the layer's misses (ADR-0074 item 2).
       const bool posts = l % 2 == card.c;
@@ -412,8 +468,8 @@ void Model::load_layer(uint32_t l) {
       L.sh_down = slice("ffn_down_shexp.weight", D41_FF, E, 0, E, r0, L.sh_ff);
     }
     L.ring = dev<uint16_t>(card, (size_t)opt_.slots * D41_RING * D41_HD);
-    if (D41_KV_SRC(li) == li) {
-      const uint32_t ratio = (uint32_t)D41_RATIO(li);
+    if (kv_source(l)) {
+      const uint32_t ratio = ratio_of(l);
       L.comp_kv = upload_bf16(card, name("attn_compressor_kv.weight"), {E, D41_HD});
       if (ratio == 2) {
         L.comp_gate = upload_bf16(card, name("attn_compressor_gate.weight"), {E, D41_HD});
@@ -424,11 +480,11 @@ void Model::load_layer(uint32_t l) {
       L.k_norm = upload_floats(card, name("indexer.k_norm.weight"), {D41_IDX_D});
       L.pool = dev<uint16_t>(card, (size_t)kv_pages_ * (KV_PAGE_CELLS / ratio) * D41_COMP_ROW);
     }
-    if (D41_RATIO(li) != 0 && D41_IDX_SRC(li) == li) {
+    if (idx_source(l)) {
       L.idx_q_b = upload_bf16(card, name("indexer.attn_q_b.weight"), {D41_QLR, D41_IDX_H * D41_IDX_D});
       L.idx_proj = upload_bf16(card, name("indexer.proj.weight"), {E, D41_IDX_H});
     }
-    if (D41_ENGRAM(li) >= 0) {
+    if (engram_of(l) >= 0) {
       // The card's two streams' keys, then its half of the value rows.
       const GgufTensor &t = tensor(name("engram_kv.weight"), {D41_ENG_G, D41_ENG_KV});
       const uint64_t nb = D41_ENG_G / quant_block_values(t.type);
@@ -439,6 +495,71 @@ void Model::load_layer(uint32_t l) {
     }
   }
   held_.clear();
+}
+
+// The drafter's dense tensors and all of its experts onto the cards, and its token tables into host memory.
+void Model::load_drafter() {
+  Drafter &d = *dsp_;
+  dsp_loading_ = true;
+  if (d.gguf.get_string("general.architecture") != "dflash" || d.gguf.get_int("dflash.block_count") != D41_DSP_LAYERS)
+    throw std::runtime_error(opt_.mtp_dir + ": not deepseek41's drafter");
+  d.noise = (int32_t)d.gguf.get_int("tokenizer.ggml.mask_token_id");
+  if (d.noise < 0 || (uint32_t)d.noise >= vocab_) throw std::runtime_error(opt_.mtp_dir + ": its noise token");
+  {
+    const GgufTensor &t = tensor("conf_proj.weight", {E + D41_DSP_RANK, 1});
+    if (t.type != QT_F32) throw std::runtime_error(t.name + ": the engine reads it as F32 only");
+    const float *f = reinterpret_cast<const float *>(held(t));
+    d.conf.assign(f, f + E + D41_DSP_RANK);
+  }
+  const auto table = [&](const char *name, AlignedBuffer &buf) {
+    const GgufTensor &t = tensor(name, {D41_DSP_RANK, vocab_});
+    if (t.type != QT_BF16) throw std::runtime_error(t.name + ": the engine reads it as BF16 only");
+    buf = aligned_buffer(DirectReader::span(t.offset, t.bytes));
+    return reinterpret_cast<const uint16_t *>(d.reader.read(t.shard, t.offset, t.bytes, buf.get()));
+  };
+  d.w1 = table("markov_w1.weight", d.w1_buf);
+  AlignedBuffer w2_buf;
+  const uint16_t *w2 = table("markov_w2.weight", w2_buf);
+  const GgufTensor &fc = tensor("fc.weight", {D41_DSP_FEATURES, E});
+  for (auto &cp : cards_) {
+    Card &card = *cp;
+    card.w2 = upload<uint16_t>(card, w2 + (size_t)card.vocab0 * D41_DSP_RANK, (size_t)card.vocab_n * D41_DSP_RANK);
+    card.rb = dev<uint16_t>(card, (size_t)STEP_MAX_ROWS * D41_DSP_RANK);
+    card.bias = dev<float>(card, card.vocab_n);
+    card.biased = dev<float>(card, card.vocab_n);
+    card.pick = dev<uint32_t>(card, 16);
+    card.fc = mat(card, fc.type, D41_DSP_FEATURES,
+                  {{held(fc), fc.row_bytes(), 0, E, 0, D41_DSP_FEATURES / quant_block_values(fc.type)}});
+    card.enc_norm = upload_floats(card, "enc.output_norm.weight", {E});
+    card.draft_norm = upload_floats(card, "output_norm.weight", {E});
+  }
+  held_.clear();
+  for (uint32_t il = 0; il < D41_DSP_LAYERS; il++) {
+    const GgufTensor &g = tensor(blk(il, "ffn_gate_exps.weight"), {E, D41_FF, D41_DSP_EXPERTS});
+    const GgufTensor &u = tensor(blk(il, "ffn_up_exps.weight"), {E, D41_FF, D41_DSP_EXPERTS});
+    const GgufTensor &dn = tensor(blk(il, "ffn_down_exps.weight"), {D41_FF, E, D41_DSP_EXPERTS});
+    if (g.type != u.type) throw std::runtime_error(u.name + ": not gate's type");
+    LayerExperts le;
+    le.shape.gate_type = g.type;
+    le.shape.down_type = dn.type;
+    le.shape.n_embd = E;
+    le.shape.n_ff = D41_FF;
+    le.shape.swiglu_limit = D41_SWIGLU_LIMIT;
+    le.gate = {g.shard, g.offset};
+    le.up = {u.shard, u.offset};
+    le.down = {dn.shard, dn.offset};
+    le.gate_bytes = g.bytes / D41_DSP_EXPERTS;
+    le.down_bytes = dn.bytes / D41_DSP_EXPERTS;
+    le.experts = D41_DSP_EXPERTS;
+    d.experts.push_back(le);
+  }
+  std::vector<uint32_t> all(D41_DSP_EXPERTS);
+  for (uint32_t e = 0; e < D41_DSP_EXPERTS; e++) all[e] = e;
+  for (uint32_t l = D41_LAYERS; l < kAllLayers; l++) {
+    load_layer(l);
+    load_cache(l, all);
+  }
+  dsp_loading_ = false;
 }
 
 // The tiers, hottest first by the profile's routings a byte: the cards' slots, then the arena. The rest stay in the
@@ -483,9 +604,6 @@ void Model::load_experts() {
       arena_bytes += in_ram;
     }
   }
-  pairs_.resize(D41_LAYERS);
-  split_.resize(D41_LAYERS);
-  tables_.resize(D41_LAYERS);
   for (uint32_t l = 0; l < D41_LAYERS; l++) load_cache(l, on_cards[l]);
   info_.experts_per_layer = (uint32_t)(cached / D41_LAYERS);
   if (opt_.adapt_swaps) {
@@ -515,7 +633,7 @@ void Model::load_experts() {
 // Layer l's experts ids on the cards: pair k's part A on one card and part B on the other, the cards taking turns so
 // that both hold the same bytes.
 void Model::load_cache(uint32_t l, const std::vector<uint32_t> &ids) {
-  const LayerExperts &le = experts_[l];
+  const LayerExperts &le = layer_experts(l);
   const uint32_t gt = le.shape.gate_type, dt = le.shape.down_type;
   const uint32_t n = (uint32_t)ids.size(), split = (n + 1) / 2;
   std::vector<int32_t> map(D41_EXPERTS, -1);
@@ -542,8 +660,9 @@ void Model::load_cache(uint32_t l, const std::vector<uint32_t> &ids) {
   const uint64_t slot_bytes = tables_[l][0][0].slot_bytes;
   std::mutex mu;
   std::exception_ptr failed;
-  const DirectReader &reader = ssd_->direct();
-  ssd_->direct().pool().run(n, [&](uint64_t k) {
+  DirectReader &from = drafter_layer(l) ? dsp_->reader : ssd_->direct();
+  const DirectReader &reader = from;
+  from.pool().run(n, [&](uint64_t k) {
     try {
       AlignedBuffer bufs[3] = {aligned_buffer(buf_bytes), aligned_buffer(buf_bytes), aligned_buffer(buf_bytes)};
       std::vector<uint8_t> slot(slot_bytes);
@@ -570,18 +689,19 @@ void Model::load_cache(uint32_t l, const std::vector<uint32_t> &ids) {
 // layout, or, with down_b, as the arena holds it: part A's blocks of every row at down and part B's at down_b.
 void Model::make_slot(uint32_t l, uint32_t c, uint32_t pair, const uint8_t *gate, const uint8_t *up, const uint8_t *down,
                       const uint8_t *down_b, uint8_t *slot) const {
-  const LayerExperts &le = experts_[l];
+  const LayerExperts &le = layer_experts(l);
   const uint32_t gt = le.shape.gate_type, dt = le.shape.down_type;
   const D41Class &t = pair_class(l, c, pair);
   const bool part_b = t.rows == D41_PART_B;
-  const uint64_t gu_blocks = E / 256, rb = gu_blocks * quant_block_bytes(gt), bb = quant_block_bytes(dt);
-  const uint64_t r0 = part_b ? D41_PART_A : 0, nb = t.rows / 256;
+  const uint64_t dq = quant_block_values(dt);
+  const uint64_t gu_blocks = E / quant_block_values(gt), rb = gu_blocks * quant_block_bytes(gt), bb = quant_block_bytes(dt);
+  const uint64_t r0 = part_b ? D41_PART_A : 0, nb = t.rows / dq;
   to_runs(gt, {{gate, rb, r0, t.rows, 0, gu_blocks}}, slot);
   to_runs(gt, {{up, rb, r0, t.rows, 0, gu_blocks}}, slot + t.up_off);
   if (down_b) {
     to_runs(dt, {{part_b ? down_b : down, nb * bb, 0, E, 0, nb}}, slot + t.down_off);
   } else {
-    to_runs(dt, {{down, (uint64_t)(D41_FF / 256) * bb, 0, E, r0 / 256, nb}}, slot + t.down_off);
+    to_runs(dt, {{down, (uint64_t)(D41_FF / dq) * bb, 0, E, r0 / dq, nb}}, slot + t.down_off);
   }
 }
 
@@ -825,7 +945,7 @@ void Model::wait(ze::List &L, Card &card, const char *name, uint32_t *raise, con
 void Model::record_engram(ze::List &L, Card &card, uint32_t l, uint32_t W) {
   Layer &ly = card.layers[l];
   Card &other = *cards_[1 - card.c];
-  const uint32_t e = (uint32_t)D41_ENGRAM((int)l), k = 2 * D41_LAYERS + e;
+  const uint32_t e = (uint32_t)engram_of(l), k = 2 * kAllLayers + e;
   const uint32_t c0 = 2 * card.c, c1 = c0 + 2, v0 = card.c * (E / 2), v1 = v0 + E / 2, stride = kEngKvRows;
   const uint32_t in_card = 0;
   // The host gathers the table's rows while the layers before run.
@@ -845,11 +965,12 @@ void Model::record_engram(ze::List &L, Card &card, uint32_t l, uint32_t W) {
 void Model::record_attention(ze::List &L, Card &card, uint32_t l, uint32_t W) {
   Layer &ly = card.layers[l];
   Card &other = *cards_[1 - card.c];
-  const int li = (int)l;
-  const uint32_t ratio = (uint32_t)D41_RATIO(li), yarn = ratio != 0, first_head = card.c * kHeads;
-  const bool kv_src = D41_KV_SRC(li) == li, idx_src = ratio != 0 && D41_IDX_SRC(li) == li;
+  const uint32_t ratio = ratio_of(l), yarn = ratio != 0, first_head = card.c * kHeads;
+  const bool kv_src = kv_source(l), idx_src = idx_source(l);
   // A window-only layer reads no compressed row; it is given layer 2's pool so that the pointer is one it may read.
-  uint16_t *pool = card.layers[ratio ? (uint32_t)D41_KV_SRC(li) : 2].pool;
+  uint16_t *pool = card.layers[ratio ? (uint32_t)D41_KV_SRC((int)l) : 2].pool;
+  // A drafter layer's rows are one block: each sees the window before it and the block's rows.
+  const void *block = drafter_layer(l) ? &card.plan->real : nullptr;
   D41Row *rows = card.plan->rows;
   const auto attn = [&](const char *name) { return kernel(card, "deepseek41_attn", name); };
 
@@ -880,17 +1001,19 @@ void Model::record_attention(ze::List &L, Card &card, uint32_t l, uint32_t W) {
              D41_IDX_WG_ROWS);
     L.launch(attn("ds_idx_topk"), {card.score, rows, ratio, card.idx}, W, 1, 1, kTopkLocal);
   }
-  L.launch(attn("ds_attn_split"), {card.q, rows, ratio, ly.ring, card.pt, npp_, pool, card.idx, card.part},
-           kHeads / D41_ATT_HEADS, W, ratio ? D41_ATT_SPLITS : 1, D41_ATT_WG);
-  L.launch(attn("ds_attn_merge"), {card.part, ly.sinks, first_head, rows, ratio, card.oa, none}, kHeads, W, 1, 256);
-  L.launch(kernel(card, "deepseek41_og", "ds_output_groups"), {ly.out_a.p, ly.out_a.bpr, card.oa, W, card.aa, none},
+  L.launch(attn("ds_attn_split"), {card.q, rows, ratio, ly.ring, card.pt, npp_, pool, card.idx, card.part, block},
+           kHeads / D41_ATT_HEADS, W, drafter_layer(l) ? 2 : ratio ? D41_ATT_SPLITS : 1, D41_ATT_WG);
+  L.launch(attn("ds_attn_merge"), {card.part, ly.sinks, first_head, rows, ratio, card.oa, none, block}, kHeads, W, 1,
+           256);
+  L.launch(kernel(card, og_module(ly.out_a.type), "ds_output_groups"), {ly.out_a.p, ly.out_a.bpr, card.oa, W, card.aa, none},
            D41_OLR / D41_OG_WG_ROWS, kGroups, 1, D41_OG_WG_ROWS / (16 / D41_OG_LANES) * 16);
   matvec(L, card, "attn_output_b", ly.out_b, card.aa, card.y, W, 8);
 
   const uint32_t k = 2 * l, in_card = 0;
   L.launch(kernel(card, "deepseek41", "ds_exch_send"), {card.y, other.in[0]}, W, 1, 1, D41_EX_SGS * 16);
   wait(L, card, "wait: other card, attention", flag(card.c, k), flag(other.c, k));
-  const void *job = l % 2 == card.c ? jobs_ + (size_t)l * STEP_MAX_ROWS : nullptr;
+  // The drafter's experts are all on the cards: its layers post nothing to the CPU.
+  const void *job = !drafter_layer(l) && l % 2 == card.c ? jobs_ + (size_t)l * STEP_MAX_ROWS : nullptr;
   L.launch(kernel(card, "deepseek41", "ds_hc_post_norm"),
            {card.X, card.y, card.in[0], in_card, card.amix, ly.ffn_norm, card.X1, card.ss, card.xa, card.xb, none, job},
            W, 1, 1, D41_HC_SGS * 16);
@@ -902,23 +1025,26 @@ void Model::record_attention(ze::List &L, Card &card, uint32_t l, uint32_t W) {
 void Model::record_ffn(ze::List &L, Card &card, uint32_t l, uint32_t W) {
   Layer &ly = card.layers[l];
   Card &other = *cards_[1 - card.c];
-  const bool posts = l % 2 == card.c;
+  const bool posts = !drafter_layer(l) && l % 2 == card.c;
   const uint32_t ff = ly.sh_ff, two_ff = 2 * ff, in_card = 0;
 
   L.launch(kernel(card, "deepseek41", "ds_hc_mix"), {ly.ffn_fn, card.X1, card.ss, W, card.m}, D41_MIX, 1, 1,
            16 * D41_HC_KSPLIT);
   L.launch(kernel(card, "deepseek41", "ds_hc_sinkhorn"), {card.m, ly.ffn_scale, ly.ffn_base, card.fmix}, W, 1, 1, 16);
 
-  product_bf16(L, card, "router product", ly.gate_inp, D41_EXPERTS, E, card.xb, card.rlogits);
+  product_bf16(L, card, "router product", ly.gate_inp, experts_of(l), E, card.xb, card.rlogits);
   const void *jobs = posts ? jobs_ + (size_t)l * STEP_MAX_ROWS : nullptr;
-  L.launch(kernel(card, "deepseek41", "ds_router"),
+  L.launch(kernel(card, layer_module(l), "ds_router"),
            {card.rlogits, ly.bias, ly.slot_map, W, ly.split, ly.flip, &card.plan->real, &card.plan->step, card.ids, card.w,
             card.slots, card.nmiss, jobs, card.groups, card.ngroups},
            1, 1, 1, 16 * W * D41_RT_SGS(W));
+  if (drafter_layer(l) && dsp_->probe_ids && card.c == 0)
+    L.copy(dsp_->probe_ids + (size_t)(l - D41_LAYERS) * STEP_MAX_ROWS * D41_DSP_USED, card.ids,
+           (size_t)W * D41_DSP_USED * 4);
 
   if (ly.cache) {
-    const LayerExperts &le = experts_[l];
-    const uint32_t per = D41_USED, xs = D41_A8_ROW, hs = D41_PART_A + D41_PART_A / 8, nasg = W * D41_USED;
+    const LayerExperts &le = layer_experts(l);
+    const uint32_t per = used_of(l), xs = D41_A8_ROW, hs = D41_PART_A + D41_PART_A / 8, nasg = W * per;
     const uint32_t lxg = 16 * MOE_WG_ROWS / std::max<uint32_t>(D41_GU_ROWS(W), 16 / D41_GU_LANES);
     const uint32_t lxd = 16 * MOE_WG_ROWS / std::max<uint32_t>(D41_DOWN_ROWS, 16 / D41_DOWN_LANES(le.shape.down_type, W));
     L.launch(lib_->get(card.c, moe_module("gate_up", le.shape.gate_type, W), "moe_gate_up_c"),
@@ -935,21 +1061,114 @@ void Model::record_ffn(ze::List &L, Card &card, uint32_t l, uint32_t W) {
 
   const void *cpu = posts ? cpu_y_ + (size_t)l * STEP_MAX_ROWS * E : nullptr;
   if (posts) wait(L, card, "wait: CPU experts", nullptr, ans_flag_ + 16 * l, card.nmiss, W);
-  L.launch(kernel(card, "deepseek41", "ds_moe_combine"),
+  L.launch(kernel(card, layer_module(l), "ds_moe_combine"),
            {card.y6, card.w, card.slots, card.shared, cpu, card.nmiss, card.out, other.in[1]}, W, 1, 1,
            D41_CMB_SGS(W) * 16);
   const uint32_t k = 2 * l + 1;
   wait(L, card, "wait: other card, MoE", flag(card.c, k), flag(other.c, k));
 
   // Before an Engram layer only the streams are made: its injection comes before the collapse.
-  const bool last = l + 1 == D41_LAYERS, engram = !last && D41_ENGRAM((int)l + 1) >= 0;
-  const void *norm = engram ? nullptr : last ? card.out_norm : card.layers[l + 1].attn_norm;
+  const bool last = l + 1 == D41_LAYERS || l + 1 == kAllLayers, engram = !last && engram_of(l + 1) >= 0;
+  const void *norm = engram ? nullptr : !last ? card.layers[l + 1].attn_norm : drafter_layer(l) ? card.draft_norm : card.out_norm;
   const void *xa = engram ? nullptr : card.xa, *xb = engram ? nullptr : card.xb;
   L.launch(kernel(card, "deepseek41", "ds_hc_post_norm"),
            {card.X1, card.out, card.in[1], in_card, card.fmix, norm, card.X, card.ss, xa, xb, none, none}, W, 1, 1,
            D41_HC_SGS * 16);
   if (probe_ && card.c == 0)
-    L.copy(probe_ + ((size_t)D41_LAYERS + l) * STEP_MAX_ROWS * D, card.X, (size_t)W * D * 4);
+    L.copy(probe_ + ((size_t)kAllLayers + l) * STEP_MAX_ROWS * D, card.X, (size_t)W * D * 4);
+}
+
+// The step's rows into the drafter's keys, from their features in fa: the drafter's input, then each of its layers' key
+// at the row's position into that layer's window. A row the model later drops is stored again when its position runs.
+void Model::record_feed(ze::List &L, Card &card, uint32_t W) {
+  const uint32_t yarn = 0;
+  D41Row *rows = card.plan->rows;
+  matvec(L, card, "drafter input", card.fc, card.fa, card.dmain, W, 8);
+  L.launch(kernel(card, "deepseek41", "ds_dsp_input"), {card.dmain, card.enc_norm, card.dxa, card.dxf}, W, 1, 1,
+           D41_HC_SGS * 16);
+  for (uint32_t il = 0; il < D41_DSP_LAYERS; il++) {
+    Layer &ly = card.layers[D41_LAYERS + il];
+    const void *kvf = card.dkvf ? card.dkvf + (size_t)il * STEP_MAX_ROWS * D41_HD : nullptr;
+    matvec(L, card, "drafter key", ly.kv, card.dxa, card.dkv, W, 8, 4);
+    L.launch(kernel(card, "deepseek41_attn", "ds_qkv_norm"),
+             {none, none, card.dkv, ly.kv_norm, rows, yarn, none, none, none, ly.ring, kvf}, 2, W, 1,
+             D41_QKV_SGS * 16);
+  }
+  if (dsp_->probe_x && card.c == 0) {
+    L.copy(dsp_->probe_x, card.dxf, (size_t)W * E * 4);
+    L.copy(dsp_->probe_kv, card.dkvf, (size_t)D41_DSP_LAYERS * STEP_MAX_ROWS * D41_HD * 4);
+  }
+}
+
+// A draft block's list: the rows are the block, through the drafter's layers and the model's output head.
+void Model::record_draft(Card &card, uint32_t W) {
+  auto list = std::make_unique<ze::List>(*rt_, card.c, ze::List::regular, false, false);
+  ze::List &L = *list;
+  if (opt_.trace) {
+    constexpr size_t cap = 4096;
+    card.draft_trace_ts[W] = static_cast<uint64_t *>(rt_->alloc_host(cap * 8));
+    L.trace(card.draft_trace_ts[W], cap);
+  }
+  L.copy(card.plan, plan_, sizeof(StepWords));
+  L.copy(card.e, embed_, (size_t)W * E * 4);
+  L.launch(kernel(card, "deepseek41", "ds_hc_init"),
+           {card.e, card.layers[D41_LAYERS].attn_norm, card.X, card.ss, card.xa, card.xb, none}, W, 1, 1,
+           D41_HC_SGS * 16);
+  for (uint32_t l = D41_LAYERS; l < kAllLayers; l++) {
+    record_attention(L, card, l, W);
+    record_ffn(L, card, l, W);
+  }
+  matvec(L, card, "output", card.head, card.xa, card.logits, W, 4);
+  record_pick(L, card);
+  // The keep chance reads a row's streams before the output norm.
+  if (card.c == 0) {
+    L.copy(dsp_->x, card.X, (size_t)W * D * 4);
+    L.copy(dsp_->mix, card.fmix, (size_t)W * sizeof(D41HcMix));
+  }
+  L.copy(stuck_ + 16 * card.c, &card.plan->stuck, 4);
+  L.close();
+  card.draft_lists[W] = std::move(list);
+}
+
+// One draft's candidates, into the host's first row: the logits of the row the host named plus the bias of the token
+// before it, whose row of markov_w1 the host gave, over the card's part of the vocabulary.
+void Model::record_pick(ze::List &L, Card &card) {
+  const uint32_t zero = 0, ks = 4, rank = D41_DSP_RANK;
+  const float one = 1.0f;
+  L.copy(card.pick, dsp_->words, 64);
+  L.copy(card.rb, dsp_->r, (size_t)D41_DSP_RANK * 2);
+  L.label("draft bias");
+  L.launch(kernel(card, "common", "mv_xmx_bf16"),
+           {card.w2, card.vocab_n, rank, rank, card.rb, card.pick + 1, card.bias, card.vocab_n, zero, one, zero, ks, none},
+           (card.vocab_n + 15) / 16, 1, 1, 16 * ks);
+  L.launch(kernel(card, "deepseek41", "ds_dsp_bias_add"), {card.logits, card.vocab_n, card.bias, card.pick, card.biased},
+           (card.vocab_n + 255) / 256, 1, 1, 256);
+  L.launch(kernel(card, "common", "topk_rows"),
+           {card.biased, card.vocab_n, card.vocab_n, opt_.candidates, card.vocab0, card.pick + 1,
+            top_idx_ + (size_t)card.c * STEP_MAX_ROWS * opt_.candidates,
+            top_val_ + (size_t)card.c * STEP_MAX_ROWS * opt_.candidates, top_n_ + (size_t)card.c * STEP_MAX_ROWS},
+           1, 1, 1, kTopkLocal);
+}
+
+// What the cards read to choose draft row: its number and the row of the token before it.
+void Model::set_pick(uint32_t row, int32_t prev) {
+  dsp_->words[0] = row;
+  dsp_->words[1] = 1;
+  std::memcpy(dsp_->r, dsp_->w1 + (size_t)prev * D41_DSP_RANK, (size_t)D41_DSP_RANK * 2);
+}
+
+// The candidates the cards' last choice left, largest first.
+std::vector<Candidate> Model::picked() const {
+  std::vector<Candidate> o;
+  for (uint32_t c = 0; c < 2; c++) {
+    const size_t base = (size_t)c * STEP_MAX_ROWS * opt_.candidates;
+    for (uint32_t i = 0; i < top_n_[c * STEP_MAX_ROWS]; i++) o.push_back({(int32_t)top_idx_[base + i], top_val_[base + i]});
+  }
+  std::sort(o.begin(), o.end(), [](const Candidate &x, const Candidate &y) {
+    return x.logit != y.logit ? x.logit > y.logit : x.token < y.token;
+  });
+  if (o.size() > opt_.candidates) o.resize(opt_.candidates);
+  return o;
 }
 
 void Model::record(Card &card, uint32_t W) {
@@ -965,7 +1184,13 @@ void Model::record(Card &card, uint32_t W) {
   L.launch(kernel(card, "deepseek41", "ds_hc_init"),
            {card.e, card.layers[0].attn_norm, card.X, card.ss, card.xa, card.xb, none}, W, 1, 1, D41_HC_SGS * 16);
   for (uint32_t l = 0; l < D41_LAYERS; l++) {
-    if (D41_ENGRAM((int)l) >= 0) record_engram(L, card, l, W);
+    if (engram_of(l) >= 0) record_engram(L, card, l, W);
+    // The drafter reads the streams as these layers do; with the last of them every row's keys are stored.
+    if (dsp_ && l >= D41_DSP_TARGET0 && l < D41_DSP_TARGET0 + D41_DSP_TARGETS) {
+      L.launch(kernel(card, "deepseek41", "ds_dsp_feature"), {card.X, l - D41_DSP_TARGET0, card.fa}, W, 1, 1,
+               D41_HC_SGS * 16);
+      if (l + 1 == D41_DSP_TARGET0 + D41_DSP_TARGETS) record_feed(L, card, W);
+    }
     record_attention(L, card, l, W);
     record_ffn(L, card, l, W);
   }
@@ -1013,6 +1238,7 @@ std::vector<std::vector<Candidate>> Model::step(const StepIn *rows, uint32_t n, 
   engram_cv_.notify_one();
 
   last_width_ = W;
+  last_draft_ = false;
   plan_->real = n;
   plan_->stuck = 0;
   plan_->start = 0;
@@ -1132,9 +1358,10 @@ std::vector<float> Model::logits(uint32_t row) {
 
 std::vector<TraceRow> Model::trace(uint32_t c) const {
   const Card &card = *cards_[c];
-  const auto ts = card.trace_ts.find(last_width_);
-  if (ts == card.trace_ts.end()) throw std::runtime_error("the last step was not traced");
-  const std::vector<std::string> &names = card.lists.at(last_width_)->trace_names();
+  const auto &stamps = last_draft_ ? card.draft_trace_ts : card.trace_ts;
+  const auto ts = stamps.find(last_width_);
+  if (ts == stamps.end()) throw std::runtime_error("the last step was not traced");
+  const std::vector<std::string> &names = (last_draft_ ? card.draft_lists : card.lists).at(last_width_)->trace_names();
   const ze::Card &dev = rt_->cards()[c];
   std::vector<TraceRow> rows;
   for (size_t i = 0; i < names.size(); i++) {
@@ -1147,8 +1374,8 @@ std::vector<TraceRow> Model::trace(uint32_t c) const {
 }
 
 const float *Model::probe(uint32_t layer, bool ffn) const {
-  if (!probe_ || layer >= D41_LAYERS) throw std::runtime_error("no such probe");
-  return probe_ + ((size_t)(ffn ? D41_LAYERS : 0) + layer) * STEP_MAX_ROWS * D;
+  if (!probe_ || layer >= kAllLayers) throw std::runtime_error("no such probe");
+  return probe_ + ((size_t)(ffn ? kAllLayers : 0) + layer) * STEP_MAX_ROWS * D;
 }
 
 void Model::set_images(uint32_t, const Image *, uint32_t n) {
@@ -1157,23 +1384,134 @@ void Model::set_images(uint32_t, const Image *, uint32_t n) {
 
 std::vector<std::vector<Candidate>> Model::mtp_catchup(const StepIn *, uint32_t, const std::vector<uint32_t> &,
                                                        const uint32_t *) {
-  throw std::runtime_error("deepseek41 has no drafter");
+  throw std::runtime_error("deepseek41 drafts by blocks");
 }
 std::vector<Candidate> Model::mtp_draft(uint32_t, uint32_t, int32_t, uint32_t) {
-  throw std::runtime_error("deepseek41 has no drafter");
+  throw std::runtime_error("deepseek41 drafts by blocks");
 }
 std::vector<std::vector<Candidate>> Model::mtp_drafts(const StepIn *, uint32_t, const uint32_t *) {
-  throw std::runtime_error("deepseek41 has no drafter");
+  throw std::runtime_error("deepseek41 drafts by blocks");
 }
 std::vector<std::vector<Candidate>> Model::mtp_catchup_prompt(const StepIn *, uint32_t, uint32_t,
                                                               const std::vector<uint32_t> &) {
-  throw std::runtime_error("deepseek41 has no drafter");
+  throw std::runtime_error("deepseek41 drafts by blocks");
 }
-std::vector<std::vector<std::vector<Candidate>>> Model::df_pass(const StepIn *, uint32_t, const DraftBlock *, uint32_t) {
-  throw std::runtime_error("deepseek41 has no drafter");
+std::vector<std::vector<std::vector<Candidate>>> Model::df_pass(const StepIn *, uint32_t, const DraftBlock *blocks,
+                                                                uint32_t nblocks) {
+  if (!dsp_) throw std::runtime_error("deepseek41 was loaded without its drafter");
+  if (nblocks == 0) return {};
+  if (nblocks > 1) throw std::runtime_error("deepseek41 drafts one block a pass");
+  const DraftBlock &b = blocks[0];
+  if (b.n == 0 || b.n > D41_DSP_BLOCK) throw std::runtime_error("a draft block holds 1 to 5 rows");
+  if (b.slot >= opt_.slots) throw std::runtime_error("slot out of range");
+  if (b.token < 0 || (uint32_t)b.token >= vocab_) throw std::runtime_error("a token outside the vocabulary");
+  const uint32_t n = b.n, W = width(n);
+  for (auto &card : cards_)
+    if (!card->draft_lists.count(W)) record_draft(*card, W);
+  last_width_ = W;
+  last_draft_ = true;
+  plan_->step = ++step_;
+  plan_->real = n;
+  plan_->stuck = 0;
+  plan_->start = 0;
+  // The block's token, then the drafter's noise token at the positions after it.
+  const GgufTensor &te = gguf_.tensor("token_embd.weight");
+  const auto to_float = ggml_get_type_traits((ggml_type)te.type)->to_float;
+  for (uint32_t r = 0; r < W; r++) {
+    if (r >= n) {
+      plan_->rows[r] = {D41_NO_ROW, 0, 0, D41_NO_ROW};
+      std::memset(embed_ + (size_t)r * E, 0, E * 4);
+      continue;
+    }
+    plan_->rows[r] = {b.slot, b.pos + r, (b.pos + r) % D41_RING, D41_NO_ROW};
+    to_float(te.data + (uint64_t)(r == 0 ? b.token : dsp_->noise) * te.row_bytes(), embed_ + (size_t)r * E, E);
+  }
+  set_pick(0, b.token);
+  for (auto &card : cards_) card->draft_lists.at(W)->execute();
+  for (auto &card : cards_) card->draft_lists.at(W)->synchronize();
+  for (uint32_t c = 0; c < 2; c++)
+    if (stuck_[16 * c]) throw std::runtime_error("card " + std::to_string(c) + " gave up a wait of the draft block");
+
+  Drafter &d = *dsp_;
+  d.n = n;
+  d.token = b.token;
+  d.first = picked();
+  d.out.resize((size_t)n * E);
+  for (uint32_t r = 0; r < n; r++) {
+    const float *X = d.x + (size_t)r * D, *pre = d.mix[r].pre;
+    float *out = d.out.data() + (size_t)r * E;
+    for (uint32_t i = 0; i < E; i++)
+      out[i] = pre[0] * X[i] + pre[1] * X[E + i] + pre[2] * X[2 * E + i] + pre[3] * X[3 * E + i];
+  }
+  return {{d.first}};
 }
+
+std::vector<CardDraft> Model::drafts(const DraftPick &pick) {
+  if (!dsp_ || dsp_->n == 0) throw std::runtime_error("deepseek41 has drafted no block");
+  const Drafter &d = *dsp_;
+  const auto bf16 = [](uint16_t v) {
+    const uint32_t b = (uint32_t)v << 16;
+    float f;
+    std::memcpy(&f, &b, 4);
+    return f;
+  };
+  std::vector<CardDraft> out(d.n);
+  int32_t prev = d.token;
+  for (uint32_t r = 0; r < d.n; r++) {
+    CardDraft &o = out[r];
+    if (r == 0) {
+      o.candidates = d.first;
+    } else {
+      set_pick(r, prev);
+      for (auto &card : cards_) {
+        if (!card->pick_list) {
+          card->pick_list = std::make_unique<ze::List>(*rt_, card->c, ze::List::regular, false, false);
+          record_pick(*card->pick_list, *card);
+          card->pick_list->close();
+        }
+        card->pick_list->execute();
+      }
+      for (auto &card : cards_) card->pick_list->synchronize();
+      o.candidates = picked();
+    }
+    if (o.candidates.empty()) throw std::runtime_error("a draft row has no candidate");
+    const float *h = d.out.data() + (size_t)r * E;
+    const uint16_t *w1 = d.w1 + (size_t)prev * D41_DSP_RANK;
+    double sum = 0;
+    for (uint32_t i = 0; i < E; i++) sum += (double)d.conf[i] * h[i];
+    for (uint32_t k = 0; k < D41_DSP_RANK; k++) sum += (double)d.conf[E + k] * bf16(w1[k]);
+    o.keep = (float)(1.0 / (1.0 + std::exp(-sum)));
+    o.token = pick ? pick(r, o.candidates) : o.candidates.front().token;
+    if (o.token < 0 || (uint32_t)o.token >= vocab_) throw std::runtime_error("a chosen draft outside the vocabulary");
+    prev = o.token;
+  }
+  return out;
+}
+
+int32_t Model::noise_token() const {
+  if (!dsp_) throw std::runtime_error("deepseek41 was loaded without its drafter");
+  return dsp_->noise;
+}
+const float *Model::draft_input() const {
+  if (!dsp_ || !dsp_->probe_x) throw std::runtime_error("no such probe");
+  return dsp_->probe_x;
+}
+const float *Model::draft_key(uint32_t layer) const {
+  if (!dsp_ || !dsp_->probe_kv || layer >= D41_DSP_LAYERS) throw std::runtime_error("no such probe");
+  return dsp_->probe_kv + (size_t)layer * STEP_MAX_ROWS * D41_HD;
+}
+const int32_t *Model::draft_route(uint32_t layer, uint32_t row) const {
+  if (!dsp_ || !dsp_->probe_ids || layer >= D41_DSP_LAYERS || row >= dsp_->n) throw std::runtime_error("no such probe");
+  return dsp_->probe_ids + ((size_t)layer * STEP_MAX_ROWS + row) * D41_DSP_USED;
+}
+const float *Model::draft_out(uint32_t row) const {
+  if (!dsp_ || row >= dsp_->n) throw std::runtime_error("no such draft row");
+  return dsp_->out.data() + (size_t)row * E;
+}
+
+// Prompts are read as decode steps, which store the drafter's keys.
 void Model::df_context_prompt(const StepIn *, uint32_t, uint32_t) {
-  throw std::runtime_error("deepseek41 has no drafter");
+  throw std::runtime_error("deepseek41 has no prompt path: its prompts are read as decode steps");
 }
 std::vector<std::vector<Candidate>> Model::prompt_runs(const PromptRun *, uint32_t, const int32_t *, uint32_t) {
   throw std::runtime_error("deepseek41 has no prompt path: its prompts are read as decode steps");
@@ -1182,7 +1520,7 @@ std::vector<std::vector<Candidate>> Model::prompt_runs(const PromptRun *, uint32
 // A slot's state outside the pages: every layer's window, then each ratio-2 source's compressor ring. Both cards hold
 // the same bits, so card 0's are saved.
 uint64_t Model::slot_state_bytes() {
-  uint64_t n = (uint64_t)D41_LAYERS * D41_RING * D41_HD * 2;
+  uint64_t n = (uint64_t)cards_[0]->layers.size() * D41_RING * D41_HD * 2;
   for (const Layer &ly : cards_[0]->layers)
     if (ly.cr) n += (uint64_t)D41_CRING * D41_CRING_CELL * 4;
   return n;

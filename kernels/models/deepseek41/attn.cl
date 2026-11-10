@@ -52,8 +52,8 @@ static inline float4 rope_4(float4 v, uint pos, uint yarn) {
 
 // One row's qr or kv: qr (group 0) goes to a8 in qa and, when set, bf16 in qb; kv (group 1) is rotated at the row's
 // position (yarn: the layer has compressed rows) and goes into ring [slot][D41_RING][D41_HD] at the row's cell. qf and
-// kvf, when set, get the f32 values, for the tests. Inputs and outputs are rows D41_QLR or D41_HD apart. Groups
-// (2, W), D41_QKV_SGS * 16.
+// kvf, when set, get the f32 values, for the tests. Inputs and outputs are rows D41_QLR or D41_HD apart. A null qr
+// leaves group 0 nothing to do. Groups (2, W), D41_QKV_SGS * 16.
 REQD_SG __kernel void ds_qkv_norm(__global const float *qr, __global const float *q_norm, __global const float *kv,
                                   __global const float *kv_norm, __global const D41Row *rows, uint yarn,
                                   __global uchar *qa, __global ushort *qb, __global float *qf, __global ushort *ring,
@@ -61,6 +61,7 @@ REQD_SG __kernel void ds_qkv_norm(__global const float *qr, __global const float
   __local float red[D41_QKV_SGS];
   const uint r = get_group_id(1), s = sg_id(), lane = sg_lane();
   if (get_group_id(0) == 0) {
+    if (!qr) return;
     const uint i0 = s * (D41_QLR / D41_QKV_SGS);
     __global const float *in = qr + (ulong)r * D41_QLR;
     float4 xs[D41_QLR / D41_QKV_SGS / 64];
@@ -472,21 +473,24 @@ REQD_SG __kernel void ds_idx_topk(__global const float *score, __global const D4
 #define ATT_DOT_CHUNKS (ATT_CHUNKS / 2)           // 16: each lot's two sub-groups take half of the chunks
 #define ATT_SCALE 0.044194173824159216f           // 512^-0.5
 
-// How many splits of keys a row has: the window, and its compressed rows (ratio 0: none).
+// How many splits of keys a row has: the window, and its compressed rows (ratio 0: none). A row of a draft block of
+// blk rows has two: the window before the block, then the block's rows.
 static inline uint att_compressed(uint pos, uint ratio) { return ratio ? min((pos + 1) / ratio, (uint)D41_TOPK) : 0; }
-static inline uint att_splits(uint pos, uint ratio) {
-  return 1 + (att_compressed(pos, ratio) + D41_ATT_KEYS - 1) / D41_ATT_KEYS;
+static inline uint att_splits(uint pos, uint ratio, uint blk) {
+  return blk ? 2 : 1 + (att_compressed(pos, ratio) + D41_ATT_KEYS - 1) / D41_ATT_KEYS;
 }
 
 // Each key's place as a multiple of 64 bytes, lane l holding key i0 + l, i0 a sub-group's first. Split 0 is the window,
 // the last vis positions up to the row's, oldest first; a split after it reads idx from entry (split - 1) D41_ATT_KEYS.
-// A lane past the m keys takes the sub-group's first, since idx past them is not written.
-static inline uint att_key_off(__global const D41Row *row, uint split, uint vis, uint i0, uint m, uint ratio,
-                               __global const uint *idx, __global const uint *pt, uint npp) {
+// A lane past the m keys takes the sub-group's first, since idx past them is not written. In a draft block (head its
+// first row) split 0 is the vis positions before head's and split 1 the block's cells, from head's on.
+static inline uint att_key_off(__global const D41Row *row, __global const D41Row *head, uint split, uint vis, uint i0,
+                               uint m, uint ratio, __global const uint *idx, __global const uint *pt, uint npp) {
   const uint lane = sg_lane(), slot = row->slot, i = i0 + lane;
-  if (split == 0) {
-    const int c = (int)row->ring - (int)(vis - 1) + (int)(i < m ? i : i0);
-    return (slot * D41_RING + (uint)(c < 0 ? c + D41_RING : c)) * (D41_HD * 2 / 64);
+  if (split == 0 || head) {
+    const int last = head ? (int)head->ring - 1 : (int)row->ring;
+    const int c = split ? (int)head->ring + (int)(i < m ? i : i0) : last - (int)(vis - 1) + (int)(i < m ? i : i0);
+    return (slot * D41_RING + (uint)(c < 0 ? c + D41_RING : c >= D41_RING ? c - D41_RING : c)) * (D41_HD * 2 / 64);
   }
   uint j = intel_sub_group_block_read(idx + (split - 1) * D41_ATT_KEYS + i0);
   j = i < m ? j : sub_group_broadcast(j, 0);
@@ -495,14 +499,17 @@ static inline uint att_key_off(__global const D41Row *row, uint split, uint vis,
 
 // One split of one row for 8 heads: for its keys k_i, s_i = (q_h . k_i) 512^-0.5 and, with m the head's largest s_i,
 // o = sum_i exp(s_i - m) k_i, l = sum_i exp(s_i - m). ratio 0: the window only, with base 10000, in a grid of one
-// split. A split past the row's keys or a padded row returns. Groups (heads / 8, W, splits), D41_ATT_WG.
+// split. A split past the row's keys or a padded row returns. block set: the rows are one draft block of *block rows at
+// consecutive positions, ratio 0, in a grid of two splits; each row sees the window before the block's first row and
+// every row of the block, whose keys are in ring too. Groups (heads / 8, W, splits), D41_ATT_WG.
 REQD_SG __kernel void ds_attn_split(__global const float *q,  // the row's rows of this card's heads, not yet rotated
                                     __global const D41Row *rows, uint ratio,
                                     __global const ushort *ring,  // split 0's keys, f16: [slot][D41_RING][D41_HD]
                                     __global const uint *pt, uint npp,
                                     __global const ushort *pool,  // later splits' keys, f16, by d41_comp_index, pt
                                     __global const uint *idx,     // their numbers, rows of D41_TOPK
-                                    __global float *part) {       // D41_ATT_PART (layout.h)
+                                    __global float *part,         // D41_ATT_PART (layout.h)
+                                    __global const uint *block) {
   __local float __attribute__((aligned(64))) lq[D41_HD * D41_ATT_HEADS];       // [chunk][head][16]
   __local float __attribute__((aligned(64))) lp[2 * D41_ATT_KEYS * D41_ATT_HEADS];  // [half of the chunks][lot][head][16]
   __local uint __attribute__((aligned(64))) lo[D41_ATT_KEYS];
@@ -510,14 +517,16 @@ REQD_SG __kernel void ds_attn_split(__global const float *q,  // the row's rows 
   const uint nh = get_num_groups(0) * D41_ATT_HEADS;
   __global const D41Row *row = rows + r;
   const uint slot = row->slot, pos = row->pos;
-  if (slot == D41_NO_ROW || split >= att_splits(pos, ratio)) return;
+  const uint blk = block ? *block : 0;
+  if (slot == D41_NO_ROW || split >= att_splits(pos, ratio, blk)) return;
+  __global const D41Row *head = blk ? rows : 0;
   const uint s = sg_id(), lane = sg_lane();
-  const uint vis = min(pos + 1, (uint)D41_WIN);
+  const uint vis = blk ? min(head->pos, (uint)D41_WIN) : min(pos + 1, (uint)D41_WIN);
   const uint rest = att_compressed(pos, ratio) - (split ? (split - 1) * D41_ATT_KEYS : 0);
-  const uint m = split ? min(rest, (uint)D41_ATT_KEYS) : vis;
+  const uint m = split ? (blk ? blk : min(rest, (uint)D41_ATT_KEYS)) : vis;
   const uint nb = (m + SG_SIZE - 1) / SG_SIZE;
   const uint lot = s / 2, side = s & 1;
-  __global const uchar *keys = (__global const uchar *)(split ? pool : ring);
+  __global const uchar *keys = (__global const uchar *)(split && !blk ? pool : ring);
   __global const float *q0 = q + ((ulong)r * nh + hg * D41_ATT_HEADS) * D41_HD;
 
   // A sub-group's 32 values of each head; a rotated chunk takes each pair's angle once for the 8 heads.
@@ -540,7 +549,7 @@ REQD_SG __kernel void ds_attn_split(__global const float *q,  // the row's rows 
                                as_uint8((float8)(x[0].s1, x[1].s1, x[2].s1, x[3].s1, x[4].s1, x[5].s1, x[6].s1,
                                                  x[7].s1)));
   if (!side && lot < nb) {
-    const uint off = att_key_off(row, split, vis, lot * SG_SIZE, m, ratio, idx + (ulong)r * D41_TOPK, pt, npp);
+    const uint off = att_key_off(row, head, split, vis, lot * SG_SIZE, m, ratio, idx + (ulong)r * D41_TOPK, pt, npp);
     intel_sub_group_block_write(lo + lot * SG_SIZE, off);
   }
   barrier(CLK_LOCAL_MEM_FENCE);
@@ -622,11 +631,12 @@ REQD_SG __kernel void ds_attn_merge(__global const float *part,   // as ds_attn_
                                     uint first_head,              // the card's first; groups of heads count from it
                                     __global const D41Row *rows, uint ratio,
                                     __global uchar *oa,    // a8, [groups][W] rows of 8 heads, D41_OG_A8_ROW bytes
-                                    __global float *of) {  // when set, the f32 values, rows of heads of D41_HD
+                                    __global float *of,    // when set, the f32 values, rows of heads of D41_HD
+                                    __global const uint *block) {  // as ds_attn_split's
   const uint lh = get_group_id(0), r = get_group_id(1), nh = get_num_groups(0);
   const uint slot = rows[r].slot, pos = rows[r].pos;
   if (slot == D41_NO_ROW) return;
-  const uint lane = sg_lane(), ns = att_splits(pos, ratio), i0 = sg_id() * 32;
+  const uint lane = sg_lane(), ns = att_splits(pos, ratio, block ? *block : 0), i0 = sg_id() * 32;
   __global const float *ph = part + ((ulong)r * nh + lh) * D41_ATT_PART;
   // Lane 2 s holds split s's m, the next its l.
   const float ml = rd1(ph + D41_ATT_ML);

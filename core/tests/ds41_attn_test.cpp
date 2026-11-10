@@ -147,11 +147,11 @@ struct Bench {
   ze_kernel_handle_t k_merge() { return lib.get(io.card, "deepseek41_attn", "ds_attn_merge"); }
   static uint32_t nsplits(uint32_t ratio) { return ratio ? D41_ATT_SPLITS : 1; }
   void launch_split(ze::List &L, uint32_t W, uint32_t nh, uint32_t ratio, const void *ppt) {
-    L.launch(k_split(), {q, rows, ratio, ring, ppt, NPP, pool, idx, part}, nh / D41_ATT_HEADS, W, nsplits(ratio),
+    L.launch(k_split(), {q, rows, ratio, ring, ppt, NPP, pool, idx, part, none}, nh / D41_ATT_HEADS, W, nsplits(ratio),
              D41_ATT_WG);
   }
   void launch_merge(ze::List &L, uint32_t W, uint32_t h0, uint32_t nh, uint32_t ratio, const void *pof) {
-    L.launch(k_merge(), {part, sinks, h0, rows, ratio, oa, pof}, nh, W, 1, 256);
+    L.launch(k_merge(), {part, sinks, h0, rows, ratio, oa, pof, none}, nh, W, 1, 256);
   }
 
   std::vector<D41Row> make_rows(uint32_t W, uint32_t last, uint32_t nslots, uint32_t npad) {

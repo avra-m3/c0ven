@@ -27,14 +27,19 @@ static inline void moe_combine(__global const float *y, __global const float *w,
                                __global float *out, __global float *peer, bool fence) {
   const uint r = get_group_id(0), sgs = get_num_sub_groups(), lane = sg_lane();
   const uint a = r * D41_USED;
-  const float3 w0 = vload3(0, w + a), w1 = vload3(1, w + a);
-  const int3 s0 = vload3(0, slots + a), s1 = vload3(1, slots + a);
-  const float wk[D41_USED] = {sub_group_broadcast(w0.s0, 0), sub_group_broadcast(w0.s1, 0),
-                              sub_group_broadcast(w0.s2, 0), sub_group_broadcast(w1.s0, 0),
-                              sub_group_broadcast(w1.s1, 0), sub_group_broadcast(w1.s2, 0)};
-  const int on[D41_USED] = {sub_group_broadcast(s0.s0, 0), sub_group_broadcast(s0.s1, 0),
-                            sub_group_broadcast(s0.s2, 0), sub_group_broadcast(s1.s0, 0),
-                            sub_group_broadcast(s1.s1, 0), sub_group_broadcast(s1.s2, 0)};
+  // D41_USED is a multiple of 3: the weights and slots load three at a time.
+  float wk[D41_USED];
+  int on[D41_USED];
+  for (uint t = 0; t < D41_USED / 3; t++) {
+    const float3 wt = vload3(t, w + a);
+    const int3 st = vload3(t, slots + a);
+    wk[3 * t] = sub_group_broadcast(wt.s0, 0);
+    wk[3 * t + 1] = sub_group_broadcast(wt.s1, 0);
+    wk[3 * t + 2] = sub_group_broadcast(wt.s2, 0);
+    on[3 * t] = sub_group_broadcast(st.s0, 0);
+    on[3 * t + 1] = sub_group_broadcast(st.s1, 0);
+    on[3 * t + 2] = sub_group_broadcast(st.s2, 0);
+  }
   const uint host = cpu != 0 && sub_group_broadcast(nmiss[r], 0) != 0;
   if (host) {
     // One fence a row: it waits on the card's whole cache, so one a sub-group outlasts the loads

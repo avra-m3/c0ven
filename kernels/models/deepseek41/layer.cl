@@ -72,6 +72,53 @@ REQD_SG __kernel void ds_hc_init(__global const float *e, __global const float *
   if (s == 0 && lane == 0) ss[r] = total * (float)D41_HC;
 }
 
+// The drafter's feature of target layer t for each row (layout.h, D41_DSP_TARGETS): the mean of the row's streams as the
+// model's layer reads them, into unit t D41_EMBD / 32 and on of the row's a8 features at fa, rows D41_DSP_A8_ROW apart.
+// Groups W, D41_HC_SGS * 16.
+REQD_SG __kernel void ds_dsp_feature(__global const float *X, uint t, __global uchar *fa) {
+  const uint r = get_group_id(0), i0 = sg_id() * HC_VALUES;
+  __global const float *Xr = X + (ulong)r * D41_HC_DIM;
+  __global uchar *a = fa + (ulong)r * D41_DSP_A8_ROW;
+  for (uint b = 0; b < HC_CHUNKS; b++) {
+    const uint i = i0 + 64 * b, u = (t * D41_EMBD + i) / 32;
+    const float4 v = 0.25f * (rd4(Xr + i) + rd4(Xr + D41_EMBD + i) + rd4(Xr + 2 * D41_EMBD + i) +
+                              rd4(Xr + 3 * D41_EMBD + i));
+    a8_store_block(v.lo, a, D41_DSP_FEATURES, u);
+    a8_store_block(v.hi, a, D41_DSP_FEATURES, u + 1);
+  }
+}
+
+// The drafter's input from the features' product m, rows D41_EMBD apart: x = RMSNorm_norm(m), into xa (a8) and, when
+// set, xf (f32). Groups W, D41_HC_SGS * 16.
+REQD_SG __kernel void ds_dsp_input(__global const float *m, __global const float *norm, __global uchar *xa,
+                                   __global float *xf) {
+  __global ushort *xb = 0;
+  HC_LOCALS
+  __global const float *mr = m + (ulong)r * D41_EMBD;
+  float4 xs[HC_CHUNKS];
+  float4 sq = (float4)0.0f;
+  for (uint b = 0; b < HC_CHUNKS; b++) {
+    xs[b] = rd4(mr + i0 + 64 * b);
+    sq = mad(xs[b], xs[b], sq);
+  }
+  const float post = sg_sum(sum4(sq));
+  if (lane == 0) red[0][s] = post;
+  barrier(CLK_LOCAL_MEM_FENCE);
+  const float rs = rsqrt(posted_sum(red[0], D41_HC_SGS) / (float)D41_EMBD + D41_EPS);
+  for (uint b = 0; b < HC_CHUNKS; b++) {
+    const uint i = i0 + 64 * b;
+    store_x(xs[b] * rs * rd4(norm + i), i, xar, xbr, xfr, 0);
+  }
+}
+
+// A draft row's logits with the bias of the token before it: out[v] = logits[*row][v] + bias[v] for v < n; logits' rows
+// are n apart. Groups ceil(n / 256), 256.
+__kernel void ds_dsp_bias_add(__global const float *logits, uint n, __global const float *bias,
+                              __global const uint *row, __global float *out) {
+  const uint v = get_global_id(0);
+  if (v < n) out[v] = logits[(ulong)*row * n + v] + bias[v];
+}
+
 // The 24 raw mixes of W rows: m[r][j] = (fn_j . X_r) / sqrt(ss[r] / D41_HC_DIM + D41_EPS), fn D41_MIX rows of
 // D41_HC_DIM (hc_attn_fn or hc_ffn_fn). A work-group is a row of fn; its sub-groups split K, and all W rows share each
 // weight read, sums through local memory. Groups D41_MIX, 16 ksplit with ksplit dividing 320 and at most 32.

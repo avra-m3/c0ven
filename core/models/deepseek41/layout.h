@@ -36,8 +36,14 @@
 #define D41_IDX_WG_ROWS 64             // ds_idx_score's rows a work-group, 16 a sub-group
 #define D41_IDX_WGS (D41_CTX_CAP / D41_IDX_WG_ROWS)  // ds_idx_score's work-groups a row of the step
 
+// A kernel module built with D41_DRAFTER is the drafter's: its router and combine count the drafter's experts.
+#ifdef D41_DRAFTER
+#define D41_EXPERTS 128
+#define D41_USED 3
+#else
 #define D41_EXPERTS 384
 #define D41_USED 6
+#endif
 #define D41_FF 2304                    // expert and shared-expert width
 #define D41_ROUTE_SCALE 1.5f
 #define D41_SWIGLU_LIMIT 10.0f         // min(g, L) and clamp(u, -L, L), routed and shared experts
@@ -54,6 +60,7 @@
 #define D41_DSP_TARGETS 3              // model layers whose inputs feed it
 #define D41_DSP_TARGET0 37             // the first of them; the others follow
 #define D41_DSP_FEATURES (D41_DSP_TARGETS * D41_EMBD)
+#define D41_DSP_A8_ROW (D41_DSP_FEATURES + D41_DSP_FEATURES / 8)  // bytes of a row of features as a8
 #define D41_ENG_NGRAM 4                // a token and the three before it
 #define D41_ENG_HEADS 8                // heads an n-gram size
 #define D41_ENG_COLS ((D41_ENG_NGRAM - 1) * D41_ENG_HEADS)  // 24 rows a token and Engram layer
@@ -109,7 +116,7 @@ typedef struct {
   u32 slot;
   u32 pos;
   u32 ring;  // pos % D41_RING, the window cell it writes
-  u32 prev;  // the row of this step holding the slot's position pos - 1, or D41_NO_ROW
+  u32 prev;  // the row of this step holding the slot's position pos - 1, or D41_NO_ROW; a draft block's rows leave it
 } D41Row;
 SHARED_ASSERT(sizeof(D41Row) == 16, "D41Row layout");
 
@@ -152,7 +159,7 @@ typedef struct {
   i32 ids[D41_USED];       // the misses' ids, then their weights
   float w[D41_USED];
   i32 all[D41_USED];       // every routed expert's id, for the routing counts
-  u32 pad[12];
+  u32 pad[30 - 3 * D41_USED];
   float x[D41_EMBD];       // the MoE block's input, normed
 } D41MissJob;
 SHARED_ASSERT(sizeof(D41MissJob) == 128 + 4 * D41_EMBD, "D41MissJob layout");

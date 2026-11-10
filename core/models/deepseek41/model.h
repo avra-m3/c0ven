@@ -1,11 +1,14 @@
 // deepseek41's decode step on two cards (ADR-0074): each card runs one recorded list a step, the two exchange their
 // partial sums through each other's memory, and the CPU answers the routed experts the cards do not hold. Prompts are
-// read as decode steps; the model has no drafter and reads no images.
+// read as decode steps; the model reads no images. With Options::mtp_dir, the path of the file's drafter (a second
+// GGUF), the cards also hold the drafter: its layers follow the model's in every card's list of layers, and all of
+// its experts are on the cards.
 #pragma once
 
 #include <array>
 #include <atomic>
 #include <condition_variable>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -14,6 +17,7 @@
 #include <vector>
 
 #include "api/model.h"
+#include "load/direct.h"
 #include "load/gguf.h"
 #include "load/runs.h"
 #include "models/deepseek41/engram.h"
@@ -46,8 +50,18 @@ struct StepTimes {
 
 // What the tests ask for beyond Options.
 struct Debug {
-  bool probes = false;  // card 0 copies the streams out after every sublayer
+  bool probes = false;  // card 0 copies the streams out after every sublayer, and what a step stores for the drafter
 };
+
+// One draft of a block: the token chosen, the drafter's own chance, 0 to 1, that the model keeps it, and the candidates
+// it was chosen from, largest logit first, the bias of the token before it added.
+struct CardDraft {
+  int32_t token = 0;
+  float keep = 0;
+  std::vector<Candidate> candidates;
+};
+// Picks draft i's token from its candidates. Not given, a draft is the first candidate.
+using DraftPick = std::function<int32_t(uint32_t i, const std::vector<Candidate> &candidates)>;
 
 class Model final : public engine::Model {
  public:
@@ -65,18 +79,26 @@ class Model final : public engine::Model {
   void commit(uint32_t, uint32_t, uint32_t) override {}
   void commit_runs(const CommitRun *, uint32_t) override {}
 
-  bool drafting() const override { return false; }
-  bool dflash() const override { return false; }
-  uint32_t draft_max_default() const override { return 0; }
-  uint32_t draft_max_cap() const override { return 0; }
+  bool drafting() const override { return dsp_ != nullptr; }
+  bool dflash() const override { return dsp_ != nullptr; }
+  uint32_t draft_max_default() const override { return dsp_ ? D41_DSP_BLOCK : 0; }
+  uint32_t draft_max_cap() const override { return dsp_ ? D41_DSP_BLOCK : 0; }
   std::vector<std::vector<Candidate>> mtp_catchup(const StepIn *, uint32_t, const std::vector<uint32_t> &,
                                                   const uint32_t *) override;
   std::vector<Candidate> mtp_draft(uint32_t, uint32_t, int32_t, uint32_t) override;
   std::vector<std::vector<Candidate>> mtp_drafts(const StepIn *, uint32_t, const uint32_t *) override;
   std::vector<std::vector<Candidate>> mtp_catchup_prompt(const StepIn *, uint32_t, uint32_t,
                                                          const std::vector<uint32_t> &) override;
+  // One block a pass, of 1 to D41_DSP_BLOCK rows, row i for position pos + 1 + i. Returns the first row's candidates
+  // only: a later row's depend on the draft chosen before it, and drafts gives them. A step stores every row's keys
+  // for the drafter, so the context rows need nothing here.
   std::vector<std::vector<std::vector<Candidate>>> df_pass(const StepIn *, uint32_t, const DraftBlock *,
                                                            uint32_t) override;
+  // The last df_pass's block as drafts, chosen in turn: draft i from row i's logits plus the bias of the token before
+  // it, which is the block's token, then the drafts chosen. The cards add the bias over the whole vocabulary, a round
+  // a draft after the first.
+  std::vector<CardDraft> drafts(const DraftPick &pick = nullptr);
+  int32_t noise_token() const;
   void df_context_prompt(const StepIn *, uint32_t, uint32_t) override;
   void draft_start(uint32_t, uint32_t) override {}
 
@@ -113,10 +135,19 @@ class Model final : public engine::Model {
   uint32_t experts_floor() const override { return 0; }
   NgramStats ngram_stats() const override { return engram_->stats(); }
 
-  // For tests. logits: a row of the last step, every token's. probe: the streams of the last step's rows after layer's
-  // attention (ffn false) or its MoE block, D41_HC_DIM values a row; needs Debug::probes.
+  // For tests. logits: a row of the last step or block, every token's. probe: the streams of the last step's or
+  // block's rows after layer's attention (ffn false) or its MoE block, D41_HC_DIM values a row, the drafter's layers
+  // numbered from D41_LAYERS; needs Debug::probes.
   std::vector<float> logits(uint32_t row);
   const float *probe(uint32_t layer, bool ffn) const;
+  // What the last step stored for the drafter, with Debug::probes: each row's input (D41_EMBD values a row), and the
+  // key of a drafter layer (D41_HD a row). And a row of the last block before the output norm, D41_EMBD values.
+  const float *draft_input() const;
+  const float *draft_key(uint32_t layer) const;
+  const float *draft_out(uint32_t row) const;
+  // With Debug::probes: the experts a row of the last block routed to at a drafter layer, D41_DSP_USED ids.
+  const int32_t *draft_route(uint32_t layer, uint32_t row) const;
+  static constexpr uint32_t kAllLayers = D41_LAYERS + D41_DSP_LAYERS;
   // What the CPU answered in the last step, summed over its layers.
   const MissCounts &miss_counts() const { return counts_; }
   const StepTimes &step_times() const { return times_; }
@@ -183,9 +214,43 @@ class Model final : public engine::Model {
     float *out_norm, *logits;
     Mat head;
     uint32_t vocab0 = 0, vocab_n = 0;
-    std::vector<Layer> layers;
-    std::map<uint32_t, std::unique_ptr<ze::List>> lists;  // by width
-    std::map<uint32_t, uint64_t *> trace_ts;               // a traced list's timestamps
+    // The drafter's: its product with the features, the norms around its layers, and a step's rows on their way to
+    // its keys.
+    Mat fc;
+    float *enc_norm = nullptr, *draft_norm = nullptr;
+    uint8_t *fa = nullptr, *dxa = nullptr;
+    float *dmain = nullptr, *dkv = nullptr, *dxf = nullptr, *dkvf = nullptr;
+    // A draft's choice: markov_w2's rows of the card's tokens, the row of the token before, the bias and the row's
+    // logits with it, and the words {row, 1}.
+    uint16_t *w2 = nullptr, *rb = nullptr;
+    float *bias = nullptr, *biased = nullptr;
+    uint32_t *pick = nullptr;
+    std::unique_ptr<ze::List> pick_list;
+    std::vector<Layer> layers;  // the model's, then the drafter's
+    std::map<uint32_t, std::unique_ptr<ze::List>> lists, draft_lists;  // by width
+    std::map<uint32_t, uint64_t *> trace_ts, draft_trace_ts;           // a traced list's timestamps
+  };
+  // The drafter's file and what the host keeps of it.
+  struct Drafter {
+    explicit Drafter(const std::string &path) : gguf(path), reader(gguf.files()) {}
+    GgufModel gguf;
+    DirectReader reader;
+    std::vector<LayerExperts> experts;
+    int32_t noise = 0;
+    std::vector<float> conf;       // conf_proj: D41_EMBD weights of a row's output, then D41_DSP_RANK of the token before
+    AlignedBuffer w1_buf;          // markov_w1, [token][D41_DSP_RANK] bf16; markov_w2 is on the cards
+    const uint16_t *w1 = nullptr;
+    uint16_t *r = nullptr;         // for the cards: the row of the token before the draft being chosen
+    uint32_t *words = nullptr;     // and {the draft's row, 1}
+    float *x = nullptr;            // the last block's streams, [row][D41_HC_DIM], and its last mixes
+    D41HcMix *mix = nullptr;
+    float *probe_x = nullptr, *probe_kv = nullptr;
+    int32_t *probe_ids = nullptr;  // the last block's routed experts, [layer][row][D41_DSP_USED]
+    // The last block.
+    uint32_t n = 0;
+    int32_t token = 0;
+    std::vector<Candidate> first;  // the first draft's candidates
+    std::vector<float> out;        // [row][D41_EMBD], before the output norm
   };
 
   template <class T>
@@ -195,6 +260,17 @@ class Model final : public engine::Model {
   float *upload_floats(Card &card, const std::string &name, std::initializer_list<uint64_t> shape, size_t first = 0,
                        size_t n = 0);
   uint16_t *upload_bf16(Card &card, const std::string &name, std::initializer_list<uint64_t> shape);
+  const GgufModel &source() const { return dsp_loading_ ? dsp_->gguf : gguf_; }
+  DirectReader &reader() { return dsp_loading_ ? dsp_->reader : ssd_->direct(); }
+  const LayerExperts &layer_experts(uint32_t l) const {
+    return l < D41_LAYERS ? experts_[l] : dsp_->experts[l - D41_LAYERS];
+  }
+  void load_drafter();
+  void record_feed(ze::List &L, Card &card, uint32_t W);
+  void record_draft(Card &card, uint32_t W);
+  void record_pick(ze::List &L, Card &card);
+  void set_pick(uint32_t row, int32_t prev);
+  std::vector<Candidate> picked() const;
   Mat mat(Card &card, uint32_t type, uint32_t K, const std::vector<SliceSpec> &specs);
   const GgufTensor &tensor(const std::string &name, std::initializer_list<uint64_t> shape) const;
   const uint8_t *held(const GgufTensor &t);
@@ -224,8 +300,8 @@ class Model final : public engine::Model {
   void record_ffn(ze::List &L, Card &card, uint32_t l, uint32_t W);
   uint32_t *flag(uint32_t card, uint32_t k) const { return flags_ + ((size_t)card * kFlags + k) * 16; }
 
-  // An exchange a sublayer, then one for each Engram layer.
-  static constexpr uint32_t kFlags = 2 * D41_LAYERS + kEngramTables;
+  // An exchange a sublayer, the drafter's after the model's, then one for each Engram layer.
+  static constexpr uint32_t kFlags = 2 * kAllLayers + kEngramTables;
 
   Options opt_;
   Debug debug_;
@@ -239,6 +315,9 @@ class Model final : public engine::Model {
   std::unique_ptr<EngramHash> hash_;
   std::unique_ptr<EngramReader> engram_;
   std::vector<LayerExperts> experts_;
+  std::unique_ptr<Drafter> dsp_;
+  bool dsp_loading_ = false;  // tensors are the drafter's file's
+  bool last_draft_ = false;   // the last list run was a block's
   std::unique_ptr<Card> cards_[2];
   std::map<std::pair<uint32_t, uint64_t>, AlignedBuffer> held_;  // a tensor's bytes while its layer loads
 
