@@ -38,7 +38,7 @@ rate of a cache that size is measured.
 4. The margin of ADR-0057 item 6 applies only to the part of the table outside reserved huge pages.
 5. The memory plan and the fit report count the n-gram's reserved pages apart from `MemAvailable` and `memory.max`,
    and say where the table is and how many rows its cache holds. The C ABI's config gains `ngram_huge_bytes` and its
-   info `ngram_cache_rows` and `ngram_huge_bytes` (ABI version 20).
+   info `ngram_cache_rows` and `ngram_huge_bytes` (ABI version 22).
 6. `--ngram-ram on` and `off`, and every run without `--hugepages`, are as before.
 7. The pinned buffers stay with the driver.
 8. A sleep keeps the table and its cache, as it keeps the arena; `--sleep-mode exit` gives them back

@@ -402,6 +402,10 @@ class EngineStats:
     experts_floor: int = 0
     idle_rounds: int = 0
     """Of the swap rounds, those run while no plan came."""
+    reading_steps: int = 0
+    """Of the undrafted steps, those run while another slot read its prompt."""
+    reading_rounds: int = 0
+    """Of the rounds, those run while another slot read its prompt (ADR-0071)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -465,4 +469,11 @@ class Engine(Protocol):
         """Loads the cards again after `sleep`. The slots are empty and the checkpoints too."""
         ...
 
-    def close(self) -> None: ...
+    def close(self) -> None:
+        """Frees the cards. Not to be called once `queue_stuck`: it would wait on the stuck queue."""
+        ...
+
+    def queue_stuck(self) -> bool:
+        """True once a command list on the cards has timed out in this process. The driver's calls wait on the stuck
+        queue then, its teardown at a normal exit too, so the process ends with os._exit."""
+        ...

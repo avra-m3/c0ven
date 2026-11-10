@@ -511,9 +511,9 @@ def serve(
         swap_watch.stop()
         if state is not State.ASLEEP:  # asleep, it was written at the sleep
             write_cost(cost_file, scheduler.cost)
-        # After a failure a queue on the cards may never finish, and closing would wait on it. The process is ending,
-        # so the kernel frees the cards.
-        if status == 0:
+        # A stuck queue never finishes, and closing would wait on it. The process is ending, so the kernel frees the
+        # cards.
+        if not engine.queue_stuck():
             try:
                 engine.close()
             except EngineError:
@@ -639,8 +639,9 @@ def main(argv: list[str] | None = None) -> int:
         prompt_budget_ms=args.prompt_budget_ms, decode_share=args.decode_share, chunk_rows=args.chunk_rows
     )
     rule: CheckpointRule = model.checkpoint_rule(args.model if native else None, args.table_cache)
-    return serve(
-        make_engine(args.backend, args.realtime, arch),
+    engine = make_engine(args.backend, args.realtime, arch)
+    status = serve(
+        engine,
         config,
         rule=rule,
         options=sched,
@@ -653,6 +654,14 @@ def main(argv: list[str] | None = None) -> int:
         else None,
         cost_file=cost,
     )
+    # A stuck queue makes the driver's teardown at a normal exit wait forever, so the process skips it. serve has
+    # flushed the protocol's lines by now. Otherwise the process exits normally: the teardown stops the driver's loop on
+    # each card's copy engine, and a process that ends with one running can leave that copy engine unable to run new
+    # work, so the next start hangs on its first copy
+    # (docs/measurements/MEASUREMENTS.md#2026-11-06-copy-engine-stuck-after-exit).
+    if engine.queue_stuck():
+        os._exit(status)
+    return status
 
 
 def cache_dir() -> str | None:

@@ -20,7 +20,7 @@ extern "C" {
 #define ENGINE_API
 #endif
 
-#define ENGINE_API_VERSION 20
+#define ENGINE_API_VERSION 22
 
 typedef enum {
   ENGINE_OK = 0,
@@ -199,11 +199,12 @@ typedef struct {
   uint32_t value;
 } engine_event;
 
-/* One timing record (docs/DESIGN.md, section 7): a prompt piece or a decode step, as the engine ran it. */
+/* One timing record (docs/DESIGN.md, section 7): a prompt piece, a decode step or round, or the draft pass after one, as the engine ran it. */
 typedef enum {
   ENGINE_TIMING_PROMPT = 1,
   ENGINE_TIMING_DECODE = 2,
-  ENGINE_TIMING_ROUND = 3      /* a draft round: rows = the window's rows, misses as decode */
+  ENGINE_TIMING_ROUND = 3,     /* a draft round: rows = the window's rows, misses as decode */
+  ENGINE_TIMING_DRAFT = 4      /* the rest of a plan's decode after its step or round: the draft layer's pass; rows 0 */
 } engine_timing_kind;
 
 typedef struct {
@@ -258,6 +259,8 @@ typedef struct {
   uint64_t experts_cached;     /* experts cached per layer at the last plan's end, the mean over the layers */
   uint64_t experts_floor;      /* the fewest the load keeps room for, whatever the KV pool holds (ENGINE_CONFIG_SHARE_KV) */
   uint64_t idle_rounds;        /* of the swap rounds, those run while no plan came */
+  uint64_t reading_steps;      /* of the undrafted steps, those run while another slot read its prompt */
+  uint64_t reading_rounds;     /* of the rounds, those run while another slot read its prompt */
 } engine_stats;
 
 /* One slot's counters since admit: its own decode, not its prompt. */
@@ -348,9 +351,14 @@ ENGINE_API engine_status engine_wake(engine_ctx *e, engine_info *info);
 ENGINE_API const char *engine_last_error(const engine_ctx *e);
 
 /* Frees everything. Once a command list has timed out ("did not finish a list"), the cards' memory and queues stay,
- * as the driver's calls would wait on the stuck queue. The caller then ends the process with _exit, because the
- * driver's teardown at a normal exit waits on it too. */
+ * as the driver's calls would wait on the stuck queue. */
 ENGINE_API void engine_close(engine_ctx *e);
+
+/* 1 once a command list has timed out in this process, else 0. The driver's teardown at a normal exit waits on the
+ * stuck queue, so the caller then ends the process with _exit. Otherwise it exits normally: the teardown stops the
+ * driver's loop on each card's copy engine, and a process that ends with one running can leave that copy engine unable
+ * to run the next process's work. */
+ENGINE_API int engine_queue_stuck(void);
 
 /* One card the engine can use, as Level Zero reports it (ZE_AFFINITY_MASK applies). */
 typedef struct {

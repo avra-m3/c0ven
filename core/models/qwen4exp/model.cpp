@@ -207,7 +207,7 @@ Model::Model(const std::string &path, const Options &opt) : opt_(opt), gguf_(pat
   kv_margin_ = std::max<uint32_t>(2048, 2 * tmax_ / KV_PAGE_CELLS);  // two prompt chunks, or 8,192 positions
   if (tmax_) {
     if (opt_.prompt_chunk % 64) throw std::runtime_error("prompt_chunk must be a multiple of 64");
-    pevents_ = std::make_unique<ze::EventPool>(*rt_, 7 * shape_.layers * ncards_ + 1 + shape_.attn_layers() * ncards_ + ncards_);
+    pevents_ = std::make_unique<ze::EventPool>(*rt_, 9 * shape_.layers * ncards_ + 1 + shape_.attn_layers() * ncards_ + ncards_);
     pplan_ = static_cast<PromptPlan *>(rt_->alloc_host((1 + PROMPT_MAX_RUNS) * sizeof(PromptPlan)));
     std::memset(pplan_, 0, (1 + PROMPT_MAX_RUNS) * sizeof(PromptPlan));
     prows_ = static_cast<uint32_t *>(rt_->alloc_host(2 * 4));
