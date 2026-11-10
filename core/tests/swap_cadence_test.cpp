@@ -1,4 +1,5 @@
-// Level 1 (docs/TESTING.md): the swap cadence (api/swap_cadence.h) on made-up step times. No card.
+// Level 1 (docs/TESTING.md): the swap cadence (api/swap_cadence.h) on made-up step times, and whether a round runs
+// beside a prompt. No card.
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -6,7 +7,9 @@
 #include "api/swap_cadence.h"
 #include "test_util.h"
 
+using engine::count_prompt_routing;
 using engine::MissCost;
+using engine::swap_round_runs;
 using engine::SwapCadence;
 
 namespace {
@@ -97,6 +100,37 @@ int main() {
     c.round(30.0);
     for (int i = 0; i < 3; i++) c.plan();
     EXPECT(!c.due(1), "3 plans after a round");
+  }
+
+  // A lone prompt: no round while it is read, due or not; one when it ends.
+  EXPECT(!swap_round_runs(false, true, true, 0), "a lone prompt read, a round due");
+  EXPECT(!swap_round_runs(false, false, true, 0), "a lone prompt read");
+  EXPECT(swap_round_runs(true, false, false, 1), "a lone prompt ended");
+  EXPECT(swap_round_runs(true, false, false, 0), "a prompt ended, its slot done at once");
+  // A prompt read beside writers: rounds on the cadence.
+  EXPECT(swap_round_runs(false, true, true, 1), "a prompt beside one writer, a round due");
+  EXPECT(swap_round_runs(false, true, true, 3), "a prompt beside three writers, a round due");
+  EXPECT(!swap_round_runs(false, false, true, 1), "a prompt beside one writer, no round due");
+  EXPECT(!swap_round_runs(false, false, true, 3), "a prompt beside three writers, no round due");
+  // A prompt that ends while another is read: its slot writes, so a round runs.
+  EXPECT(swap_round_runs(true, false, true, 1), "one prompt ended, another read");
+  // No prompt read: the cadence, as before.
+  EXPECT(swap_round_runs(false, true, false, 2), "two writers, a round due");
+  EXPECT(!swap_round_runs(false, false, false, 2), "two writers, no round due");
+  EXPECT(!swap_round_runs(false, false, false, 0), "nothing to do");
+
+  // A prompt's routing joins the counts only while no slot writes.
+  EXPECT(count_prompt_routing(0), "a lone prompt's routing counts");
+  EXPECT(!count_prompt_routing(1), "a prompt beside one writer");
+  EXPECT(!count_prompt_routing(4), "a prompt beside four writers");
+
+  // Beside a writer, a held plan count still grows, so the round comes at the next plan once a writer starts.
+  {
+    SwapCadence c;
+    for (int i = 0; i < 4; i++) c.plan();
+    EXPECT(!swap_round_runs(false, c.due(0), true, 0), "a lone prompt, four plans");
+    c.plan();
+    EXPECT(swap_round_runs(false, c.due(1), true, 1), "a writer starts beside the prompt");
   }
 
   std::printf("swap_cadence_test: ok\n");

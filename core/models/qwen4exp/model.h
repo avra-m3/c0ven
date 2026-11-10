@@ -177,7 +177,7 @@ class Model final : public engine::Model {
   void kvs_drop(uint32_t slot, uint32_t pages) override;
 
   // Adaptive swaps (swap.cpp): a round makes the clearest swaps first.
-  void note_prompt_routing() override;
+  void note_prompt_routing(bool add) override;
   uint32_t swap_round(uint32_t max_swaps = 64, bool decay = true) override;
   // The swap and move threads are done.
   bool swaps_ready() const override { return swap_busy_.load() == 0; }

@@ -144,6 +144,7 @@ struct engine_ctx {
   bool prompt_ended = false;  // the plan being run read some slot's last prompt token
   uint64_t step_end_ns = 0;   // where the plan's decode step or round ended; 0 until it has run one
   uint32_t writers = 0;  // the slots the plan being run decoded
+  uint32_t writing_at_start = 0;  // the slots writing when the plan being run began (writing_slots)
   uint32_t shared_choices = 0;  // shared_most's choices, for its kSharedCheck; under mu
   engine::WindowTimes window_times;  // decode steps of one slot and rounds of any number, by their rows
   engine::SwapCadence swap_cadence;  // when the next swap round is due; under mu
@@ -475,6 +476,13 @@ struct engine_ctx {
     return false;
   }
 
+  // The slots that have read their whole prompt and are not done. Under mu.
+  uint32_t writing_slots() const {
+    uint32_t n = 0;
+    for (const Slot &sl : slots) n += sl.used && !sl.done && sl.fed >= sl.prompt.size();
+    return n;
+  }
+
   // A prompt piece as read from its slot before it runs.
   struct Piece {
     uint32_t slot = 0, pos0 = 0, n = 0;
@@ -647,7 +655,7 @@ struct engine_ctx {
       if (chunk.empty()) return;
       prompt_chunk(plan, chunk);
       rows = 0;
-      if (swaps) model->note_prompt_routing();
+      if (swaps) model->note_prompt_routing(engine::count_prompt_routing(writing_at_start));
     };
     for (uint32_t i = 0; i < sp.npieces && i < ENGINE_MAX_PROMPT_PIECES; i++) {
       // A piece of a slot already in the chunk starts where that one ends.
@@ -660,7 +668,7 @@ struct engine_ctx {
       if (!prepare_piece(sp.pieces[i], window, pi)) continue;
       if (pi.windowed) {  // its slot is not in the chunk, which can wait for it
         prompt_windows(plan, StepIn{pi.slot, pi.pos0, pi.toks[0], pi.p1, pi.p2, pi.p3}, pi.toks, pi.restart);
-        if (swaps) model->note_prompt_routing();
+        if (swaps) model->note_prompt_routing(engine::count_prompt_routing(writing_at_start));
         continue;
       }
       if (chunk.size() == PROMPT_MAX_RUNS || rows + pi.n > info.prompt_chunk) flush();
@@ -1107,6 +1115,7 @@ struct engine_ctx {
         prompt_ended = false;
         step_end_ns = 0;
         writers = 0;
+        writing_at_start = writing_slots();
       }
       const uint64_t t_plan = now_ns();
       try {
@@ -1126,17 +1135,17 @@ struct engine_ctx {
         idle_due = swaps;
         // A swap round after a plan that ended a prompt, and otherwise once the time the CPU's misses have cost since
         // the last round reaches that round's time, within 4 to 16 plans of it (api/swap_cadence.h); 4 and 16 until
-        // both are known, and 16 while several slots write. Never while a slot reads its prompt
-        // (docs/measurements/MEASUREMENTS.md#2026-10-16-drafting-and-swaps). While several slots write, the round's swaps are
-        // shared out: the cache follows several requests' routing at once.
-        bool due;
+        // both are known, and 16 while several slots write. None while a prompt is read and no slot writes
+        // (docs/adr/0074-swap-rounds-beside-a-prompt.md). While several slots write, the round's swaps are shared
+        // out: the cache follows several requests' routing at once.
+        bool run_round;
         {
           std::lock_guard<std::mutex> lk(mu);
           swap_cadence.plan();
-          due = prompt_ended || swap_cadence.due(writers);
+          run_round = engine::swap_round_runs(prompt_ended, swap_cadence.due(writers), reading(), writing_slots());
         }
         uint64_t swapped = 0, swap_ns = 0;
-        if (swaps && due && !prompt_reading()) {
+        if (swaps && run_round) {
           const uint64_t t0 = now_ns();
           swapped = model->swap_round(64 / std::max<uint32_t>(1, writers));
           swap_ns = now_ns() - t0;
@@ -1210,14 +1219,6 @@ struct engine_ctx {
       stats.swaps += swapped;
       stats.swap_ns += t1 - t0;
     }
-  }
-
-  // Whether a slot is still reading its prompt.
-  bool prompt_reading() {
-    std::lock_guard<std::mutex> lk(mu);
-    for (const Slot &sl : slots)
-      if (sl.used && !sl.done && sl.fed < sl.prompt.size()) return true;
-    return false;
   }
 
   // Waits until every queued plan has run. Under the lock lk.
