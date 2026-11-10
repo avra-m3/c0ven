@@ -134,11 +134,7 @@ uint32_t ExpertArena::fill(DirectReader &reader, uint32_t layer, const LayerExpe
       const uint8_t *u = reader.read_one(l.up.file, matrix_offset(l.up, l.gate_bytes, id), l.gate_bytes, buf.get());
       std::memcpy(to + l.gate_bytes, u, l.gate_bytes);
       const uint8_t *d = reader.read_one(l.down.file, matrix_offset(l.down, l.down_bytes, id), l.down_bytes, buf.get());
-      uint8_t *a = to + 2 * l.gate_bytes, *b = a + rows * part_a;
-      for (uint64_t r = 0; r < rows; r++) {
-        std::memcpy(a + r * part_a, d + r * (part_a + part_b), part_a);
-        std::memcpy(b + r * part_b, d + r * (part_a + part_b) + part_a, part_b);
-      }
+      write_down(l, d, to + 2 * l.gate_bytes);
     } catch (...) {
       std::lock_guard<std::mutex> lk(mu);
       if (!failed) failed = std::current_exception();
@@ -149,16 +145,45 @@ uint32_t ExpertArena::fill(DirectReader &reader, uint32_t layer, const LayerExpe
   if (!places.empty()) reader.pool().run(places.size(), task);
   if (failed) std::rethrow_exception(failed);
 
-  for (const auto &[id, to] : places) {
-    ExpertWeights &w = weights_[layer][id];
-    w.gate = to;
-    w.up = to + l.gate_bytes;
-    w.down = to + 2 * l.gate_bytes;
-    w.down_parts = 2;
-    w.down_blocks[0] = kPartABlocks;
-    w.down_blocks[1] = kPartBBlocks;
-  }
+  for (const auto &[id, to] : places) put(layer, l, id, to);
   return (uint32_t)places.size();
+}
+
+// A down in the file's layout as the arena holds it: part A's blocks of every row, then part B's.
+void ExpertArena::write_down(const LayerExperts &l, const uint8_t *down, uint8_t *to) {
+  const size_t block = ggml_type_size((ggml_type)l.shape.down_type);
+  const uint64_t rows = l.shape.n_embd, part_a = kPartABlocks * block, part_b = kPartBBlocks * block;
+  uint8_t *b = to + rows * part_a;
+  for (uint64_t r = 0; r < rows; r++) {
+    std::memcpy(to + r * part_a, down + r * (part_a + part_b), part_a);
+    std::memcpy(b + r * part_b, down + r * (part_a + part_b) + part_a, part_b);
+  }
+}
+
+void ExpertArena::write(const LayerExperts &l, const uint8_t *gate, const uint8_t *up, const uint8_t *down, uint8_t *to) {
+  std::memcpy(to, gate, l.gate_bytes);
+  std::memcpy(to + l.gate_bytes, up, l.gate_bytes);
+  write_down(l, down, to + 2 * l.gate_bytes);
+}
+
+uint8_t *ExpertArena::take(uint32_t layer, uint32_t id) {
+  if (layer >= weights_.size() || id >= weights_[layer].size()) return nullptr;
+  ExpertWeights &w = weights_[layer][id];
+  uint8_t *place = const_cast<uint8_t *>(w.gate);
+  w = {};
+  return place;
+}
+
+void ExpertArena::put(uint32_t layer, const LayerExperts &l, uint32_t id, uint8_t *place) {
+  if (weights_.size() <= layer) weights_.resize(layer + 1);
+  if (weights_[layer].empty()) weights_[layer].resize(l.experts);
+  ExpertWeights &w = weights_[layer][id];
+  w.gate = place;
+  w.up = place + l.gate_bytes;
+  w.down = place + 2 * l.gate_bytes;
+  w.down_parts = 2;
+  w.down_blocks[0] = kPartABlocks;
+  w.down_blocks[1] = kPartBBlocks;
 }
 
 ArenaReport ExpertArena::settle() {

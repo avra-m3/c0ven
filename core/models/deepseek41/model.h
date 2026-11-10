@@ -3,9 +3,13 @@
 // read as decode steps; the model has no drafter and reads no images.
 #pragma once
 
+#include <array>
+#include <atomic>
+#include <condition_variable>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <thread>
 #include <string>
 #include <vector>
 
@@ -114,6 +118,7 @@ class Model final : public engine::Model {
   // What the CPU answered in the last step, summed over its layers.
   const MissCounts &miss_counts() const { return counts_; }
   const StepTimes &step_times() const { return times_; }
+  uint64_t swaps_done() const { return swaps_done_; }
   // A card's kernels in the last step, with Options::trace: each name's launches and time, in the list's order.
   std::vector<TraceRow> trace(uint32_t card) const;
 
@@ -147,6 +152,8 @@ class Model final : public engine::Model {
     uint32_t c = 0;
     std::unique_ptr<ze::List> up;
     std::mutex up_mu;  // for the load's threads
+    std::unique_ptr<ze::List> swap_up;  // the swap thread's copies
+    uint8_t *swap_slot = nullptr;       // and the slot it builds, in pinned memory
     uint8_t *grids;
     StepWords *plan;
     uint32_t *pt;
@@ -190,6 +197,14 @@ class Model final : public engine::Model {
   void load_layer(uint32_t l);
   void load_experts();
   void load_cache(uint32_t l, const std::vector<uint32_t> &ids);
+  void make_slot(uint32_t l, uint32_t c, uint32_t pair, const uint8_t *gate, const uint8_t *up, const uint8_t *down,
+                 const uint8_t *down_b, uint8_t *slot) const;
+  uint8_t *slot_at(uint32_t l, uint32_t c, uint32_t pair) const;
+  const D41Class &pair_class(uint32_t l, uint32_t c, uint32_t pair) const;
+  void map_expert(uint32_t l, uint32_t expert, int32_t pair);
+  void advance_swaps();
+  void count_routing(uint32_t n);
+  void swap_work();
   void alloc_buffers(Card &card);
 
   ze_kernel_handle_t kernel(Card &card, const char *module, const char *name);
@@ -241,6 +256,29 @@ class Model final : public engine::Model {
   StepStats stats_;
   MissCounts counts_;
   StepTimes times_;
+
+  // The cards' pairs by layer: the expert each holds (kNoExpert while it changes), the split, the slot classes by card.
+  static constexpr uint32_t kNoExpert = 0xffffffffu;
+  std::vector<std::vector<uint32_t>> pairs_;
+  std::vector<uint32_t> split_;
+  std::vector<std::array<std::array<D41Class, 2>, 2>> tables_;
+  // Options::adapt_swaps: an expert the CPU keeps answering takes the pair of the layer's least used one. The step
+  // thread chooses and maps between steps; the swap thread loads the slots, then refills the arena places they freed.
+  struct Swap {
+    uint32_t l, pair, in, out;
+    uint8_t *place;  // in's place in the arena, which out takes; null when in came from the file
+  };
+  enum class SwapState { idle, loading, loaded, refilling, refilled, failed };
+  std::vector<float> heat_;  // [layer][expert]: routings, the older ones counting less
+  float heat_unit_ = 1.0f;
+  std::vector<Swap> swaps_;
+  std::atomic<SwapState> swap_state_{SwapState::idle};
+  std::mutex swap_mu_;
+  std::condition_variable swap_cv_;
+  bool swap_stop_ = false;
+  std::exception_ptr swap_failed_;
+  std::thread swapper_;
+  uint64_t swaps_done_ = 0;
 };
 
 }  // namespace engine::deepseek41

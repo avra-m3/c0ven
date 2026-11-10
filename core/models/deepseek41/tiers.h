@@ -98,10 +98,18 @@ class ExpertArena {
 
   // Expert id of layer, with down_parts 2 and its part widths; gate is null when the arena does not hold it.
   ExpertWeights weights(uint32_t layer, uint32_t id) const;
+
+  // An expert's change of tier, while no step runs. take forgets expert id of layer and returns its place, null when
+  // the arena does not hold it. write puts an expert's matrices, in the file's layout, at such a place of the same
+  // layer, from any thread while no expert is mapped there. put maps expert id of layer at the place.
+  uint8_t *take(uint32_t layer, uint32_t id);
+  static void write(const LayerExperts &l, const uint8_t *gate, const uint8_t *up, const uint8_t *down, uint8_t *to);
+  void put(uint32_t layer, const LayerExperts &l, uint32_t id, uint8_t *place);
   const std::vector<AnonMemory> &pieces() const { return pieces_; }
 
  private:
   uint8_t *place(uint64_t need);
+  static void write_down(const LayerExperts &l, const uint8_t *down, uint8_t *to);
 
   uint64_t budget_, piece_bytes_, used_ = 0, experts_ = 0, left_ = 0;
   bool reserved_;  // the next piece asks for reserved huge pages; cleared when a piece gets none

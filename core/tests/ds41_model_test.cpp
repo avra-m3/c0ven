@@ -2,7 +2,7 @@
 // sublayer, the logits and the first choice, one row a step. Needs two cards and DS41_MODEL, the file's first shard.
 // DS41_STEPS: positions run. DS41_TOKENS: a dump of upstream's whose tokens start the sequence. DS41_ARENA_GIB,
 // DS41_CARD_EXPERTS, DS41_PROFILE: the arena's size, the experts a layer on the cards, a routing profile. DS41_TRACE:
-// the last step's kernels and their times. DS41_NO_STREAMS: the lists copy no streams out, as a served step.
+// the last step's kernels and their times. DS41_SWAPS: experts change tiers by use. DS41_NO_STREAMS: the lists copy no streams out, as a served step.
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -88,6 +88,7 @@ int run() {
   opt.experts_per_layer = std::getenv("DS41_CARD_EXPERTS") ? std::atoi(std::getenv("DS41_CARD_EXPERTS")) : -1;
   if (const char *profile = std::getenv("DS41_PROFILE")) opt.routing_profile = profile;
   opt.trace = std::getenv("DS41_TRACE") != nullptr;
+  opt.adapt_swaps = std::getenv("DS41_SWAPS") != nullptr;
   const bool probes = std::getenv("DS41_NO_STREAMS") == nullptr;
   const auto t_load = std::chrono::steady_clock::now();
   deepseek41::Model model(path, opt, Debug{probes});
@@ -159,10 +160,10 @@ int run() {
     kls.push_back(kl);
     same += top_want == top_got;
     const MissCounts &c = model.miss_counts();
-    std::printf("position %u token %d: %.1f ms, streams worst %.2e (layer %d %s), logits %.2e, KL %.5f, choice %d %s; CPU %llu of %llu routings, %llu from the file\n",
+    std::printf("position %u token %d: %.1f ms, streams worst %.2e (layer %d %s), logits %.2e, KL %.5f, choice %d %s; CPU %llu of %llu routings, %llu from the file, %llu swaps\n",
                 t, tokens[t], ms, worst, worst_layer, worst_ffn ? "ffn" : "attention", rel_rms(got.data(), want.data(), vocab), kl,
                 top_got, top_want == top_got ? "same" : "differs", (unsigned long long)c.routings, (unsigned long long)D41_LAYERS * D41_USED,
-                (unsigned long long)c.ssd_jobs);
+                (unsigned long long)c.ssd_jobs, (unsigned long long)model.swaps_done());
     std::fflush(stdout);
     if (tokens.size() <= t + 1) tokens.push_back(top_want);
   }

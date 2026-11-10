@@ -25,6 +25,10 @@ constexpr uint32_t kEngA8Row = D41_ENG_G + D41_ENG_G / 8;        // a token's ga
 constexpr uint32_t kEngKvRows = 2 * E + E / 2;                   // a card's rows of engram_kv: two keys, half the value
 constexpr uint32_t kTopkLocal = 1024;                            // ds_idx_topk's and topk_rows' work-group
 constexpr std::chrono::seconds kPublishLimit{10};
+// The swaps' rule: a routing counts kHeatDecay times less each step; an expert comes in when it leads the one going out
+// by kSwapLead times and kSwapFloor routings; a profile counts as kProfileSteps steps; at most kSwapBatch pairs change at once.
+constexpr float kHeatDecay = 0.998f, kSwapLead = 1.5f, kSwapFloor = 2.0f, kProfileSteps = 200.0f;
+constexpr size_t kSwapBatch = 8;
 const void *const none = nullptr;
 
 std::string blk(uint32_t l, const char *name) { return "blk." + std::to_string(l) + "." + name; }
@@ -240,7 +244,15 @@ Model::Model(const std::string &path, const Options &opt, const Debug &debug) : 
   info_.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
 }
 
-Model::~Model() = default;
+Model::~Model() {
+  if (!swapper_.joinable()) return;
+  {
+    std::lock_guard<std::mutex> lk(swap_mu_);
+    swap_stop_ = true;
+  }
+  swap_cv_.notify_all();
+  swapper_.join();
+}
 
 void Model::alloc_buffers(Card &card) {
   const size_t R = STEP_MAX_ROWS;
@@ -409,8 +421,28 @@ void Model::load_experts() {
       arena_bytes += in_ram;
     }
   }
+  pairs_.resize(D41_LAYERS);
+  split_.resize(D41_LAYERS);
+  tables_.resize(D41_LAYERS);
   for (uint32_t l = 0; l < D41_LAYERS; l++) load_cache(l, on_cards[l]);
   info_.experts_per_layer = (uint32_t)(cached / D41_LAYERS);
+  if (opt_.adapt_swaps) {
+    heat_.assign((size_t)D41_LAYERS * D41_EXPERTS, 0.0f);
+    for (uint32_t l = 0; l < D41_LAYERS && !profile.empty(); l++) {
+      uint64_t sum = 0;
+      for (uint32_t e = 0; e < D41_EXPERTS; e++) sum += profile[(size_t)l * D41_EXPERTS + e];
+      for (uint32_t e = 0; e < D41_EXPERTS && sum; e++)
+        heat_[(size_t)l * D41_EXPERTS + e] =
+            (float)profile[(size_t)l * D41_EXPERTS + e] / (float)sum * D41_USED * kProfileSteps;
+    }
+    uint64_t slot_bytes = 0;
+    for (const auto &t : tables_) slot_bytes = std::max(slot_bytes, t[0][0].slot_bytes);
+    for (auto &cp : cards_) {
+      cp->swap_up = std::make_unique<ze::List>(*rt_, cp->c, ze::List::immediate, true);
+      cp->swap_slot = static_cast<uint8_t *>(rt_->alloc_host(slot_bytes));
+    }
+    swapper_ = std::thread([this] { swap_work(); });
+  }
   if (opt_.arena_bytes == 0) return;
   for (uint32_t l = 0; l < D41_LAYERS; l++) arena_->fill(ssd_->direct(), l, experts_[l], in_arena[l]);
   const ArenaReport r = arena_->settle();
@@ -425,54 +457,42 @@ void Model::load_cache(uint32_t l, const std::vector<uint32_t> &ids) {
   const uint32_t n = (uint32_t)ids.size(), split = (n + 1) / 2;
   std::vector<int32_t> map(D41_EXPERTS, -1);
   for (uint32_t k = 0; k < n; k++) map[ids[k]] = (int32_t)k;
-  D41Class tables[2][2];
+  pairs_[l] = ids;
+  split_[l] = split;
   for (auto &cp : cards_) {
     Card &card = *cp;
     Layer &ly = card.layers[l];
     ly.slot_map = upload<int32_t>(card, map.data(), map.size());
-    if (n == 0) continue;
-    ly.split = split;
     ly.flip = card.c ^ (l & 1);
     const uint64_t part_a = ly.flip == 0 ? split : n - split;
-    D41Class *t = tables[card.c];
+    auto &t = tables_[l][card.c];
     t[0] = slot_class(gt, dt, D41_PART_A, 0);
     t[1] = slot_class(gt, dt, D41_PART_B, part_a * t[0].slot_bytes);
+    if (n == 0) continue;
+    ly.split = split;
     ly.cache = dev<uint8_t>(card, part_a * t[0].slot_bytes + (n - part_a) * t[1].slot_bytes);
-    ly.classes = upload<D41Class>(card, t, 2);
+    ly.classes = upload<D41Class>(card, t.data(), 2);
   }
   if (n == 0) return;
 
-  const uint64_t gu_blocks = E / 256, rb = gu_blocks * quant_block_bytes(gt), db = (uint64_t)(D41_FF / 256) * quant_block_bytes(dt);
   const uint64_t buf_bytes = std::max(le.gate_bytes, le.down_bytes) + 2 * DirectReader::kAlign;
-  const uint64_t slot_bytes = slot_class(gt, dt, D41_PART_A, 0).slot_bytes;
+  const uint64_t slot_bytes = tables_[l][0][0].slot_bytes;
   std::mutex mu;
   std::exception_ptr failed;
   const DirectReader &reader = ssd_->direct();
   ssd_->direct().pool().run(n, [&](uint64_t k) {
     try {
-      AlignedBuffer buf = aligned_buffer(buf_bytes);
-      std::vector<uint8_t> slot[2] = {std::vector<uint8_t>(slot_bytes), std::vector<uint8_t>(slot_bytes)};
-      const D41Class *cls[2];
-      uint64_t r0[2];
-      for (uint32_t c = 0; c < 2; c++) {
-        const uint32_t part = (uint32_t)(k >= split) ^ cards_[c]->layers[l].flip;
-        cls[c] = &tables[c][part];
-        r0[c] = part ? D41_PART_A : 0;
-      }
+      AlignedBuffer bufs[3] = {aligned_buffer(buf_bytes), aligned_buffer(buf_bytes), aligned_buffer(buf_bytes)};
+      std::vector<uint8_t> slot(slot_bytes);
       const uint32_t e = ids[k];
-      const uint8_t *g = reader.read_one(le.gate.file, le.gate.offset + e * le.gate_bytes, le.gate_bytes, buf.get());
-      for (uint32_t c = 0; c < 2; c++) to_runs(gt, {{g, rb, r0[c], cls[c]->rows, 0, gu_blocks}}, slot[c].data());
-      const uint8_t *u = reader.read_one(le.up.file, le.up.offset + e * le.gate_bytes, le.gate_bytes, buf.get());
-      for (uint32_t c = 0; c < 2; c++)
-        to_runs(gt, {{u, rb, r0[c], cls[c]->rows, 0, gu_blocks}}, slot[c].data() + cls[c]->up_off);
-      const uint8_t *d = reader.read_one(le.down.file, le.down.offset + e * le.down_bytes, le.down_bytes, buf.get());
-      for (uint32_t c = 0; c < 2; c++)
-        to_runs(dt, {{d, db, 0, E, r0[c] / 256, cls[c]->rows / 256}}, slot[c].data() + cls[c]->down_off);
+      const uint8_t *g = reader.read_one(le.gate.file, le.gate.offset + e * le.gate_bytes, le.gate_bytes, bufs[0].get());
+      const uint8_t *u = reader.read_one(le.up.file, le.up.offset + e * le.gate_bytes, le.gate_bytes, bufs[1].get());
+      const uint8_t *d = reader.read_one(le.down.file, le.down.offset + e * le.down_bytes, le.down_bytes, bufs[2].get());
       for (uint32_t c = 0; c < 2; c++) {
         Card &card = *cards_[c];
-        const uint64_t at = k < split ? k : k - split;
+        make_slot(l, c, (uint32_t)k, g, u, d, nullptr, slot.data());
         std::lock_guard<std::mutex> lk(card.up_mu);
-        card.up->copy(card.layers[l].cache + cls[c]->base + at * cls[c]->slot_bytes, slot[c].data(), cls[c]->slot_bytes);
+        card.up->copy(slot_at(l, c, (uint32_t)k), slot.data(), pair_class(l, c, (uint32_t)k).slot_bytes);
         card.up->synchronize();
       }
     } catch (...) {
@@ -481,6 +501,181 @@ void Model::load_cache(uint32_t l, const std::vector<uint32_t> &ids) {
     }
   });
   if (failed) std::rethrow_exception(failed);
+}
+
+// Card c's slot of layer l's pair, from an expert's matrices: gate and up in the file's layout, and down in the file's
+// layout, or, with down_b, as the arena holds it: part A's blocks of every row at down and part B's at down_b.
+void Model::make_slot(uint32_t l, uint32_t c, uint32_t pair, const uint8_t *gate, const uint8_t *up, const uint8_t *down,
+                      const uint8_t *down_b, uint8_t *slot) const {
+  const LayerExperts &le = experts_[l];
+  const uint32_t gt = le.shape.gate_type, dt = le.shape.down_type;
+  const D41Class &t = pair_class(l, c, pair);
+  const bool part_b = t.rows == D41_PART_B;
+  const uint64_t gu_blocks = E / 256, rb = gu_blocks * quant_block_bytes(gt), bb = quant_block_bytes(dt);
+  const uint64_t r0 = part_b ? D41_PART_A : 0, nb = t.rows / 256;
+  to_runs(gt, {{gate, rb, r0, t.rows, 0, gu_blocks}}, slot);
+  to_runs(gt, {{up, rb, r0, t.rows, 0, gu_blocks}}, slot + t.up_off);
+  if (down_b) {
+    to_runs(dt, {{part_b ? down_b : down, nb * bb, 0, E, 0, nb}}, slot + t.down_off);
+  } else {
+    to_runs(dt, {{down, (uint64_t)(D41_FF / 256) * bb, 0, E, r0 / 256, nb}}, slot + t.down_off);
+  }
+}
+
+// The class of a pair's slot on card c: part A for a pair below the split on the card whose flip is 0, and so on.
+const D41Class &Model::pair_class(uint32_t l, uint32_t c, uint32_t pair) const {
+  return tables_[l][c][(uint32_t)(pair >= split_[l]) ^ c ^ (l & 1)];
+}
+
+uint8_t *Model::slot_at(uint32_t l, uint32_t c, uint32_t pair) const {
+  const D41Class &t = pair_class(l, c, pair);
+  return cards_[c]->layers[l].cache + t.base + (uint64_t)(pair < split_[l] ? pair : pair - split_[l]) * t.slot_bytes;
+}
+
+// The routers' word for an expert of layer l on both cards: its pair, or -1.
+void Model::map_expert(uint32_t l, uint32_t expert, int32_t pair) {
+  for (auto &cp : cards_) cp->up->copy(cp->layers[l].slot_map + expert, &pair, 4);
+}
+
+// Between steps: the experts the swap thread loaded are mapped, and the arena places it refilled.
+void Model::advance_swaps() {
+  const SwapState state = swap_state_.load(std::memory_order_acquire);
+  if (state == SwapState::failed) std::rethrow_exception(swap_failed_);
+  if (state != SwapState::loaded && state != SwapState::refilled) return;
+  bool refill = false;
+  for (Swap &w : swaps_) {
+    if (state == SwapState::loaded) {
+      map_expert(w.l, w.in, (int32_t)w.pair);
+      pairs_[w.l][w.pair] = w.in;
+      w.place = arena_->take(w.l, w.in);
+      refill = refill || w.place;
+    } else if (w.place) {
+      arena_->put(w.l, experts_[w.l], w.out, w.place);
+    }
+  }
+  if (state == SwapState::loaded)
+    for (auto &cp : cards_) cp->up->synchronize();
+  if (!refill) {
+    swaps_done_ += swaps_.size();
+    swaps_.clear();
+  }
+  {
+    std::lock_guard<std::mutex> lk(swap_mu_);
+    swap_state_.store(refill ? SwapState::refilling : SwapState::idle, std::memory_order_release);
+  }
+  swap_cv_.notify_all();
+}
+
+// After a step of n rows: the routings' counts, and with the swap thread idle the next pairs to change, one a layer:
+// the expert this step missed that leads the layer's least used pair by the most.
+void Model::count_routing(uint32_t n) {
+  heat_unit_ /= kHeatDecay;
+  if (heat_unit_ > 1e6f) {
+    for (float &h : heat_) h /= heat_unit_;
+    heat_unit_ = 1.0f;
+  }
+  for (uint32_t l = 0; l < D41_LAYERS; l++)
+    for (uint32_t r = 0; r < n; r++)
+      for (int32_t e : jobs_[(size_t)l * STEP_MAX_ROWS + r].all)
+        if (e >= 0) heat_[(size_t)l * D41_EXPERTS + (uint32_t)e] += heat_unit_;
+  if (swap_state_.load(std::memory_order_acquire) != SwapState::idle) return;
+
+  struct Lead {
+    float by;
+    Swap swap;
+  };
+  std::vector<Lead> leads;
+  for (uint32_t l = 0; l < D41_LAYERS; l++) {
+    const float *heat = heat_.data() + (size_t)l * D41_EXPERTS;
+    uint32_t out = kNoExpert;
+    for (uint32_t k = 0; k < pairs_[l].size(); k++)
+      if (pairs_[l][k] != kNoExpert && (out == kNoExpert || heat[pairs_[l][k]] < heat[pairs_[l][out]])) out = k;
+    if (out == kNoExpert) continue;
+    Lead best{0.0f, {}};
+    for (uint32_t r = 0; r < n; r++) {
+      const D41MissJob &job = jobs_[(size_t)l * STEP_MAX_ROWS + r];
+      for (uint32_t i = 0; i < job.nmiss && i < D41_USED; i++) {
+        const auto e = (uint32_t)job.ids[i];
+        const float by = heat[e] - kSwapLead * heat[pairs_[l][out]] - kSwapFloor * heat_unit_;
+        if (by > best.by) best = {by, {l, out, e, pairs_[l][out], nullptr}};
+      }
+    }
+    if (best.by > 0.0f) leads.push_back(best);
+  }
+  if (leads.empty()) return;
+  std::sort(leads.begin(), leads.end(), [](const Lead &a, const Lead &b) { return a.by > b.by; });
+  if (leads.size() > kSwapBatch) leads.resize(kSwapBatch);
+  // The pairs' experts leave the cards now: their slots are written while the next steps run.
+  for (const Lead &lead : leads) {
+    const Swap &w = lead.swap;
+    map_expert(w.l, w.out, -1);
+    pairs_[w.l][w.pair] = kNoExpert;
+    swaps_.push_back(w);
+  }
+  for (auto &cp : cards_) cp->up->synchronize();
+  {
+    std::lock_guard<std::mutex> lk(swap_mu_);
+    swap_state_.store(SwapState::loading, std::memory_order_release);
+  }
+  swap_cv_.notify_all();
+}
+
+// The swap thread: loads the incoming experts' slots from the arena or the file, and later writes the outgoing ones
+// into the arena places the incoming left.
+void Model::swap_work() {
+  uint64_t gate_bytes = 0, down_bytes = 0;
+  for (const LayerExperts &le : experts_) gate_bytes = std::max(gate_bytes, le.gate_bytes), down_bytes = std::max(down_bytes, le.down_bytes);
+  AlignedBuffer bufs[3] = {aligned_buffer(gate_bytes + 2 * DirectReader::kAlign), aligned_buffer(gate_bytes + 2 * DirectReader::kAlign),
+                           aligned_buffer(down_bytes + 2 * DirectReader::kAlign)};
+  const DirectReader &reader = ssd_->direct();
+  const auto read = [&](const LayerExperts &le, uint32_t e, const uint8_t *m[3]) {
+    m[0] = reader.read_one(le.gate.file, le.gate.offset + e * le.gate_bytes, le.gate_bytes, bufs[0].get());
+    m[1] = reader.read_one(le.up.file, le.up.offset + e * le.gate_bytes, le.gate_bytes, bufs[1].get());
+    m[2] = reader.read_one(le.down.file, le.down.offset + e * le.down_bytes, le.down_bytes, bufs[2].get());
+  };
+  for (;;) {
+    SwapState state;
+    {
+      std::unique_lock<std::mutex> lk(swap_mu_);
+      swap_cv_.wait(lk, [&] {
+        state = swap_state_.load(std::memory_order_acquire);
+        return swap_stop_ || state == SwapState::loading || state == SwapState::refilling;
+      });
+      if (swap_stop_) return;
+    }
+    try {
+      for (const Swap &w : swaps_) {
+        const LayerExperts &le = experts_[w.l];
+        const uint8_t *m[3];
+        if (state == SwapState::refilling) {
+          if (!w.place) continue;
+          read(le, w.out, m);
+          ExpertArena::write(le, m[0], m[1], m[2], w.place);
+          continue;
+        }
+        const ExpertWeights held = arena_->weights(w.l, w.in);
+        const uint8_t *down_b = nullptr;
+        if (held.gate) {
+          m[0] = held.gate, m[1] = held.up, m[2] = held.down;
+          down_b = held.down + (uint64_t)E * kPartABlocks * quant_block_bytes(le.shape.down_type);
+        } else {
+          read(le, w.in, m);
+        }
+        for (uint32_t c = 0; c < 2; c++) {
+          Card &card = *cards_[c];
+          make_slot(w.l, c, w.pair, m[0], m[1], m[2], down_b, card.swap_slot);
+          card.swap_up->copy(slot_at(w.l, c, w.pair), card.swap_slot, pair_class(w.l, c, w.pair).slot_bytes);
+          card.swap_up->synchronize();
+        }
+      }
+      state = state == SwapState::loading ? SwapState::loaded : SwapState::refilled;
+    } catch (...) {
+      swap_failed_ = std::current_exception();
+      state = SwapState::failed;
+    }
+    std::lock_guard<std::mutex> lk(swap_mu_);
+    swap_state_.store(state, std::memory_order_release);
+  }
 }
 
 ze_kernel_handle_t Model::kernel(Card &card, const char *module, const char *name) {
@@ -689,6 +884,7 @@ std::vector<std::vector<Candidate>> Model::step(const StepIn *rows, uint32_t n, 
   const uint32_t W = width(n);
   for (auto &card : cards_)
     if (!card->lists.count(W)) record(*card, W);
+  if (opt_.adapt_swaps) advance_swaps();
   using Clock = std::chrono::steady_clock;
   const auto ms = [](Clock::time_point a, Clock::time_point b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
   const auto t_start = Clock::now();
@@ -792,6 +988,8 @@ std::vector<std::vector<Candidate>> Model::step(const StepIn *rows, uint32_t n, 
   }
   for (uint32_t c = 0; c < 2; c++)
     if (stuck_[16 * c]) throw std::runtime_error("card " + std::to_string(c) + " gave up a wait of the step" + progress());
+
+  if (opt_.adapt_swaps) count_routing(n);
 
   std::vector<std::vector<Candidate>> out(n);
   for (uint32_t r = 0; r < n; r++) {
