@@ -43,10 +43,11 @@ struct LayerExperts {
 
 // Anonymous memory under ADR-0035 and ADR-0037: 2 MiB aligned, MADV_HUGEPAGE, mlock2(MLOCK_ONFAULT). A memory lock too
 // small for it throws, unless ENGINE_UNLOCKED_ARENA is set (docs/DEVELOPING.md); lock_errno() then says why it is not
-// locked. Throws when mmap fails.
+// locked. Throws when mmap fails. reserved: the bytes come from the host's reserved huge pages (vm.nr_hugepages) when
+// enough are free, which the kernel never moves or swaps; reserved() says whether they did.
 class AnonMemory {
  public:
-  explicit AnonMemory(uint64_t bytes);
+  explicit AnonMemory(uint64_t bytes, bool reserved = false);
   ~AnonMemory();
   AnonMemory(AnonMemory &&other) noexcept;
   AnonMemory(const AnonMemory &) = delete;
@@ -56,17 +57,20 @@ class AnonMemory {
   uint8_t *data() const { return at_; }
   uint64_t bytes() const { return bytes_; }
   int lock_errno() const { return lock_errno_; }
+  bool reserved() const { return reserved_; }
 
  private:
   void *map_ = nullptr;
   uint64_t map_bytes_ = 0, bytes_ = 0;
   uint8_t *at_ = nullptr;
   int lock_errno_ = 0;
+  bool reserved_ = false;
 };
 
 // What ExpertArena::settle found.
 struct ArenaReport {
   uint64_t pieces = 0, experts = 0, bytes = 0;
+  uint64_t reserved_pieces = 0;          // pieces in the host's reserved huge pages
   uint64_t huge_ranges = 0, ranges = 0;  // the used 2 MiB ranges, and those in huge pages after MADV_COLLAPSE
   uint64_t touched_pages = 0;            // 4 KiB pages read once
   int lock_errno = 0;                    // why some piece is not locked; 0: every piece is
@@ -79,8 +83,9 @@ struct ArenaReport {
 class ExpertArena {
  public:
   // budget: the bytes experts may take, from the plan. piece_bytes: a multiple of kHugeBytes, and it maps virtual
-  // memory only; a piece's unused part is never touched.
-  explicit ExpertArena(uint64_t budget, uint64_t piece_bytes = kArenaPieceBytes);
+  // memory only; a piece's unused part is never touched. reserved: pieces come from the host's reserved huge pages
+  // while they last (Options::hugetlb_arena), which takes a piece whole.
+  explicit ExpertArena(uint64_t budget, uint64_t piece_bytes = kArenaPieceBytes, bool reserved = false);
 
   // Reads experts ids of layer, in the order given, until the budget is met, on reader's pool and the calling thread.
   // Returns how many it placed: an expert that does not fit stays on the SSD, which is a normal plan. Throws when a read
@@ -99,6 +104,7 @@ class ExpertArena {
   uint8_t *place(uint64_t need);
 
   uint64_t budget_, piece_bytes_, used_ = 0, experts_ = 0, left_ = 0;
+  bool reserved_;  // the next piece asks for reserved huge pages; cleared when a piece gets none
   std::vector<AnonMemory> pieces_;
   std::vector<uint64_t> piece_used_;
   std::vector<std::vector<ExpertWeights>> weights_;  // [layer][id]

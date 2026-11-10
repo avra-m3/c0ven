@@ -186,6 +186,23 @@ void check_arena(const Generated &g, DirectReader &reader) {
               (unsigned long long)rep.ranges, rep.lock_errno ? "unlocked" : "locked");
 }
 
+// A piece from the host's reserved huge pages holds experts as any other; with none free it is the process's own.
+void check_reserved(const Generated &g, DirectReader &reader) {
+  ExpertArena arena(2 * g.largest(), kArenaPieceBytes, true);
+  EXPECT(arena.fill(reader, 0, g.layers[0], {3, 1}) == 2, "a reserved arena holds two experts");
+  const LayerExperts &l = g.layers[0];
+  for (uint32_t id : {3u, 1u}) {
+    const ExpertWeights w = arena.weights(0, id), file = g.whole(0, id);
+    EXPECT(w.gate && !std::memcmp(w.gate, file.gate, l.gate_bytes) && !std::memcmp(w.up, file.up, l.gate_bytes),
+           "a reserved arena's expert %u differs from the file", id);
+  }
+  const ArenaReport rep = arena.settle();
+  const bool reserved = arena.pieces()[0].reserved();
+  EXPECT(rep.reserved_pieces == (reserved ? 1u : 0u) && rep.pieces == 1, "the report's reserved pieces");
+  if (reserved) EXPECT(rep.huge_ranges == rep.ranges, "a reserved piece is all huge pages");
+  std::printf("reserved huge pages: %s\n", reserved ? "a piece took them" : "none free, the piece is the process's own memory");
+}
+
 void check_memlock() {
   // A memory lock too small refuses the arena, and the switch opens it. A process allowed to lock any amount is not
   // limited, so the refusal cannot run there, and the output says so.
@@ -755,6 +772,7 @@ int main(int argc, char **argv) {
     {
       DirectReader reader(g.paths);
       check_arena(g, reader);
+      check_reserved(g, reader);
     }
     check_reads(g, staging_ring_bytes(g.largest(), STEP_MAX_ROWS));
     check_sums(g);

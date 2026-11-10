@@ -34,7 +34,17 @@ uint64_t collapse(uint8_t *at, uint64_t bytes, uint64_t *ranges) {
 
 }  // namespace
 
-AnonMemory::AnonMemory(uint64_t bytes) : map_bytes_(bytes + kHugeBytes), bytes_(bytes) {
+AnonMemory::AnonMemory(uint64_t bytes, bool reserved) : map_bytes_(bytes + kHugeBytes), bytes_(bytes) {
+  // A private mapping reserves its pages here, so a short pool fails now and not at a later fault.
+  void *huge = reserved ? mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0)
+                        : MAP_FAILED;
+  if (huge != MAP_FAILED) {
+    map_ = huge;
+    map_bytes_ = bytes;
+    at_ = static_cast<uint8_t *>(huge);
+    reserved_ = true;
+    return;
+  }
   map_ = mmap(nullptr, map_bytes_, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
   if (map_ == MAP_FAILED) throw std::runtime_error("the arena: mmap of " + std::to_string(map_bytes_) + " B failed");
   // Locked as it fills: a page the kernel swaps out drops the cards' bindings of it, and comes back slowly.
@@ -58,16 +68,22 @@ AnonMemory::~AnonMemory() {
 
 AnonMemory::AnonMemory(AnonMemory &&o) noexcept
     : map_(std::exchange(o.map_, nullptr)), map_bytes_(o.map_bytes_), bytes_(o.bytes_), at_(o.at_),
-      lock_errno_(o.lock_errno_) {}
+      lock_errno_(o.lock_errno_), reserved_(o.reserved_) {}
 
-ExpertArena::ExpertArena(uint64_t budget, uint64_t piece_bytes) : budget_(budget), piece_bytes_(piece_bytes) {
+ExpertArena::ExpertArena(uint64_t budget, uint64_t piece_bytes, bool reserved)
+    : budget_(budget), piece_bytes_(piece_bytes), reserved_(reserved) {
   if (piece_bytes % kHugeBytes != 0) throw std::runtime_error("the arena: a piece must be whole huge pages");
 }
 
 uint8_t *ExpertArena::place(uint64_t need) {
   if (need > piece_bytes_) throw std::runtime_error("the arena: an expert is larger than a piece");
   if (left_ < need) {
-    pieces_.emplace_back(piece_bytes_);
+    pieces_.emplace_back(piece_bytes_, reserved_);
+    if (reserved_ && !pieces_.back().reserved()) {
+      std::fprintf(stderr, "engine: the deepseek41 arena: no reserved huge pages for piece %zu; it and the pieces after it "
+                           "are in the process's own memory\n", pieces_.size() - 1);
+      reserved_ = false;
+    }
     piece_used_.push_back(0);
     left_ = piece_bytes_;
   }
@@ -154,7 +170,13 @@ ArenaReport ExpertArena::settle() {
   uint64_t sum = 0;
   for (size_t p = 0; p < pieces_.size(); p++) {
     if (!rep.lock_errno) rep.lock_errno = pieces_[p].lock_errno();
-    rep.huge_ranges += collapse(pieces_[p].data(), piece_used_[p], &rep.ranges);
+    if (pieces_[p].reserved()) {
+      rep.reserved_pieces++;
+      rep.ranges += piece_used_[p] / kHugeBytes;
+      rep.huge_ranges += piece_used_[p] / kHugeBytes;
+    } else {
+      rep.huge_ranges += collapse(pieces_[p].data(), piece_used_[p], &rep.ranges);
+    }
     // A read, since the fill has written these pages: the first miss on a page pays its fault otherwise.
     for (uint64_t o = 0; o < piece_used_[p]; o += kAlign, rep.touched_pages++)
       sum += *static_cast<volatile const uint8_t *>(pieces_[p].data() + o);
@@ -164,9 +186,10 @@ ArenaReport ExpertArena::settle() {
   const std::string lock = rep.lock_errno ? std::string("not locked (mlock2: ") + std::strerror(rep.lock_errno) +
                                                 "), so the kernel may swap it out"
                                           : "locked in memory";
-  std::fprintf(stderr, "engine: the deepseek41 arena: %llu experts, %llu of %llu 2 MiB ranges in huge pages, in %.2f s; %s\n",
-               (unsigned long long)rep.experts, (unsigned long long)rep.huge_ranges, (unsigned long long)rep.ranges,
-               rep.seconds, lock.c_str());
+  std::fprintf(stderr, "engine: the deepseek41 arena: %llu experts, %llu of %llu pieces in reserved huge pages, %llu of %llu 2 MiB "
+                       "ranges in huge pages, in %.2f s; %s\n",
+               (unsigned long long)rep.experts, (unsigned long long)rep.reserved_pieces, (unsigned long long)rep.pieces,
+               (unsigned long long)rep.huge_ranges, (unsigned long long)rep.ranges, rep.seconds, lock.c_str());
   return rep;
 }
 
