@@ -18,15 +18,16 @@ set(deepseek41_modules deepseek41 deepseek41_attn deepseek41_check deepseek41_og
 # The routed experts' products at the file's types, one module per kernel, type and largest group:
 # deepseek41_moe_gate_up_<type>_g<a> and deepseek41_moe_down_<type>_g<a>. The down modules read the codebook through
 # __constant except IQ2_XXS's at group size 1 (docs/measurements/MEASUREMENTS.md#2026-11-02-deepseek41-moe-step-sweep).
+# MXFP4 is the drafter's experts' type.
 set(deepseek41_moe_options -DMOE_CLASSES -I${CMAKE_SOURCE_DIR}/kernels/quant ${DEEPSEEK41_KERNEL_INCLUDES})
 foreach(a 1 2 3 4 6 8)
-  foreach(type IQ1_S IQ1_M IQ2_XXS)
+  foreach(type IQ1_S IQ1_M IQ2_XXS MXFP4)
     string(TOLOWER ${type} lower)
     engine_add_kernel_module(deepseek41_moe_gate_up_${lower}_g${a} SOURCE kernels/quant/moe.cl
                              OPTIONS -DQTYPE=QT_${type} -DGROUP=${a} -DCL_GATE_UP_ONLY ${deepseek41_moe_options})
     list(APPEND deepseek41_modules deepseek41_moe_gate_up_${lower}_g${a})
   endforeach()
-  foreach(type IQ1_S IQ1_M IQ2_XXS IQ2_S)
+  foreach(type IQ1_S IQ1_M IQ2_XXS IQ2_S MXFP4)
     string(TOLOWER ${type} lower)
     set(grid -DGRID_CONSTANT)
     if(type STREQUAL IQ2_XXS AND a EQUAL 1)

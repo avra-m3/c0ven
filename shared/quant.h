@@ -83,7 +83,7 @@ SHARED_FN u32 quant_nfields(u32 t) {
     case QT_IQ4_XS: case QT_Q3_K: case QT_Q5_K: case QT_Q6_K: return 4;
     case QT_IQ1_S: case QT_IQ1_M: case QT_IQ2_XS: case QT_IQ3_XXS:
     case QT_Q2_K: case QT_Q4_K: case QT_Q5_0: case QT_Q5_1: return 3;
-    case QT_IQ2_XXS: case QT_IQ4_NL: case QT_Q2_0: case QT_Q4_0: case QT_Q8_0: return 2;
+    case QT_IQ2_XXS: case QT_IQ4_NL: case QT_Q2_0: case QT_Q4_0: case QT_Q8_0: case QT_MXFP4: return 2;
     default: return 1;
   }
 }
@@ -141,6 +141,10 @@ SHARED_FN u32 quant_field_(u32 t, u32 f) {
     }
     case QT_Q8_0: {  // qs, d
       const u32 v[2] = {(2u << 8) | 32, (0u << 8) | 2};
+      return v[f];
+    }
+    case QT_MXFP4: {  // qs, e (the scale's exponent)
+      const u32 v[2] = {(1u << 8) | 16, (0u << 8) | 1};
       return v[f];
     }
     case QT_Q2_K: {  // qs, scales (a scale and a min a nibble each), d and dmin

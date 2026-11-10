@@ -126,6 +126,16 @@ static inline uint spread4(uint x) {
   return (x & 1u) | ((x & 2u) << 7) | ((x & 4u) << 14) | ((x & 8u) << 21);
 }
 
+// MXFP4: 4 codes, one a byte, into their values as signed bytes: 0, 1, 2, 3, 4, 6, 8, 12, negative with bit 3.
+static inline uint mxfp4_word(uint x) {
+  const uint m = x & 0x07070707u, b0 = m & 0x01010101u, b1 = (m >> 1) & 0x01010101u;
+  const uint big = ((m >> 2) & 0x01010101u) * 0xffu, neg = ((x >> 3) & 0x01010101u) * 0xffu;
+  const uint v = ((0x04040404u + (b0 << 1) + (b1 << 2) + ((b0 & b1) << 1)) & big) | (m & ~big);
+  return (v & ~neg) | (sub_bytes(0u, v) & neg);
+}
+// Its scale, half of 2^(e - 127) as ggml takes it: the two smallest are denormal.
+static inline float mxfp4_scale(uint e) { return as_float(e < 2 ? 0x00200000u << e : (e - 1) << 23); }
+
 // Q3_K: the 6-bit scale i of 16 (12 bytes: low nibbles of 0-7, high nibbles of 0-7, then 2-bit tops in 8-11).
 static inline int q3k_scale(__global const uchar *sc, uint i) {
   uint lo4 = i < 8 ? sc[i] & 15 : sc[i - 8] >> 4;
@@ -167,6 +177,15 @@ static inline void decode_unit(__global const uchar *W, ulong n, ulong k, uint s
   }
   *lo = *hi = ld_half(FIELD(1, k));
 #endif
+#elif QTYPE == QT_MXFP4
+  // MXFP4: y = scale * value[code], byte j holding value j (low nibble) and value j + 16 (high nibble).
+  __global const uchar *qs = FIELD(0, k);
+  for (uint i = 0; i < 4; i++) {
+    uint x = dec_u32(qs + 4 * i);
+    w[i] = mxfp4_word(x & 0x0f0f0f0fu);
+    w[4 + i] = mxfp4_word((x >> 4) & 0x0f0f0f0fu);
+  }
+  *lo = *hi = mxfp4_scale(*FIELD(1, k));
 #elif QTYPE == QT_Q5_1
   // Q5_1: Q5_0's bits without the offset of 16, and a min; y = d * q + m.
   __global const uchar *qs = FIELD(0, k);

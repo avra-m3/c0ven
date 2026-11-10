@@ -47,6 +47,7 @@ commit [MODEL_LAYER.md](MODEL_LAYER.md) uses and the build the reference outputs
 | [IQ1_M](#iq1_m) | 29 | not in the IQ3_S file; experts gate+up in the IQ2_XS file | 256 | 56 | 1.75 | `iq1s_grid`, 2048 x 8 B | - | q8_K |
 | [IQ1_S](#iq1_s) | 19 | not in the IQ3_S file; experts gate+up in [Unsloth's other files](../MODEL_FILES.md#unsloths-other-files), and (10 layers) in Unsloth's UD-IQ2_XXS file of DeepSeek-V4.1-Flash-1017 | 256 | 50 | 1.5625 | `iq1s_grid`, 2048 x 8 B | - | q8_K |
 | [Q2_K](#q2_k) | 10 | not in the IQ3_S file; experts down (layer 0) in Unsloth's UD-IQ2_XXS file of DeepSeek-V4.1-Flash-1017 | 256 | 84 | 2.625 | none | - | q8_K |
+| [MXFP4](#mxfp4) | 39 | not in the IQ3_S file; the experts of DeepSeek-V4.1-Flash-1017's drafter file | 32 | 17 | 4.25 | none | - | q8_0 |
 | [Q3_K](#q3_k) | 11 | not in the IQ3_S file; dense and the embedding in the Q2_0 file | 256 | 110 | 3.4375 | none | - | q8_K |
 | [Q4_K](#q4_k) | 12 | 47 dense; experts gate+up in [Unsloth's other files](../MODEL_FILES.md#unsloths-other-files) | 256 | 144 | 4.5 | none | q8_1, DP4A | q8_K |
 | [Q5_K](#q5_k) | 13 | 35 dense; experts gate+up in [Unsloth's other files](../MODEL_FILES.md#unsloths-other-files) | 256 | 176 | 5.5 | none | q8_1, DP4A | q8_K |
@@ -351,6 +352,26 @@ minimum of the value's sub-block, v / 16. A 32-value unit s takes the codes at b
 two (`mn` and `mh` in `kernels/quant/decode.h`), each times the sum of its half's activation codes; every other type
 has one minimum a unit or none.
 
+### MXFP4
+
+32 values in 17 B, 4.25 bpw (`block_mxfp4` in `ggml-common.h`; `GGML_TYPE_MXFP4 = 39`). One scale that is a power of
+two, then a 4-bit float a value.
+
+| Offset | Bytes | Field | Meaning |
+| ---: | ---: | --- | --- |
+| 0 | 1 | `e` | the scale's exponent |
+| 1 | 16 | `qs[16]` | byte j: low nibble is value j, high nibble value j+16 |
+| | **17** | | 1 + 16 |
+
+**Dequantisation** (`dequantize_row_mxfp4` in `ggml-quants.c`): **y = d · `kvalues_mxfp4`[nibble]**. The table is 0,
+1, 2, 3, 4, 6, 8, 12, and the same negated for nibbles 8 to 15. d = 2^(e − 128) (`ggml_e8m0_to_fp32_half` in
+`ggml-impl.h`): for e of 2 and more it is the float whose exponent field is e − 1, and for e of 0 and 1 the two
+denormals `0x00200000` and `0x00400000`.
+
+The engine decodes four nibbles at a time with shifts and masks, no table (`mxfp4_word` in
+`kernels/quant/decode.h`): a code below 4 is its own value, and codes 4 to 7 are 4, 6, 8 and 12. The expert kernels
+take a row as groups of 8 blocks, so that a group is 256 values as with the other expert types.
+
 ## The dense types
 
 ### Q3_K
@@ -555,7 +576,7 @@ values in order, each packed little-endian in the table's C type, so anyone can 
 
 The IQ3_S file's three grids together are 11,264 B; with the other quants' three the packed buffer the engine uploads
 is 33,808 B (`QGRID_BYTES`, shared/quant.h). The sign tables can be replaced by arithmetic (parity and shifts), as the
-CUDA kernels do. `kvalues_fp4` belongs to a type none of the files holds.
+CUDA kernels do. `kvalues_fp4`, [MXFP4](#mxfp4)'s 16 values, is not in the buffer: the engine computes them.
 
 ## Wide loads: a layout with quants in one run and scales in another
 
