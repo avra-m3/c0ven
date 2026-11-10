@@ -355,7 +355,7 @@ void Model::record_mtp(Card &card, uint32_t W, uint32_t Wr, bool chain) {
   const uint32_t zero = 0, mode_silu = 1, from_pad = 1;
   L.copy(M.plan, mplan_, sizeof(StepPlan));
   if (pr != pl) L.copy(M.rest, mrest_, sizeof(StepPlan));
-  // The BF16 products on the XMX units with bf16 activations (xb: 8 rows of K), as the decode step's
+  // The BF16 products on the XMX units with bf16 activations (xb: STEP_MAX_ROWS rows of K), as the decode step's
   // (docs/measurements/MEASUREMENTS.md#2026-10-16-draft-layer-xmx). Every product here has 128 rows or more: K split in 4.
   uint16_t *no_yb = nullptr;
   auto bf16mv = [&](const uint16_t *Wt, uint32_t rows, uint32_t K, const uint16_t *xb, const uint32_t *ntok, float *y,
@@ -423,7 +423,7 @@ void Model::record_mtp(Card &card, uint32_t W, uint32_t Wr, bool chain) {
     MissJob *nojobs = nullptr;
     L.launch(q4("router"), {card.rl, M.slot_map, card.x, card.ids, card.w, card.slots, nmiss, nojobs, pr}, Wr, 1, 1,
              kSgSize);
-    L.launch(q4("moe_group"), {card.slots, pr, card.groups, card.ngroups}, 1, 1, 1, 128);
+    L.launch(q4("moe_group"), {card.slots, pr, card.groups, card.ngroups}, 1, 1, 1, MOE_GROUP_WG);
     {
       const uint32_t qk = quant_block_values(mtp_type_);
       uint32_t gbpr = E / qk, xs = (uint32_t)a8_bytes(E), per = shape_.used, K = E;
@@ -538,14 +538,14 @@ std::vector<std::vector<Candidate>> Model::catchup(const StepIn *rows, uint32_t 
 std::vector<std::vector<Candidate>> Model::mtp_catchup(const StepIn *rows, uint32_t n, const std::vector<uint32_t> &keep,
                                                        const uint32_t *from) {
   // The main model's final residuals of the last step's rows are the hidden inputs: card.R row r (or from[r]).
-  if (n == 0 || n > STEP_MAX_ROWS) throw std::runtime_error("a catch-up takes 1 to 8 rows");
+  if (n == 0 || n > STEP_MAX_ROWS) throw std::runtime_error("a catch-up takes 1 to STEP_MAX_ROWS rows");
   return catchup(rows, n, keep, from);
 }
 
 std::vector<std::vector<Candidate>> Model::mtp_catchup_prompt(const StepIn *rows, uint32_t n, uint32_t end,
                                                               const std::vector<uint32_t> &keep) {
   // The hidden inputs are the prompt path's final residuals of the last chunk's n rows before row end.
-  if (n == 0 || n > STEP_MAX_ROWS || n > end) throw std::runtime_error("a prompt catch-up takes 1 to 8 rows");
+  if (n == 0 || n > STEP_MAX_RUN || n > end) throw std::runtime_error("a prompt catch-up takes 1 to STEP_MAX_RUN rows");
   for (auto &card : cards_)
     card->up->copy(card->R, card->pc->R + (size_t)(end - n) * shape_.hc_dim(), (size_t)n * shape_.hc_dim() * 4);
   for (auto &card : cards_) card->up->synchronize();
@@ -558,7 +558,7 @@ std::vector<Candidate> Model::mtp_draft(uint32_t slot, uint32_t pos, int32_t tok
 }
 
 std::vector<std::vector<Candidate>> Model::mtp_drafts(const StepIn *rows, uint32_t n, const uint32_t *src_rows) {
-  if (n == 0 || n > STEP_MAX_ROWS) throw std::runtime_error("a draft pass takes 1 to 8 rows");
+  if (n == 0 || n > STEP_MAX_ROWS) throw std::runtime_error("a draft pass takes 1 to STEP_MAX_ROWS rows");
   uint32_t src = 0;
   for (uint32_t r = 0; r < n; r++) {
     if (src_rows[r] >= STEP_MAX_ROWS) throw std::runtime_error("a draft's source row is past the last pass");

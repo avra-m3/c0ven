@@ -117,42 +117,54 @@ __kernel void hc_mix(__global const float *n, __global const float *a, __global 
   x[(ulong)r * Q_EMBD + i] = acc * Q_HC_MEAN;
 }
 
-// The up projection and hc_mix in one, on the XMX units: dpas up projection of lrb (8 bf16 rows of Q_HC_LR, all read;
-// to_bf16_rows), 16 of W's value-major rows a sub-group (4 values' a for the 4 streams), then hc_mix's sum in stream
-// order. A work-group's 8 sub-groups write 32 values of x, also as bf16 into xb (rows Q_EMBD apart) and as a8 into xa
-// (a8.h; rows Q_EMBD + Q_EMBD / 8 bytes apart, sub-group m storing row m). Groups (Q_HC_DIM / 128), 128.
+// The up projection and hc_mix in one, on the XMX units: dpas up projection of lrb (bf16 rows of Q_HC_LR, in tiles of
+// 8 rows up to the tile that holds the plan's last row; to_bf16_rows), 16 of W's value-major rows a sub-group (4
+// values' a for the 4 streams), then hc_mix's sum in stream order. A work-group's 8 sub-groups write 32 values of x,
+// also as bf16 into xb (rows Q_EMBD apart) and as a8 into xa (a8.h; rows Q_EMBD + Q_EMBD / 8 bytes apart, sub-group m
+// storing rows m, m + 8, ...). Groups (Q_HC_DIM / 128), 128.
 #define UPM_SGS 8
 REQD_SG __kernel void hc_up_mix_xmx(__global const ushort *W, __global const ushort *lrb, __global const float *n,
                                     __global const StepPlan *plan, __global float *x, __global uchar *xa,
                                     __global ushort *xb) {
   __local float xs[STEP_MAX_ROWS][32];
   const uint lane = sg_lane(), n0 = (get_group_id(0) * UPM_SGS + sg_id()) * 16, ntok = plan->nrows;
-  float8 acc = (float8)0.0f;
+  const uint tiles = (ntok + 7) / 8;
+  float8 acc[STEP_MAX_ROWS / 8];
+  __attribute__((opencl_unroll_hint)) for (uint t = 0; t < STEP_MAX_ROWS / 8; t++) acc[t] = (float8)0.0f;
   for (uint k = 0; k < Q_HC_LR; k += 16) {
-    ushort a[8];
-    intel_sub_group_2d_block_read_16b_8r16x1c((__global void *)lrb, Q_HC_LR * 2, 8, Q_HC_LR * 2, (int2)(k, 0), a);
     uint b[8];
     sg_load_cols16(W, Q_HC_LR * 2, Q_HC_DIM, Q_HC_LR * 2, k / 2, n0, b);
-    acc = dpas_bf16(as_short8(vload8(0, a)), as_int8(vload8(0, b)), acc);
+    __attribute__((opencl_unroll_hint)) for (uint t = 0; t < STEP_MAX_ROWS / 8; t++) {
+      if (t < tiles) {
+        ushort a[8];
+        intel_sub_group_2d_block_read_16b_8r16x1c((__global void *)lrb, Q_HC_LR * 2, 8 * tiles, Q_HC_LR * 2,
+                                                  (int2)(k, 8 * t), a);
+        acc[t] = dpas_bf16(as_short8(vload8(0, a)), as_int8(vload8(0, b)), acc[t]);
+      }
+    }
   }
   // Lane l holds a_s[i] for s = l % 4, i = n0 / 4 + l / 4.
   const uint s = lane % Q_HC, i = n0 / Q_HC + lane / Q_HC;
-  float r[8];
-  vstore8(acc, 0, r);
-  for (uint m = 0; m < 8; m++) {
-    if (m >= ntok) break;
-    float term = n[(ulong)m * Q_HC_DIM + s * Q_EMBD + i] * sigmoid(r[m]);
-    float mix = 0.0f;
-    for (uint q = 0; q < Q_HC; q++) mix += sub_group_shuffle(term, (lane & ~3u) + q);
-    if (s == 0) {
-      x[(ulong)m * Q_EMBD + i] = mix * Q_HC_MEAN;
-      xb[(ulong)m * Q_EMBD + i] = f32_to_bf16(mix * Q_HC_MEAN);
-      xs[m][i % 32] = mix * Q_HC_MEAN;
+  __attribute__((opencl_unroll_hint)) for (uint t = 0; t < STEP_MAX_ROWS / 8; t++) {
+    if (t >= tiles) break;
+    float r[8];
+    vstore8(acc[t], 0, r);
+    for (uint j = 0; j < 8; j++) {
+      const uint m = 8 * t + j;
+      if (m >= ntok) break;
+      float term = n[(ulong)m * Q_HC_DIM + s * Q_EMBD + i] * sigmoid(r[j]);
+      float mix = 0.0f;
+      for (uint q = 0; q < Q_HC; q++) mix += sub_group_shuffle(term, (lane & ~3u) + q);
+      if (s == 0) {
+        x[(ulong)m * Q_EMBD + i] = mix * Q_HC_MEAN;
+        xb[(ulong)m * Q_EMBD + i] = f32_to_bf16(mix * Q_HC_MEAN);
+        xs[m][i % 32] = mix * Q_HC_MEAN;
+      }
     }
   }
   barrier(CLK_LOCAL_MEM_FENCE);
-  const uint m = sg_id();
-  if (m < ntok) a8_store(vload2(lane, xs[m]), xa + (ulong)m * (Q_EMBD + Q_EMBD / 8), Q_EMBD, get_group_id(0));
+  for (uint m = sg_id(); m < ntok; m += UPM_SGS)
+    a8_store(vload2(lane, xs[m]), xa + (ulong)m * (Q_EMBD + Q_EMBD / 8), Q_EMBD, get_group_id(0));
 }
 
 // After an exchange (1.2): y = the cards' partial sums added in card order, R_s += 2 sigma(inject_s / 4) y. P holds
@@ -871,26 +883,38 @@ __kernel void moe_combine(__global const float *y, __global const float *w, __gl
 }
 
 // The step's cached experts grouped (MoeGroup): every assignment a = r * Q_USED + k of the plan's rows whose slot is
-// on the card joins its expert's group. A row routes to 10 distinct experts, so a group has at most one assignment
-// per row: STEP_MAX_ROWS <= MOE_GROUP_MAX. Groups are numbered by their first assignment, and members ordered, so
-// the result does not depend on scheduling. One work-group of 128 (>= STEP_MAX_ROWS * Q_USED).
+// on the card joins its expert's group. A row routes to 10 distinct experts, so an expert has at most one assignment
+// per row; one that more than MOE_GROUP_MAX rows route to takes a group for each MOE_GROUP_MAX of its assignments, in
+// order. Groups are numbered by their first assignment, and members ordered, so the result does not depend on
+// scheduling. One work-group of MOE_GROUP_WG, a work-item an assignment.
+#if STEP_MAX_ROWS * Q_USED > MOE_GROUP_WG || STEP_MAX_ROWS * SG_SIZE > MOE_GROUP_WG
+#error "moe_group takes an assignment a work-item, router_group a row a sub-group"
+#endif
 static inline void group_slots(__global const int *slots, __global const StepPlan *plan, __global MoeGroup *groups,
                                __global uint *ngroups, __local int *sl, __local uint *head_of, __local uint *scan) {
   const uint a = get_local_id(0), n = plan->nrows * Q_USED;
   sl[a] = a < n ? slots[a] : -1;
   barrier(CLK_LOCAL_MEM_FENCE);
   int s = sl[a];
-  uint leader = a, rank = 0;
+  uint rank = 0;  // the expert's assignments before a
   if (s >= 0)
-    for (uint b = 0; b < a; b++)
+    for (uint b = 0; b < a; b++) rank += sl[b] == s;
+  // The first assignment of a's group: the expert's assignment number rank - rank % MOE_GROUP_MAX.
+  const uint first = rank - rank % MOE_GROUP_MAX;
+  uint leader = a;
+  if (s >= 0 && first < rank)
+    for (uint b = 0, seen = 0; b < a; b++)
       if (sl[b] == s) {
-        if (leader == a) leader = b;
-        rank++;
+        if (seen == first) {
+          leader = b;
+          break;
+        }
+        seen++;
       }
   bool head = s >= 0 && leader == a;
   scan[a] = head ? 1 : 0;
   barrier(CLK_LOCAL_MEM_FENCE);
-  for (uint off = 1; off < 128; off <<= 1) {
+  for (uint off = 1; off < MOE_GROUP_WG; off <<= 1) {
     uint v = a >= off ? scan[a - off] : 0;
     barrier(CLK_LOCAL_MEM_FENCE);
     scan[a] += v;
@@ -900,21 +924,21 @@ static inline void group_slots(__global const int *slots, __global const StepPla
   barrier(CLK_LOCAL_MEM_FENCE);
   if (s >= 0) {
     uint g = head_of[leader];
-    groups[g].asg[rank] = a;
+    groups[g].asg[rank % MOE_GROUP_MAX] = a;
     if (head) {
       uint cnt = 0;
-      for (uint b = a; b < n; b++) cnt += sl[b] == s;
+      for (uint b = a; b < n && cnt < MOE_GROUP_MAX; b++) cnt += sl[b] == s;
       groups[g].slot = s;
       groups[g].n = cnt;
     }
   }
-  if (a == 127) *ngroups = scan[127];
+  if (a == MOE_GROUP_WG - 1) *ngroups = scan[MOE_GROUP_WG - 1];
 }
 
 __kernel void moe_group(__global const int *slots, __global const StepPlan *plan, __global MoeGroup *groups,
                         __global uint *ngroups) {
-  __local int sl[128];
-  __local uint head_of[128], scan[128];
+  __local int sl[MOE_GROUP_WG];
+  __local uint head_of[MOE_GROUP_WG], scan[MOE_GROUP_WG];
   group_slots(slots, plan, groups, ngroups, sl, head_of, scan);
 }
 
@@ -950,13 +974,13 @@ static inline void group_row(int slot, __global MoeGroup *groups, __global uint 
 // router and moe_group in one launch: sub-group r routes row r, then the work-group groups the slots. A step of one
 // row splits the routing: sub-group 0 takes the top 10, 1 the softmax's sum, 2 copies slot_map to local memory, and
 // the others copy x to the MissJob, misses or not; after a barrier, sub-group 0 finishes, publishes the job and
-// groups the row's slots. Groups 1, 128.
+// groups the row's slots. Groups 1, MOE_GROUP_WG.
 REQD_SG __kernel void router_group(__global const float *rl, __global const int *slot_map, __global const float *x,
                                    __global int *ids_all, __global float *w_all, __global int *slots_all,
                                    __global uint *nmiss, __global MissJob *jobs, __global const StepPlan *plan,
                                    __global MoeGroup *groups, __global uint *ngroups) {
-  __local int sl[128];
-  __local uint head_of[128], scan[128];
+  __local int sl[MOE_GROUP_WG];
+  __local uint head_of[MOE_GROUP_WG], scan[MOE_GROUP_WG];
   __local uint2 cand[STEP_MAX_ROWS * RT_SLM];
   __local int sm[Q_EXPERTS];
   __local float2 ms;
@@ -973,7 +997,7 @@ REQD_SG __kernel void router_group(__global const float *rl, __global const int 
     } else if (sg == 2) {
       for (uint j = 0; j < RT_PER; j++) sm[lane + SG_SIZE * j] = slot_map[lane + SG_SIZE * j];
     } else if (jobs) {
-      for (uint i = get_local_id(0) - 3 * SG_SIZE; i < Q_EMBD / 4; i += 128 - 3 * SG_SIZE)
+      for (uint i = get_local_id(0) - 3 * SG_SIZE; i < Q_EMBD / 4; i += MOE_GROUP_WG - 3 * SG_SIZE)
         vstore4(vload4(i, x), i, jobs->x);
       atomic_work_item_fence(CLK_GLOBAL_MEM_FENCE, memory_order_release, memory_scope_all_svm_devices);
     }

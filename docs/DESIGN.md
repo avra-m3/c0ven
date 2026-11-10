@@ -515,7 +515,7 @@ Read at vLLM [`656d0d4`][v], SGLang [`e0c957e`][sg] and llama.cpp [`9d7d504`][l]
 ## 9. One decode step, and the CPU side
 
 A decode step runs one row for each writing slot, or a window of one slot's rows. Each card runs a command list
-recorded at load for the step's width: the smallest of 1, 2, 3, 4, 6 and 8 rows that holds the step's rows. The
+recorded at load for the step's width: the smallest of 1, 2, 3, 4, 6, 8, 12 and 16 rows that holds the step's rows. The
 list's first command copies the step plan from host memory to the card, and the kernels read that copy: a word read
 from host memory at each launch's start makes every launch slower
 ([the record](measurements/MEASUREMENTS.md#2026-10-16-bf16-products-occupancy)).
@@ -583,7 +583,8 @@ the next step starts ([ADR-0027](adr/0027-the-c-abi-as-the-core-was-optimised.md
 
 When the decoding slots all write, a step is a draft round
 ([ADR-0029](adr/0029-the-engine-process-drafts-and-swaps.md)). For each slot, the token sampled last and its drafts run
-as one window, and the windows of all slots run in one step. The slots share the step's 8 rows: a lone slot takes up to
+as one window, and the windows of all slots run in one step. The slots share the step's 16 rows, and one slot's window holds at most 8
+([ADR-0077](adr/0077-a-decode-step-holds-16-rows.md)): a lone slot takes up to
 7 drafts with DFlash 2 and 3 with the MTP layer, and each of several as many as give the most tokens a millisecond, from the slots' acceptance and the times of
 windows of each width (2 until a window is timed), fewer as there are more of them. Each slot's window is accepted and committed on
 its own. A step of several slots runs no drafts when it gives one of them its second token, which already waits for

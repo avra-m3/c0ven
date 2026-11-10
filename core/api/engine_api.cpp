@@ -398,7 +398,7 @@ struct engine_ctx {
     std::vector<size_t> of;
     for (size_t i = 0; i < seeds.size(); i++) {
       const DfSeed &sd = seeds[i];
-      const uint32_t most = std::min<uint32_t>(sd.most, STEP_MAX_ROWS - 1);
+      const uint32_t most = std::min<uint32_t>(sd.most, STEP_MAX_RUN - 1);
       if (most == 0 || sd.pos == 0 || sd.pos >= info.max_ctx) continue;
       blocks.push_back({sd.slot, sd.pos - 1, sd.anchor, 1 + most});
       of.push_back(i);
@@ -627,7 +627,7 @@ struct engine_ctx {
     produce(pi.slot, cand);
     if (!model->drafting() || sl.done) return;
     // The draft layer reads the prompt's last rows (its cells start there), and drafts.
-    uint32_t k = std::min<uint32_t>(pi.n, STEP_MAX_ROWS), fed = sl.fed;
+    uint32_t k = std::min<uint32_t>(pi.n, STEP_MAX_RUN), fed = sl.fed;
     std::vector<StepIn> mr;
     for (uint32_t j = 0; j < k; j++) {
       uint32_t pos = fed - k + j;
@@ -678,7 +678,7 @@ struct engine_ctx {
     flush();
   }
 
-  // A short prompt piece as decode windows of up to STEP_MAX_ROWS forced rows, each committed whole. The draft layer
+  // A short prompt piece as decode windows of up to STEP_MAX_RUN forced rows, each committed whole. The draft layer
   // reads every row, from pos0 on when restart (its cells before were never computed). Then as piece_read. Runs on
   // the engine thread.
   void prompt_windows(uint32_t plan, const StepIn first, const std::vector<int32_t> &toks, bool restart) {
@@ -695,8 +695,8 @@ struct engine_ctx {
     std::vector<Candidate> cand;
     std::vector<StepIn> mr;  // the last window's rows for the draft layer, each with the token after it
     StepIn row = first;
-    for (uint32_t i = 0; i < n; i += STEP_MAX_ROWS) {
-      const uint32_t w = std::min<uint32_t>(STEP_MAX_ROWS, n - i);
+    for (uint32_t i = 0; i < n; i += STEP_MAX_RUN) {
+      const uint32_t w = std::min<uint32_t>(STEP_MAX_RUN, n - i);
       std::vector<StepIn> rows;
       for (uint32_t k = i; k < i + w; k++) {
         if (k > 0) row = row_after(row, toks[k]);
@@ -779,9 +779,9 @@ struct engine_ctx {
         // A lone writing slot's own tokens may give better drafts than the draft layer
         // (docs/adr/0041-drafts-from-the-slots-own-tokens.md).
         std::vector<int32_t> look =
-            sl.lookup.drafts(sl.tokens, rows[0].token, STEP_MAX_ROWS - 1, [this](int32_t t) { return media(t); });
+            sl.lookup.drafts(sl.tokens, rows[0].token, STEP_MAX_RUN - 1, [this](int32_t t) { return media(t); });
         const uint32_t take = engine::choose_drafts(sl.odds, (uint32_t)sl.drafts.size(), draft_max,
-                                                    (uint32_t)look.size(), STEP_MAX_ROWS, window_times);
+                                                    (uint32_t)look.size(), STEP_MAX_RUN, window_times);
         sl.lookup_round = take > 0;
         if (take) look.resize(take), sl.drafts = std::move(look);
       }
@@ -911,7 +911,7 @@ struct engine_ctx {
   void round(uint32_t plan, StepIn row0, const std::vector<int32_t> &drafts) {
     const uint32_t s = row0.slot, p = row0.pos;
     uint32_t k = (uint32_t)std::min<size_t>(drafts.size(), info.max_ctx - 1 - p);
-    k = std::min<uint32_t>(k, STEP_MAX_ROWS - 1);
+    k = std::min<uint32_t>(k, STEP_MAX_RUN - 1);
     {
       std::lock_guard<std::mutex> lk(mu);
       k = std::min(k, mapped_cells(s) - 1 - p);  // the window's rows only where the slot has pages (decode checked p)
@@ -988,7 +988,7 @@ struct engine_ctx {
         const uint32_t s = row0[i].slot, p = row0[i].pos;
         uint32_t ki = (uint32_t)std::min<size_t>(drafts[i].size(), info.max_ctx - 1 - p);
         ki = std::min(ki, mapped_cells(s) - 1 - p);
-        ki = std::min<uint32_t>(ki, STEP_MAX_ROWS - (uint32_t)rows.size() - (ns - i));
+        ki = std::min<uint32_t>({ki, STEP_MAX_RUN - 1, STEP_MAX_ROWS - (uint32_t)rows.size() - (ns - i)});
         start[i] = (uint32_t)rows.size();
         k[i] = ki;
         rows.push_back(row0[i]);
@@ -1304,12 +1304,12 @@ engine_status engine_open(const engine_config *config, engine_info *info, engine
     e->info.prompt_chunk = e->model->prompt_chunk();
     e->info.fetch_rows = e->model->fetch_rows();
     e->info.decode_weight = e->model->decode_weight();
-    e->info.max_step_rows = ENGINE_MAX_STEP_SLOTS;
+    e->info.max_step_rows = STEP_MAX_ROWS;
     e->info.drafting = e->model->drafting() ? 1 : 0;
     e->info.image_tokens_max = e->model->image_tokens_max();
     e->info.kv_pages = e->model->kv_pages();
     e->info.pages_per_slot = e->model->pages_per_slot();
-    e->draft_max = config->draft_max ? std::min({config->draft_max, (uint32_t)ENGINE_MAX_STEP_SLOTS - 1,
+    e->draft_max = config->draft_max ? std::min({config->draft_max, (uint32_t)STEP_MAX_RUN - 1,
                                                  e->model->draft_max_cap()})
                                      : e->model->draft_max_default();
     if (config->draft_min_p > 0) e->draft_min_p = config->draft_min_p;

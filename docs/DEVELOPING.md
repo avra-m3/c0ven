@@ -59,6 +59,7 @@ docker exec engine-dev bash -c 'cd /src/build && ENGINE_EXPECT_GPUS=2 ctest -L g
 | `ze_smoke_test` | 2 | a kernel runs on every card, and one card waits on another's event |
 | `matvec_test` | 3 | the weight products of every quantised type on random blocks, and of every type the file holds on its rows, against ggml's dequantisation, 1e-5 |
 | `moe_test` | 3 | the decode step's grouped expert products of `moe.cl` equal `matvec.cl`'s bit for bit, for every type `moe.cl` takes on random blocks and every one the file holds on its experts, and every group size |
+| `step_rows_test` | 3 | the decode kernels that take more than 8 of a step's rows: `moe_group`'s groups at 1, 8, 9, 12 and 16 rows against the host's, an expert more than 8 rows route to split in order; `mv_xmx_bf16` at 8, 12 and 16 rows within 2e-3 of the reference, rows 0 to 7 the same bits at every count; no model |
 | `topk_test` | 2 | `topk_rows` against the host: the k largest of rows of up to 248,320 values, ties to the lower indices, both of its paths |
 | `gemm_test` | 2, 3 | the prompt path's fp16 and bf16 products on the XMX units, and the DPAS register layout, 2e-3 |
 | `swiglu_limit_test` | 3 | the experts' gate and up kernels built with and without `-DSWIGLU_LIMIT`, against double precision on random IQ4_XS weights: 1e-5 for the decode kernels, which also agree bit for bit, 2e-3 for the prompt path's; no model needed |
@@ -118,7 +119,7 @@ huge pages (`--hugepages`, [server options](OPTIONS.md#reserved-huge-pages)) are
   `general.architecture` names, `qwen4exp::Model` for Flash-Next
   ([ADR-0061](adr/0061-the-core-picks-its-model-by-the-files-architecture.md)).
 - `core/models/qwen4exp/model.cpp` loads each card's half of every layer and records the decode step as one regular
-  command list per card for each width (1, 2, 3, 4, 6 and 8 rows), once. The step's first command copies the step plan
+  command list per card for each width (1, 2, 3, 4, 6, 8, 12 and 16 rows), once. The step's first command copies the step plan
   ([`shared/step.h`](../shared/step.h)) from host memory to the card, and the kernels read that copy, so the same list
   runs every step. The host computes the rows' embeddings and resets the step's events before it submits.
 - The cards exchange partial sums twice per layer. A one-row step goes through host memory; a window of two rows or

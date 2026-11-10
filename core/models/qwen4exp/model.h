@@ -63,7 +63,7 @@ DfConfig read_df_config(const std::string &dir);
 // whole number of rows of embd values, or the count has no kernels.
 uint32_t mtp_expert_count(const std::string &dir, uint32_t embd);
 // The drafts a round makes by default: the draft layer's; DFlash 2 drafts a whole window in one pass.
-constexpr uint32_t kDraftMaxLayer = 3, kDraftMaxCap = STEP_MAX_ROWS - 1;
+constexpr uint32_t kDraftMaxLayer = 3, kDraftMaxCap = STEP_MAX_RUN - 1;
 
 class Model final : public engine::Model {
  public:
@@ -399,7 +399,7 @@ class Model final : public engine::Model {
   uint32_t *dtop_idx_ = nullptr, *dtop_n_ = nullptr;
   float *dtop_val_ = nullptr;
   std::unique_ptr<ze::EventPool> devents_;
-  uint16_t *pfeat_ = nullptr;      // [run][STEP_MAX_ROWS][DF_FEAT]: each prompt run's last rows' features
+  uint16_t *pfeat_ = nullptr;      // [run][STEP_MAX_RUN][DF_FEAT]: each prompt run's last rows' features
   std::vector<uint32_t> dffirst_;  // [slot] the first position its ring holds
   float *embed_ = nullptr;   // the token's embedding row
   float *ngram_u_ = nullptr; // its n-gram rows

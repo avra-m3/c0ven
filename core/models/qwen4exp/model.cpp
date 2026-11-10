@@ -1160,12 +1160,12 @@ void Model::matvec(ze::List &list, Card &card, const Mat &m, const uint8_t *act,
   if (m.rows <= kMvKsRows && lanes == 8) {
     // Few rows: K split over 4 sub-groups of 8 lanes per row (matvec_ks), so that the card has enough of them.
     const uint32_t ks = 4;
-    list.launch(kernel(card.c, mv_module(m.type, 8), "matvec_ks"),
+    list.launch(kernel(card.c, mv_module(m.type, 8, ntok), "matvec_ks"),
                 {m.p, m.rows, m.bpr, act, m.K, stride, ntok, y, m.rows, card.grids, ks}, (m.rows + 1) / 2, 1, 1,
                 16 * ks, 1, 1, signal);
     return;
   }
-  auto k = kernel(card.c, mv_module(m.type, lanes), "matvec");
+  auto k = kernel(card.c, mv_module(m.type, lanes, ntok), "matvec");
   uint32_t rows_per_wg = 4 * (16 / lanes);
   list.launch(k, {m.p, m.rows, m.bpr, act, m.K, stride, ntok, y, m.rows, card.grids},
               (m.rows + rows_per_wg - 1) / rows_per_wg, 1, 1, 64, 1, 1, signal);
@@ -1196,9 +1196,9 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
     L.trace(card.trace[key], 8192);
   }
   L.copy(card.plan, plan_, sizeof(StepPlan));
-  // The BF16 products, on the XMX units with bf16 activations (xb: 8 rows of K), as the reference rounds a BF16
-  // product's activation (docs/spec/MODEL_LAYER.md, section 6) and the prompt path's gemm_bf16 takes it. K split in 4,
-  // or in 16 for a few rows.
+  // The BF16 products, on the XMX units with bf16 activations (xb: STEP_MAX_ROWS rows of K), as the reference rounds a
+  // BF16 product's activation (docs/spec/MODEL_LAYER.md, section 6) and the prompt path's gemm_bf16 takes it. K split
+  // in 4, or in 16 for a few rows.
   uint16_t *no_yb = nullptr;
   auto bf16mv = [&](const uint16_t *W_, uint32_t rows, uint32_t K, const uint16_t *xb, float *y) {
     const uint32_t ks = rows < 128 ? 16 : 4;
@@ -1356,14 +1356,15 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
                kSgSize);
     else
       L.launch(q4("router_group"), {card.rl, Ly.slot_map, card.x, card.ids, card.w, card.slots, nmiss, jobs, plan,
-                                    card.groups, card.ngroups}, 1, 1, 1, 128);
+                                    card.groups, card.ngroups}, 1, 1, 1, MOE_GROUP_WG);
     L.launch(q4("swiglu_a8"), {card.shg, card.shu, card.ff, plan, card.sha8}, (card.ff / 32 + 3) / 4, W, 1, 64);
     L.together(false);
     if (nslots_cached_ > 0) {
       // moe.cl's kernels where they take the type: the same results, faster
       // (docs/measurements/MEASUREMENTS.md#2026-10-14-decode-expert-kernels).
-      std::string gm = moe_module(Ly.gu_type, W, false), dm = moe_module(Ly.down_type, W, true);
-      uint32_t rpw = gm.empty() ? 4 : MOE_WG_ROWS, lx = gm.empty() ? 64 : kSgSize * MOE_WG_ROWS / MOE_GU_ROWS(W);
+      const uint32_t A = moe_group_rows(W);
+      std::string gm = moe_module(Ly.gu_type, A, false), dm = moe_module(Ly.down_type, A, true);
+      uint32_t rpw = gm.empty() ? 4 : MOE_WG_ROWS, lx = gm.empty() ? 64 : kSgSize * MOE_WG_ROWS / MOE_GU_ROWS(A);
       uint32_t gbpr = shape_.embd / quant_block_values(Ly.gu_type);
       uint32_t K = shape_.embd, xs = (uint32_t)a8_bytes(shape_.embd), per = shape_.used;
       L.together(true);
@@ -1382,7 +1383,7 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
       L.together(false);
       if (gm.empty()) quant(card.h, card.ff, W * shape_.used, card.ha8);
       uint32_t drpw = dm.empty() ? 16 : MOE_WG_ROWS;
-      uint32_t dlx = dm.empty() ? 64 : kSgSize * MOE_WG_ROWS / MOE_DOWN_ROWS(Ly.down_type, W);
+      uint32_t dlx = dm.empty() ? 64 : kSgSize * MOE_WG_ROWS / MOE_DOWN_ROWS(Ly.down_type, A);
       uint32_t dbpr = card.ff / quant_block_values(Ly.down_type);
       uint32_t stride = (uint32_t)a8_bytes(card.ff);
       L.launch(kernel(c, dm.empty() ? mv_module(Ly.down_type, 4) : dm, "moe_down_g"),
@@ -1518,7 +1519,7 @@ std::vector<Candidate> Model::step(uint32_t slot, uint32_t pos, int32_t token, i
 }
 
 std::vector<std::vector<Candidate>> Model::step(const StepIn *rows, uint32_t n, bool window, bool prompt) {
-  if (n == 0 || n > STEP_MAX_ROWS) throw std::runtime_error("a step takes 1 to 8 rows");
+  if (n == 0 || n > STEP_MAX_ROWS) throw std::runtime_error("a step takes 1 to STEP_MAX_ROWS rows");
   if (window)
     for (uint32_t r = 1; r < n; r++) {
       bool same = rows[r].slot == rows[r - 1].slot;

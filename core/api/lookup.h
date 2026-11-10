@@ -8,6 +8,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "step.h"
+
 namespace engine {
 
 // The shortest match of the slot's last tokens with an earlier run of them that proposes drafts.
@@ -40,7 +42,7 @@ class WindowTimes {
   double ms(uint32_t rows) const;
 
  private:
-  static constexpr uint32_t kWidths = 9;  // 0 to STEP_MAX_ROWS
+  static constexpr uint32_t kWidths = STEP_MAX_ROWS + 1;  // 0 to STEP_MAX_ROWS
   double ms_[kWidths] = {};
 };
 

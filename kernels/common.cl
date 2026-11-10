@@ -1,6 +1,7 @@
 // Small kernels every model uses.
 #include "a8.h"
 #include "builtins.h"
+#include "step.h"
 #include "swiglu.h"
 
 // a8 activations (a8.h): x[t * x_stride + i] for i < K, t < ntok, into rows at out + t * (K + K / 8). One sub-group
@@ -19,10 +20,10 @@ static inline float silu(float x) { return x / (1.0f + exp(-x)); }
 static inline float sigmoid(float x) { return 1.0f / (1.0f + exp(-x)); }
 
 // y[t * y_stride + r] = post(scale * W[r] . x_t) for a BF16 matrix of rows x K (K a multiple of 8 lpr) and f32
-// activations, t < ntok <= 8. post is the identity (mode 0), SiLU (1) or the sigmoid (2). lpr lanes share a row (16,
-// 8, 4 or 2), so a sub-group takes 16 / lpr rows; 4 sub-groups per work-group: groups ceil(rows / (64 / lpr)), 64.
+// activations, t < ntok <= BF_MAXT. post is the identity (mode 0), SiLU (1) or the sigmoid (2). lpr lanes share a row
+// (16, 8, 4 or 2), so a sub-group takes 16 / lpr rows; 4 sub-groups per work-group: groups ceil(rows / (64 / lpr)), 64.
 // Each lane reads 8 weights (16 bytes) at a time, and every token reuses them.
-#define BF_MAXT 8
+#define BF_MAXT STEP_MAX_ROWS
 REQD_SG __kernel void matvec_bf16(__global const ushort *W, uint rows, uint K, __global const float *x, uint x_stride,
                                   uint ntok, __global float *y, uint y_stride, uint mode, float scale, uint lpr) {
   const uint lane = sg_lane(), sub = lane % lpr;
@@ -54,9 +55,9 @@ REQD_SG __kernel void matvec_bf16(__global const ushort *W, uint rows, uint K, _
 }
 
 // The same for few, long rows: one work-group of 256 per row splits K (a multiple of 8) and sums through local
-// memory; ntok <= 8 tokens share each weight read (x and y rows x_stride and y_stride apart). post and scale apply to
-// rows below post_rows only (the hyper-connections' down product carries their 4 inject rows after its 320).
-// Groups rows, 256.
+// memory; ntok <= BF_MAXT tokens share each weight read (x and y rows x_stride and y_stride apart). post and scale
+// apply to rows below post_rows only (the hyper-connections' down product carries their 4 inject rows after its
+// 320). Groups rows, 256.
 __kernel void matvec_bf16_ks(__global const ushort *W, uint rows, uint K, __global const float *x, uint x_stride,
                              __global const uint *ntok_p, __global float *y, uint y_stride, uint mode, float scale,
                              uint post_rows) {
@@ -102,40 +103,54 @@ __kernel void to_bf16_rows(__global const float *x, uint x_stride, uint K, __glo
   xb[(ulong)t * K + i] = f32_to_bf16(x[(ulong)t * x_stride + i]);
 }
 
-// y[t * y_stride + n] = post(scale * W[n] . xb[t]) on the XMX units, t < *ntok <= 8; post (mode as matvec_bf16_ks)
-// applies to n < post_rows, whose values also go to yb as bf16 (rows post_rows apart) when yb is set. xb: 8 bf16 rows
-// of K, all read (to_bf16_rows); W: N rows ldw apart. W, xb 64-byte aligned; K, ldw multiples of 32. Groups
-// ceil(N / 16), 16 ksplit (ksplit <= 64, K / ksplit a multiple of 16); sub-group 0 adds the ksplit tiles in order.
+// y[t * y_stride + n] = post(scale * W[n] . xb[t]) on the XMX units, t < *ntok <= STEP_MAX_ROWS; post (mode as
+// matvec_bf16_ks) applies to n < post_rows, whose values also go to yb as bf16 (rows post_rows apart) when yb is set.
+// xb: bf16 rows of K (to_bf16_rows), read in tiles of 8 rows up to the tile that holds row *ntok - 1, so as many
+// rows as those tiles hold; W: N rows ldw apart. W, xb 64-byte aligned; K, ldw multiples of 32. Groups ceil(N / 16),
+// 16 ksplit (ksplit <= 64, K / ksplit a multiple of 16); sub-group 0 adds the ksplit tiles in order. A tile's sums do
+// not depend on the tiles after it.
+#define MV_TILES (STEP_MAX_ROWS / 8)
 REQD_SG __kernel void mv_xmx_bf16(__global const ushort *W, uint N, uint K, uint ldw, __global const ushort *xb,
                                   __global const uint *ntok_p, __global float *y, uint y_stride, uint mode,
                                   float scale, uint post_rows, uint ksplit, __global ushort *yb) {
   __local float red[64][8][SG_SIZE];
-  const uint lane = sg_lane(), s = sg_id(), n0 = get_group_id(0) * 16, ntok = *ntok_p;
+  const uint lane = sg_lane(), s = sg_id(), n0 = get_group_id(0) * 16, ntok = *ntok_p, tiles = (ntok + 7) / 8;
   const uint kc = K / ksplit, k0 = s * kc;
-  float8 acc = (float8)0.0f;
+  float8 acc[MV_TILES];
+  __attribute__((opencl_unroll_hint)) for (uint t = 0; t < MV_TILES; t++) acc[t] = (float8)0.0f;
   for (uint k = k0; k < k0 + kc; k += 16) {
-    ushort a[8];
-    intel_sub_group_2d_block_read_16b_8r16x1c((__global void *)xb, K * 2, 8, K * 2, (int2)(k, 0), a);
     uint b[8];
     sg_load_cols16(W, K * 2, N, ldw * 2, k / 2, n0, b);
-    acc = dpas_bf16(as_short8(vload8(0, a)), as_int8(vload8(0, b)), acc);
-  }
-  float r[8];
-  vstore8(acc, 0, r);
-  for (uint m = 0; m < 8; m++) red[s][m][lane] = r[m];
-  barrier(CLK_LOCAL_MEM_FENCE);
-  if (s != 0) return;
-  const uint n = n0 + lane;
-  for (uint m = 0; m < 8 && m < ntok; m++) {
-    float v = 0.0f;
-    for (uint q = 0; q < ksplit; q++) v += red[q][m][lane];
-    if (n < post_rows) {
-      v *= scale;
-      if (mode == 1) v = silu(v);
-      if (mode == 2) v = sigmoid(v);
+    __attribute__((opencl_unroll_hint)) for (uint t = 0; t < MV_TILES; t++) {
+      if (t < tiles) {
+        ushort a[8];
+        intel_sub_group_2d_block_read_16b_8r16x1c((__global void *)xb, K * 2, 8 * tiles, K * 2, (int2)(k, 8 * t), a);
+        acc[t] = dpas_bf16(as_short8(vload8(0, a)), as_int8(vload8(0, b)), acc[t]);
+      }
     }
-    if (n < N) y[(ulong)m * y_stride + n] = v;
-    if (yb && n < post_rows) yb[(ulong)m * post_rows + n] = f32_to_bf16(v);
+  }
+  const uint n = n0 + lane;
+  __attribute__((opencl_unroll_hint)) for (uint t = 0; t < MV_TILES; t++) {
+    if (t < tiles) {
+      float r[8];
+      vstore8(acc[t], 0, r);
+      for (uint m = 0; m < 8; m++) red[s][m][lane] = r[m];
+      barrier(CLK_LOCAL_MEM_FENCE);
+      if (s == 0)
+        for (uint m = 0; m < 8 && 8 * t + m < ntok; m++) {
+          const uint row = 8 * t + m;
+          float v = 0.0f;
+          for (uint q = 0; q < ksplit; q++) v += red[q][m][lane];
+          if (n < post_rows) {
+            v *= scale;
+            if (mode == 1) v = silu(v);
+            if (mode == 2) v = sigmoid(v);
+          }
+          if (n < N) y[(ulong)row * y_stride + n] = v;
+          if (yb && n < post_rows) yb[(ulong)row * post_rows + n] = f32_to_bf16(v);
+        }
+      barrier(CLK_LOCAL_MEM_FENCE);
+    }
   }
 }
 

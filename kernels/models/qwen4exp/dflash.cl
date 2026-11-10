@@ -31,14 +31,14 @@ __kernel void df_feat(__global const float *R, uint k, __global const StepPlan *
   out[(ulong)r * DF_FEAT + k * Q_EMBD + i] = f32_to_bf16(m);
 }
 
-// The same for a prompt run's last rows (at most STEP_MAX_ROWS), row j of them into out[j]: only the rows r0 .. r1 - 1
-// of the chunk, which this card holds. Groups (Q_EMBD / 64, STEP_MAX_ROWS), 64.
+// The same for a prompt run's last rows (at most STEP_MAX_RUN), row j of them into out[j]: only the rows r0 .. r1 - 1
+// of the chunk, which this card holds. Groups (Q_EMBD / 64, STEP_MAX_RUN), 64.
 __kernel void p_df_feat(__global const float *R, __global const PromptPlan *runs, uint k, uint r0, uint r1,
                         __global ushort *out_all) {
-  // One launch for all the chunk's runs: run z's rows into out_all + z STEP_MAX_ROWS DF_FEAT.
+  // One launch for all the chunk's runs: run z's rows into out_all + z STEP_MAX_RUN DF_FEAT.
   __global const PromptPlan *pp = runs + get_group_id(2);
-  __global ushort *out = out_all + (ulong)get_group_id(2) * STEP_MAX_ROWS * DF_FEAT;
-  const uint n = pp->n, m = min(n, (uint)STEP_MAX_ROWS), j = get_group_id(1), i = get_global_id(0);
+  __global ushort *out = out_all + (ulong)get_group_id(2) * STEP_MAX_RUN * DF_FEAT;
+  const uint n = pp->n, m = min(n, (uint)STEP_MAX_RUN), j = get_group_id(1), i = get_global_id(0);
   if (j >= m) return;
   const uint t = pp->row0 + n - m + j;
   if (t < r0 || t >= r1) return;
@@ -149,10 +149,10 @@ __kernel void df_prep(__global float *Q, __global const float *K, __global const
 // heads, and masks the cells before each row's own lo. Per row, query head and split it writes the weighted sum of V,
 // then the scores' maximum and sum (DF_PART floats). Groups (nkv, width, DF_SPLITS), DF_D.
 #define DF_SPLIT 64
-#define DF_SPLITS ((DF_WINDOW + STEP_MAX_ROWS + DF_SPLIT - 1) / DF_SPLIT)
+#define DF_SPLITS ((DF_WINDOW + STEP_MAX_RUN + DF_SPLIT - 1) / DF_SPLIT)  // a block's: its rows are at most a run's
 #define DF_PART (DF_D + 2)
 #define DF_GQA (DF_H / DF_KV)
-#define DF_PAIRS (STEP_MAX_ROWS * DF_GQA)
+#define DF_PAIRS (STEP_MAX_RUN * DF_GQA)
 #if DF_D != 2 * DF_SPLIT
 #error "df_attn's work-items score a split's cells in two halves of the pairs"
 #endif

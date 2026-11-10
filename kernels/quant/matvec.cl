@@ -1,8 +1,9 @@
 // Matrix-vector products with quantised weights in the runs layout and a8 activations (decode.h): one weight type per
 // module (-DQTYPE), LANES lanes of a 16-wide sub-group per row (-DLANES: 16, 8 or 4), WG_SG sub-groups a work-group,
-// up to MAXT tokens sharing each weight read. matvec: a dense slice, rows x K. matvec_ks: K split over a work-group's
-// sub-groups, for slices of few rows. moe_gate_up_g: h[a] = silu(gate x) * up x for each assignment a (row, expert)
-// of a group. moe_down_g: y[a] = down h[a] for each, with its own activation.
+// up to MAXT tokens sharing each weight read (-DMAXT: 8, or 16 for the decode steps of more than 8 rows). matvec: a
+// dense slice, rows x K. matvec_ks: K split over a work-group's sub-groups, for slices of few rows. moe_gate_up_g:
+// h[a] = silu(gate x) * up x for each assignment a (row, expert) of a group. moe_down_g: y[a] = down h[a] for each,
+// with its own activation.
 #include "decode.h"
 #include "moe_tile.h"
 #include "swiglu.h"
@@ -12,7 +13,9 @@
 #endif
 #define WG_SG 4
 #define RPS (SG_SIZE / LANES)          // rows per sub-group
+#ifndef MAXT
 #define MAXT 8
+#endif
 
 static inline float lanes_sum(float x) {
 #if LANES == 16

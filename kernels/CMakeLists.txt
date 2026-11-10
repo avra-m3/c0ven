@@ -20,12 +20,15 @@ add_subdirectory(models/qwen4exp)
 set(ENGINE_QUANT_TYPES Q8_0 Q4_0 Q5_0 Q5_1 Q2_0 IQ4_NL IQ4_XS Q2_K Q3_K Q4_K Q5_K Q6_K IQ1_S IQ1_M IQ2_XXS IQ2_XS
     IQ2_S IQ3_XXS IQ3_S)
 
-# One matrix-vector module per weight type and lanes per row: matvec_<type>_l<lanes>.
+# One matrix-vector module per weight type and lanes per row: matvec_<type>_l<lanes>, up to 8 tokens a weight read,
+# and matvec_<type>_l<lanes>_t16, up to 16, for the decode steps of more than 8 rows.
 foreach(type ${ENGINE_QUANT_TYPES})
   string(TOLOWER ${type} lower)
   foreach(lanes 16 8 4)
     engine_add_kernel_module(matvec_${lower}_l${lanes} SOURCE kernels/quant/matvec.cl
                              OPTIONS -DQTYPE=QT_${type} -DLANES=${lanes} -I${CMAKE_SOURCE_DIR}/kernels/quant)
+    engine_add_kernel_module(matvec_${lower}_l${lanes}_t16 SOURCE kernels/quant/matvec.cl
+                             OPTIONS -DQTYPE=QT_${type} -DLANES=${lanes} -DMAXT=16 -I${CMAKE_SOURCE_DIR}/kernels/quant)
   endforeach()
 endforeach()
 
