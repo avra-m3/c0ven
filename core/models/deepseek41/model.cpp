@@ -11,6 +11,7 @@
 #include <stdexcept>
 
 #include "ggml.h"
+#include "moe_tile.h"
 #include "quant.h"
 
 namespace engine::deepseek41 {
@@ -32,6 +33,21 @@ std::string mv_module(uint32_t type, uint32_t lanes) {
   std::string s = std::string("matvec_") + ggml_type_label(type) + "_l" + std::to_string(lanes);
   for (char &ch : s) ch = (char)std::tolower((unsigned char)ch);
   return s;
+}
+
+std::string moe_module(const char *part, uint32_t type, uint32_t group) {
+  std::string s = std::string("deepseek41_moe_") + part + "_" + ggml_type_label(type) + "_g" + std::to_string(group);
+  for (char &ch : s) ch = (char)std::tolower((unsigned char)ch);
+  return s;
+}
+
+uint64_t align256(uint64_t v) { return (v + 255) / 256 * 256; }
+
+// The slot class of rows rows of gate and up, and the same columns of down, with its slots from base on.
+D41Class slot_class(uint32_t gate_type, uint32_t down_type, uint32_t rows, uint64_t base) {
+  const uint64_t g = align256(runs_bytes(gate_type, (uint64_t)rows * (E / 256)));
+  const uint64_t d = align256(runs_bytes(down_type, (uint64_t)E * (rows / 256)));
+  return {base, 2 * g + d, g, 2 * g, rows, {}};
 }
 
 // The recorded width that holds n rows: the routed experts' kernels are built for these.
@@ -266,8 +282,7 @@ void Model::alloc_buffers(Card &card) {
   card.nmiss = dev<uint32_t>(card, 64);
   card.groups = dev<D41Group>(card, R * D41_USED);
   card.ngroups = dev<uint32_t>(card, 64);
-  const std::vector<int32_t> no_slot(D41_EXPERTS, -1);
-  card.slot_map = upload<int32_t>(card, no_slot.data(), no_slot.size());
+  card.ha = dev<uint8_t>(card, R * D41_USED * (D41_PART_A + D41_PART_A / 8));
   card.sgu = dev<float>(card, R * 2 * D41_PART_A);
   card.sha = dev<uint8_t>(card, R * (D41_PART_A + D41_PART_A / 8));
   card.shared = dev<float>(card, R * E);
@@ -352,30 +367,120 @@ void Model::load_layer(uint32_t l) {
   held_.clear();
 }
 
-// The arena, hottest first by the profile, a few experts of each layer in turn so that no layer takes the budget.
+// The tiers, hottest first by the profile's routings a byte: the cards' slots, then the arena. The rest stay in the
+// file. Without a profile each layer's first experts go in turn.
 void Model::load_experts() {
-  if (opt_.arena_bytes == 0) return;
   std::vector<uint64_t> profile;
   if (opt_.routing_profile && !opt_.routing_profile->empty() && *opt_.routing_profile != "none")
     profile = read_profile(*opt_.routing_profile);
-  std::vector<std::vector<uint32_t>> order(D41_LAYERS);
-  for (uint32_t l = 0; l < D41_LAYERS; l++) {
-    order[l].resize(D41_EXPERTS);
-    for (uint32_t e = 0; e < D41_EXPERTS; e++) order[l][e] = e;
-    if (!profile.empty())
-      std::stable_sort(order[l].begin(), order[l].end(), [&](uint32_t a, uint32_t b) {
-        return profile[(size_t)l * D41_EXPERTS + a] > profile[(size_t)l * D41_EXPERTS + b];
-      });
+  struct Hot {
+    uint32_t l, e;
+  };
+  std::vector<Hot> hot;
+  for (uint32_t e = 0; e < D41_EXPERTS; e++)
+    for (uint32_t l = 0; l < D41_LAYERS; l++) hot.push_back({l, e});
+  if (!profile.empty())
+    std::stable_sort(hot.begin(), hot.end(), [&](const Hot &a, const Hot &b) {
+      return profile[(size_t)a.l * D41_EXPERTS + a.e] * experts_[b.l].expert_bytes() >
+             profile[(size_t)b.l * D41_EXPERTS + b.e] * experts_[a.l].expert_bytes();
+    });
+
+  // A card's room, less what the layers' odd pairs may put on one card more than the other.
+  uint64_t room = UINT64_MAX;
+  for (uint32_t c = 0; c < 2; c++) {
+    const uint64_t total = rt_->cards()[c].memory, used = rt_->device_bytes(c) + opt_.reserve_bytes + (64ull << 20);
+    info_.expert_budget[c] = total > used ? total - used : 0;
+    room = std::min(room, info_.expert_budget[c]);
   }
-  constexpr uint32_t kRound = 8;
-  bool full = false;
-  for (uint32_t at = 0; at < D41_EXPERTS && !full; at += kRound)
-    for (uint32_t l = 0; l < D41_LAYERS && !full; l++) {
-      const std::vector<uint32_t> ids(order[l].begin() + at, order[l].begin() + std::min(at + kRound, (uint32_t)D41_EXPERTS));
-      full = arena_->fill(ssd_->direct(), l, experts_[l], ids) < ids.size();
+  const uint64_t per_layer = opt_.experts_per_layer < 0 ? D41_EXPERTS : (uint64_t)opt_.experts_per_layer;
+  std::vector<std::vector<uint32_t>> on_cards(D41_LAYERS), in_arena(D41_LAYERS);
+  uint64_t card_bytes = 0, arena_bytes = 0, cached = 0;
+  for (const Hot &h : hot) {
+    const LayerExperts &le = experts_[h.l];
+    const uint64_t slots = slot_class(le.shape.gate_type, le.shape.down_type, D41_PART_A, 0).slot_bytes +
+                           slot_class(le.shape.gate_type, le.shape.down_type, D41_PART_B, 0).slot_bytes;
+    const uint64_t in_ram = align256(le.expert_bytes());
+    if (on_cards[h.l].size() < per_layer && card_bytes + slots <= 2 * room) {
+      on_cards[h.l].push_back(h.e);
+      card_bytes += slots;
+      cached++;
+    } else if (arena_bytes + in_ram <= opt_.arena_bytes) {
+      in_arena[h.l].push_back(h.e);
+      arena_bytes += in_ram;
     }
+  }
+  for (uint32_t l = 0; l < D41_LAYERS; l++) load_cache(l, on_cards[l]);
+  info_.experts_per_layer = (uint32_t)(cached / D41_LAYERS);
+  if (opt_.arena_bytes == 0) return;
+  for (uint32_t l = 0; l < D41_LAYERS; l++) arena_->fill(ssd_->direct(), l, experts_[l], in_arena[l]);
   const ArenaReport r = arena_->settle();
   info_.arena_bytes = r.bytes;
+}
+
+// Layer l's experts ids on the cards: pair k's part A on one card and part B on the other, the cards taking turns so
+// that both hold the same bytes.
+void Model::load_cache(uint32_t l, const std::vector<uint32_t> &ids) {
+  const LayerExperts &le = experts_[l];
+  const uint32_t gt = le.shape.gate_type, dt = le.shape.down_type;
+  const uint32_t n = (uint32_t)ids.size(), split = (n + 1) / 2;
+  std::vector<int32_t> map(D41_EXPERTS, -1);
+  for (uint32_t k = 0; k < n; k++) map[ids[k]] = (int32_t)k;
+  D41Class tables[2][2];
+  for (auto &cp : cards_) {
+    Card &card = *cp;
+    Layer &ly = card.layers[l];
+    ly.slot_map = upload<int32_t>(card, map.data(), map.size());
+    if (n == 0) continue;
+    ly.split = split;
+    ly.flip = card.c ^ (l & 1);
+    const uint64_t part_a = ly.flip == 0 ? split : n - split;
+    D41Class *t = tables[card.c];
+    t[0] = slot_class(gt, dt, D41_PART_A, 0);
+    t[1] = slot_class(gt, dt, D41_PART_B, part_a * t[0].slot_bytes);
+    ly.cache = dev<uint8_t>(card, part_a * t[0].slot_bytes + (n - part_a) * t[1].slot_bytes);
+    ly.classes = upload<D41Class>(card, t, 2);
+  }
+  if (n == 0) return;
+
+  const uint64_t gu_blocks = E / 256, rb = gu_blocks * quant_block_bytes(gt), db = (uint64_t)(D41_FF / 256) * quant_block_bytes(dt);
+  const uint64_t buf_bytes = std::max(le.gate_bytes, le.down_bytes) + 2 * DirectReader::kAlign;
+  const uint64_t slot_bytes = slot_class(gt, dt, D41_PART_A, 0).slot_bytes;
+  std::mutex mu;
+  std::exception_ptr failed;
+  const DirectReader &reader = ssd_->direct();
+  ssd_->direct().pool().run(n, [&](uint64_t k) {
+    try {
+      AlignedBuffer buf = aligned_buffer(buf_bytes);
+      std::vector<uint8_t> slot[2] = {std::vector<uint8_t>(slot_bytes), std::vector<uint8_t>(slot_bytes)};
+      const D41Class *cls[2];
+      uint64_t r0[2];
+      for (uint32_t c = 0; c < 2; c++) {
+        const uint32_t part = (uint32_t)(k >= split) ^ cards_[c]->layers[l].flip;
+        cls[c] = &tables[c][part];
+        r0[c] = part ? D41_PART_A : 0;
+      }
+      const uint32_t e = ids[k];
+      const uint8_t *g = reader.read_one(le.gate.file, le.gate.offset + e * le.gate_bytes, le.gate_bytes, buf.get());
+      for (uint32_t c = 0; c < 2; c++) to_runs(gt, {{g, rb, r0[c], cls[c]->rows, 0, gu_blocks}}, slot[c].data());
+      const uint8_t *u = reader.read_one(le.up.file, le.up.offset + e * le.gate_bytes, le.gate_bytes, buf.get());
+      for (uint32_t c = 0; c < 2; c++)
+        to_runs(gt, {{u, rb, r0[c], cls[c]->rows, 0, gu_blocks}}, slot[c].data() + cls[c]->up_off);
+      const uint8_t *d = reader.read_one(le.down.file, le.down.offset + e * le.down_bytes, le.down_bytes, buf.get());
+      for (uint32_t c = 0; c < 2; c++)
+        to_runs(dt, {{d, db, 0, E, r0[c] / 256, cls[c]->rows / 256}}, slot[c].data() + cls[c]->down_off);
+      for (uint32_t c = 0; c < 2; c++) {
+        Card &card = *cards_[c];
+        const uint64_t at = k < split ? k : k - split;
+        std::lock_guard<std::mutex> lk(card.up_mu);
+        card.up->copy(card.layers[l].cache + cls[c]->base + at * cls[c]->slot_bytes, slot[c].data(), cls[c]->slot_bytes);
+        card.up->synchronize();
+      }
+    } catch (...) {
+      std::lock_guard<std::mutex> lk(mu);
+      if (!failed) failed = std::current_exception();
+    }
+  });
+  if (failed) std::rethrow_exception(failed);
 }
 
 ze_kernel_handle_t Model::kernel(Card &card, const char *module, const char *name) {
@@ -489,7 +594,7 @@ void Model::record_ffn(ze::List &L, Card &card, uint32_t l, uint32_t W) {
   Layer &ly = card.layers[l];
   Card &other = *cards_[1 - card.c];
   const bool posts = l % 2 == card.c;
-  const uint32_t split = 0x7fffffffu, flip = 0, ff = ly.sh_ff, two_ff = 2 * ff, in_card = 0;
+  const uint32_t ff = ly.sh_ff, two_ff = 2 * ff, in_card = 0;
 
   L.launch(kernel(card, "deepseek41", "ds_hc_mix"), {ly.ffn_fn, card.X1, card.ss, W, card.m}, D41_MIX, 1, 1,
            16 * D41_HC_KSPLIT);
@@ -498,10 +603,22 @@ void Model::record_ffn(ze::List &L, Card &card, uint32_t l, uint32_t W) {
   product_bf16(L, card, ly.gate_inp, D41_EXPERTS, E, card.xb, card.rlogits);
   const void *jobs = posts ? jobs_ + (size_t)l * STEP_MAX_ROWS : nullptr;
   L.launch(kernel(card, "deepseek41", "ds_router"),
-           {card.rlogits, ly.bias, card.slot_map, W, split, flip, &card.plan->real, &card.plan->step, card.ids, card.w,
+           {card.rlogits, ly.bias, ly.slot_map, W, ly.split, ly.flip, &card.plan->real, &card.plan->step, card.ids, card.w,
             card.slots, card.nmiss, jobs, card.groups, card.ngroups},
            1, 1, 1, 16 * W * D41_RT_SGS(W));
 
+  if (ly.cache) {
+    const LayerExperts &le = experts_[l];
+    const uint32_t per = D41_USED, xs = D41_A8_ROW, hs = D41_PART_A + D41_PART_A / 8, nasg = W * D41_USED;
+    const uint32_t lxg = 16 * MOE_WG_ROWS / std::max<uint32_t>(D41_GU_ROWS(W), 16 / D41_GU_LANES);
+    const uint32_t lxd = 16 * MOE_WG_ROWS / std::max<uint32_t>(D41_DOWN_ROWS, 16 / D41_DOWN_LANES(le.shape.down_type, W));
+    L.launch(lib_->get(card.c, moe_module("gate_up", le.shape.gate_type, W), "moe_gate_up_c"),
+             {ly.cache, ly.classes, card.groups, card.ngroups, card.xa, E, xs, per, card.ha, hs, card.grids},
+             D41_PART_A / MOE_WG_ROWS, nasg, 1, lxg);
+    L.launch(lib_->get(card.c, moe_module("down", le.shape.down_type, W), "moe_down_c"),
+             {ly.cache, ly.classes, card.groups, card.ngroups, E, card.ha, hs, card.y6, card.grids}, E / MOE_WG_ROWS, nasg,
+             1, lxd);
+  }
   matvec(L, card, ly.sh_gu, card.xa, card.sgu, W, 8);
   L.launch(kernel(card, "deepseek41", "ds_swiglu_clamp_a8"), {card.sgu, card.sgu + ff, two_ff, ff, card.sha}, W, 1, 1,
            D41_SWIGLU_SGS * 16);
@@ -563,6 +680,10 @@ std::vector<std::vector<Candidate>> Model::step(const StepIn *rows, uint32_t n, 
   const uint32_t W = width(n);
   for (auto &card : cards_)
     if (!card->lists.count(W)) record(*card, W);
+  using Clock = std::chrono::steady_clock;
+  const auto ms = [](Clock::time_point a, Clock::time_point b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
+  const auto t_start = Clock::now();
+  times_ = {};
 
   plan_->real = n;
   plan_->step = ++step_;
@@ -595,6 +716,8 @@ std::vector<std::vector<Candidate>> Model::step(const StepIn *rows, uint32_t n, 
       a8_row(eng_f_.data() + (size_t)r * D41_ENG_G, D41_ENG_G, eng_a8_[e] + (size_t)r * kEngA8Row);
   }
 
+  auto t_mark = Clock::now();
+  times_.before = ms(t_start, t_mark);
   for (auto &card : cards_) card->lists.at(W)->execute();
   stats_ = {};
   counts_ = {};
@@ -624,6 +747,8 @@ std::vector<std::vector<Candidate>> Model::step(const StepIn *rows, uint32_t n, 
                                      "'s experts");
         }
       }
+      const auto t_seen = Clock::now();
+      times_.records += ms(t_mark, t_seen);
       MissAsk ask;
       ask.layer = l;
       ask.rows = W;
@@ -633,6 +758,8 @@ std::vector<std::vector<Candidate>> Model::step(const StepIn *rows, uint32_t n, 
       ask.answer = cpu_y_ + (size_t)l * STEP_MAX_ROWS * E;
       ask.answer_flag = ans_flag_ + 16 * l;
       const MissCounts c = miss_->run_layer(ask);
+      t_mark = Clock::now();
+      times_.answers += ms(t_seen, t_mark);
       counts_.routings += c.routings;
       counts_.arena_jobs += c.arena_jobs;
       counts_.ssd_jobs += c.ssd_jobs;
@@ -648,6 +775,7 @@ std::vector<std::vector<Candidate>> Model::step(const StepIn *rows, uint32_t n, 
   // The lists end by themselves: a wait the CPU never answers gives up (ADR-0074 item 5).
   try {
     for (auto &card : cards_) card->lists.at(W)->synchronize();
+    times_.after = ms(t_mark, Clock::now());
     if (failed) std::rethrow_exception(failed);
   } catch (const std::exception &e) {
     throw std::runtime_error(e.what() + progress());

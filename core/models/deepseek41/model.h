@@ -5,6 +5,7 @@
 
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -27,6 +28,14 @@ struct StepWords {
   uint64_t start;  // ds_wait's clock at the list's first polling wait
   uint64_t pad2;
   D41Row rows[STEP_MAX_ROWS];
+};
+
+// Where the host thread's time in the last step went, ms.
+struct StepTimes {
+  double before = 0;   // the embeddings and the Engram rows, before the lists start
+  double records = 0;  // waiting for the layers' routing records: the cards' work up to each router
+  double answers = 0;  // the CPU's experts
+  double after = 0;    // from the last answer to the lists' end
 };
 
 // What the tests ask for beyond Options.
@@ -94,7 +103,7 @@ class Model final : public engine::Model {
 
   const LoadInfo &info() const override { return info_; }
   const StepStats &last_stats() const override { return stats_; }
-  uint32_t experts_cached() const override { return 0; }
+  uint32_t experts_cached() const override { return info_.experts_per_layer; }
   uint32_t experts_floor() const override { return 0; }
   NgramStats ngram_stats() const override { return engram_->stats(); }
 
@@ -104,6 +113,7 @@ class Model final : public engine::Model {
   const float *probe(uint32_t layer, bool ffn) const;
   // What the CPU answered in the last step, summed over its layers.
   const MissCounts &miss_counts() const { return counts_; }
+  const StepTimes &step_times() const { return times_; }
 
  private:
   // A card's share of a matrix, in the runs layout.
@@ -124,10 +134,17 @@ class Model final : public engine::Model {
     uint16_t *ring;                // the window, [slot][D41_RING][D41_HD] f16
     uint16_t *pool = nullptr;      // a KV source's compressed rows, by page
     float *cr = nullptr;           // a ratio-2 source's compressor ring
+    // The routed experts the cards hold: each has part A in a slot on one card and part B on the other. A pair below
+    // split has the part of class flip here.
+    uint8_t *cache = nullptr;
+    D41Class *classes = nullptr;
+    int32_t *slot_map = nullptr;   // expert to its pair, -1 when the cards do not hold it
+    uint32_t split = 0x7fffffffu, flip = 0;
   };
   struct Card {
     uint32_t c = 0;
     std::unique_ptr<ze::List> up;
+    std::mutex up_mu;  // for the load's threads
     uint8_t *grids;
     StepWords *plan;
     uint32_t *pt;
@@ -145,7 +162,8 @@ class Model final : public engine::Model {
     float *ekv;
     D41EngramSend *eown[kEngramTables], *ein[kEngramTables];
     float *rlogits, *w, *sgu, *shared, *y6, *out;
-    int32_t *ids, *slots, *slot_map;
+    int32_t *ids, *slots;
+    uint8_t *ha;  // the routed experts' hidden rows as a8, one an assignment
     uint32_t *nmiss, *ngroups;
     D41Group *groups;
     uint8_t *sha;
@@ -168,6 +186,7 @@ class Model final : public engine::Model {
   const uint8_t *held(const GgufTensor &t);
   void load_layer(uint32_t l);
   void load_experts();
+  void load_cache(uint32_t l, const std::vector<uint32_t> &ids);
   void alloc_buffers(Card &card);
 
   ze_kernel_handle_t kernel(Card &card, const char *module, const char *name);
@@ -217,6 +236,7 @@ class Model final : public engine::Model {
   LoadInfo info_;
   StepStats stats_;
   MissCounts counts_;
+  StepTimes times_;
 };
 
 }  // namespace engine::deepseek41
