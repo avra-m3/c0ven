@@ -103,8 +103,11 @@ int main() {
     EXPECT(w.ms(8) > 39.3 && w.ms(8) < 39.4, "past, on the line through 1 and 4: %g", w.ms(8));
     w.add(8, 64.0);
     EXPECT(w.ms(8) == 64.0 && w.ms(6) == 45.0, "after 8: %g %g", w.ms(8), w.ms(6));
-    w.add(8, 80.0);
-    EXPECT(w.ms(8) == 65.0, "mean: %g", w.ms(8));
+    // The second time replaces the first (a list's first run), and later ones join a running mean.
+    w.add(8, 48.0);
+    EXPECT(w.ms(8) == 48.0, "second: %g", w.ms(8));
+    w.add(8, 64.0);
+    EXPECT(w.ms(8) == 49.0, "mean: %g", w.ms(8));
   }
 
   // The choice, with times like the cards' (1 row 16 ms, 4 rows 26, 8 rows 64).

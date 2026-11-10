@@ -43,7 +43,7 @@ void Lookup::index(const std::vector<int32_t> &t) {
 void WindowTimes::add(uint32_t rows, double ms) {
   if (rows == 0 || rows >= kWidths) return;
   double &m = ms_[rows];
-  m = m == 0 ? ms : m + (ms - m) / 16;
+  m = n_[rows]++ < 2 ? ms : m + (ms - m) / 16;
 }
 
 double WindowTimes::ms(uint32_t rows) const {

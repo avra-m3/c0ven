@@ -26,19 +26,26 @@ by more than the sampler's probability alone.
 1. The core keeps the probability the sampler gave each draft of the draft layer.
 2. The chance that a draft is accepted, given that the slot's drafts before it were, is a logistic model of the
    log-odds of that probability: one slope, and an offset for each of the 7 places in a slot's drafts
-   (`DraftEstimate`). It starts as the sampler's probability. Every 256 drafts verified it takes one Newton step
-   on them, damped so that 500 drafts move it half a step. A verified draft is one the main model accepted, or the
-   first it rejected. One estimate serves all slots.
-3. After a step of several slots, the rows the next round can spare are shared out before the drafter runs
-   (`share_drafts`). Each writing slot gets one draft. The rest go one at a time to the slot whose next draft is
-   the likeliest to be accepted, by the slot's mean acceptance a draft over its last rounds.
-4. Before a round of several slots, the drafts of all its slots are ranked by the chance that the draft and the
+   (`DraftEstimate`). It starts as the sampler's probability. Every 64 drafts verified it takes one Newton step
+   on them, damped so that half the drafts seen, from 32 to 512, move it half a step. A verified draft is one the
+   main model accepted, or the first it rejected. One estimate serves all slots.
+3. The core times each step and round of several slots by its rows, from the start of its window to the end of
+   the draft layer's pass after it (`round_times`). The draft layer reads every row the round verified and drafts
+   for every slot, so a draft costs its pass time as well as the window's.
+4. After a step of several slots, the rows the next round can spare are shared out before the drafter runs
+   (`share_rows`): each writing slot gets one draft, and the rest go one at a time to the slot whose next draft is
+   the likeliest to be accepted, by the slot's mean acceptance a draft over its last rounds. The drafter makes the
+   first N of them, N the count that gives the most expected tokens a millisecond by `round_times`, and at least
+   one for each slot (`share_drafts`). It makes all of them while fewer than two widths are timed.
+5. Before a round of several slots, the drafts of all its slots are ranked by the chance that the draft and the
    slot's drafts before it are all accepted. The round verifies the N likeliest, where N gives the most expected
-   tokens a millisecond by the measured window times (`choose_verified`). It verifies every draft while fewer than
-   two widths are timed.
-5. Every eighth time item 4 leaves no draft at all, the round verifies each slot's first draft.
-6. A slot makes no more drafts than the tokens it may still write after its next one (`max_tokens`).
-7. A lone slot's round is as before: every draft above `draft_min_p`, or the lookup's
+   tokens a millisecond by `round_times` (`choose_verified`). It verifies every draft while fewer than two widths
+   are timed.
+6. Every eighth round of several slots verifies 2 drafts more than item 5 chose, where it has them, and every
+   eighth time item 5 leaves no draft at all, the round verifies each slot's first draft. A width's second time
+   replaces its first, which holds the first run of its lists.
+7. A slot makes no more drafts than the tokens it may still write after its next one (`max_tokens`).
+8. A lone slot's round is as before: every draft above `draft_min_p`, or the lookup's
    ([ADR-0041](0041-drafts-from-the-slots-own-tokens.md)). `draft_min_p` still ends a slot's drafts in every
    round.
 
@@ -46,12 +53,19 @@ by more than the sampler's probability alone.
 
 No part of this is measured on the cards. The gain expected is where slots differ: a slot on text the drafter
 predicts well takes rows that an equal share gave to a slot whose drafts are rejected. The constants in item 2 are
-*estimates*: 256 and the ridge of 1e-3 follow vLLM's, and the damping of 500 is the value at which a host test with
-made-up acceptances settles within 0.05 of them (`draft_choice_test`).
+*estimates*: the ridge of 1e-3 follows vLLM's, and the damping's top of 512 is a value at which a host test with
+made-up acceptances settles within 0.05 of them (`draft_choice_test`). A first version refitted every 256 drafts
+with a damping of 500: after 300 drafts accepted far more often than their probability said, it had moved 0.04 of
+the 0.27 it was off, and a request of 300 tokens ended before it learned.
 
-Item 3 exists because the block pass is bounded (Context): the rows must be shared before the drafts' probabilities
-are known, so it uses what each slot accepted lately. Item 5 keeps the estimate and the window times measured: a
-round with no drafts measures neither, and one low value would otherwise hold the choice at none.
+Items 3 and 4 come from two ABBA rounds on two cards against main: with window times alone the rounds
+verified fewer drafts than main and ran more of them, and the time outside the window, which holds the draft
+layer's pass, was 1 to 2.4 ms a round more than main's when the drafter made more drafts than a round verified. A choice
+by window time leaves out about 7 ms a round that every round pays, so a draft looks dearer than it is.
+
+Item 4 shares the rows before the drafts' probabilities are known, so it uses what each slot accepted lately.
+Item 6 keeps the estimate and the times measured: a round with no drafts measures neither, and a width the choice
+never runs keeps its time, so one high value would otherwise hold the choice away from it.
 
 ## Options not chosen
 
@@ -74,5 +88,5 @@ round with no drafts measures neither, and one low value would otherwise hold th
 - The estimate learns only from drafts that were verified, and the draft layer of either kind (DFlash 2 or the MTP
   layer) feeds it.
 - The engine reports nothing about the estimate. Its slope and offsets are not in `engine_stats`.
-- `draft_choice_test` checks items 2 to 4 without a card. The change is not accepted until the alternating runs in
-  "Revisit when" show a gain.
+- `draft_choice_test` checks items 2, 4 and 5 without a card. The change is not accepted until the alternating runs
+  in "Revisit when" show a gain.

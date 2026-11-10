@@ -34,7 +34,8 @@ class Lookup {
 };
 
 // How a window's time grows with its rows, from the rounds the core runs: each width's running mean, and for a width
-// not seen yet a line through the nearest widths seen (past the widest, through the two widest).
+// not seen yet a line through the nearest widths seen (past the widest, through the two widest). A width's second
+// time replaces its first, which may hold the first run of the width's lists.
 class WindowTimes {
  public:
   void add(uint32_t rows, double ms);
@@ -46,6 +47,7 @@ class WindowTimes {
  private:
   static constexpr uint32_t kWidths = STEP_MAX_ROWS + 1;  // 0 to STEP_MAX_ROWS
   double ms_[kWidths] = {};
+  uint32_t n_[kWidths] = {};
 };
 
 // What one slot's rounds have accepted lately: the lookup's drafts accepted and its rounds that stopped at a draft,
