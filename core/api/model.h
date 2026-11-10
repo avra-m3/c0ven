@@ -33,6 +33,9 @@ struct Options {
   bool trace = false;                       // the model times every kernel of its lists
   bool profile_routing = false;             // the prompt path counts each expert's rows
   bool adapt_swaps = false;                 // count the routing, for Model::swap_round
+  // On one card, the CPU computes a short chunk's rarest uncached experts (ADR-0072). Its rows round differently from
+  // the card's, so a run's numbers then depend on what shares its chunk: off where they must repeat exactly.
+  bool rare_on_cpu = true;
   // The pages of the KV pool not in use lend their memory to the expert cache; needs adapt_swaps.
   bool share_kv = false;
   // The arena in the process's own memory, which the copy engines read in place (ADR-0035). false, or a card without
