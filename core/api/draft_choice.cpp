@@ -15,26 +15,41 @@ double log_odds(double p) {
 
 double sigmoid(double z) { return 1.0 / (1.0 + std::exp(-z)); }
 
-// The order in which share_rows gives out the spare rows: a slot index for each row.
-std::vector<uint32_t> share_order(const std::vector<DraftOdds> &slots, const std::vector<uint32_t> &caps,
-                                  uint32_t rows, uint32_t max_rows) {
+// The order in which share_rows gives out the spare rows: for each row the slot and the chance that its draft there
+// and those before it are accepted.
+struct Share {
+  uint32_t slot;
+  double survival;
+};
+std::vector<Share> share_order(const std::vector<DraftOdds> &slots, const std::vector<uint32_t> &caps, uint32_t rows,
+                               uint32_t max_rows) {
   const size_t n = slots.size();
-  std::vector<uint32_t> order, d(n, 0);
+  std::vector<Share> order;
+  std::vector<uint32_t> d(n, 0);
+  std::vector<double> next(n);  // the chance that slot i's next draft and those before it are accepted
+  for (size_t i = 0; i < n; i++) next[i] = slots[i].layer_place(0);
+  auto give = [&](size_t i) {
+    order.push_back({(uint32_t)i, next[i]});
+    next[i] *= slots[i].layer_place(++d[i]);
+  };
   uint32_t spare = max_rows > rows ? max_rows - rows : 0;
   for (size_t i = 0; i < n && spare > 0; i++)
-    if (caps[i] > 0) d[i] = 1, spare--, order.push_back((uint32_t)i);
-  std::vector<double> next(n);  // the chance that slot i's next draft and those before it are accepted
-  for (size_t i = 0; i < n; i++) next[i] = std::pow(slots[i].layer_rate(), d[i] + 1);
+    if (caps[i] > 0) give(i), spare--;
   for (; spare > 0; spare--) {
     size_t best = n;
     for (size_t i = 0; i < n; i++)
       if (d[i] < caps[i] && (best == n || next[i] > next[best])) best = i;
     if (best == n) break;
-    d[best]++;
-    next[best] *= slots[best].layer_rate();
-    order.push_back((uint32_t)best);
+    give(best);
   }
   return order;
+}
+
+// The width the draft layer's passes run a pass of n rows at (dflash.cpp).
+uint32_t pass_width(uint32_t n) {
+  uint32_t w = 1;
+  while (w < n) w *= 2;
+  return w;
 }
 
 }  // namespace
@@ -81,39 +96,43 @@ void DraftEstimate::refit() {
 std::vector<uint32_t> share_rows(const std::vector<DraftOdds> &slots, const std::vector<uint32_t> &caps,
                                  uint32_t rows, uint32_t max_rows) {
   std::vector<uint32_t> d(slots.size(), 0);
-  for (uint32_t i : share_order(slots, caps, rows, max_rows)) d[i]++;
+  for (const Share &s : share_order(slots, caps, rows, max_rows)) d[s.slot]++;
   return d;
 }
 
 std::vector<uint32_t> share_drafts(const std::vector<DraftOdds> &slots, const std::vector<uint32_t> &caps,
-                                   uint32_t rows, uint32_t max_rows, const WindowTimes &times) {
-  const std::vector<uint32_t> order = share_order(slots, caps, rows, max_rows);
-  std::vector<uint32_t> d(slots.size(), 0);
+                                   uint32_t rows, uint32_t max_rows, const WindowTimes &window,
+                                   const WindowTimes &drafter) {
+  const std::vector<Share> order = share_order(slots, caps, rows, max_rows);
+  const uint32_t all = (uint32_t)order.size();
   // The first rows of the order are one for each slot that may draft.
   uint32_t floor = 0;
   for (size_t i = 0; i < slots.size(); i++) floor += caps[i] > 0;
-  floor = std::min<uint32_t>(floor, (uint32_t)order.size());
-  uint32_t take = (uint32_t)order.size();
-  if (times.seen() >= 2) {
+  floor = std::min(floor, all);
+  // Until two widths are timed, rounds of at most kStartRows rows, as many as the floor allows: the narrow widths are
+  // timed first, and the times push wider only where a wider round pays.
+  uint32_t take = std::max(floor, std::min(all, kStartRows > rows ? kStartRows - rows : 0));
+  if (window.seen() >= 2) {
     double tokens = rows, best = 0;
-    std::vector<uint32_t> c(slots.size(), 0);
     take = floor;
-    for (uint32_t k = 0; k <= order.size(); k++) {
-      if (k > 0) {
-        const uint32_t i = order[k - 1];
-        tokens += std::pow(slots[i].layer_rate(), ++c[i]);
-      }
+    for (uint32_t k = 0; k <= all; k++) {
+      if (k > 0) tokens += order[k - 1].survival;
       if (k < floor) continue;
-      const double r = tokens / times.ms(rows + k);
+      const double r = tokens / (window.ms(rows + k) + drafter.ms(rows + k));
       if (r > best) best = r, take = k;
     }
   }
-  for (uint32_t k = 0; k < take; k++) d[order[k]]++;
+  // The block pass runs its floor + take rows at a power-of-2 width: drafts that fill it cost nothing more there,
+  // and choose_verified may verify them.
+  if (take > 0) take = std::min(all, pass_width(floor + take) - floor);
+  std::vector<uint32_t> d(slots.size(), 0);
+  for (uint32_t k = 0; k < take; k++) d[order[k].slot]++;
   return d;
 }
 
 std::vector<uint32_t> choose_verified(const std::vector<std::vector<double>> &survival, uint32_t rows,
-                                      uint32_t max_rows, const WindowTimes &times, uint32_t extra) {
+                                      uint32_t max_rows, const WindowTimes &times, const WindowTimes &drafter,
+                                      uint32_t block, uint32_t extra) {
   struct Draft {
     double survival;
     uint32_t slot, place;
@@ -129,11 +148,13 @@ std::vector<uint32_t> choose_verified(const std::vector<std::vector<double>> &su
   const uint32_t most = std::min<uint32_t>((uint32_t)all.size(), max_rows > rows ? max_rows - rows : 0);
   uint32_t take = most;
   if (times.seen() >= 2) {
-    double best = rows / times.ms(rows), tokens = rows;
+    // The draft layer's pass after the round reads its rows beside a block of about this one's.
+    auto ms = [&](uint32_t r) { return times.ms(r) + drafter.ms(std::max(r, block)); };
+    double best = rows / ms(rows), tokens = rows;
     take = 0;
     for (uint32_t k = 1; k <= most; k++) {
       tokens += all[k - 1].survival;
-      const double r = tokens / times.ms(rows + k);
+      const double r = tokens / ms(rows + k);
       if (r > best) best = r, take = k;
     }
     take = std::min(most, take + extra);

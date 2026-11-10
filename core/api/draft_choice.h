@@ -42,18 +42,22 @@ class DraftEstimate {
 
 // The step's spare rows shared among several writing slots. The step holds max_rows rows and rows of them are taken
 // (one a slot in the step). Each slot with a cap gets one row while rows are left, so that its acceptance stays
-// measured; the rest go one at a time to the slot whose next draft is the likeliest to be accepted, by the acceptance
-// a draft of its last rounds (DraftOdds), the lower slot first on a tie. caps[i] is the most slot i may make.
+// measured; the rest go one at a time to the slot whose next draft is the likeliest to be accepted with those before
+// it, by its last rounds' acceptance at each place (DraftOdds::layer_place), the lower slot first on a tie. caps[i] is
+// the most slot i may make.
 std::vector<uint32_t> share_rows(const std::vector<DraftOdds> &slots, const std::vector<uint32_t> &caps,
                                  uint32_t rows, uint32_t max_rows);
 
 // The drafts each of several writing slots makes for the next round: the first N rows share_rows gives out, N the
-// count that gives the most expected tokens a millisecond by the slots' acceptance a draft and times, and at least
-// one for each slot that may draft. times are those of a round of several slots by its rows with the draft layer's
-// pass after it (the core's round_times): the draft layer drafts and reads every row a round verifies, so a draft
-// costs it time as well as the window. All of share_rows while fewer than two widths are timed.
+// count that gives the most expected tokens a millisecond, and at least one for each slot that may draft. A round of
+// rows + N rows costs window's time for its rows and drafter's for rows + N: the draft layer's pass after a round
+// reads its rows and drafts one block row for each slot and draft. Until two widths of window are timed, the first
+// rows up to a round of kStartRows, at least the floor. Then more of share_rows' order, to fill the block pass's
+// power-of-2 width: those drafts cost the pass nothing, and choose_verified weighs them with the rest.
+constexpr uint32_t kStartRows = STEP_MAX_RUN;
 std::vector<uint32_t> share_drafts(const std::vector<DraftOdds> &slots, const std::vector<uint32_t> &caps,
-                                   uint32_t rows, uint32_t max_rows, const WindowTimes &times);
+                                   uint32_t rows, uint32_t max_rows, const WindowTimes &window,
+                                   const WindowTimes &drafter);
 
 // Every this many choices that verify no draft at all, the core verifies each slot's first draft whatever
 // choose_verified gave. A round with no drafts measures neither the estimate nor the wider windows' times, so an
@@ -63,11 +67,14 @@ constexpr uint32_t kVerifyCheck = 8;
 // How many of each slot's drafts a round verifies. survival[i][j] is the chance that slot i's drafts 0 to j are all
 // accepted, so it does not rise with j. The step has rows rows before any draft, each worth one token. The drafts of
 // all slots are ranked by survival, and the round verifies the N likeliest, N the count that gives the most expected
-// tokens a millisecond by times (as share_drafts'); at most max_rows rows in all. Every draft that fits while fewer
-// than two widths are timed: one timed width prices a wider window in proportion to its rows, and no draft would pay.
-// extra more of the ranked drafts than that count, where there are, so that the widths next to the choice stay timed.
+// tokens a millisecond by the window times and the draft layer's pass after the round, drafter's time for the
+// round's rows or block, the block rows that made these drafts, if that is more; at most max_rows rows in all. Every
+// draft that fits while fewer than two widths are timed: one timed width prices a wider window in proportion to its
+// rows, and no draft would pay. extra more of the ranked drafts than that count, where there are, so that the widths
+// next to the choice stay timed.
 std::vector<uint32_t> choose_verified(const std::vector<std::vector<double>> &survival, uint32_t rows,
-                                      uint32_t max_rows, const WindowTimes &times, uint32_t extra = 0);
+                                      uint32_t max_rows, const WindowTimes &times, const WindowTimes &drafter,
+                                      uint32_t block, uint32_t extra = 0);
 
 // Every this many rounds of several slots, the round verifies kExploreRows more drafts than choose_verified chose.
 constexpr uint32_t kExplore = 8, kExploreRows = 2;

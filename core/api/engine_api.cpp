@@ -160,9 +160,10 @@ struct engine_ctx {
   uint32_t undrafted_choices = 0;  // trim_drafts' choices of no draft at all, for its kVerifyCheck; under mu
   uint32_t trim_choices = 0;  // trim_drafts' choices, for its kExplore; under mu
   engine::WindowTimes window_times;  // decode steps of one slot and rounds of any number, by their rows
-  // Steps and rounds of several slots by their rows, each with the draft layer's pass after it: what
-  // draft_shares and trim_drafts weigh a draft's tokens against. Under mu.
-  engine::WindowTimes round_times;
+  // Steps and rounds of several slots: their windows by their rows, and what follows up to the draft layer's drafts
+  // by the window's rows or the drafts' block rows, whichever is more. What draft_shares and trim_drafts weigh a
+  // draft's tokens against. Under mu.
+  engine::WindowTimes several_times, drafter_times;
   engine::SwapCadence swap_cadence;  // when the next swap round is due; under mu
   engine_stats stats{};  // the counters (include/engine_api.h); the model's are copied in at each plan's end
   uint64_t t_open = 0;
@@ -453,17 +454,39 @@ struct engine_ctx {
     std::vector<engine::DraftOdds> odds;
     std::vector<uint32_t> caps;
     for (uint32_t s : who) odds.push_back(slots[s].odds), caps.push_back(draft_cap(slots[s]));
-    return engine::share_drafts(odds, caps, rows, STEP_MAX_ROWS, round_times);
+    return engine::share_drafts(odds, caps, rows, STEP_MAX_ROWS, several_times, drafter_times);
+  }
+
+  // The rows of the draft layer's block pass for seeds: each drafting slot's row and drafts.
+  static uint32_t block_rows(const std::vector<DfSeed> &seeds) {
+    uint32_t n = 0;
+    for (const DfSeed &sd : seeds) n += sd.most ? 1 + std::min<uint32_t>(sd.most, STEP_MAX_RUN - 1) : 0;
+    return n;
+  }
+  static uint32_t block_rows(const std::vector<DraftSeed> &seeds) {
+    uint32_t n = 0;
+    for (const DraftSeed &sd : seeds) n += sd.most ? 1 + sd.most : 0;
+    return n;
+  }
+
+  // A step or round of several slots: its window of rows from t0 to t1, and the draft layer's drafts after it, up to
+  // now, for a block of block rows. Under mu.
+  void time_several(uint32_t rows, uint64_t t0, uint64_t t1, uint32_t block) {
+    several_times.add(rows, (t1 - t0) * 1e-6);
+    drafter_times.add(std::max(rows, block), (now_ns() - t1) * 1e-6);
   }
 
   // Before a round of several slots: each keeps the first of its drafts that the round verifies, the drafts of all of
-  // them ranked by their chance of being accepted (api/draft_choice.h), weighed against round_times. Every
+  // them ranked by their chance of being accepted (api/draft_choice.h), weighed against several_times and the draft
+  // layer's pass after the round in drafter_times, for a block of about the one that made these drafts. Every
   // kExplore-th time the round verifies kExploreRows more, and every kVerifyCheck-th time that leaves no draft at all,
   // each slot keeps its first. Under mu.
   void trim_drafts(const std::vector<uint32_t> &who) {
     std::vector<std::vector<double>> survival;
+    uint32_t block = 0;
     for (uint32_t s : who) {
       const Slot &sl = slots[s];
+      block += sl.drafts.empty() ? 0 : 1 + (uint32_t)sl.drafts.size();
       std::vector<double> v;
       double alive = 1;
       if (sl.draft_p.size() == sl.drafts.size())
@@ -473,7 +496,8 @@ struct engine_ctx {
     }
     const uint32_t rows = (uint32_t)who.size();
     const uint32_t extra = ++trim_choices % engine::kExplore == 0 ? engine::kExploreRows : 0;
-    std::vector<uint32_t> keep = engine::choose_verified(survival, rows, STEP_MAX_ROWS, round_times, extra);
+    std::vector<uint32_t> keep =
+        engine::choose_verified(survival, rows, STEP_MAX_ROWS, several_times, drafter_times, block, extra);
     bool any = false, none = true;
     for (size_t i = 0; i < who.size(); i++) any |= !survival[i].empty(), none &= keep[i] == 0;
     if (any && none && ++undrafted_choices % engine::kVerifyCheck == 0)
@@ -870,9 +894,10 @@ struct engine_ctx {
     uint64_t t0 = now_ns();
     auto out = model->step(rows.data(), (uint32_t)rows.size());
     std::vector<StepIn> mr;  // the draft layer's catch-up: each row with the token after it
+    uint64_t t1;
     {
       std::lock_guard<std::mutex> lk(mu);
-      const uint64_t t1 = now_ns();
+      t1 = now_ns();
       const engine::StepStats &ss = model->last_stats();
       record({ENGINE_TIMING_DECODE, plan, (uint32_t)rows.size(), ss.misses, t0, t1});
       if (rows.size() == 1) window_times.add(1, (t1 - t0) * 1e-6);
@@ -925,7 +950,7 @@ struct engine_ctx {
         Slot &sl = slots[seeds[i].slot];
         if (sl.used && !sl.done) set_drafts(sl, std::move(d[i]));
       }
-      if (rows.size() > 1) round_times.add((uint32_t)rows.size(), (now_ns() - t0) * 1e-6);
+      if (rows.size() > 1) time_several((uint32_t)rows.size(), t0, t1, block_rows(seeds));
       return;
     }
     std::vector<uint32_t> keep;  // the rows that may draft: the writing slots'
@@ -957,7 +982,7 @@ struct engine_ctx {
         Slot &sl = slots[seeds[i].slot];
         if (sl.used && !sl.done) set_drafts(sl, std::move(d[i]));
       }
-      if (rows.size() > 1) round_times.add((uint32_t)rows.size(), (now_ns() - t0) * 1e-6);
+      if (rows.size() > 1) time_several((uint32_t)rows.size(), t0, t1, block_rows(seeds));
       return;
     }
     std::unique_lock<std::mutex> lk(mu);
@@ -1096,9 +1121,10 @@ struct engine_ctx {
     model->commit_runs(runs.data(), ns);
     std::vector<bool> live(ns, false);
     std::vector<uint32_t> share(ns, 0);  // the drafts each slot may make next round
+    uint64_t t1;
     {
       std::lock_guard<std::mutex> lk(mu);
-      const uint64_t t1 = now_ns();
+      t1 = now_ns();
       const engine::StepStats &ss = model->last_stats();
       record({ENGINE_TIMING_ROUND, plan, n, ss.misses, t0, t1});
       window_times.add(n, (t1 - t0) * 1e-6);
@@ -1143,7 +1169,7 @@ struct engine_ctx {
         Slot &sl = slots[seeds[i].slot];
         if (sl.used && !sl.done) set_drafts(sl, std::move(d[i]));
       }
-      round_times.add(n, (now_ns() - t0) * 1e-6);
+      time_several(n, t0, t1, block_rows(seeds));
       return;
     }
     // The draft layer needs no rejected row: its cell is written again before any row reads it. Each live slot's
@@ -1172,7 +1198,7 @@ struct engine_ctx {
       Slot &sl = slots[seeds[i].slot];
       if (sl.used && !sl.done) set_drafts(sl, std::move(d[i]));
     }
-    round_times.add(n, (now_ns() - t0) * 1e-6);
+    time_several(n, t0, t1, block_rows(seeds));
   }
 
   void run() {

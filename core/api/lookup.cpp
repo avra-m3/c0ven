@@ -80,9 +80,19 @@ void DraftOdds::layer_round(uint32_t accepted, uint32_t drafts) {
   layer_accepted = 0.9 * layer_accepted + 0.1 * accepted;
   // The drafts checked: those accepted and the first one rejected; the ones after it say nothing of the acceptance.
   layer_offered = 0.9 * layer_offered + 0.1 * std::min(drafts, accepted + 1);
+  for (uint32_t j = 0; j < std::min({drafts, accepted + 1, kPlaces}); j++) {
+    place_accepted[j] = 0.9 * place_accepted[j] + (j < accepted ? 1 : 0);
+    place_checked[j] = 0.9 * place_checked[j] + 1;
+  }
 }
 
 double DraftOdds::layer_rate() const { return layer_offered > 0 ? std::min(1.0, layer_accepted / layer_offered) : 0.0; }
+
+double DraftOdds::layer_place(uint32_t j) const {
+  double r = 2.0 / 3.0;
+  for (uint32_t i = 0; i <= std::min(j, kPlaces - 1); i++) r = (place_accepted[i] + r) / (place_checked[i] + 1);
+  return r;
+}
 
 double DraftOdds::layer_expected(uint32_t k) const {
   const double p = layer_rate();

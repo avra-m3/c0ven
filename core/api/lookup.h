@@ -62,6 +62,13 @@ struct DraftOdds {
   double layer_expected(uint32_t k) const;
   // The draft layer's acceptance a draft: accepted over checked, at most 1.
   double layer_rate() const;
+  // The chance that the draft layer's draft at place j of a round (0 the first) is accepted when those before it
+  // are: its place's drafts accepted over checked, each decayed by 0.9 when the place is checked again, with the
+  // place before it (2/3 for place 0) counted as one more check. A place never checked has the rate of the one
+  // before it.
+  double layer_place(uint32_t j) const;
+  static constexpr uint32_t kPlaces = STEP_MAX_RUN - 1;
+  double place_accepted[kPlaces] = {}, place_checked[kPlaces] = {};
 };
 
 // The drafts for a round of one slot: how many of the lookup's to take, 0 for the draft layer's. Each choice is worth
