@@ -58,3 +58,10 @@ That reserves 40 GiB, which the host cannot use for anything else while it is re
 from the pool while it lasts, and the rest from ordinary memory; the log says how many pieces are in reserved huge
 pages. A container needs no extra flag, unless its cgroup limits huge pages (`hugetlb.2MB.max`).
 
+The plan keeps for the arena the pieces it needs at its largest, which is more than at the load: the fit report's
+"reserved huge pages kept for the arena at its largest". With `--ngram-ram auto` (the default), the n-gram table
+takes the pages left after that ([ADR-0070](adr/0070-the-ngram-table-takes-the-huge-pages-the-arena-leaves.md)):
+whole when they and the host's memory hold it, or else a row cache of as many rows as they hold. To hold the table
+whole in them, reserve 27 GiB more than the arena needs, 13,824 pages of 2 MiB. The fit report's `ngram` and
+`hugetlb` rows say where the table is, how many rows its cache holds, and what each part takes.
+

@@ -2,7 +2,8 @@
 // the kNgramHeads rows of the table it names. The table stays on the SSD (ADR-0015), read with O_DIRECT 4 KiB reads past the
 // page cache by a pool of reader threads, many because the SSD needs many reads in flight
 // (docs/measurements/MEASUREMENTS.md#2026-10-15-ngram-gather), and rows already read are cached in RAM. Where the host
-// has room, the control plane asks for the whole table in RAM instead (ADR-0057).
+// has room, the control plane asks for the whole table in RAM instead (ADR-0057), and with --hugepages it may give the
+// table or its cache the reserved huge pages the arena leaves (ADR-0070).
 #pragma once
 
 #include <array>
@@ -14,6 +15,7 @@
 
 #include "api/model.h"
 #include "load/gguf.h"
+#include "models/qwen4exp/row_cache.h"
 #include "util/parallel.h"
 
 namespace engine::qwen4exp {
@@ -27,9 +29,13 @@ constexpr uint32_t kNgramHeads = 16;
 class Ngram {
  public:
   // cache_rows: rows the cache holds (raw, ~100 B each); readers: threads reading the SSD. in_ram: read the whole
-  // table into the process's memory now, with loader_threads threads, and serve every row from it.
-  Ngram(const GgufModel &model, uint32_t cache_rows = 1u << 20, unsigned readers = 128, bool in_ram = false,
-        unsigned loader_threads = 8);
+  // table into the process's memory now, with loader_threads threads, and serve every row from it. huge_bytes: bytes
+  // of the host's reserved huge pages, a multiple of their size; with in_ram the table's first huge_bytes are in
+  // them and the rest in the process's own memory, without it the cache fills them, when they hold more than
+  // cache_rows rows. If the pages cannot be mapped, the log says so, and the table stays in the file with a cache of
+  // cache_rows rows.
+  Ngram(const GgufModel &model, uint64_t cache_rows = 1u << 20, unsigned readers = 128, bool in_ram = false,
+        unsigned loader_threads = 8, uint64_t huge_bytes = 0);
   ~Ngram();
 
   // The 16 row ids for token t at a position whose two predecessors are p1 (just before) and p2 (kNoToken when
@@ -48,6 +54,9 @@ class Ngram {
 
   const NgramStats &stats() const { return stats_; }
   bool in_ram() const { return ram_ != nullptr; }
+  uint64_t cache_rows() const { return cache_.slots(); }
+  // The table's or the cache's bytes in reserved huge pages.
+  uint64_t huge_bytes() const { return huge_bytes_; }
   // The mean time of one 4 KiB row read from the SSD, from 256 reads at random rows one at a time, microseconds.
   double read_latency_us();
 
@@ -55,8 +64,17 @@ class Ngram {
   void read_rows(const std::vector<uint64_t> &ids, uint8_t *out);
   void fill(const std::vector<uint64_t> &ids, uint32_t n, float *u);  // ids: 16 a token
 
+  void map_ram(uint64_t huge_bytes);
+  bool map_cache(uint64_t huge_bytes);
+
   uint8_t *ram_ = nullptr;  // the whole table's rows, when in RAM
   size_t ram_bytes_ = 0;
+  struct Mapping {
+    void *at;
+    size_t bytes;
+  };
+  std::vector<Mapping> maps_;  // what the table in RAM or the cache in huge pages mapped, for the destructor
+  uint64_t huge_bytes_ = 0;
   uint64_t rows_ = 0;
   uint64_t mult_[3];
   uint64_t vocab_[kNgramHeads], offset_[kNgramHeads];
@@ -65,10 +83,9 @@ class Ngram {
   int fd_ = -1;
   uint64_t data_offset_ = 0, row_bytes_ = 0, row_values_ = 0;
   uint32_t type_ = 0;
-  // The cache: direct-mapped, row id % slots; touched only by the calling thread.
-  uint32_t slots_ = 0;
-  std::vector<uint64_t> tag_;
-  std::vector<uint8_t> data_;
+  // The cache, touched only by the calling thread; in cache_mem_ unless it is in huge pages.
+  RowCache cache_;
+  std::vector<uint64_t> cache_mem_;
   std::unique_ptr<Pool> readers_;
   NgramStats stats_;
 };

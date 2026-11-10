@@ -164,8 +164,11 @@ Model::Model(const std::string &path, const Options &opt) : opt_(opt), gguf_(pat
   pool_ = std::make_unique<Pool>(opt_.cpu_threads > 1 ? opt_.cpu_threads - 1 : 0);
   cpu_ = std::make_unique<CpuExperts>(*pool_);
   info_.loader_threads = loader_threads();
-  ngram_ = std::make_unique<Ngram>(gguf_, 1u << 20, 128, opt_.ngram_in_ram, info_.loader_threads);
+  ngram_ = std::make_unique<Ngram>(gguf_, 1u << 20, 128, opt_.ngram_in_ram, info_.loader_threads,
+                                   opt_.ngram_huge_bytes);
   info_.ngram_in_ram = ngram_->in_ram();
+  info_.ngram_cache_rows = ngram_->cache_rows();
+  info_.ngram_huge_bytes = ngram_->huge_bytes();
   if (!info_.ngram_in_ram) info_.ngram_read_us = ngram_->read_latency_us();
   for (uint32_t c = 0; c < ncards_; c++) info_.copy_bytes_per_s[c] = measure_copy(c);
   events_ = std::make_unique<ze::EventPool>(*rt_, shape_.layers * (2 * ncards_ + 2) + 1 + shape_.attn_layers() * ncards_);

@@ -153,6 +153,10 @@ class OpenConfig:
     hugetlb_arena: bool = False
     """The expert arena in the host's reserved huge pages (`vm.nr_hugepages`) while they last, the rest in the
     process's own memory."""
+    ngram_hugetlb: int = 0
+    """Bytes of the host's reserved huge pages for the n-gram table, a multiple of their size: with ngram_in_ram its
+    first part, otherwise its row cache, as many rows as they hold. If the core cannot map them, the table is read from
+    the file with the default cache. 0: none."""
     """The image encoder's file (the mmproj GGUF, spec/MODEL_VISION.md); empty: no images."""
 
 
@@ -181,6 +185,10 @@ class EngineFacts:
     ngram_in_ram: bool = False
     ngram_read_us: float = 0.0
     """One 4 KiB row read from the file, microseconds; 0 with the table in RAM."""
+    ngram_cache_rows: int = 0
+    """The rows the n-gram table's cache holds; 0: not reported."""
+    ngram_huge_bytes: int = 0
+    """The n-gram table's or its cache's bytes in reserved huge pages."""
     copy_bytes_per_s: tuple[float, ...] = ()
     """Each card's copy engine reading pinned host memory, bytes a second."""
     expert_budget: tuple[int, ...] = ()

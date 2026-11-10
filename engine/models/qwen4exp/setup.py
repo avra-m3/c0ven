@@ -105,5 +105,6 @@ def open_config(
         deterministic=deterministic,
         draft_dir=str(draft) if draft is not None else "",
         ngram_in_ram=options.ngram_in_ram,
+        ngram_hugetlb=options.ngram_hugetlb,
     )
     return config, mp

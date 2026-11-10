@@ -135,5 +135,8 @@ def model_memory(
         checkpoint_bytes=state,
         max_context=table.context_length,
         ngram_bytes=sum(t.nbytes for t in table.tensors if split_of(t.name) is SplitKind.FILE),
+        ngram_row_bytes=next(
+            (t.nbytes // t.shape[-1] for t in table.tensors if split_of(t.name) is SplitKind.FILE and t.shape), 0
+        ),
         working_of=working_of,
     )
