@@ -9,7 +9,7 @@ from dataclasses import dataclass, field, replace
 import pytest
 
 import protocol
-from engine.api.interface import PROMPT_RUNS, Event, EventKind, OpenConfig, StepPlan
+from engine.api.interface import NO_SLOT, PROMPT_RUNS, Event, EventKind, OpenConfig, StepPlan
 from engine.api.mock import MockEngine, Script
 from engine.scheduler import CheckpointRule, Phase, Scheduler, SchedulerOptions, every_16k
 from engine.seqstate.manager import pages_for
@@ -22,10 +22,17 @@ class SpyEngine(MockEngine):
         script: Script | None = None,
         *,
         prompt_chunk_ms: float = 0.0,
+        prompt_row_ms: float = 0.46,
         fetch_rows: int = 0,
         long_chunk_ms: float | None = None,
     ) -> None:
-        super().__init__(script, prompt_chunk_ms=prompt_chunk_ms, fetch_rows=fetch_rows, long_chunk_ms=long_chunk_ms)
+        super().__init__(
+            script,
+            prompt_chunk_ms=prompt_chunk_ms,
+            prompt_row_ms=prompt_row_ms,
+            fetch_rows=fetch_rows,
+            long_chunk_ms=long_chunk_ms,
+        )
         self.plans: list[StepPlan] = []
         self.calls: list[tuple[str, int, int]] = []
         self.submitted_at: list[int] = []
@@ -85,10 +92,17 @@ def make(
     *,
     fetch_rows: int = 0,
     decode_weight: int = 0,
+    prompt_row_ms: float = 0.46,
     long_chunk_ms: float | None = None,
 ) -> Run:
     config = config or open_config()
-    engine = SpyEngine(script, prompt_chunk_ms=prompt_chunk_ms, fetch_rows=fetch_rows, long_chunk_ms=long_chunk_ms)
+    engine = SpyEngine(
+        script,
+        prompt_chunk_ms=prompt_chunk_ms,
+        prompt_row_ms=prompt_row_ms,
+        fetch_rows=fetch_rows,
+        long_chunk_ms=long_chunk_ms,
+    )
     facts = replace(engine.open(config), fetch_rows=fetch_rows, decode_weight=decode_weight)
     assert facts_of(config).slots == facts.slots
     return Run(engine, Scheduler(engine, facts, options, rule))
@@ -236,6 +250,57 @@ def test_a_prompt_step_waits_for_the_decode_the_step_before_owes():
     steps = [at for at, p in zip(engine.submitted_at, engine.plans, strict=True) if p.prompt][1:]
     gaps = [b - a for a, b in itertools.pairwise(steps)]
     assert min(gaps) >= 4, f"no prompt step before the one before it is done and its decode paid: {gaps}"
+
+
+def step_done(decode_rows: int, prompt_rows: int, ms: float) -> Event:
+    return Event(EventKind.STEP_DONE, NO_SLOT, 0, decode_rows, prompt_rows, int(ms * 1e6))
+
+
+def a_reader_beside_a_writer() -> Run:
+    run = make(open_config(slots=2, context=8192), options=SchedulerOptions(prompt_budget_ms=100.0, decode_share=0.5))
+    run.add(1, prompt(4), 400)
+    run.tick(3)
+    run.add(2, prompt(3000, start=7), 2)
+    run.scheduler._admit(run.events)  # pyright: ignore[reportPrivateUsage]
+    assert run.scheduler.by_rid[2].phase is Phase.PREFILL
+    assert run.scheduler.by_rid[1].phase is Phase.DECODE
+    return run
+
+
+def test_decode_past_what_a_reader_is_owed_is_carried_to_its_next_step():
+    run = a_reader_beside_a_writer()
+    s = run.scheduler
+    s.owed_ms = 50.0
+    for _ in range(3):
+        s._handle(step_done(2, 0, 30.0), run.events)  # pyright: ignore[reportPrivateUsage]
+    assert s.owed_ms == pytest.approx(-40.0), "three 30 ms plans against 50 ms owed: 40 ms past it"
+    s.prompt_step_open = True
+    s._handle(step_done(0, 200, 100.0), run.events)  # pyright: ignore[reportPrivateUsage]
+    assert s.owed_ms == pytest.approx(10.0), "the next prompt step's 50 ms owed, less the 40 ms already given"
+
+
+def test_decode_past_what_a_late_step_done_owes_is_carried_too():
+    run = a_reader_beside_a_writer()
+    s = run.scheduler
+    s.owed_ms = -10.0
+    s.prompt_step_open = True  # a prompt plan is queued behind these plans
+    s._handle(step_done(2, 0, 30.0), run.events)  # pyright: ignore[reportPrivateUsage]
+    assert s.owed_ms == pytest.approx(-40.0)
+
+
+def test_decode_with_nobody_reading_carries_nothing():
+    run = make(open_config(slots=2, context=8192), options=SchedulerOptions(prompt_budget_ms=100.0, decode_share=0.5))
+    run.add(1, prompt(4), 400)
+    run.tick(3)
+    s = run.scheduler
+    s.owed_ms = 50.0
+    for _ in range(3):
+        s._handle(step_done(1, 0, 30.0), run.events)  # pyright: ignore[reportPrivateUsage]
+    assert s.owed_ms == 0.0, "no credit builds up while no prompt waits"
+    run.add(2, prompt(3000, start=7), 2)
+    s._admit(run.events)  # pyright: ignore[reportPrivateUsage]
+    s._handle(step_done(1, 0, 30.0), run.events)  # pyright: ignore[reportPrivateUsage]
+    assert s.owed_ms == -30.0, "a prompt waits now"
 
 
 def test_a_short_prompt_beside_a_writer_is_one_piece():
@@ -624,7 +689,8 @@ def test_a_reading_slot_stopped_for_a_stalled_writer_does_not_take_its_pages_bac
     for rid, (p, n) in reqs.items():
         alone.add(rid, p, n)
         alone.until_idle()
-    run = make(open_config(slots=3, context=512, pages=128), options=small, script=history)
+    # A row costs as much as a decode step, so the reader's steps are long enough for the writer to grow past its pages.
+    run = make(open_config(slots=3, context=512, pages=128), options=small, script=history, prompt_row_ms=11.0)
     for rid in range(writers):
         run.add(rid, *reqs[rid])
     while run.scheduler.state.pool.available * 4 >= 230:  # the reader's 190 cells fit, and little more

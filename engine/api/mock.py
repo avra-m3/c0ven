@@ -259,6 +259,9 @@ class MockEngine:
         self._slots.clear()
         self._queue.clear()
 
+    def queue_stuck(self) -> bool:
+        return False
+
     @property
     def busy(self) -> bool:
         """Work is queued, or a slot is decoding."""

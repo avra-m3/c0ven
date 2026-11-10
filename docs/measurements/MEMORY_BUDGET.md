@@ -272,6 +272,17 @@ processes (the engine's measured 0.40-0.42 GiB RSS at `READY`, same record; the 
 ordinary memory, not large contiguous pages. Level Zero's host allocations do not count against the user's lock limit
 ([the host memory record](MEASUREMENTS.md#2026-10-12-host-memory)).
 
+With `--hugepages` the arena takes the host's free reserved huge pages first, and the plan keeps for it the pieces it
+needs at its largest: the arena grows after the load, as the KV pool takes card memory from the expert cache, down
+to the experts a layer the load keeps room for with the whole pool backed. The plan's count of cached experts is that
+figure, less the fit report's tolerance (5%, at least 8 experts a layer), and one piece more covers the ends of the
+pieces. With `--ngram-ram auto` the n-gram table takes the pages left after that
+([ADR-0070](../adr/0070-the-ngram-table-takes-the-huge-pages-the-arena-leaves.md)). It goes in RAM whole when they and
+the host's memory hold it, its first part in them, with half the host's memory left free beside the part outside
+them. Otherwise its row cache fills them: (8 + 90) B a row, so 13 GiB holds 142,435,139 rows, 44.5% of the table's
+320,001,536. Both parts in reserved huge pages are outside `MemAvailable` and `memory.max`, and the plan counts them
+apart.
+
 Measured on the host on 2026-10-13, with nothing else on the cards ([the design-inputs record](MEASUREMENTS.md#2026-10-13-design-inputs)):
 
 | Measure | Value |
@@ -299,8 +310,8 @@ The arena holds no expert VRAM holds, and its size is:
 
 ```
 host  = min(MemAvailable, memory.max, --ram-max)
-arena = host - pinned - engine working set - n-gram table in RAM - Engram cache - SSD staging ring - prompt host ring
-        - headroom
+arena = reserved huge pages + host - pinned - engine working set - n-gram table in RAM, outside reserved huge pages
+        - Engram cache - SSD staging ring - prompt host ring - headroom
 ```
 
 Pinned here is the streamed KV and the checkpoints. The working set is `PlanOptions.host_working`. Headroom is 24 GiB

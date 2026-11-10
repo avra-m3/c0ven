@@ -4,7 +4,8 @@ Each tick it admits what fits, builds one step plan of changes, submits it, and 
 protocol lines. The rules, from ADR-0017:
 
 - Prompt work is scheduled by time. While a request is writing, a prompt step aims at `prompt_budget_ms`, sized by
-  the cost model; after it, decode is owed `decode_share` of its time before the next prompt step. A prompt chunk's
+  the cost model; after it, decode is owed `decode_share` of its time before the next prompt step. Decode time past
+  that debt is credit against the next one (ADR-0071). A prompt chunk's
   time is mostly a fixed part that each piece pays, so a short prompt is read whole and a long one in pieces sized
   from the fixed part and what decode is worth (`CostModel.piece_ms`), between the budget and `STRETCH` x the budget,
   at most `whole_rows` of the core's `fetch_rows` (`CostModel.rows_within`), or a whole chunk when STRETCH x the
@@ -414,15 +415,19 @@ class Scheduler:
         if running:
             min(running, key=lambda q: (q.priority, -q.admitted)).preempting = True
 
-    def _prompt_spans(self, plan: StepPlan) -> list[tuple[Request, int, bool]]:
-        """Fill the plan's prompt spans. Returns the checkpoints to take after it."""
-        if self.spans_in_flight:
-            return []
-        candidates = [
+    def _readers(self) -> list[Request]:
+        """The requests with prompt left to put in a plan."""
+        return [
             r
             for r in self.by_slot.values()
             if r.phase is Phase.PREFILL and r.remaining > 0 and not (r.cancelled or r.preempting)
         ]
+
+    def _prompt_spans(self, plan: StepPlan) -> list[tuple[Request, int, bool]]:
+        """Fill the plan's prompt spans. Returns the checkpoints to take after it."""
+        if self.spans_in_flight:
+            return []
+        candidates = self._readers()
         if not candidates:
             return []
         writing = any(r.phase is Phase.DECODE for r in self.by_slot.values())
@@ -507,7 +512,9 @@ class Scheduler:
                     prompt_ms = max(0.0, ms - (self.cost.decode_ms.value if event.a else 0.0))
                     self.owed_ms += self.options.decode_share * prompt_ms
                 elif not event.b:
-                    self.owed_ms = max(0.0, self.owed_ms - ms)
+                    self.owed_ms -= ms
+                    if not (self.prompt_step_open or self._readers()):
+                        self.owed_ms = max(0.0, self.owed_ms)  # nobody waits for the decode: no credit to carry
                 return
             case EventKind.CHECKPOINT_DONE:
                 ck = self.state.checkpoints.get(event.a)
