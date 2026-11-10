@@ -37,13 +37,19 @@ class DraftEstimate {
   uint32_t n_[kPlaces] = {}, since_ = 0;
 };
 
-// The drafts each of several writing slots may make for the next round. The step holds max_rows rows and rows of
-// them are taken (one a slot in the step). Each slot with a cap gets one draft while rows are left, so that its
-// acceptance stays measured; the rest go one at a time to the slot whose next draft is the likeliest to be accepted,
-// by the acceptance a draft of its last rounds (DraftOdds), the lower slot first on a tie. caps[i] is the most slot i
-// may make.
+// The step's spare rows shared among several writing slots. The step holds max_rows rows and rows of them are taken
+// (one a slot in the step). Each slot with a cap gets one row while rows are left, so that its acceptance stays
+// measured; the rest go one at a time to the slot whose next draft is the likeliest to be accepted, by the acceptance
+// a draft of its last rounds (DraftOdds), the lower slot first on a tie. caps[i] is the most slot i may make.
+std::vector<uint32_t> share_rows(const std::vector<DraftOdds> &slots, const std::vector<uint32_t> &caps,
+                                 uint32_t rows, uint32_t max_rows);
+
+// The drafts each of several writing slots makes for the next round: its share_rows, cut to one more than
+// choose_verified would take of them by the slot's acceptance a draft. A draft the round does not verify costs the
+// draft layer a row for nothing, and the draft layer's pass widens with its rows. The one more leaves trim_drafts a
+// choice by each draft's own chance. The whole share while fewer than two widths are timed.
 std::vector<uint32_t> share_drafts(const std::vector<DraftOdds> &slots, const std::vector<uint32_t> &caps,
-                                   uint32_t rows, uint32_t max_rows);
+                                   uint32_t rows, uint32_t max_rows, const WindowTimes &times);
 
 // Every this many choices that verify no draft at all, the core verifies each slot's first draft whatever
 // choose_verified gave. A round with no drafts measures neither the estimate nor the wider windows' times, so an

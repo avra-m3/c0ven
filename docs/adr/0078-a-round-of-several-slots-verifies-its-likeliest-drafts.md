@@ -30,8 +30,10 @@ by more than the sampler's probability alone.
    on them, damped so that 500 drafts move it half a step. A verified draft is one the main model accepted, or the
    first it rejected. One estimate serves all slots.
 3. After a step of several slots, the rows the next round can spare are shared out before the drafter runs
-   (`share_drafts`). Each writing slot gets one draft. The rest go one at a time to the slot whose next draft is
-   the likeliest to be accepted, by the slot's mean acceptance a draft over its last rounds.
+   (`share_rows`). Each writing slot gets one draft. The rest go one at a time to the slot whose next draft is
+   the likeliest to be accepted, by the slot's mean acceptance a draft over its last rounds. Each slot then drafts
+   one more than item 4 would verify of its share by that mean acceptance (`share_drafts`), so the drafter does not
+   make drafts the round will not verify. It drafts the whole share while fewer than two widths are timed.
 4. Before a round of several slots, the drafts of all its slots are ranked by the chance that the draft and the
    slot's drafts before it are all accepted. The round verifies the N likeliest, where N gives the most expected
    tokens a millisecond by the measured window times (`choose_verified`). It verifies every draft while fewer than
