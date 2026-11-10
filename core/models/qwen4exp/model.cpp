@@ -883,7 +883,7 @@ void Model::load_card(Card &card) {
   card.idxq = fbuf(shape_.idx_h * shape_.idx_d + shape_.idx_d);
   card.scores = fbuf(nb_max);
   card.bscores = fbuf(shape_.idx_blocks() + 1);
-  card.att = fbuf((size_t)STEP_MAX_ROWS * card.nq * shape_.att_splits() * (shape_.att_key + 2));
+  card.att = fbuf((size_t)card.nq * shape_.att_splits() * (shape_.att_key + 2));  // attn_split's parts for a row
   card.blocks = upload<uint32_t>(card, nullptr, W * (shape_.idx_blocks() + 1) * 4);
   card.cells = upload<uint32_t>(card, nullptr, W * shape_.idx_cells() * 4);
   card.ncells = upload<uint32_t>(card, nullptr, W * 4);
