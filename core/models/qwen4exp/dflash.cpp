@@ -87,6 +87,10 @@ struct DfFile {
 
 }  // namespace
 
+std::vector<uint16_t> read_df_tensor(const std::string &dir, const std::string &name, size_t elements) {
+  return DfFile(dir).tensor(name, elements);
+}
+
 DfConfig read_df_config(const std::string &dir) {
   const std::string path = dir + "/" + kDfConfig;
   std::ifstream f(path);

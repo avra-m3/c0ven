@@ -59,6 +59,9 @@ struct DfConfig {
 // dir's config.json, checked against the sizes the drafter's kernels are built for (layout.h). Throws when the
 // file is missing or a size differs.
 DfConfig read_df_config(const std::string &dir);
+// The BF16 words of one of the drafter's tensors, from dir's model.safetensors. Throws when the tensor is missing,
+// is not BF16 or does not hold `elements` words. For tests: a load reads the file once (dflash.cpp).
+std::vector<uint16_t> read_df_tensor(const std::string &dir, const std::string &name, size_t elements);
 // The MTP layer's routed experts: its router's rows, from the size of its file in dir. Throws when the file is not a
 // whole number of rows of embd values, or the count has no kernels.
 uint32_t mtp_expert_count(const std::string &dir, uint32_t embd);
