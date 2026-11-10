@@ -15,8 +15,8 @@ give no more tokens a second in total, or the same-tokens check differs.
   ([the record](../measurements/MEASUREMENTS.md#2026-10-26-dflash2-acceptance)), so with several slots the step's
   rows run out before the drafts do.
 - The core chooses how many drafts several slots make from their acceptance and the measured time of windows of
-  each width (`choose_shared_drafts`, [the record](../measurements/MEASUREMENTS.md#2026-10-19-draft-rounds-several-writers)).
-  It cannot choose more than the step holds.
+  each width ([the record](../measurements/MEASUREMENTS.md#2026-10-19-draft-rounds-several-writers)). It cannot
+  choose more than the step holds.
 - One more row in a step of three slots costs about 4.45 ms, most of it the CPU's products for experts the cards do
   not hold (*estimate*: from runs with no record in MEASUREMENTS.md).
 
@@ -33,8 +33,9 @@ give no more tokens a second in total, or the same-tokens check differs.
 4. The BF16 products on the XMX units take a step's rows in tiles of 8, a second tile past 8 rows. Rows 0 to 7
    have the same bits as with one tile.
 5. `engine_info.max_step_rows` reports 16. `ENGINE_MAX_STEP_SLOTS` stays 8, and the ABI version does not change.
-6. How many drafts several slots make is still chosen by `choose_shared_drafts`. It may now give two slots up to
-   7 each, three up to 5, 4 and 4, four up to 3 each, and eight 1 each.
+6. Which drafts a round of several slots verifies is chosen as
+   [ADR-0078](0078-a-round-of-several-slots-verifies-its-likeliest-drafts.md) says. The step's rows now let two
+   slots verify up to 7 each, three 13 between them, four 12, and eight 8.
 
 ## Why
 

@@ -65,6 +65,12 @@ double WindowTimes::ms(uint32_t rows) const {
   return 0;
 }
 
+uint32_t WindowTimes::seen() const {
+  uint32_t n = 0;
+  for (uint32_t w = 1; w < kWidths; w++) n += ms_[w] > 0;
+  return n;
+}
+
 void DraftOdds::lookup_round(uint32_t accepted, uint32_t drafts) {
   lookup_accepted = 0.9 * lookup_accepted + accepted;
   lookup_failed = 0.9 * lookup_failed + (accepted < drafts ? 1 : 0);
@@ -76,8 +82,10 @@ void DraftOdds::layer_round(uint32_t accepted, uint32_t drafts) {
   layer_offered = 0.9 * layer_offered + 0.1 * std::min(drafts, accepted + 1);
 }
 
+double DraftOdds::layer_rate() const { return layer_offered > 0 ? std::min(1.0, layer_accepted / layer_offered) : 0.0; }
+
 double DraftOdds::layer_expected(uint32_t k) const {
-  const double p = layer_offered > 0 ? std::min(1.0, layer_accepted / layer_offered) : 0.0;
+  const double p = layer_rate();
   double e = 0, pi = 1;
   for (uint32_t i = 0; i < k; i++) e += (pi *= p);
   return e;
@@ -96,30 +104,6 @@ uint32_t choose_drafts(const DraftOdds &odds, uint32_t layer_drafts, uint32_t dr
     for (uint32_t i = 0; i < l; i++) e += (ql *= q);
     const double r = (1.0 + e) / times.ms(l + 1);
     if (l >= 2 && r > best) best = r, take = l;
-  }
-  return take;
-}
-
-uint32_t choose_shared_drafts(const std::vector<DraftOdds> &slots, uint32_t draft_max, uint32_t max_rows,
-                              const WindowTimes &times) {
-  const uint32_t n = (uint32_t)slots.size();
-  if (n == 0 || n >= max_rows) return 0;
-  // The window's spare rows are handed out as the engine does (draft_share): each slot spare / n, and the first
-  // spare % n slots one more. With k at most each, slot i makes min(k, its share).
-  const uint32_t spare = max_rows - n, most = std::min(draft_max, (spare + n - 1) / n);
-  if (times.ms(n) == 0) return std::min(kSharedDrafts, most);
-  double best = 0;
-  uint32_t take = 0;
-  for (uint32_t k = 0; k <= most; k++) {
-    double tokens = 0;
-    uint32_t rows = n;
-    for (uint32_t i = 0; i < n; i++) {
-      const uint32_t d = std::min(k, spare / n + (i < spare % n ? 1u : 0u));
-      rows += d;
-      tokens += 1.0 + slots[i].layer_expected(d);
-    }
-    const double r = tokens / times.ms(rows);
-    if (r > best) best = r, take = k;
   }
   return take;
 }

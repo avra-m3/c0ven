@@ -40,6 +40,8 @@ class WindowTimes {
   void add(uint32_t rows, double ms);
   // The time of a window of rows; 0 while no width has been seen.
   double ms(uint32_t rows) const;
+  // The widths timed so far.
+  uint32_t seen() const;
 
  private:
   static constexpr uint32_t kWidths = STEP_MAX_ROWS + 1;  // 0 to STEP_MAX_ROWS
@@ -56,6 +58,8 @@ struct DraftOdds {
   // The draft layer's drafts accepted in a round of k: its acceptance a draft, accepted over checked, to the powers
   // 1 to k added (a draft counts only when those before it do).
   double layer_expected(uint32_t k) const;
+  // The draft layer's acceptance a draft: accepted over checked, at most 1.
+  double layer_rate() const;
 };
 
 // The drafts for a round of one slot: how many of the lookup's to take, 0 for the draft layer's. Each choice is worth
@@ -64,19 +68,5 @@ struct DraftOdds {
 // the draft layer makes and as many as a window holds.
 uint32_t choose_drafts(const DraftOdds &odds, uint32_t layer_drafts, uint32_t draft_max, uint32_t lookup_drafts,
                        uint32_t max_rows, const WindowTimes &times);
-
-// The drafts each of several writing slots makes while the window times are not known.
-constexpr uint32_t kSharedDrafts = 2;
-
-// Every this many choices for several slots the core makes kSharedDrafts whatever choose_shared_drafts gives. Rounds
-// with fewer drafts, or none, do not measure the draft layer's acceptance or the wider windows' times, so a low
-// acceptance or a slow window measured once would otherwise keep the choice low for good.
-constexpr uint32_t kSharedCheck = 8;
-
-// The most drafts each of the slots makes in a round of several (one count for all; each makes at most its share of
-// the window's spare rows, as draft_share gives them): the count that gives the most tokens a millisecond, the slots' expected tokens (the row sampled last and the
-// draft layer's drafts accepted) over the time of their windows together. kSharedDrafts until a window's time is known.
-uint32_t choose_shared_drafts(const std::vector<DraftOdds> &slots, uint32_t draft_max, uint32_t max_rows,
-                              const WindowTimes &times);
 
 }  // namespace engine
