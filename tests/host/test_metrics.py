@@ -36,6 +36,19 @@ REPORT = {
     "window_ns": "0",
     "ngram_rows": "1000",
     "ngram_hits": "900",
+    "step_miss_ns": "400000000",
+    "round_miss_ns": "3000000000",
+    "draft_passes": "500",
+    "draft_ns": "2750000000",
+    "layer_drafts_1": "450",
+    "layer_accepted_1": "400",
+    "layer_drafts_2": "300",
+    "layer_accepted_2": "240",
+    "layer_drafts_3": "0",
+    "layer_accepted_3": "0",
+    "layer_stop_max": "90",
+    "layer_stop_share": "270",
+    "layer_stop_p": "45",
     "decode_ms": "11.250",
     "version": "core-abi9",
 }
@@ -66,6 +79,21 @@ def test_derive_divides_what_has_a_divisor():
     assert d["prompt_rows_per_s"] == 2000.0
     assert "window_rows_per_s" not in d, "no windows ran"
     assert d["ngram_hit_rate"] == 0.9
+
+
+def test_derive_reads_the_miss_wait_the_draft_pass_and_the_drafts_by_depth():
+    d = derive(REPORT)
+    assert d["miss_wait_ms_per_step"] == 1.0
+    assert d["miss_wait_ms_per_round"] == 6.0
+    assert d["miss_wait_step_share"] == 0.1
+    assert d["miss_wait_round_share"] == 0.3
+    assert d["miss_wait_ms_per_layer"] == 0.17, "steps' and rounds' layers with a miss together"
+    assert d["draft_pass_ms"] == 5.5
+    assert d["draft_pass_share"] == round(2.75 / 15, 4)
+    assert d["layer_accepted_at_1"] == round(400 / 450, 4)
+    assert d["layer_accepted_at_2"] == 0.8
+    assert "layer_accepted_at_3" not in d, "no run verified three drafts"
+    assert (d["layer_stopped_at_max"], d["layer_stopped_at_share"], d["layer_stopped_at_p"]) == (0.2, 0.6, 0.1)
 
 
 def test_derive_of_nothing_is_empty():

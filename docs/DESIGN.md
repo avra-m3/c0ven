@@ -425,18 +425,43 @@ read its prompt; and each slot's run in a round by the source of its drafts, the
 drafts verified and accepted and the rounds' time; swap rounds, the experts they swapped and their time; stalls,
 checkpoints and restores; the n-gram table's rows, cache hits and SSD reads; and the experts cached per layer at the
 last plan's end, beside the fewest the load keeps room for (ADR-0045). Each counter is one addition where the timing record is already written, so the step pays nothing
-that a measurement could see. `engine_read_stats` copies them out, awake or asleep; `engine_read_slot_stats` gives one
+that a measurement could see.
+
+Further counters say where the decode time goes ([ADR-0075](adr/0075-counters-for-the-miss-wait-the-draft-pass-and-draft-depth.md)).
+`step_miss_ns` and `round_miss_ns` sum the engine thread's time, in plain steps and in rounds, from the moment it has
+seen every row's record of a layer with a miss to the moment it raises that layer's answer flag: the time card 0 waits
+for the CPU's experts. Their count is `step_layers_missed` and `round_layers_missed`. This is the one counter that
+reads the clock where no timing record is written, twice for each layer with a miss: about 33 layers of a round's 48,
+at tens of nanoseconds a read, against a round of about 36 ms (*estimate*, from the clock's usual cost on x86-64).
+`draft_passes` and `draft_ns` sum the `ENGINE_TIMING_DRAFT` records: the sampling and the draft layer's pass after a
+step or round. For the draft layer's drafts, `layer_drafts_1` to `_7` count the drafts verified at each position of a
+slot's run and `layer_accepted_1` to `_7` those accepted there, so `layer_accepted_n / layer_drafts_n` is the share of
+runs that verified n drafts whose first n were all accepted. `layer_stop_max`, `layer_stop_share` and `layer_stop_p`
+count, of the same runs, those whose drafting reached `draft_max`, those that reached the fewer drafts the round's
+share gave the slot (or whose window held fewer rows than its drafts), and those that stopped at a draft below
+`draft_min_p`; the rest stopped at the context's end or the slot's pages. A run of drafts from the slot's own tokens
+counts in none of these. `engine_read_stats` copies them out, awake or asleep; `engine_read_slot_stats` gives one
 admitted slot's: its steps, rounds, drafts and the accepted ones, and the part from its own tokens
 ([ADR-0049](adr/0049-counters-in-the-core-read-by-a-snapshot-call.md)).
 
 The engine process answers `STATS` with the core's counters, the scheduler's (the requests waiting, reading and
-writing, and the cost model's parts) and `swapped_out_pages`, the pages the host has swapped out since the first load
+writing, the cost model's parts, the checkpoints evicted and the KV pool's pages by holder, below) and `swapped_out_pages`, the pages the host has swapped out since the first load
 ended. A thread of its own reads that from `pswpout` in `/proc/vmstat` once a second, and the engine's loop only takes
 the value; a host without the file reports no such counter. Each request's `DONE` line carries its wait for a slot,
 its steps and its drafts. `/metrics` reports both, and the ratios read from the counters (`frontend/metrics.py`): a step's and a
 round's time, misses per decode row, tokens per second of card time in plain steps and in rounds by draft source,
 drafts accepted per run, the share of the writers' passes beside a reading slot that ran as rounds, the engine
-thread's busy share and the swap rounds' part of it. With `--metrics-log`, the
+thread's busy share and the swap rounds' part of it, the miss wait per step, per round and per layer with a miss and
+its share of the steps' and rounds' time, the draft pass's mean time and its share of the busy time, the draft
+layer's acceptance at each position, and the shares of its runs by where drafting stopped.
+
+The scheduler's checkpoint counters are `checkpoints_evicted_pages`, the checkpoints evicted because the KV pool
+could not give the pages an admission or a writing slot's next block wanted, and `checkpoints_evicted_room`, those
+evicted because the checkpoint pool was full when a new one was taken. Each eviction also writes an `INFO` line on the
+`engine.seqstate` logger with the checkpoint's id, its length in tokens and the cause. `cold_admits` counts the
+requests admitted with no checkpoint to restore whose prompt is longer than one chunk (`--chunk-rows`).
+`kv_pages_used` is the KV pool's pages in use, `kv_pages_slots` those an admitted slot holds and
+`kv_pages_checkpoints` those only checkpoints hold. With `--metrics-log`, the
 `frontend.metrics` logger writes each request's record as it ends, and the counters and ratios at that interval and at
 shutdown, each as one JSON object on a line with an `event` of `request` or `snapshot`. The counters start from zero
 with each process, so a log store is what keeps them.

@@ -146,6 +146,7 @@ struct Image {
 struct StepStats {
   uint32_t misses = 0;          // routed experts the CPU computed
   uint32_t layers_missed = 0;   // layers with at least one miss
+  uint64_t miss_ns = 0;         // the host's time from those layers' records being seen to their answers, summed
 };
 
 struct NgramStats {

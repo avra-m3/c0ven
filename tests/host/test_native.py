@@ -549,6 +549,15 @@ def test_the_engines_stats_are_the_cores():
     assert run.engine.slot_stats(7).steps == 0, "zeros for a slot not admitted"
 
 
+def test_the_new_core_counters_reach_the_engines_stats():
+    run = make()
+    c = abi.CStats(round_miss_ns=7, draft_ns=11, layer_drafts_7=3, layer_accepted_1=2, layer_stop_share=5)
+    run.core.read_stats = lambda: c
+    stats = run.engine.stats()
+    assert (stats.round_miss_ns, stats.draft_ns, stats.layer_drafts_7) == (7, 11, 3)
+    assert (stats.layer_accepted_1, stats.layer_stop_share) == (2, 5)
+
+
 def test_a_full_plan_queue_is_waited_out():
     run = make(queue_limit=1)
     prompt = prompt_of(400)

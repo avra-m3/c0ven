@@ -28,7 +28,7 @@ import ctypes
 from dataclasses import dataclass
 from enum import IntEnum
 
-ABI_VERSION = 22
+ABI_VERSION = 23
 
 MAX_STOP = 8
 MAX_STEP_SLOTS = 8
@@ -263,6 +263,15 @@ STATS_FIELDS = (
     "idle_rounds",
     "reading_steps",
     "reading_rounds",
+    "step_miss_ns",
+    "round_miss_ns",
+    "draft_passes",
+    "draft_ns",
+    *(f"layer_drafts_{n}" for n in range(1, 8)),
+    *(f"layer_accepted_{n}" for n in range(1, 8)),
+    "layer_stop_max",
+    "layer_stop_share",
+    "layer_stop_p",
 )
 """`engine_stats`'s fields, in the header's order; all 64-bit counts."""
 

@@ -139,6 +139,20 @@ def test_done_counts_the_wait_for_a_slot_and_the_steps():
     assert float(report["decode_ms"]) > 0
 
 
+def test_the_report_counts_cold_admissions_and_the_pages_checkpoints_hold():
+    run = make(rule=lambda p: [(32, False)] if len(p) > 32 else [], options=SchedulerOptions(chunk_rows=16))
+    run.add(1, prompt(40), 2)
+    run.until_idle()
+    run.add(2, prompt(48), 2)  # restores the checkpoint at 32
+    run.add(3, prompt(10, start=500), 2)  # within one chunk
+    run.until_idle()
+    report = run.scheduler.report()
+    assert report["cold_admits"] == "1", "only the first long prompt had no checkpoint"
+    assert report["kv_pages_slots"] == "0"
+    assert int(report["kv_pages_checkpoints"]) == int(report["kv_pages_used"]) == pages_for(32)
+    assert (report["checkpoints_evicted_pages"], report["checkpoints_evicted_room"]) == ("0", "0")
+
+
 def test_eos_finishes_with_stop():
     run = make(script=lambda tokens: 2 if len(tokens) >= 12 else 7)
     run.add(1, prompt(10), 50)

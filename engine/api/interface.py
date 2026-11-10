@@ -406,6 +406,37 @@ class EngineStats:
     """Of the undrafted steps, those run while another slot read its prompt."""
     reading_rounds: int = 0
     """Of the rounds, those run while another slot read its prompt (ADR-0071)."""
+    step_miss_ns: int = 0
+    """The engine thread's time from a layer's records being published, with a miss among them, to its answer flag
+    being raised, summed over the steps' `step_layers_missed`; `round_miss_ns` the same in the rounds (ADR-0075)."""
+    round_miss_ns: int = 0
+    draft_passes: int = 0
+    """What a plan's decode did after its step or round, the draft layer's pass and the sampling: how many and their
+    time, `draft_ns`."""
+    draft_ns: int = 0
+    layer_drafts_1: int = 0
+    """Of `layer_drafts`, those verified at position n of the slot's run, n from 1 to 7; `layer_accepted_n` of
+    `layer_accepted` the same. `layer_accepted_n / layer_drafts_n` is the share of runs that verified n drafts whose
+    first n were all accepted."""
+    layer_drafts_2: int = 0
+    layer_drafts_3: int = 0
+    layer_drafts_4: int = 0
+    layer_drafts_5: int = 0
+    layer_drafts_6: int = 0
+    layer_drafts_7: int = 0
+    layer_accepted_1: int = 0
+    layer_accepted_2: int = 0
+    layer_accepted_3: int = 0
+    layer_accepted_4: int = 0
+    layer_accepted_5: int = 0
+    layer_accepted_6: int = 0
+    layer_accepted_7: int = 0
+    layer_stop_max: int = 0
+    """Of `layer_runs`, those whose drafting reached `draft_max`; `layer_stop_share` those that reached the fewer
+    drafts the round's share gave the slot, or whose window held fewer rows than its drafts; `layer_stop_p` those that
+    stopped at a draft below `draft_min_p`. The rest stopped at the context's end or the slot's pages."""
+    layer_stop_share: int = 0
+    layer_stop_p: int = 0
 
 
 @dataclass(frozen=True, slots=True)
