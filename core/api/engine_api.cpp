@@ -61,8 +61,9 @@ std::vector<SlotImage> images_before(const std::vector<SlotImage> &ims, uint32_t
 enum DraftStop : uint8_t {
   kStopNone,   // no drafts made since the last round, or stopped at the context's end
   kStopMax,    // reached draft_max
-  kStopShare,  // reached the fewer drafts the round's share gave it
+  kStopShare,  // reached the fewer drafts the round's share of the window's rows gave it
   kStopP,      // a draft fell below draft_min_p
+  kStopChoice, // reached the fewer drafts shared_most chose for the round, below its share of the rows
 };
 
 // engine_stats' counters by a draft's position in its slot's run, 1 to kDepths.
@@ -349,11 +350,11 @@ struct engine_ctx {
     return d;
   }
 
-  // Why drafting that ended with got drafts, of most at most, stopped: at draft_max, at a smaller share, or at the
-  // context's end.
-  DraftStop reached(size_t got, uint32_t most) const {
+  // Why drafting that ended with got drafts, of most at most, stopped: at draft_max, at most for the reason limit
+  // (share_limit), or at the context's end.
+  DraftStop reached(size_t got, uint32_t most, DraftStop limit = kStopShare) const {
     if (got >= draft_max) return kStopMax;
-    return got >= most ? kStopShare : kStopNone;
+    return got >= most ? limit : kStopNone;
   }
 
   // One slot's drafting from a pass's row: its sampler, the first draft's position, the row's candidates, the row,
@@ -366,7 +367,8 @@ struct engine_ctx {
     uint32_t src;
     uint32_t most;
     std::vector<int32_t> hist;
-    DraftStop stop = kStopNone;  // set by the drafting
+    DraftStop limit = kStopShare;  // why most is what it is (share_limit)
+    DraftStop stop = kStopNone;    // set by the drafting
   };
 
   // make_drafts for several slots at once, each further draft of every slot still drafting in one pass of the draft
@@ -377,14 +379,14 @@ struct engine_ctx {
     std::vector<uint32_t> src(n), live;
     for (size_t i = 0; i < n; i++) {
       DraftSeed &sd = seeds[i];
-      sd.stop = sd.most == 0 ? kStopShare : kStopNone;
+      sd.stop = sd.most == 0 ? sd.limit : kStopNone;
       if (sd.most == 0 || sd.first.empty()) continue;
       std::pair<int32_t, double> pick = sample_p(sd.first, sd.settings, sd.pos, sd.hist);
       sd.stop = kStopP;
       if (pick.second < draft_min_p) continue;
       d[i].push_back(pick.first);
       src[i] = sd.src;
-      sd.stop = reached(d[i].size(), sd.most);
+      sd.stop = reached(d[i].size(), sd.most, sd.limit);
       if (d[i].size() < sd.most && sd.pos + 2 < info.max_ctx) live.push_back((uint32_t)i);
     }
     while (!live.empty()) {
@@ -405,7 +407,7 @@ struct engine_ctx {
         sd.stop = kStopP;
         if (pick.second < draft_min_p) continue;
         d[i].push_back(pick.first);
-        sd.stop = reached(d[i].size(), sd.most);
+        sd.stop = reached(d[i].size(), sd.most, sd.limit);
         if (d[i].size() < sd.most && sd.pos + d[i].size() + 1 < info.max_ctx) still.push_back(i);
       }
       live = std::move(still);
@@ -422,7 +424,8 @@ struct engine_ctx {
     int32_t anchor;
     uint32_t most;
     std::vector<int32_t> hist;
-    DraftStop stop = kStopNone;  // set by the drafting
+    DraftStop limit = kStopShare;  // why most is what it is (share_limit)
+    DraftStop stop = kStopNone;    // set by the drafting
   };
 
   // DFlash 2 (dflash.cpp): the context pass over ctx, rows of the last step whose features the cards hold, then one
@@ -435,7 +438,7 @@ struct engine_ctx {
     for (size_t i = 0; i < seeds.size(); i++) {
       DfSeed &sd = seeds[i];
       const uint32_t most = std::min<uint32_t>(sd.most, STEP_MAX_ROWS - 1);
-      sd.stop = most == 0 ? kStopShare : kStopNone;
+      sd.stop = most == 0 ? sd.limit : kStopNone;
       if (most == 0 || sd.pos == 0 || sd.pos >= info.max_ctx) continue;
       blocks.push_back({sd.slot, sd.pos - 1, sd.anchor, 1 + most});
       of.push_back(i);
@@ -444,7 +447,7 @@ struct engine_ctx {
     auto c = model->df_pass(ctx, nctx, blocks.data(), (uint32_t)blocks.size());
     for (size_t b = 0; b < blocks.size(); b++) {
       DfSeed &sd = seeds[of[b]];
-      sd.stop = reached(c[b].size(), blocks[b].n - 1);
+      sd.stop = reached(c[b].size(), blocks[b].n - 1, sd.limit);
       for (uint32_t k = 0; k < c[b].size(); k++) {
         if (k > 0 && sd.pos + k + 1 >= info.max_ctx) {
           sd.stop = kStopNone;
@@ -468,6 +471,15 @@ struct engine_ctx {
     if (n >= STEP_MAX_ROWS) return 0;
     const uint32_t spare = STEP_MAX_ROWS - n;
     return std::min({draft_max, most, spare / n + (i < spare % n ? 1u : 0u)});
+  }
+
+  // Why draft_share(i, n, most) is what it is, for engine_stats.layer_stop_*: kStopChoice when most (shared_most's
+  // choice) is below both draft_max and the slot's share of the window's rows, kStopShare otherwise (reached counts
+  // draft_max first).
+  DraftStop share_limit(uint32_t i, uint32_t n, uint32_t most) const {
+    if (n >= STEP_MAX_ROWS) return kStopShare;
+    const uint32_t spare = STEP_MAX_ROWS - n, rows = spare / n + (i < spare % n ? 1u : 0u);
+    return most < rows && most < draft_max ? kStopChoice : kStopShare;
   }
 
   // The most drafts each of several writing slots makes, from their acceptance and the window times
@@ -517,6 +529,7 @@ struct engine_ctx {
       stats.layer_stop_max += why == kStopMax;
       stats.layer_stop_share += why == kStopShare;
       stats.layer_stop_p += why == kStopP;
+      stats.layer_stop_choice += why == kStopChoice;
     }
     round_ns = 0;  // a round of several slots counts its time once, to the layer
   }
@@ -911,7 +924,7 @@ struct engine_ctx {
           const Slot &sl = slots[mr[i].slot];
           if (sl.used && !sl.done && sl.fed >= sl.prompt.size())
             seeds.push_back({mr[i].slot, sl.settings, sl.fed + 1, sl.next, draft_share(i, n, most),
-                             draft_history(sl)});
+                             draft_history(sl), share_limit(i, n, most)});
         }
       }
       auto d = df_drafts(mr.data(), (uint32_t)mr.size(), seeds);
@@ -941,7 +954,8 @@ struct engine_ctx {
           const Slot &sl = slots[mr[i].slot];
           if (sl.used && !sl.done)
             seeds.push_back({mr[i].slot, sl.settings, sl.fed + 1, dc[j], j,
-                             draft_share(i, (uint32_t)mr.size(), most), draft_history(sl)});
+                             draft_share(i, (uint32_t)mr.size(), most), draft_history(sl),
+                             share_limit(i, (uint32_t)mr.size(), most)});
         }
       }
       auto d = make_drafts_many(seeds);
@@ -1127,7 +1141,7 @@ struct engine_ctx {
         if (live[i]) {
           if (penalised(settings[i])) hist[i].push_back(picks[i][acc[i]]);
           seeds.push_back({row0[i].slot, settings[i], row0[i].pos + acc[i] + 2, picks[i][acc[i]], draft_share(i, ns, most),
-                           std::move(hist[i])});
+                           std::move(hist[i]), share_limit(i, ns, most)});
         }
       auto d = df_drafts(mr.data(), n, seeds);
       std::lock_guard<std::mutex> lk(mu);
@@ -1154,7 +1168,7 @@ struct engine_ctx {
       if (live[i]) {
         if (penalised(settings[i])) hist[i].push_back(picks[i][acc[i]]);
         seeds.push_back({row0[i].slot, settings[i], row0[i].pos + acc[i] + 2, dc[j], j, draft_share(i, ns, most),
-                         std::move(hist[i])});
+                         std::move(hist[i]), share_limit(i, ns, most)});
         j++;
       }
     auto d = make_drafts_many(seeds);
@@ -1794,7 +1808,7 @@ uint32_t engine_abi_layout(engine_abi_row *table, uint32_t cap) {
       ROW(engine_stats, layer_accepted_1), ROW(engine_stats, layer_accepted_2), ROW(engine_stats, layer_accepted_3),
       ROW(engine_stats, layer_accepted_4), ROW(engine_stats, layer_accepted_5), ROW(engine_stats, layer_accepted_6),
       ROW(engine_stats, layer_accepted_7), ROW(engine_stats, layer_stop_max), ROW(engine_stats, layer_stop_share),
-      ROW(engine_stats, layer_stop_p), SIZE(engine_stats),
+      ROW(engine_stats, layer_stop_p), ROW(engine_stats, layer_stop_choice), SIZE(engine_stats),
       ROW(engine_slot_stats, steps), ROW(engine_slot_stats, rounds), ROW(engine_slot_stats, drafts),
       ROW(engine_slot_stats, accepted), ROW(engine_slot_stats, lookup_rounds), ROW(engine_slot_stats, lookup_drafts),
       ROW(engine_slot_stats, lookup_accepted), SIZE(engine_slot_stats),

@@ -542,6 +542,7 @@ def test_the_new_counters_reach_metrics_as_numbers_and_ratios(client: TestClient
         "draft_ns",
         "layer_drafts_7",
         "layer_stop_p",
+        "layer_stop_choice",
         "checkpoints_evicted_pages",
         "cold_admits",
         "kv_pages_checkpoints",

@@ -49,6 +49,7 @@ REPORT = {
     "layer_stop_max": "90",
     "layer_stop_share": "270",
     "layer_stop_p": "45",
+    "layer_stop_choice": "36",
     "decode_ms": "11.250",
     "version": "core-abi9",
 }
@@ -94,6 +95,7 @@ def test_derive_reads_the_miss_wait_the_draft_pass_and_the_drafts_by_depth():
     assert d["layer_accepted_at_2"] == 0.8
     assert "layer_accepted_at_3" not in d, "no run verified three drafts"
     assert (d["layer_stopped_at_max"], d["layer_stopped_at_share"], d["layer_stopped_at_p"]) == (0.2, 0.6, 0.1)
+    assert d["layer_stopped_at_choice"] == 0.08
 
 
 def test_derive_of_nothing_is_empty():

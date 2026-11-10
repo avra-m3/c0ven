@@ -287,6 +287,8 @@ typedef struct {
                                   held fewer rows than its drafts */
   uint64_t layer_stop_p;       /* those that stopped at a draft below draft_min_p; the rest stopped at the context's
                                   end or the slot's pages */
+  uint64_t layer_stop_choice;  /* those that reached the fewer drafts the core chose for a round of several writing
+                                  slots, below the slot's share of the rows and draft_max */
 } engine_stats;
 
 /* One slot's counters since admit: its own decode, not its prompt. */

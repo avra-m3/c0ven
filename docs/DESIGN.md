@@ -436,10 +436,11 @@ at tens of nanoseconds a read, against a round of about 36 ms (*estimate*, from 
 `draft_passes` and `draft_ns` sum the `ENGINE_TIMING_DRAFT` records: the sampling and the draft layer's pass after a
 step or round. For the draft layer's drafts, `layer_drafts_1` to `_7` count the drafts verified at each position of a
 slot's run and `layer_accepted_1` to `_7` those accepted there, so `layer_accepted_n / layer_drafts_n` is the share of
-runs that verified n drafts whose first n were all accepted. `layer_stop_max`, `layer_stop_share` and `layer_stop_p`
-count, of the same runs, those whose drafting reached `draft_max`, those that reached the fewer drafts the round's
-share gave the slot (or whose window held fewer rows than its drafts), and those that stopped at a draft below
-`draft_min_p`; the rest stopped at the context's end or the slot's pages. A run of drafts from the slot's own tokens
+runs that verified n drafts whose first n were all accepted. `layer_stop_max`, `layer_stop_share`, `layer_stop_p` and
+`layer_stop_choice` count, of the same runs, those whose drafting reached `draft_max`, those that reached the fewer
+drafts the round's share gave the slot (or whose window held fewer rows than its drafts), those that stopped at a draft
+below `draft_min_p`, and those that reached the fewer drafts the core chose for a round of several writing slots
+(`choose_shared_drafts`), below the slot's share; the rest stopped at the context's end or the slot's pages. A run of drafts from the slot's own tokens
 counts in none of these. `engine_read_stats` copies them out, awake or asleep; `engine_read_slot_stats` gives one
 admitted slot's: its steps, rounds, drafts and the accepted ones, and the part from its own tokens
 ([ADR-0049](adr/0049-counters-in-the-core-read-by-a-snapshot-call.md)).

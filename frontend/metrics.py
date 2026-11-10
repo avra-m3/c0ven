@@ -40,9 +40,10 @@ def derive(report: Mapping[str, str]) -> dict[str, float]:
     `draft_pass_ms`: what a plan's decode did after its step or round, the draft layer's pass with the sampling, on
     average; `draft_pass_share` its part of the engine thread's time in plans.
     `layer_accepted_at_<n>`, n from 1 to 7: of the slot-runs that verified n or more of the draft layer's drafts, those
-    whose first n were accepted. `layer_stopped_at_max`, `_share` and `_p`: of the slot-runs with the draft layer's
-    drafts, those whose drafting reached `draft_max`, reached the fewer drafts the round's share gave the slot, or
-    stopped at a draft below `draft_min_p`."""
+    whose first n were accepted. `layer_stopped_at_max`, `_share`, `_p` and `_choice`: of the slot-runs with the draft
+    layer's drafts, those whose drafting reached `draft_max`, reached the fewer drafts the round's share gave the slot,
+    stopped at a draft below `draft_min_p`, or reached the fewer drafts the core chose for a round of several writing
+    slots."""
     n = numbers(report)
 
     def count(key: str) -> float:
@@ -89,6 +90,6 @@ def derive(report: Mapping[str, str]) -> dict[str, float]:
     ratio("draft_pass_share", count("draft_ns"), count("busy_ns"))
     for depth in range(1, 8):
         ratio(f"layer_accepted_at_{depth}", count(f"layer_accepted_{depth}"), count(f"layer_drafts_{depth}"))
-    for why in ("max", "share", "p"):
+    for why in ("max", "share", "p", "choice"):
         ratio(f"layer_stopped_at_{why}", count(f"layer_stop_{why}"), count("layer_runs"))
     return out

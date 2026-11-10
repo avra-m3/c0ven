@@ -29,9 +29,12 @@ about decode time needs a counter these do not give.
    - `draft_passes` and `draft_ns`: the `ENGINE_TIMING_DRAFT` records, summed where each is written.
    - `layer_drafts_1` to `layer_drafts_7` and `layer_accepted_1` to `layer_accepted_7`: of the draft layer's drafts,
      those verified and those accepted at each position of the slot's run.
-   - `layer_stop_max`, `layer_stop_share` and `layer_stop_p`: of the slot-runs with the draft layer's drafts, those
-     whose drafting reached `draft_max`, those that reached the fewer drafts the round's share gave the slot or whose
-     window held fewer rows than its drafts, and those that stopped at a draft below `draft_min_p`. The reason is
+   - `layer_stop_max`, `layer_stop_share`, `layer_stop_p` and `layer_stop_choice`: of the slot-runs with the draft
+     layer's drafts, those whose drafting reached `draft_max`, those that reached the fewer drafts the round's share
+     gave the slot or whose window held fewer rows than its drafts, those that stopped at a draft below
+     `draft_min_p`, and those that reached the fewer drafts the core chose for a round of several writing slots
+     (`choose_shared_drafts`), below the slot's share of the rows. The last two tell apart a round held short by the
+     window's 8 rows and one held short by the choice. The reason is
      kept with the slot's drafts when they are made, and counted when the round verifies them.
 2. The scheduler's `STATS` pairs gain `checkpoints_evicted_pages` (evicted because the KV pool could not give an
    admission's or a slot's growth's pages), `checkpoints_evicted_room` (evicted because the checkpoint pool was full),

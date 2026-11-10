@@ -434,9 +434,12 @@ class EngineStats:
     layer_stop_max: int = 0
     """Of `layer_runs`, those whose drafting reached `draft_max`; `layer_stop_share` those that reached the fewer
     drafts the round's share gave the slot, or whose window held fewer rows than its drafts; `layer_stop_p` those that
-    stopped at a draft below `draft_min_p`. The rest stopped at the context's end or the slot's pages."""
+    stopped at a draft below `draft_min_p`; `layer_stop_choice` those that reached the fewer drafts the core chose for
+    a round of several writing slots, below the slot's share of the rows. The rest stopped at the context's end or the
+    slot's pages."""
     layer_stop_share: int = 0
     layer_stop_p: int = 0
+    layer_stop_choice: int = 0
 
 
 @dataclass(frozen=True, slots=True)

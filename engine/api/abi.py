@@ -272,6 +272,7 @@ STATS_FIELDS = (
     "layer_stop_max",
     "layer_stop_share",
     "layer_stop_p",
+    "layer_stop_choice",
 )
 """`engine_stats`'s fields, in the header's order; all 64-bit counts."""
 
