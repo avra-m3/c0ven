@@ -1,6 +1,8 @@
 # ADR-0066: the arena may take the host's reserved huge pages
 
-**Status:** draft. 2026-11-07.
+**Status:** draft. 2026-11-07. Item 3 superseded by
+[ADR-0070](0070-the-ngram-table-takes-the-huge-pages-the-arena-leaves.md): the n-gram table takes the pages the arena
+leaves.
 **Revisit when:** a run with `--hugepages` is timed against one without it, or the kernel starts moving reserved huge
 pages under the arena's bindings.
 

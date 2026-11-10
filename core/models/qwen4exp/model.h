@@ -251,6 +251,9 @@ class Model final : public engine::Model {
   // A short chunk's staging on card c, on its own thread: each layer's uncached experts in order (hottest first)
   // until the router's counts are in, then the rest it routes to.
   void fetch_experts(uint32_t c, const std::vector<std::vector<uint32_t>> &order);
+  // A short chunk's uncached experts that kCpuRows rows or fewer picked, on one card: each layer's, on this thread and
+  // the workers, as the chunk reads back the layer's inputs.
+  void rare_experts();
   ze::List &prompt_list(Card &card, uint32_t T, uint32_t runs);
   uint32_t pev(uint32_t kind, uint32_t layer, uint32_t c) const;
   Mat mat(Card &card, const GgufTensor &t, const std::vector<std::pair<uint64_t, uint64_t>> &rows,
@@ -352,6 +355,7 @@ class Model final : public engine::Model {
   uint32_t kv_pages_ = 0;  // pages in the pool
   uint32_t kv_res_ = 0;    // streamed (Options::kv_resident): the ring of resident K and V pages a layer on each
                            // card, at most; 0: every page resident
+  uint16_t *xg_host_ = nullptr;  // the inputs of what the CPU computes in a short chunk; kept across sleeps
   std::vector<uint8_t *> kv_host_;  // the host copies of K and V, [card][attention layer][K, V]; kept across sleeps
   std::vector<uint32_t> kvs_to_;    // [slot] the position its pages are claimed through (kvs_claim), 0: not settled
   uint32_t ring_level_ = 0;         // the ring's size on the cards (kst[4])
