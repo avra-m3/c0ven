@@ -37,6 +37,9 @@ HcMix hc_mixes(const float *X, const float *fn, const float *scale, const float 
 // earlier sublayer's: the previous FFN's for attention, this layer's attention's for the FFN.
 void hc_collapse_norm(const float *X, const float *pre, const float *w, float *x);
 
+// The collapse alone: x = sum_c pre[c] X_c. The drafter's keep chance reads it before the norm.
+void hc_collapse(const float *X, const float *pre, float *x);
+
 // The streams after a sublayer (sections 3e, 3h; M Block.hc_post): out_dst = post[dst] y + sum_src comb[src][dst]
 // X_src. out must not alias X.
 void hc_post(const float *X, const float *y, const HcMix &mix, float *out);
@@ -96,6 +99,9 @@ struct Route {
   float w[D41_USED];
 };
 Route router(const float *logits, const float *bias);
+
+// The same for n experts of which used are taken: the drafter's layers have their own counts.
+void route(const float *logits, const float *bias, uint32_t n, uint32_t used, int32_t *id, float *w);
 
 // The SwiGLU of an expert's gate and up values with the clamp (section 3g; M Expert.forward):
 // silu(min(g, D41_SWIGLU_LIMIT)) clamp(u, -D41_SWIGLU_LIMIT, D41_SWIGLU_LIMIT).

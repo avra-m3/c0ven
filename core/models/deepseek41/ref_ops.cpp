@@ -86,12 +86,16 @@ HcMix hc_mixes(const float *X, const float *fn, const float *scale, const float 
   return hc_split(m, scale, base);
 }
 
-void hc_collapse_norm(const float *X, const float *pre, const float *w, float *x) {
+void hc_collapse(const float *X, const float *pre, float *x) {
   for (uint32_t d = 0; d < D41_EMBD; d++) {
     double s = 0;
     for (uint32_t c = 0; c < D41_HC; c++) s += (double)pre[c] * X[(size_t)c * D41_EMBD + d];
     x[d] = (float)s;
   }
+}
+
+void hc_collapse_norm(const float *X, const float *pre, const float *w, float *x) {
+  hc_collapse(X, pre, x);
   rms_norm(x, w, D41_EMBD, x);
 }
 
@@ -222,21 +226,25 @@ void grouped_output(const float *o, const float *wo_a, const float *wo_b, float 
   for (uint32_t i = 0; i < D41_EMBD; i++) out[i] = (float)dot(wo_b + (size_t)i * D41_OG * D41_OLR, a, D41_OG * D41_OLR);
 }
 
-Route router(const float *logits, const float *bias) {
-  float s[D41_EXPERTS], b[D41_EXPERTS];
-  for (uint32_t e = 0; e < D41_EXPERTS; e++) {
+void route(const float *logits, const float *bias, uint32_t n, uint32_t used, int32_t *id, float *w) {
+  std::vector<float> s(n), b(n);
+  for (uint32_t e = 0; e < n; e++) {
     // softplus as torch and ggml take it: x itself above 20.
     const float x = logits[e], sp = x > 20.0f ? x : std::log1p(std::exp(x));
     s[e] = std::sqrt(sp);
     b[e] = s[e] + bias[e];
   }
-  uint32_t order[D41_EXPERTS];
-  std::iota(order, order + D41_EXPERTS, 0u);
-  std::stable_sort(order, order + D41_EXPERTS, [&](uint32_t x, uint32_t y) { return b[x] > b[y]; });
-  Route r;
+  std::vector<uint32_t> order(n);
+  std::iota(order.begin(), order.end(), 0u);
+  std::stable_sort(order.begin(), order.end(), [&](uint32_t x, uint32_t y) { return b[x] > b[y]; });
   float sum = 0;
-  for (uint32_t k = 0; k < D41_USED; k++) r.id[k] = (int32_t)order[k], sum += s[order[k]];
-  for (uint32_t k = 0; k < D41_USED; k++) r.w[k] = s[r.id[k]] / (sum + D41_EPS) * D41_ROUTE_SCALE;
+  for (uint32_t k = 0; k < used; k++) id[k] = (int32_t)order[k], sum += s[order[k]];
+  for (uint32_t k = 0; k < used; k++) w[k] = s[id[k]] / (sum + D41_EPS) * D41_ROUTE_SCALE;
+}
+
+Route router(const float *logits, const float *bias) {
+  Route r;
+  route(logits, bias, D41_EXPERTS, D41_USED, r.id, r.w);
   return r;
 }
 

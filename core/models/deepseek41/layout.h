@@ -43,6 +43,17 @@
 #define D41_SWIGLU_LIMIT 10.0f         // min(g, L) and clamp(u, -L, L), routed and shared experts
 
 #define D41_VOCAB 129280
+
+// The drafter (the file's own draft model, a second GGUF): D41_DSP_LAYERS layers shaped as the window-only ones, with
+// fewer routed experts. A draft is one pass over a block: the last chosen token, then noise tokens.
+#define D41_DSP_LAYERS 3
+#define D41_DSP_EXPERTS 128
+#define D41_DSP_USED 3
+#define D41_DSP_BLOCK 5                // tokens a draft holds at most
+#define D41_DSP_RANK 256               // the previous token's row that biases a draft's logits
+#define D41_DSP_TARGETS 3              // model layers whose inputs feed it
+#define D41_DSP_TARGET0 37             // the first of them; the others follow
+#define D41_DSP_FEATURES (D41_DSP_TARGETS * D41_EMBD)
 #define D41_ENG_NGRAM 4                // a token and the three before it
 #define D41_ENG_HEADS 8                // heads an n-gram size
 #define D41_ENG_COLS ((D41_ENG_NGRAM - 1) * D41_ENG_HEADS)  // 24 rows a token and Engram layer

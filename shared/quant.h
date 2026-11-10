@@ -30,12 +30,13 @@
 #define QT_IQ4_XS 23
 #define QT_IQ1_M 29
 #define QT_BF16 30
+#define QT_MXFP4 39  // 32 values a block: one power-of-two scale, then 4-bit floats
 #define QT_Q2_0 42
 
 // Values per block.
 SHARED_FN u32 quant_block_values(u32 t) {
   switch (t) {
-    case QT_Q4_0: case QT_Q5_0: case QT_Q5_1: case QT_Q8_0: case QT_Q8_1: case QT_IQ4_NL: return 32;
+    case QT_Q4_0: case QT_Q5_0: case QT_Q5_1: case QT_Q8_0: case QT_Q8_1: case QT_IQ4_NL: case QT_MXFP4: return 32;
     case QT_Q2_0: return 64;
     case QT_Q2_K: case QT_Q3_K: case QT_Q4_K: case QT_Q5_K: case QT_Q6_K: case QT_Q8_K:
     case QT_IQ1_S: case QT_IQ1_M: case QT_IQ2_XXS: case QT_IQ2_XS:
@@ -70,6 +71,7 @@ SHARED_FN u32 quant_block_bytes(u32 t) {
     case QT_IQ2_S: return 82;
     case QT_IQ4_XS: return 136;
     case QT_Q2_0: return 18;
+    case QT_MXFP4: return 17;
     default: return 0;
   }
 }

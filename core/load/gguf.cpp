@@ -146,6 +146,7 @@ const char *ggml_type_label(uint32_t type) {
     case QT_IQ2_S: return "IQ2_S";
     case QT_IQ4_XS: return "IQ4_XS";
     case QT_Q2_0: return "Q2_0";
+    case QT_MXFP4: return "MXFP4";
   }
   return "?";
 }
