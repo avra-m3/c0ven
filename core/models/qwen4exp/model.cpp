@@ -857,7 +857,13 @@ void Model::load_card(Card &card) {
   // The decode step's buffers, for STEP_MAX_ROWS rows.
   constexpr size_t W = STEP_MAX_ROWS;
   auto fbuf = [&](size_t n) { return upload<float>(card, nullptr, W * n * 4); };
-  const uint32_t nb_max = opt_.max_ctx / shape_.idx_block;
+  // The indexer's scores of this card's blocks (idx_score's row stride), the attention's parts and the head's
+  // logits are used in turn: the scores until a layer's candidates are taken, the parts in that layer's attention
+  // after them, the logits after the last layer, in the draft layer's pass and the MTP pass alike. They share one
+  // buffer, so the step's rows past 8 take less of the room the expert cache has.
+  const size_t nbl = (opt_.max_ctx / shape_.idx_block + ncards_ - 1) / ncards_;
+  const size_t att_row = (size_t)card.nq * shape_.att_splits() * (shape_.att_key + 2);  // attn_split's parts
+  float *turns = fbuf(std::max({nbl, att_row, (size_t)card.vocab_n}));
   card.R = fbuf(shape_.hc_dim());
   card.n = fbuf(shape_.hc_dim());
   card.plan = upload<StepPlan>(card, nullptr, sizeof(StepPlan));
@@ -882,9 +888,9 @@ void Model::load_card(Card &card) {
   card.Kt = fbuf(card.nkv * shape_.att_key);
   card.Vt = fbuf(card.nkv * shape_.att_key);
   card.idxq = fbuf(shape_.idx_h * shape_.idx_d + shape_.idx_d);
-  card.scores = fbuf(nb_max);
+  card.scores = turns;
   card.bscores = fbuf(shape_.idx_blocks() + 1);
-  card.att = fbuf((size_t)card.nq * shape_.att_splits() * (shape_.att_key + 2));  // attn_split's parts for a row
+  card.att = turns;
   card.blocks = upload<uint32_t>(card, nullptr, W * (shape_.idx_blocks() + 1) * 4);
   card.cells = upload<uint32_t>(card, nullptr, W * shape_.idx_cells() * 4);
   card.ncells = upload<uint32_t>(card, nullptr, W * 4);
@@ -907,7 +913,7 @@ void Model::load_card(Card &card) {
   card.pv = fbuf(shape_.embd);
   card.gates = fbuf(shape_.hc);
   card.N = fbuf(shape_.hc_dim());
-  card.logits = fbuf(card.vocab_n);
+  card.logits = turns;
   card.xa8 = upload<uint8_t>(card, nullptr, W * a8_bytes(shape_.embd));
   card.oa8 = upload<uint8_t>(card, nullptr, W * a8_bytes(std::max(card.nvh * shape_.gdn_d, card.nq * shape_.att_key)));
   card.ha8 = upload<uint8_t>(card, nullptr, W * shape_.used * a8_bytes(card.ff));

@@ -50,6 +50,10 @@ give no more tokens a second in total, or the same-tokens check differs.
    past its last row's and the 32 after it. Where it does not, the round takes 8 rows.
 9. The dense products (`matvec`, `matvec_ks`) compute only the step's rows: they read the count from the step plan,
    as the other step kernels do, and the list's width only picks their module.
+10. The indexer's scores, the attention's parts and the head's logits share one buffer, since a step uses each in
+    turn: the scores until a layer's candidates are taken, the parts in that layer's attention after them, the logits
+    after the last layer. The scores buffer holds the card's own blocks, the rows its kernels read. A step of 16 rows
+    then leaves the expert cache as much room as one of 8 did.
 
 ## Why
 
@@ -85,7 +89,8 @@ rounds of several slots run 8 rows or fewer.
   `matvec_<type>_l<lanes>_t16`, which the dense products of a step of more than 8 rows use, and the three of item 7.
   Load time and card memory with them are not measured.
 - The decode step's buffers hold 16 rows where they held 8, and `StepPlan`, `DraftPlan` and `CommitPlan` are twice
-  as long. A load on two cards caches 363.8 experts a layer after its first refill, against 364.0 with 8 rows
+  as long. With item 10, a load on two cards has 17 spare blocks of the expert cache against 16 with 8 rows, and
+  caches 364.0 experts a layer after its first refill, as with 8 rows; without it, 12 spare blocks and 363.8
   ([the record](../measurements/MEASUREMENTS.md#2026-11-11-products-read-the-steps-rows)).
 - In a step of more than 8 rows, `matvec_bf16` and `matvec_bf16_ks` keep 16 sums a lane.
 - With long contexts and a small ring, several slots draft over 8 rows only, as before this change (item 8).
