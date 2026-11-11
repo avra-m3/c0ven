@@ -130,27 +130,29 @@ REQD_SG __kernel void mv_xmx_bf16(__global const ushort *W, uint N, uint K, uint
     }
   }
   const uint n = n0 + lane;
+  // After the last tile's sums are in red, only sub-group 0 has work left: the others leave, as their threads can
+  // then run other work-groups. Between tiles, red is read in full before the next tile's sums overwrite it.
   __attribute__((opencl_unroll_hint)) for (uint t = 0; t < MV_TILES; t++) {
-    if (t < tiles) {
-      float r[8];
-      vstore8(acc[t], 0, r);
-      for (uint m = 0; m < 8; m++) red[s][m][lane] = r[m];
-      barrier(CLK_LOCAL_MEM_FENCE);
-      if (s == 0)
-        for (uint m = 0; m < 8 && 8 * t + m < ntok; m++) {
-          const uint row = 8 * t + m;
-          float v = 0.0f;
-          for (uint q = 0; q < ksplit; q++) v += red[q][m][lane];
-          if (n < post_rows) {
-            v *= scale;
-            if (mode == 1) v = silu(v);
-            if (mode == 2) v = sigmoid(v);
-          }
-          if (n < N) y[(ulong)row * y_stride + n] = v;
-          if (yb && n < post_rows) yb[(ulong)row * post_rows + n] = f32_to_bf16(v);
+    if (t >= tiles) break;
+    float r[8];
+    vstore8(acc[t], 0, r);
+    for (uint m = 0; m < 8; m++) red[s][m][lane] = r[m];
+    barrier(CLK_LOCAL_MEM_FENCE);
+    if (s != 0 && t + 1 == tiles) return;
+    if (s == 0)
+      for (uint m = 0; m < 8 && 8 * t + m < ntok; m++) {
+        const uint row = 8 * t + m;
+        float v = 0.0f;
+        for (uint q = 0; q < ksplit; q++) v += red[q][m][lane];
+        if (n < post_rows) {
+          v *= scale;
+          if (mode == 1) v = silu(v);
+          if (mode == 2) v = sigmoid(v);
         }
-      barrier(CLK_LOCAL_MEM_FENCE);
-    }
+        if (n < N) y[(ulong)row * y_stride + n] = v;
+        if (yb && n < post_rows) yb[(ulong)row * post_rows + n] = f32_to_bf16(v);
+      }
+    if (t + 1 < tiles) barrier(CLK_LOCAL_MEM_FENCE);
   }
 }
 

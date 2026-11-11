@@ -897,13 +897,18 @@ static inline void group_slots(__global const int *slots, __global const StepPla
   sl[a] = a < n ? slots[a] : -1;
   barrier(CLK_LOCAL_MEM_FENCE);
   int s = sl[a];
-  uint rank = 0;  // the expert's assignments before a
+  uint rank = 0, lead0 = a;  // the expert's assignments before a, and the first of them
   if (s >= 0)
-    for (uint b = 0; b < a; b++) rank += sl[b] == s;
-  // The first assignment of a's group: the expert's assignment number rank - rank % MOE_GROUP_MAX.
+    for (uint b = 0; b < a; b++)
+      if (sl[b] == s) {
+        if (lead0 == a) lead0 = b;
+        rank++;
+      }
+  // The first assignment of a's group: the expert's assignment number rank - rank % MOE_GROUP_MAX. For a's expert's
+  // first group, the one loop above found it.
   const uint first = rank - rank % MOE_GROUP_MAX;
-  uint leader = a;
-  if (s >= 0 && first < rank)
+  uint leader = first == 0 ? lead0 : a;
+  if (s >= 0 && first > 0 && first < rank)
     for (uint b = 0, seen = 0; b < a; b++)
       if (sl[b] == s) {
         if (seen == first) {
