@@ -66,7 +66,7 @@ struct ChunkTimes {
   double stage = 0;     // the copies' lists and the SSD reads of the experts staged on the cards
   double ssd_wait = 0;  // of that, waiting for the SSD
   double record = 0;    // of that, recording the copy lists and the second list
-  double copy_wait = 0; // of that, waiting for the copies to land after the SSD rounds
+  double copy_wait = 0; // of that, the fence and read-back that send each batch to the card
   double fill = 0;      // of that, the CPU putting the experts into host memory
   double launch = 0;    // of that, starting the copies to the cards
   uint32_t cpu_routings = 0, cached_routings = 0;  // routings the CPU answered, and the cards' tiles
@@ -380,6 +380,7 @@ class Model final : public engine::Model {
   void chunk_attention(ze::List &L, Card &card, uint32_t l, const ChunkRun &run);
   void chunk_router(ze::List &L, Card &card, uint32_t l, const ChunkRun &run);
   void chunk_experts_a(ze::List &L, Card &card, uint32_t l, const ChunkRun &run);
+  void chunk_staged_tiles(ze::List &L, Card &card, uint32_t l, const ChunkRun &run);
   void chunk_experts_b(ze::List &L, Card &card, uint32_t l, const ChunkRun &run);
   void chunk_stage_fill(Card &card, uint32_t l, uint32_t slot, const ExpertWeights &w, bool whole_down);
   void chunk_probe_copy(ze::List &L, Card &card, bool ffn, uint32_t l, const float *from, const ChunkRun &run);
@@ -417,6 +418,7 @@ class Model final : public engine::Model {
   D41MissJob *jobs_ = nullptr;   // [layer][row]
   float *cpu_y_ = nullptr;       // [layer][row][D41_EMBD]
   uint32_t *ans_flag_ = nullptr;  // a 64-byte line a layer
+  uint32_t *stage_flag_ = nullptr;  // a chunk's a 64-byte line for each batch of staging slots: the copies have landed
   uint32_t *eng_flag_ = nullptr;  // a line an Engram table: its rows of this step are in eng_a8_
   // The Engram rows' thread: it gathers a step's rows from the file while the lists run their first layers.
   std::thread engram_thread_;

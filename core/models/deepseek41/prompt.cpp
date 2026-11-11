@@ -98,6 +98,11 @@ struct Model::ChunkRun {
   uint32_t nasg = 0;
   std::vector<MoeTile> tiles[2][2];
   std::vector<MoeTile> stiles[2];  // the staged experts' tiles by card
+  // The staged tiles by batch of slots: the first tile, how many, and the batch (the flag it waits for).
+  struct StageGroup {
+    uint32_t first, count, batch;
+  };
+  std::vector<StageGroup> sgroups[2];
 };
 
 void Model::alloc_chunk(Card &card) {
@@ -210,6 +215,7 @@ void Model::alloc_chunk(Card &card) {
   crowidx_ = static_cast<uint32_t *>(host(A * 4));
   cyidx_ = static_cast<int32_t *>(host(A * 4));
   cnmiss_ = static_cast<uint32_t *>(host(R8 * 4));
+  stage_flag_ = static_cast<uint32_t *>(host((size_t)kStageFlags * 64));
   for (auto &c : ctiles_)
     for (auto &t : c) t = static_cast<MoeTile *>(host(A * sizeof(MoeTile)));
   for (auto &t : ctiles_s_) t = static_cast<MoeTile *>(host(A * sizeof(MoeTile)));
@@ -500,12 +506,9 @@ void Model::chunk_experts_a(ze::List &L, Card &card, uint32_t l, const ChunkRun 
   chunk_gemm(L, card, false, k.w16b, E, ff, k.sh, ff, k.words, n, k.shared, E, false, "gemm shared down");
 }
 
-// The staged experts' tiles, the card's partial sum, the exchange and the next layer's input.
-void Model::chunk_experts_b(ze::List &L, Card &card, uint32_t l, const ChunkRun &run) {
+// The staged experts' tiles, each batch of them started when its copies have landed.
+void Model::chunk_staged_tiles(ze::List &L, Card &card, uint32_t l, const ChunkRun &run) {
   ChunkCard &k = *card.ck;
-  Card &other = *cards_[1 - card.c];
-  const uint32_t n = run.n;
-  const bool posts = l % 2 == card.c;
   const LayerExperts &le = layer_experts(l);
   const uint32_t gt = le.shape.gate_type, dt = le.shape.down_type;
   const uint32_t hsig = quant_pairs_sigma(dt);
@@ -515,16 +518,29 @@ void Model::chunk_experts_b(ze::List &L, Card &card, uint32_t l, const ChunkRun 
     const StageLayout sl = stage_layout(le, l, card.c);
     const uint32_t bpr_gate = E / quant_block_values(gt), ldx = E, kx = E, edim = E;
     const uint32_t *count = k.words + 5;
-    L.label("staged expert gate and up");
-    L.launch(kernel(card, ("qgemm_" + lower(ggml_type_label(gt)) + "_file_limit10").c_str(), "moe_gate_up_t"),
-             {k.stage, k.stage_slot, k.tiles_s, count, sl.rows, bpr_gate, sl.up_off, k.xg, kx, ldx, k.hbuf, hsig, card.grids},
-             (sl.rows + 63) / 64, (uint32_t)nt, 1, 64);
-    L.label("staged expert down");
-    L.launch(kernel(card, ("qgemm_" + lower(ggml_type_label(dt)) + "_file").c_str(), "moe_down_t"),
-             {k.stage, k.stage_slot, sl.down_off, k.tiles_s, count, edim, sl.nb, zero, k.hbuf, sl.rows, k.ybuf, card.grids},
-             (E + 63) / 64, (uint32_t)nt, 1, 64);
+    // A batch's tiles start when its copies have landed, while the host writes the next batch.
+    for (const ChunkRun::StageGroup &g : run.sgroups[card.c]) {
+      wait(L, card, "wait: staged experts", nullptr, stage_flag_ + 16 * g.batch);
+      L.label("staged expert gate and up");
+      L.launch(kernel(card, ("qgemm_" + lower(ggml_type_label(gt)) + "_file_limit10").c_str(), "moe_gate_up_t"),
+               {k.stage, k.stage_slot, k.tiles_s + g.first, count, sl.rows, bpr_gate, sl.up_off, k.xg, kx, ldx, k.hbuf, hsig,
+                card.grids},
+               (sl.rows + 63) / 64, g.count, 1, 64);
+      L.label("staged expert down");
+      L.launch(kernel(card, ("qgemm_" + lower(ggml_type_label(dt)) + "_file").c_str(), "moe_down_t"),
+               {k.stage, k.stage_slot, sl.down_off, k.tiles_s + g.first, count, edim, sl.nb, zero, k.hbuf, sl.rows, k.ybuf,
+                card.grids},
+               (E + 63) / 64, g.count, 1, 64);
+    }
   }
+}
 
+// The card's partial sum, the exchange and the next layer's input, once the CPU's answers are in.
+void Model::chunk_experts_b(ze::List &L, Card &card, uint32_t l, const ChunkRun &run) {
+  ChunkCard &k = *card.ck;
+  Card &other = *cards_[1 - card.c];
+  const uint32_t n = run.n;
+  const bool posts = l % 2 == card.c;
   const void *cpu = posts ? cpu_cy_ : nullptr;
   L.launch(kernel(card, "deepseek41_prompt", "dp_combine"),
            {k.ybuf, k.yidx, k.w, k.shared, cpu, k.nmiss, k.out, other.ck->in[1]}, n, 1, 1, 256);
@@ -769,6 +785,7 @@ std::vector<Candidate> Model::chunk_forward(uint32_t slot, const int32_t *tokens
     for (auto &c : run.tiles)
       for (auto &t : c) t.clear();
     for (auto &t : run.stiles) t.clear();
+    for (auto &g : run.sgroups) g.clear();
     std::fill(cyidx_, cyidx_ + (size_t)n * D41_USED, -1);
     uint32_t at = 0;
     for (uint32_t p = 0; p < npairs; p++) {
@@ -802,6 +819,13 @@ std::vector<Candidate> Model::chunk_forward(uint32_t slot, const int32_t *tokens
       ctimes_.staged_routings += (uint32_t)list.size();
     }
     run.nasg = at;
+    // The staged tiles are in slot order: one group for each batch of slots, which waits for the batch's copies.
+    for (uint32_t c = 0; c < 2; c++)
+      for (uint32_t i = 0; i < run.stiles[c].size(); i++) {
+        const uint32_t batch = run.stiles[c][i].slot / kStageBatch;
+        if (run.sgroups[c].empty() || run.sgroups[c].back().batch != batch) run.sgroups[c].push_back({i, 0, batch});
+        run.sgroups[c].back().count++;
+      }
     // The CPU keeps the others: each row's record loses the staged experts.
     for (uint32_t r = 0; r < n; r++) {
       D41MissJob &job = cjobs_[r];
@@ -843,15 +867,23 @@ std::vector<Candidate> Model::chunk_forward(uint32_t slot, const int32_t *tokens
       }
       chunk_experts_a(L, *cp, l, run);
       L.close();
-      if (!k.p3) k.p3 = std::make_unique<ze::List>(*rt_, cp->c, ze::List::regular);
+      for (auto *list : {&k.p3, &k.p4})
+        if (!*list) *list = std::make_unique<ze::List>(*rt_, cp->c, ze::List::regular);
       k.p3->reset_list();
       trace_on(*cp, *k.p3, 2);
-      chunk_experts_b(*k.p3, *cp, l, run);
+      chunk_staged_tiles(*k.p3, *cp, l, run);
       k.p3->copy(stuck_ + 16 * cp->c, &cp->plan->stuck, 4);
       k.p3->close();
+      k.p4->reset_list();
+      trace_on(*cp, *k.p4, 3);
+      chunk_experts_b(*k.p4, *cp, l, run);
+      k.p4->copy(stuck_ + 16 * cp->c, &cp->plan->stuck, 4);
+      k.p4->close();
     }
     const auto t_p2 = Clock::now();
     for (auto &cp : cards_) cp->ck->p2->execute();
+    // The staged experts' list queues behind it and waits, on the cards, for each batch of copies.
+    for (auto &cp : cards_) cp->ck->p3->execute();
     ctimes_.record += ms(t0, t_p2);
 
     // The staged experts: the arena's first, then the file's, a batch at a time. Arena experts are safe to read beside
@@ -869,6 +901,14 @@ std::vector<Candidate> Model::chunk_forward(uint32_t slot, const int32_t *tokens
         chunk_stage_fill(*cards_[t & 1], l, s0 + i, w[i], whole);
       });
       ctimes_.fill += ms(t_f, Clock::now());
+      // Each writer's fence sent its writes out of its write-combining buffers. This full fence orders them before the
+      // read, and a read through the mapping returns only after the writes have arrived; then the cards may read the batch.
+      const auto t_cw = Clock::now();
+      _mm_mfence();
+      for (auto &cp : cards_) (void)*(volatile uint8_t *)(cp->ck->stage_cpu);
+      ctimes_.copy_wait += ms(t_cw, Clock::now());
+      for (uint32_t b = s0 / kStageBatch; b <= (s0 + count - 1) / kStageBatch; b++)
+        std::atomic_ref<uint32_t>(stage_flag_[16 * b]).store(plan_->step, std::memory_order_release);
     };
     // The file's experts in rounds the ring holds, the first read while the arena's are copied.
     std::vector<std::vector<uint32_t>> ssd_ids;
@@ -895,12 +935,6 @@ std::vector<Candidate> Model::chunk_forward(uint32_t slot, const int32_t *tokens
       stage_batch(s0, (uint32_t)ssd_ids[round].size(), w, true);
       ssd_->release(round & 1);
     }
-    // Each writer's fence sent its writes out of its write-combining buffers. This full fence orders them before the
-    // read, and a read through the mapping returns only after the writes have arrived.
-    const auto t_cw = Clock::now();
-    _mm_mfence();
-    for (auto &cp : cards_) (void)*(volatile uint8_t *)(cp->ck->stage_cpu);
-    ctimes_.copy_wait += ms(t_cw, Clock::now());
     ctimes_.stage += ms(t0, Clock::now());
 
     // The CPU answers the experts that stayed with it, rows in slices whose SSD reads fit the ring.
@@ -940,12 +974,15 @@ std::vector<Candidate> Model::chunk_forward(uint32_t slot, const int32_t *tokens
 
     // The second list's end.
     t0 = Clock::now();
-    for (auto &cp : cards_) cp->ck->p3->execute();
+    // The closing list needs the CPU's answers, so it starts now.
+    for (auto &cp : cards_) cp->ck->p4->execute();
     for (auto &cp : cards_) cp->ck->p2->synchronize();
     for (auto &cp : cards_) cp->ck->p3->synchronize();
+    for (auto &cp : cards_) cp->ck->p4->synchronize();
     for (auto &cp : cards_) {
       trace_add(*cp, *cp->ck->p2, 1);
       trace_add(*cp, *cp->ck->p3, 2);
+      trace_add(*cp, *cp->ck->p4, 3);
     }
     for (uint32_t c = 0; c < 2; c++)
       if (stuck_[16 * c]) throw std::runtime_error("card " + std::to_string(c) + " gave up a wait of the prompt chunk");
