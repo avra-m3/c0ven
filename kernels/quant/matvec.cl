@@ -49,7 +49,8 @@ static inline void row_dot(__global const uchar *W, ulong n, uint r, uint bpr, _
 }
 
 // y[t * y_stride + r] = W[r] . x_t for r < rows, t < *ntok_p <= MAXT: the step plan's rows, read at run time, so a
-// list recorded for a width computes only the rows of the step it runs. The slice holds rows * bpr blocks.
+// list recorded for a width computes only the rows of the step it runs
+// (docs/measurements/MEASUREMENTS.md#2026-11-11-products-read-the-steps-rows). The slice holds rows * bpr blocks.
 REQD_SG __kernel void matvec(__global const uchar *W, uint rows, uint bpr, __global const uchar *act, uint K,
                              uint act_stride, __global const uint *ntok_p, __global float *y, uint y_stride,
                              __global const uchar *grids) {
