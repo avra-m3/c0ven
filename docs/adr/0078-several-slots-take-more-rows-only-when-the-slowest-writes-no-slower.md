@@ -173,7 +173,8 @@ rare to be timed twice.
 - In six rounds of alternating runs on two cards against steps of 8 rows, one, three and four requests on prose or
   mixed text wrote 0.5% to 2.2% more tokens a second in total, three copying text 7.6% more and four editing code
   13.7% more, their slowest request 63.2 → 68.0 and 35.3 → 40.0 tokens a second. Two requests wrote 1.4% less, their
-  slowest 54.9 → 54.1, within that case's spread: at the same rows the windows are within 0.2 ms of steps of 8 rows'
-  ([the record](../measurements/MEASUREMENTS.md#2026-11-11-products-read-the-steps-rows)).
+  slowest 54.9 → 54.1, within that case's spread: at the same rows the windows are within 0.2 ms of steps of 8 rows'.
+  On one card, in three rounds, every case wrote as many tokens a second or more, and its slowest request as fast or
+  faster ([the record](../measurements/MEASUREMENTS.md#2026-11-11-products-read-the-steps-rows)).
 - `lookup_test` checks items 1 to 5 without a card. The change is not accepted until the alternating runs in
   "Revisit when" show the slowest request no slower.
