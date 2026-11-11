@@ -449,7 +449,7 @@ void Model::record_mtp(Card &card, uint32_t W, uint32_t Wr, bool chain) {
     exchange(1, mex2_, card.inj[1] + shape_.hc_lr);
     // The MTP's own final mixer, then the main head (step 5), from its residual R (kept for the next draft step).
     hc_mix(M.mx_norm, M.mx_down, M.mx_up, card.lr, shape_.hc_lr, pr, Wr);
-    matvec(L, card, card.head, card.xa8, card.logits, Wr);
+    matvec(L, card, card.head, card.xa8, card.logits, Wr, nrest);
     uint32_t *ti = mtop_idx_ + (size_t)c * STEP_MAX_ROWS * opt_.candidates;
     float *tv = mtop_val_ + (size_t)c * STEP_MAX_ROWS * opt_.candidates;
     L.launch(common("topk_rows"), {card.logits, card.vocab_n, card.vocab_n, opt_.candidates, card.vocab0, nrest, ti, tv,

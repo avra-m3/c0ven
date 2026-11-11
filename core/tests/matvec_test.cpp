@@ -78,6 +78,7 @@ int main() {
     auto *dW = static_cast<uint8_t *>(rt.alloc_device(card, runs.size()));
     auto *dA = static_cast<uint8_t *>(rt.alloc_device(card, act.size()));
     auto *dY = static_cast<float *>(rt.alloc_host(rows * ntok * sizeof(float)));
+    auto *dN = static_cast<uint32_t *>(rt.alloc_host(sizeof(uint32_t)));  // the kernels read the token count here
     up.copy(dW, runs.data(), runs.size());
     up.copy(dA, act.data(), act.size());
     up.synchronize();
@@ -89,14 +90,15 @@ int main() {
         std::string mod = std::string("matvec_") + ggml_type_label(type) + "_l" + std::to_string(lanes);
         for (auto &c : mod) c = (char)std::tolower(c);
         std::fill(dY, dY + rows * ntok, NAN);
+        *dN = nt;
         uint32_t rows32 = (uint32_t)rows, bpr32 = (uint32_t)bpr, K32 = (uint32_t)K, stride = (uint32_t)a8[0].size();
         uint32_t ystride = rows32;
         if (ks == 0) {
           uint32_t groups = (rows32 + 4 * (16 / lanes) - 1) / (4 * (16 / lanes));
-          up.launch(lib.get(card, mod, "matvec"), {dW, rows32, bpr32, dA, K32, stride, nt, dY, ystride, grids}, groups,
+          up.launch(lib.get(card, mod, "matvec"), {dW, rows32, bpr32, dA, K32, stride, dN, dY, ystride, grids}, groups,
                     1, 1, 64);
         } else {
-          up.launch(lib.get(card, mod, "matvec_ks"), {dW, rows32, bpr32, dA, K32, stride, nt, dY, ystride, grids, ks},
+          up.launch(lib.get(card, mod, "matvec_ks"), {dW, rows32, bpr32, dA, K32, stride, dN, dY, ystride, grids, ks},
                     (rows32 + 16 / lanes - 1) / (16 / lanes), 1, 1, 16 * ks);
         }
         up.synchronize();
@@ -120,6 +122,7 @@ int main() {
     rt.free(dW);
     rt.free(dA);
     rt.free(dY);
+    rt.free(dN);
   };
 
   // Every type the engine reads, on random blocks: 300 rows of 2,560 values.

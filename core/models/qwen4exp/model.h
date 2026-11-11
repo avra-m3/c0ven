@@ -265,7 +265,7 @@ class Model final : public engine::Model {
           const std::vector<std::pair<uint64_t, uint64_t>> &cols = {});
   template <class T>
   T *upload(Card &card, const void *src, size_t bytes);
-  void matvec(ze::List &list, Card &card, const Mat &m, const uint8_t *act, float *y, uint32_t ntok,
+  void matvec(ze::List &list, Card &card, const Mat &m, const uint8_t *act, float *y, uint32_t W, const uint32_t *ntok,
               ze_event_handle_t signal = nullptr);
   ze_kernel_handle_t kernel(uint32_t card, const std::string &module, const std::string &name);
   uint32_t ev(uint32_t layer, uint32_t which) const;

@@ -1151,9 +1151,9 @@ std::unique_ptr<Model::HostLayer> Model::host_layer(uint32_t l, uint64_t n, cons
   return hl;
 }
 
-// y[t] = m x[t] for ntok tokens of a8 activations, rows of m.rows apart.
-void Model::matvec(ze::List &list, Card &card, const Mat &m, const uint8_t *act, float *y, uint32_t ntok,
-                   ze_event_handle_t signal) {
+// y[t] = m x[t] for the *ntok tokens of a8 activations (read when the list runs, at most W), rows of m.rows apart.
+void Model::matvec(ze::List &list, Card &card, const Mat &m, const uint8_t *act, float *y, uint32_t W,
+                   const uint32_t *ntok, ze_event_handle_t signal) {
   uint32_t lanes = lanes_for(m.type, m.K);
   uint32_t stride = (uint32_t)a8_bytes(m.K);
   if (opt_.trace)
@@ -1161,21 +1161,21 @@ void Model::matvec(ze::List &list, Card &card, const Mat &m, const uint8_t *act,
   if (m.rows <= kMvKsRows && lanes == 8) {
     // Few rows: K split over 4 sub-groups of 8 lanes per row (matvec_ks), so that the card has enough of them.
     const uint32_t ks = 4;
-    list.launch(kernel(card.c, mv_module(m.type, 8, ntok), "matvec_ks"),
+    list.launch(kernel(card.c, mv_module(m.type, 8, W), "matvec_ks"),
                 {m.p, m.rows, m.bpr, act, m.K, stride, ntok, y, m.rows, card.grids, ks}, (m.rows + 1) / 2, 1, 1,
                 16 * ks, 1, 1, signal);
     return;
   }
-  auto k = kernel(card.c, mv_module(m.type, lanes, ntok), "matvec");
+  auto k = kernel(card.c, mv_module(m.type, lanes, W), "matvec");
   uint32_t rows_per_wg = 4 * (16 / lanes);
   list.launch(k, {m.p, m.rows, m.bpr, act, m.K, stride, ntok, y, m.rows, card.grids},
               (m.rows + rows_per_wg - 1) / rows_per_wg, 1, 1, 64, 1, 1, signal);
 }
 
 // The decode step for up to W rows, recorded once per card and width (kStepWidths): the kernels read the step plan
-// in host memory, so a list serves any step of up to W rows. Products run for all W rows (their weights are read
-// once whatever the count); row-wise kernels skip the rows past the plan's. Streamed, a second list a width leaves
-// out the claim (kvs: false, key W + kKvsSkipList), for the steps whose pages are claimed already (step).
+// in host memory, so a list serves any step of up to W rows, and the kernels skip the rows past the plan's. Streamed,
+// a second list a width leaves out the claim (kvs: false, key W + kKvsSkipList), for the steps whose pages are claimed
+// already (step).
 void Model::record(Card &card, uint32_t W, bool kvs) {
   const uint32_t key = kvs ? W : W + kKvsSkipList;
   // Not in order: the launches between L.together(true) and L.together(false) read the same inputs and write their
@@ -1251,15 +1251,15 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
   };
   auto out_product = [&](const Mat &m, float *p1, uint32_t layer) {
     if (W == 1) {
-      matvec(L, card, m, card.oa8, p1, W, (*events_)[ev(layer, c)]);
+      matvec(L, card, m, card.oa8, p1, W, nrows, (*events_)[ev(layer, c)]);
       return;
     }
     if (peer) {
-      matvec(L, card, m, card.oa8, xp_block(card, 0), W);
+      matvec(L, card, m, card.oa8, xp_block(card, 0), W, nrows);
       send_peer(0, layer, 0);
       return;
     }
-    matvec(L, card, m, card.oa8, card.yo, W);
+    matvec(L, card, m, card.oa8, card.yo, W, nrows);
     L.copy(p1, card.yo, (size_t)W * shape_.embd * 4, (*events_)[ev(layer, c)]);
   };
 
@@ -1282,8 +1282,8 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
     float *p1 = ex1_ + l * ex_layer + (size_t)c * STEP_MAX_ROWS * shape_.embd;
     if (!Ly.attn) {
       L.together(true);
-      matvec(L, card, Ly.qkv, card.xa8, card.m, W);
-      matvec(L, card, Ly.z, card.xa8, card.z, W);
+      matvec(L, card, Ly.qkv, card.xa8, card.m, W, nrows);
+      matvec(L, card, Ly.z, card.xa8, card.z, W, nrows);
       bf16mv(Ly.ab, 2 * card.nvh, shape_.embd, card.xbf16, card.ab);
       L.together(false);
       // u, the gates and m stay in the layer's own buffers, for a window's commit.
@@ -1295,9 +1295,9 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
       out_product(Ly.out, p1, l);
     } else {
       L.together(true);
-      matvec(L, card, Ly.q, card.xa8, card.Q, W);
-      matvec(L, card, Ly.k, card.xa8, card.Kt, W);
-      matvec(L, card, Ly.v, card.xa8, card.Vt, W);
+      matvec(L, card, Ly.q, card.xa8, card.Q, W, nrows);
+      matvec(L, card, Ly.k, card.xa8, card.Kt, W, nrows);
+      matvec(L, card, Ly.v, card.xa8, card.Vt, W, nrows);
       bf16mv(Ly.idx_w, shape_.idx_h * shape_.idx_d + shape_.idx_d, shape_.embd, card.xbf16, card.idxq);
       L.together(false);
       L.together(true);
@@ -1346,8 +1346,8 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
     uint32_t *nmiss = card.nmiss + l * STEP_MAX_ROWS;
     L.together(true);
     bf16mv(Ly.router, shape_.experts + 1, shape_.embd, card.xbf16, card.rl);
-    matvec(L, card, Ly.sh_gate, card.xa8, card.shg, W);
-    matvec(L, card, Ly.sh_up, card.xa8, card.shu, W);
+    matvec(L, card, Ly.sh_gate, card.xa8, card.shg, W, nrows);
+    matvec(L, card, Ly.sh_up, card.xa8, card.shu, W, nrows);
     L.together(false);
     // With cached experts, the router also groups them (router_group), so an expert several rows need is decoded
     // once for all of them.
@@ -1380,7 +1380,7 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
                  {Ly.cache, Ly.slot_bytes, card.groups, card.ngroups, card.ff, gbpr, Ly.up_off, card.xa8, K, xs, per,
                   card.h, card.grids, card.ha8},
                  (card.ff + rpw - 1) / rpw, W * shape_.used, 1, lx);
-      matvec(L, card, Ly.sh_down, card.sha8, card.s, W);
+      matvec(L, card, Ly.sh_down, card.sha8, card.s, W, nrows);
       L.together(false);
       if (gm.empty()) quant(card.h, card.ff, W * shape_.used, card.ha8);
       uint32_t drpw = dm.empty() ? 16 : MOE_WG_ROWS;
@@ -1392,7 +1392,7 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
                 stride, card.y, card.grids},
                (shape_.embd + drpw - 1) / drpw, W * shape_.used, 1, dlx);
     } else {
-      matvec(L, card, Ly.sh_down, card.sha8, card.s, W);
+      matvec(L, card, Ly.sh_down, card.sha8, card.s, W, nrows);
     }
     if (c == 0) L.launch(q4("cpu_wait"), {nmiss, ans_seq_ + 16 * l, plan, stuck_}, 1, 1, 1, 1);
     float *p2 = ex2_ + l * ex_layer + (size_t)c * STEP_MAX_ROWS * shape_.embd;
@@ -1481,7 +1481,7 @@ void Model::record_head(ze::List &L, Card &card, const StepPlan *plan, uint32_t 
   L.launch(q4("hc_mix"), {card.n, card.a, plan, card.x}, shape_.embd / 64, W, 1, 64);
   uint32_t units = shape_.embd / 32 * W;
   L.launch(common("quantize_a8"), {card.x, gs, gs, W, card.xa8}, (units + 3) / 4, 1, 1, 64);
-  matvec(L, card, card.head, card.xa8, card.logits, W);
+  matvec(L, card, card.head, card.xa8, card.logits, W, &plan->nrows);
   uint32_t *ti = top_idx_ + (size_t)c * STEP_MAX_ROWS * opt_.candidates;
   float *tv = top_val_ + (size_t)c * STEP_MAX_ROWS * opt_.candidates;
   L.launch(common("topk_rows"), {card.logits, card.vocab_n, card.vocab_n, opt_.candidates, card.vocab0, &plan->nrows, ti, tv,

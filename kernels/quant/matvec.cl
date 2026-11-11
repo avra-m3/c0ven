@@ -48,11 +48,13 @@ static inline void row_dot(__global const uchar *W, ulong n, uint r, uint bpr, _
   for (uint t = 0; t < MAXT; t++) acc[t] = lanes_sum(acc[t]);
 }
 
-// y[t * y_stride + r] = W[r] . x_t for r < rows. The slice holds rows * bpr blocks.
+// y[t * y_stride + r] = W[r] . x_t for r < rows, t < *ntok_p <= MAXT: the step plan's rows, read at run time, so a
+// list recorded for a width computes only the rows of the step it runs. The slice holds rows * bpr blocks.
 REQD_SG __kernel void matvec(__global const uchar *W, uint rows, uint bpr, __global const uchar *act, uint K,
-                             uint act_stride, uint ntok, __global float *y, uint y_stride,
+                             uint act_stride, __global const uint *ntok_p, __global float *y, uint y_stride,
                              __global const uchar *grids) {
   LOAD_GRID(grids)
+  const uint ntok = *ntok_p;
   uint r = (get_group_id(0) * WG_SG + sg_id()) * RPS + sg_lane() / LANES;
   bool valid = r < rows;
   if (!valid) r = rows - 1;  // lanes stay in the sub-group's reductions
@@ -67,11 +69,11 @@ REQD_SG __kernel void matvec(__global const uchar *W, uint rows, uint bpr, __glo
 // each. The sub-groups' sums meet in local memory and sub-group 0 adds them in order of s. Groups ceil(rows / RPS),
 // 16 ks.
 REQD_SG __kernel void matvec_ks(__global const uchar *W, uint rows, uint bpr, __global const uchar *act, uint K,
-                                uint act_stride, uint ntok, __global float *y, uint y_stride,
+                                uint act_stride, __global const uint *ntok_p, __global float *y, uint y_stride,
                                 __global const uchar *grids, uint ks) {
   __local float part[MAXT][8][SG_SIZE];
   LOAD_GRID(grids)
-  const uint s = sg_id();
+  const uint s = sg_id(), ntok = *ntok_p;
   uint r = get_group_id(0) * RPS + sg_lane() / LANES;
   bool valid = r < rows;
   if (!valid) r = rows - 1;

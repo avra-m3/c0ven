@@ -344,7 +344,7 @@ void Model::record_df(Card &card, uint32_t W, bool block) {
   L.launch(df("df_norm"), {D.h, D.norm, pl, D.hn, no_b}, W, 1, 1, 256);
   const uint32_t units = E / 32 * W, gs = E;
   L.launch(common("quantize_a8"), {D.hn, gs, gs, W, card.xa8}, (units + 3) / 4, 1, 1, 64);
-  matvec(L, card, card.head, card.xa8, card.logits, W);
+  matvec(L, card, card.head, card.xa8, card.logits, W, nrows);
   uint32_t *ti = dtop_idx_ + (size_t)c * STEP_MAX_ROWS * opt_.candidates;
   float *tv = dtop_val_ + (size_t)c * STEP_MAX_ROWS * opt_.candidates;
   L.launch(common("topk_rows"), {card.logits, card.vocab_n, card.vocab_n, opt_.candidates, card.vocab0, nrows, ti, tv,
