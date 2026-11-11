@@ -89,15 +89,16 @@ class Model final : public engine::Model {
   std::vector<std::vector<Candidate>> mtp_drafts(const StepIn *, uint32_t, const uint32_t *) override;
   std::vector<std::vector<Candidate>> mtp_catchup_prompt(const StepIn *, uint32_t, uint32_t,
                                                          const std::vector<uint32_t> &) override;
-  // One block a pass, of 1 to D41_DSP_BLOCK rows, row i for position pos + 1 + i. Returns the first row's candidates
-  // only: a later row's depend on the draft chosen before it, and drafts gives them. A step stores every row's keys
-  // for the drafter, so the context rows need nothing here.
+  // One block a pass, of 1 to D41_DSP_BLOCK rows, row i for position pos + 1 + i, through the drafter's layers.
+  // Returns no candidates: a row's depend on the draft chosen before it, and drafts gives them. A step stores every
+  // row's keys for the drafter, so the context rows need nothing here.
   std::vector<std::vector<std::vector<Candidate>>> df_pass(const StepIn *, uint32_t, const DraftBlock *,
                                                            uint32_t) override;
   // The last df_pass's block as drafts, chosen in turn: draft i from row i's logits plus the bias of the token before
-  // it, which is the block's token, then the drafts chosen. The cards add the bias over the whole vocabulary, a round
-  // a draft after the first.
-  std::vector<CardDraft> drafts(const DraftPick &pick = nullptr);
+  // it, which is the block's token, then the drafts chosen. It gives at most `most` drafts and stops before the first
+  // whose keep chance is below min_keep, which needs no logits: a block with no draft to run costs no output head.
+  // The cards add the bias over the whole vocabulary, a round a draft after the first.
+  std::vector<CardDraft> drafts(const DraftPick &pick = nullptr, float min_keep = 0, uint32_t most = D41_DSP_BLOCK);
   int32_t noise_token() const;
   void df_context_prompt(const StepIn *, uint32_t, uint32_t) override;
   void draft_start(uint32_t, uint32_t) override {}
@@ -227,8 +228,9 @@ class Model final : public engine::Model {
     uint32_t *pick = nullptr;
     std::unique_ptr<ze::List> pick_list;
     std::vector<Layer> layers;  // the model's, then the drafter's
-    std::map<uint32_t, std::unique_ptr<ze::List>> lists, draft_lists;  // by width
-    std::map<uint32_t, uint64_t *> trace_ts, draft_trace_ts;           // a traced list's timestamps
+    // By width: a step's list, a block's, and the output head over a block's rows.
+    std::map<uint32_t, std::unique_ptr<ze::List>> lists, draft_lists, head_lists;
+    std::map<uint32_t, uint64_t *> trace_ts, draft_trace_ts, head_trace_ts;  // a traced list's timestamps
   };
   // The drafter's file and what the host keeps of it.
   struct Drafter {
@@ -247,10 +249,10 @@ class Model final : public engine::Model {
     float *probe_x = nullptr, *probe_kv = nullptr;
     int32_t *probe_ids = nullptr;  // the last block's routed experts, [layer][row][D41_DSP_USED]
     // The last block.
-    uint32_t n = 0;
+    uint32_t n = 0, width = 0;
     int32_t token = 0;
-    std::vector<Candidate> first;  // the first draft's candidates
-    std::vector<float> out;        // [row][D41_EMBD], before the output norm
+    bool head_ran = false;   // its rows' logits are on the cards
+    std::vector<float> out;  // [row][D41_EMBD], before the output norm
   };
 
   template <class T>
@@ -268,6 +270,7 @@ class Model final : public engine::Model {
   void load_drafter();
   void record_feed(ze::List &L, Card &card, uint32_t W);
   void record_draft(Card &card, uint32_t W);
+  void record_head(Card &card, uint32_t W);
   void record_pick(ze::List &L, Card &card);
   void set_pick(uint32_t row, int32_t prev);
   std::vector<Candidate> picked() const;

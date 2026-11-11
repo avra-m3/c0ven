@@ -1100,7 +1100,7 @@ void Model::record_feed(ze::List &L, Card &card, uint32_t W) {
   }
 }
 
-// A draft block's list: the rows are the block, through the drafter's layers and the model's output head.
+// A draft block's list: the rows are the block, through the drafter's layers. The keep chance reads what it leaves.
 void Model::record_draft(Card &card, uint32_t W) {
   auto list = std::make_unique<ze::List>(*rt_, card.c, ze::List::regular, false, false);
   ze::List &L = *list;
@@ -1118,8 +1118,6 @@ void Model::record_draft(Card &card, uint32_t W) {
     record_attention(L, card, l, W);
     record_ffn(L, card, l, W);
   }
-  matvec(L, card, "output", card.head, card.xa, card.logits, W, 4);
-  record_pick(L, card);
   // The keep chance reads a row's streams before the output norm.
   if (card.c == 0) {
     L.copy(dsp_->x, card.X, (size_t)W * D * 4);
@@ -1128,6 +1126,22 @@ void Model::record_draft(Card &card, uint32_t W) {
   L.copy(stuck_ + 16 * card.c, &card.plan->stuck, 4);
   L.close();
   card.draft_lists[W] = std::move(list);
+}
+
+// The model's output head over the last block's rows, and the first draft's candidates: run only when the first
+// draft's keep chance says a draft is worth choosing.
+void Model::record_head(Card &card, uint32_t W) {
+  auto list = std::make_unique<ze::List>(*rt_, card.c, ze::List::regular, false, false);
+  ze::List &L = *list;
+  if (opt_.trace) {
+    constexpr size_t cap = 256;
+    card.head_trace_ts[W] = static_cast<uint64_t *>(rt_->alloc_host(cap * 8));
+    L.trace(card.head_trace_ts[W], cap);
+  }
+  matvec(L, card, "output", card.head, card.xa, card.logits, W, 4);
+  record_pick(L, card);
+  L.close();
+  card.head_lists[W] = std::move(list);
 }
 
 // One draft's candidates, into the host's first row: the logits of the row the host named plus the bias of the token
@@ -1361,15 +1375,20 @@ std::vector<TraceRow> Model::trace(uint32_t c) const {
   const auto &stamps = last_draft_ ? card.draft_trace_ts : card.trace_ts;
   const auto ts = stamps.find(last_width_);
   if (ts == stamps.end()) throw std::runtime_error("the last step was not traced");
-  const std::vector<std::string> &names = (last_draft_ ? card.draft_lists : card.lists).at(last_width_)->trace_names();
   const ze::Card &dev = rt_->cards()[c];
   std::vector<TraceRow> rows;
-  for (size_t i = 0; i < names.size(); i++) {
-    auto row = std::find_if(rows.begin(), rows.end(), [&](const TraceRow &r) { return r.kernel == names[i]; });
-    if (row == rows.end()) row = rows.insert(rows.end(), TraceRow{names[i], 0, 0});
-    row->launches++;
-    row->ms += (double)((ts->second[i + 1] - ts->second[i]) & dev.timestamp_mask) * 1e3 / (double)dev.timer_hz;
-  }
+  const auto add = [&](const ze::List &list, const uint64_t *stamp) {
+    const std::vector<std::string> &names = list.trace_names();
+    for (size_t i = 0; i < names.size(); i++) {
+      auto row = std::find_if(rows.begin(), rows.end(), [&](const TraceRow &r) { return r.kernel == names[i]; });
+      if (row == rows.end()) row = rows.insert(rows.end(), TraceRow{names[i], 0, 0});
+      row->launches++;
+      row->ms += (double)((stamp[i + 1] - stamp[i]) & dev.timestamp_mask) * 1e3 / (double)dev.timer_hz;
+    }
+  };
+  add(*(last_draft_ ? card.draft_lists : card.lists).at(last_width_), ts->second);
+  // A block whose drafts were chosen ran the head's list too.
+  if (last_draft_ && dsp_->head_ran) add(*card.head_lists.at(last_width_), card.head_trace_ts.at(last_width_));
   return rows;
 }
 
@@ -1426,7 +1445,6 @@ std::vector<std::vector<std::vector<Candidate>>> Model::df_pass(const StepIn *, 
     plan_->rows[r] = {b.slot, b.pos + r, (b.pos + r) % D41_RING, D41_NO_ROW};
     to_float(te.data + (uint64_t)(r == 0 ? b.token : dsp_->noise) * te.row_bytes(), embed_ + (size_t)r * E, E);
   }
-  set_pick(0, b.token);
   for (auto &card : cards_) card->draft_lists.at(W)->execute();
   for (auto &card : cards_) card->draft_lists.at(W)->synchronize();
   for (uint32_t c = 0; c < 2; c++)
@@ -1434,8 +1452,9 @@ std::vector<std::vector<std::vector<Candidate>>> Model::df_pass(const StepIn *, 
 
   Drafter &d = *dsp_;
   d.n = n;
+  d.width = W;
   d.token = b.token;
-  d.first = picked();
+  d.head_ran = false;
   d.out.resize((size_t)n * E);
   for (uint32_t r = 0; r < n; r++) {
     const float *X = d.x + (size_t)r * D, *pre = d.mix[r].pre;
@@ -1443,47 +1462,49 @@ std::vector<std::vector<std::vector<Candidate>>> Model::df_pass(const StepIn *, 
     for (uint32_t i = 0; i < E; i++)
       out[i] = pre[0] * X[i] + pre[1] * X[E + i] + pre[2] * X[2 * E + i] + pre[3] * X[3 * E + i];
   }
-  return {{d.first}};
+  return {{}};
 }
 
-std::vector<CardDraft> Model::drafts(const DraftPick &pick) {
+std::vector<CardDraft> Model::drafts(const DraftPick &pick, float min_keep, uint32_t most) {
   if (!dsp_ || dsp_->n == 0) throw std::runtime_error("deepseek41 has drafted no block");
-  const Drafter &d = *dsp_;
+  Drafter &d = *dsp_;
   const auto bf16 = [](uint16_t v) {
     const uint32_t b = (uint32_t)v << 16;
     float f;
     std::memcpy(&f, &b, 4);
     return f;
   };
-  std::vector<CardDraft> out(d.n);
+  std::vector<CardDraft> out;
   int32_t prev = d.token;
-  for (uint32_t r = 0; r < d.n; r++) {
-    CardDraft &o = out[r];
-    if (r == 0) {
-      o.candidates = d.first;
-    } else {
-      set_pick(r, prev);
-      for (auto &card : cards_) {
-        if (!card->pick_list) {
-          card->pick_list = std::make_unique<ze::List>(*rt_, card->c, ze::List::regular, false, false);
-          record_pick(*card->pick_list, *card);
-          card->pick_list->close();
-        }
-        card->pick_list->execute();
-      }
-      for (auto &card : cards_) card->pick_list->synchronize();
-      o.candidates = picked();
-    }
-    if (o.candidates.empty()) throw std::runtime_error("a draft row has no candidate");
+  for (uint32_t r = 0; r < std::min(d.n, most); r++) {
+    CardDraft o;
     const float *h = d.out.data() + (size_t)r * E;
     const uint16_t *w1 = d.w1 + (size_t)prev * D41_DSP_RANK;
     double sum = 0;
     for (uint32_t i = 0; i < E; i++) sum += (double)d.conf[i] * h[i];
     for (uint32_t k = 0; k < D41_DSP_RANK; k++) sum += (double)d.conf[E + k] * bf16(w1[k]);
     o.keep = (float)(1.0 / (1.0 + std::exp(-sum)));
+    if (o.keep < min_keep) break;
+    set_pick(r, prev);
+    // The first draft chosen runs the head over every row; a later one adds its bias to its row's logits.
+    const bool head = r == 0;
+    for (auto &card : cards_) {
+      if (head && !card->head_lists.count(d.width)) record_head(*card, d.width);
+      if (!head && !card->pick_list) {
+        card->pick_list = std::make_unique<ze::List>(*rt_, card->c, ze::List::regular, false, false);
+        record_pick(*card->pick_list, *card);
+        card->pick_list->close();
+      }
+      (head ? card->head_lists.at(d.width) : card->pick_list)->execute();
+    }
+    for (auto &card : cards_) (head ? card->head_lists.at(d.width) : card->pick_list)->synchronize();
+    d.head_ran = true;
+    o.candidates = picked();
+    if (o.candidates.empty()) throw std::runtime_error("a draft row has no candidate");
     o.token = pick ? pick(r, o.candidates) : o.candidates.front().token;
     if (o.token < 0 || (uint32_t)o.token >= vocab_) throw std::runtime_error("a chosen draft outside the vocabulary");
     prev = o.token;
+    out.push_back(std::move(o));
   }
   return out;
 }

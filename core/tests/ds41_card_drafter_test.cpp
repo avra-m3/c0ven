@@ -187,8 +187,8 @@ int run() {
         if (made[i].token != theirs[i].token) break;
       }
     }
-    EXPECT(cands.size() == 1 && cands[0].size() == 1 && made.size() == nblock, "the block's rows");
-    EXPECT(!made[0].candidates.empty() && cands[0][0][0].token == made[0].candidates[0].token, "the first draft's candidates");
+    EXPECT(cands.size() == 1 && cands[0].empty() && made.size() == nblock, "the block's rows");
+    EXPECT(!made[0].candidates.empty(), "the first draft's candidates");
 
     double stream = 0;
     int stream_layer = -1;
