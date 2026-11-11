@@ -144,22 +144,25 @@ SharedChoice choose_shared_drafts(const std::vector<DraftOdds> &slots, uint32_t 
 // Whether rounds of several slots take choose_shared_drafts' wide count or its even split. Each arm keeps what its
 // rounds gave against what choose_shared_drafts estimated for them: the tokens they wrote over the time of their
 // windows and of the draft layer's passes after them, and the estimated tokens over the estimated time, each decayed
-// by kTrialDecay a round of its own. An arm's correction is the first rate over the second. A round's estimates
-// follow the slots' text and the misses of the moment, so the corrections compare the arms even when one last ran on
-// other text. Until each arm has kTrialRounds rounds the two alternate; then the arm whose estimate for this round,
-// times its correction, is the higher, and every kTrialCheck-th choice the other, so that its correction stays
+// by kTrialDecay a round of its own. An arm's correction is the first rate over the second, starting from
+// kTrialPrior (as kTrialPriorRounds rounds at its first round's estimates). A round's estimates follow the slots'
+// text and the misses of the moment, so the corrections compare the arms even when one last ran on other text. A
+// round takes the arm whose estimate times its correction is the higher, and every kTrialCheck-th choice the other
+// (every kTrialCheck / 2-th while the other has fewer than kTrialRounds rounds), so that its correction stays
 // current. A choice without estimates is not counted and takes the wide count while the arms have as many rounds.
 // The core keeps one for each number of slots.
 constexpr uint32_t kTrialRounds = 8;
 constexpr uint32_t kTrialCheck = 32;
 constexpr double kTrialDecay = 1.0 / 16;
+constexpr double kTrialPrior[2] = {1.0, 0.85};  // the even split's, the wide count's
+constexpr uint32_t kTrialPriorRounds = 4;
 class RoundTrial {
  public:
   bool wide(const SharedChoice &c);  // this choice's: true for the wide count
   // A round's tokens and window, with its arm's estimates.
   void add_round(bool wide, double tokens, double ms, double est_tokens, double est_ms);
   void add_time(bool wide, double ms);  // the draft layer's pass after a round
-  double correction(bool wide) const;   // 1 before the arm's first round with estimates
+  double correction(bool wide) const;
   uint32_t rounds(bool wide) const { return rounds_[wide]; }
 
  private:

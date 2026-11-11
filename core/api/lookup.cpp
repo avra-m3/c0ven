@@ -230,14 +230,18 @@ SharedChoice choose_shared_drafts(const std::vector<DraftOdds> &slots, uint32_t 
 bool RoundTrial::wide(const SharedChoice &c) {
   if (c.wide_ms <= 0 || c.even_ms <= 0) return rounds_[1] <= rounds_[0];
   picks_++;
-  if (rounds_[0] < kTrialRounds || rounds_[1] < kTrialRounds) return rounds_[1] <= rounds_[0];
   const bool faster =
       c.wide_tokens / c.wide_ms * correction(true) > c.even_tokens / c.even_ms * correction(false);
-  return picks_ % kTrialCheck == 0 ? !faster : faster;
+  const uint32_t check = rounds_[!faster] < kTrialRounds ? kTrialCheck / 2 : kTrialCheck;
+  return picks_ % check == 0 ? !faster : faster;
 }
 
 void RoundTrial::add_round(bool wide, double tokens, double ms, double est_tokens, double est_ms) {
   if (est_tokens <= 0 || est_ms <= 0) return;
+  if (rounds_[wide] == 0) {
+    tokens_[wide] = kTrialPriorRounds * kTrialPrior[wide] * est_tokens, ms_[wide] = kTrialPriorRounds * est_ms;
+    est_tokens_[wide] = kTrialPriorRounds * est_tokens, est_ms_[wide] = kTrialPriorRounds * est_ms;
+  }
   const double keep = 1 - kTrialDecay;
   tokens_[wide] = tokens_[wide] * keep + tokens, ms_[wide] = ms_[wide] * keep + ms;
   est_tokens_[wide] = est_tokens_[wide] * keep + est_tokens, est_ms_[wide] = est_ms_[wide] * keep + est_ms;
@@ -249,7 +253,7 @@ void RoundTrial::add_time(bool wide, double ms) {
 }
 
 double RoundTrial::correction(bool wide) const {
-  if (ms_[wide] <= 0 || est_ms_[wide] <= 0 || est_tokens_[wide] <= 0) return 1;
+  if (ms_[wide] <= 0 || est_ms_[wide] <= 0 || est_tokens_[wide] <= 0) return kTrialPrior[wide];
   return (tokens_[wide] / ms_[wide]) / (est_tokens_[wide] / est_ms_[wide]);
 }
 
