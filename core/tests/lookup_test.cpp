@@ -43,12 +43,15 @@ std::vector<DraftOdds> slots(uint32_t n, uint32_t accepted, uint32_t offered) {
 
 std::vector<uint32_t> v(std::initializer_list<uint32_t> l) { return l; }
 
-// n slots whose draft layer's drafts are accepted at each place as p gives, the places past it as its last, measured.
-std::vector<DraftOdds> placed(uint32_t n, std::initializer_list<double> p) {
+// n slots whose draft layer's drafts are accepted at each place as p gives, and made as m gives (all where m is
+// empty), the places past them as their last, measured.
+std::vector<DraftOdds> placed(uint32_t n, std::initializer_list<double> p, std::initializer_list<double> m = {}) {
   DraftOdds o;
   o.layer_accepted = *p.begin(), o.layer_offered = 1, o.first_checks = engine::kFirstChecks;
   uint32_t i = 0;
   for (double x : p) o.place_accepted[i] = x, o.place_checked[i] = 1, i++;
+  i = 0;
+  for (double x : m) o.place_made[i] = x, o.place_tried[i] = 1, i++;
   return std::vector<DraftOdds>(n, o);
 }
 
@@ -224,18 +227,29 @@ int main() {
     DraftOdds sure;
     for (int i = 0; i < 200; i++) sure.layer_round(3, 3);
     EXPECT(std::fabs(sure.place_expected(7) - 7) < 1e-6, "past the places reached: %g", sure.place_expected(7));
-    // A round asked for 3 that made 1, accepted: the second place counts as rejected; the acceptance a draft does
-    // not see it.
+    // A round asked for 3 that made 1, accepted: the second place is never made, so a round of 3 makes 1 draft and
+    // accepts it; the acceptance a draft does not see the drafts not made.
     DraftOdds short_made;
     for (int i = 0; i < 200; i++) short_made.layer_round(1, 1, 3);
-    EXPECT(std::fabs(short_made.place_expected(3) - 1) < 1e-6 && std::fabs(short_made.layer_expected(3) - 3) < 1e-6,
-           "asked, not made: %g %g", short_made.place_expected(3), short_made.layer_expected(3));
-    // Asked for 2 and made none: the first place rejected, the acceptance a draft as it was.
+    EXPECT(std::fabs(short_made.place_expected(3) - 1) < 1e-6 && std::fabs(short_made.place_drafts(3) - 1) < 1e-6 &&
+               std::fabs(short_made.layer_expected(3) - 3) < 1e-6,
+           "asked, not made: %g %g %g", short_made.place_expected(3), short_made.place_drafts(3),
+           short_made.layer_expected(3));
+    // Asked for 2, every draft made and accepted in half the rounds and only the first in the others: 1.5 drafts
+    // made and accepted.
+    DraftOdds half_made;
+    for (int i = 0; i < 200; i++) half_made.layer_round(1 + i % 2, 1 + i % 2, 2);
+    EXPECT(std::fabs(half_made.place_expected(2) - 1.5) < 0.05 && std::fabs(half_made.place_drafts(2) - 1.5) < 0.05,
+           "half made: %g %g", half_made.place_expected(2), half_made.place_drafts(2));
+    // Asked for 2 and made none: nothing made or accepted, the acceptance a draft as it was, the first place tried.
     DraftOdds none_made;
     for (int i = 0; i < 200; i++) none_made.layer_round(0, 0, 2);
-    EXPECT(none_made.place_expected(2) < 1e-6 && std::fabs(none_made.layer_expected(1) - 2.0 / 3) < 1e-6 &&
-               none_made.first_checks == 200,
-           "none made: %g %g %u", none_made.place_expected(2), none_made.layer_expected(1), none_made.first_checks);
+    EXPECT(none_made.place_expected(2) < 1e-6 && none_made.place_drafts(2) < 1e-6 &&
+               std::fabs(none_made.layer_expected(1) - 2.0 / 3) < 1e-6 && none_made.first_checks == 200,
+           "none made: %g %g %g %u", none_made.place_expected(2), none_made.place_drafts(2),
+           none_made.layer_expected(1), none_made.first_checks);
+    // No round says what it asked for: every draft asked for is made.
+    EXPECT(std::fabs(sure.place_drafts(5) - 5) < 1e-6, "made, not asked: %g", sure.place_drafts(5));
     // A place few rounds reach keeps what they gave: the second place rejected in 50 rounds, then 200 of one draft.
     DraftOdds kept;
     for (int i = 0; i < 50; i++) kept.layer_round(1, 2);
@@ -252,12 +266,12 @@ int main() {
     EXPECT(even_drafts(9, 2, 8, 7) == std::vector<uint32_t>(9, 0), "more slots than rows");
   }
 
-  // The drafts of several slots, with times like the cards' (windows of 2 rows 20 ms, 4 23.4, 6 27.3, 8 32.2, 12 44,
-  // 16 48.1; the draft layer's pass 4.5 ms up to 8 rows and 6.5 past) and no misses.
+  // The drafts of several slots, with times like the cards' (windows of 2 rows 20 ms, 4 23.4, 6 27.3, 8 32.2, 9 40,
+  // 12 44, 16 48.1; the draft layer's pass 4.5 ms up to 8 rows and 6.5 past) and no misses.
   {
     RoundTimes w;
     WindowTimes dr;
-    const double t[] = {0, 0, 20, 0, 23.4, 0, 27.3, 0, 32.2, 0, 0, 0, 44, 0, 0, 0, 48.1};
+    const double t[] = {0, 0, 20, 0, 23.4, 0, 27.3, 0, 32.2, 40, 0, 0, 44, 0, 0, 0, 48.1};
     for (int i = 0; i < 4; i++)
       for (uint32_t r = 1; r <= 16; r++)
         if (t[r] > 0) w.add(r, t[r], 0), dr.add(r, r > 8 ? 6.5 : 4.5);
@@ -289,14 +303,21 @@ int main() {
     // more rows.
     EXPECT(even(placed(2, {2.0 / 3}), 7, 16, w) == v({2, 2}), "two thirds");
     EXPECT(wide(placed(2, {2.0 / 3}), 7, 16, w).empty(), "two thirds, wide");
-    // Four slots on prose, as the cards measured it with drafts asked for and not made counted rejected (0.68, 0.43
-    // and 0.44 at the first three places): 1 each (6.7 tokens in 36.7 ms) beats 3 each of 16 rows (8.4 in 54.6).
-    // At 0.82 for every place, 3 each would give 12.2 and be taken. On edits (0.98, 0.81, 0.87) 3 each gives 13.9
-    // against 7.9 and is taken.
+    // Four slots accepting 0.68, 0.43 and 0.44 at the first three places: 1 each (6.7 tokens in 36.7 ms) beats 3 each
+    // of 16 rows (8.4 in 54.6). At 0.82 for every place, 3 each would give 12.2 and be taken. On edits (0.98, 0.81,
+    // 0.87) 3 each gives 13.9 against 7.9 and is taken.
     EXPECT(even(placed(4, {0.68, 0.43, 0.44}), 7, 16, w) == v({1, 1, 1, 1}), "prose, 4 slots");
     EXPECT(wide(placed(4, {0.68, 0.43, 0.44}), 7, 16, w).empty(), "prose, 4 slots, wide");
     EXPECT(wide(placed(4, {0.82}), 7, 16, w) == v({3, 3, 3, 3}), "one acceptance for every place, wide");
     EXPECT(wide(placed(4, {0.98, 0.81, 0.87}), 7, 16, w) == v({3, 3, 3, 3}), "edits, 4 slots, wide");
+    // Three slots on prose as the cards measured it: drafts made accepted 0.81, 0.71 and 0.65 at the first three
+    // places, made 0.85, 0.8 and 0.8 of the times asked for. 2, 2 and 1 make 3.9 drafts (5.85 tokens in 34.1 ms) and
+    // beat 1 each (2.55 drafts, 5.07 tokens in 30.9 ms); priced at the rows asked, the two were level (36.7 and 31.8
+    // ms). 2 each of 16 rows (6.24 tokens in 38.1 ms, 9 rows in 3 rounds of 10) and 3 each (6.85 in 43.7) are not
+    // taken.
+    const std::vector<DraftOdds> prose = placed(3, {0.81, 0.71, 0.65}, {0.85, 0.8, 0.8});
+    EXPECT(even(prose, 7, 16, w) == v({2, 2, 1}), "prose, 3 slots, drafts not made");
+    EXPECT(wide(prose, 7, 16, w).empty(), "prose, 3 slots, drafts not made, wide");
     // Rows dear with misses (150 a row at 0.025 ms): at 0.3 a draft no drafts beat 1 each, but only once each slot's
     // first draft is measured; before, 1 each.
     RoundTimes missing;

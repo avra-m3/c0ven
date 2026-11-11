@@ -37,6 +37,11 @@ alternating order, give the slowest request fewer tokens a second, or fewer in t
   2 each; three on prose 0.151 with 1, 1 and 1 and 0.152 with 2, 2 and 1; three of mixed text 0.129 and 0.119;
   three copying text 0.239 with 4 each of 15 rows against 0.196; four editing text 0.171 with 3 each of 16 rows
   against 0.150 with 1 each (*estimate*).
+- A first version of this change counted a draft asked for and not made as rejected at its place, and priced a
+  round at the rows asked for. With three requests it ran 5.8 rows a round where the 8-row choice ran 6.1, and was
+  1.5% slower on prose, 2.6% on mixed text and 6.0% on mixed text sampled at temperature 1; on mixed text the slowest
+  request wrote 33.4 tokens a second against 35.9. With four requests it was level, on copied text 12% faster and on
+  edited text 14% (*estimate*, from alternating runs on two cards with no record in MEASUREMENTS.md).
 
 ## Decision
 
@@ -46,16 +51,19 @@ alternating order, give the slowest request fewer tokens a second, or fewer in t
    cost of its misses, and the misses a row of the rounds lately. A width's time is that net time and its rows'
    misses at the cost. A width not timed twice is on the line through the nearest timed ones; below the
    narrowest, on the line through the two narrowest, and no less than in proportion to the rows. A round of a
-   number of drafts is priced at that time of its rows and the draft layer's pass.
-2. Each slot keeps the draft layer's acceptance at each of the first 8 places of its drafts (`DraftOdds`): the
-   rounds that checked the place, every draft before it accepted, each decayed by 0.9 a round that checks it, and
-   for the weight those rounds do not yet carry, the place before it's (the first place's from the slot's acceptance
-   a draft). A draft that a round of several slots asked for and the draft layer did not make counts as rejected at
-   its place. A number of drafts is worth the row sampled last and, for each place, the product of the places'
-   acceptances up to it. A lone slot's choice keeps one acceptance for all places.
+   number of drafts is priced at the time of each width it may have and the draft layer's pass after it, by the
+   chance of that width from item 2's shares of drafts made.
+2. Each slot keeps two figures at each of the first 8 places of its drafts (`DraftOdds`): the share of the rounds
+   that asked for a draft there, after the draft layer made the one before, in which it made it; and the acceptance
+   of the drafts made there, in the rounds that checked the place, every draft before it accepted. Each is decayed
+   by 0.9 a round that tries or checks the place, and for the weight those rounds do not yet carry takes the place
+   before it's (the first place's: all made, and the slot's acceptance a draft). A number of drafts asked for is
+   worth the row sampled last and, for each place, the product of the places' shares made and acceptances up to
+   it; it makes each number of drafts up to it with the chance the shares made give. A lone slot's choice keeps one
+   acceptance for all places.
 3. The even split is one number for all slots, each at most its part of a step of 8 rows: the number with the most
    tokens a millisecond by items 1 and 2; 2 each while fewer than two widths are timed and every eighth choice; no
-   drafts only once each slot's first draft has been checked in 4 rounds.
+   drafts only once each slot's first draft has been tried or checked in 4 rounds.
 4. The wide count is a number of the whole step's 16 rows, shared out the same way, that gives more tokens a
    millisecond in total, and its slowest slot at least the tokens a millisecond of the even split's slowest, both
    by items 1 and 2; of those, the one with the most. Until two widths are timed by `RoundTimes`, 3 each of 16 rows,
@@ -81,10 +89,13 @@ Item 2 prices each draft at its own place. With one acceptance a slot, a prose r
 it checks, set the price of its third, and a count of 3 each looked 11% faster than 1 each for four requests on
 prose where the round log has them level. A later place is checked only when the ones before it are accepted, so its
 rounds are few; a place takes the place before it's for the weight its rounds do not carry, and keeps what its
-rounds gave while no round reaches it. A draft asked for and not made gives no token and a narrower window: counting
-it as rejected prices the tokens right, and pricing the rows asked for prices such rounds 4 to 8% high in the round
-log, which leans to fewer rows. On copied and edited text the draft layer makes nearly every draft asked, so there
-the count of 16 rows keeps its gain.
+rounds gave while no round reaches it. A draft asked for and not made gives no token and takes no row. Counted as
+rejected at the rows asked for, it priced such rounds 4 to 8% high in the round log; on prose, 2, 2 and 1 drafts
+came out level with 1 each, and three requests ran fewer rows than the 8-row choice and wrote slower (Context). The
+share made prices both the tokens and the rows. Each width is priced by its chance because a window's time jumps
+from 8 rows to 9 (Context): with `lookup_test`'s times and three slots on prose, 2 each of 16 rows looks 1.7% faster
+than 2, 2 and 1 at the mean of the rows made, and is 4.4% slower by each width's chance. On copied and edited text
+the draft layer makes nearly every draft asked, so there the count of 16 rows keeps its gain.
 
 A case where the wide count never wins runs the even split but for the trial's rounds of it: one in 16 until it
 has 8, then one in 32. A wide count 10% slower costs about 0.3% once it has 8 rounds. Item 5 judges the wide count by
@@ -129,8 +140,9 @@ rare to be timed twice.
   8-row choice with three and four requests (*estimate*, from alternating runs on two cards).
 - The even split priced as before ADR-0077, by the mean window of each width since load. It mixes numbers of
   slots and texts, and a request it gives no drafts stays without them (Context).
-- Pricing a round at the rows the draft layer would make rather than those asked. It needs a second figure for
-  each place, the drafts made; the rows asked price such rounds a little high, toward fewer rows (Why).
+- Counting a draft asked for and not made as rejected, and pricing a round at the rows asked for. It leans to fewer
+  rows, and three requests wrote 1.5 to 6% slower than with the 8-row choice (Context).
+- Pricing a round at the mean of the rows made. It hides the jump in a window's time past 8 rows (Why).
 - A trial of every number of drafts. Each needs its own rounds, and a slow one costs every request while it runs.
 - A trial that compares the arms' measured rates. One arm's rate is from whatever text it last ran on (Why).
 - A number of drafts for each slot, the most tokens a millisecond with the floor of item 4. Each slot's acceptance
@@ -146,8 +158,7 @@ rare to be timed twice.
   of slots, for as long as the engine runs. A trial's rates come from earlier requests too; the decay and the
   sixteenth choice let new ones replace them.
 - Several slots' choices differ from the 8-row choice before ADR-0077 even within 8 rows: they follow the misses of
-  the rounds lately and each place's acceptance. On prose three requests may run 1 draft each where they ran 2, 2
-  and 1, which the round log has level.
+  the rounds lately and each place's acceptance and share made.
 - Four requests no longer run tens of steps without drafts at the start of their text.
 - A number of slots whose wide count item 4 estimates at least 18% faster runs it from its first round.
 - Requests that repeat text they were given, such as copies or code returned with a change, accept nearly every

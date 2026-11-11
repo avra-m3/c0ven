@@ -88,31 +88,41 @@ class RoundTimes {
 // The places in a round of the draft layer's drafts whose acceptance DraftOdds keeps apart: the first kOddsPlaces.
 constexpr uint32_t kOddsPlaces = 8;
 
-// The rounds that must have checked a slot's first draft before several slots' even split may give it none: a round
-// without drafts measures no acceptance, so a low first guess would otherwise keep a request without drafts.
+// The rounds that must have tried or checked a slot's first draft before several slots' even split may give it none: a
+// round without drafts measures no acceptance, so a low first guess would otherwise keep a request without drafts.
 constexpr uint32_t kFirstChecks = 4;
 
 // What one slot's rounds have accepted lately: the lookup's drafts accepted and its rounds that stopped at a draft,
 // and the draft layer's drafts accepted and checked a round (up to the first one rejected), each decayed by 0.9 a
-// round. Also the draft layer's drafts at each place of a round, the first draft's, the second's and so on: accepted
-// and checked (reached: every draft before it accepted), each decayed by 0.9 a round that checks the place, so that a
-// place few rounds reach keeps what they gave.
+// round. Also, at each place of a round of the draft layer's drafts, the first draft's, the second's and so on:
+// - made: the rounds that asked for a draft there after the draft layer made the one before (tried), and of them those
+//   it made it in; the draft layer stops at a draft it is unsure of, so a round may hold fewer drafts than it asked;
+// - accepted: the rounds with a draft there and every draft before it accepted (checked), and of them those that
+//   accepted it;
+// each decayed by 0.9 a round that tries or checks the place, so that a place few rounds reach keeps what they gave.
 struct DraftOdds {
   double lookup_accepted = 9.0, lookup_failed = 1.0, layer_accepted = 2.0, layer_offered = 3.0;
   double place_accepted[kOddsPlaces] = {}, place_checked[kOddsPlaces] = {};
-  uint32_t first_checks = 0;  // the rounds that checked the first place
+  double place_made[kOddsPlaces] = {}, place_tried[kOddsPlaces] = {};
+  uint32_t first_checks = 0;  // the rounds that tried or checked the first place
   void lookup_round(uint32_t accepted, uint32_t drafts);
   // A round of the draft layer's drafts, of which it checked drafts and accepted accepted. asked is the drafts the
-  // round asked of the draft layer, which may have made fewer: a place asked for and reached without a draft counts
-  // as rejected in the places, as it gives no token there.
+  // round asked of the draft layer, which may have made fewer; 0 where the round does not say.
   void layer_round(uint32_t accepted, uint32_t drafts, uint32_t asked = 0);
   // The draft layer's drafts accepted in a round of k: its acceptance a draft, accepted over checked, to the powers
   // 1 to k added (a draft counts only when those before it do).
   double layer_expected(uint32_t k) const;
-  // The same with each place's own acceptance: its rounds', which start from the place before it's (the first
-  // place's from the acceptance a draft), as if that had been their first. A slot's second and third drafts are
-  // accepted less often than its first on most text, which one acceptance for all of them hides.
+  // The draft layer's drafts accepted in a round that asks for k, with each place's own figures: a draft counts when
+  // it is made and accepted and those before it are. A place's acceptance is its rounds', which start from the place
+  // before it's (the first place's from the acceptance a draft), as if that had been their first; its share made
+  // likewise, the first place's from 1. A slot's second and third drafts are accepted less often than its first on
+  // most text, which one acceptance for all of them hides.
   double place_expected(uint32_t k) const;
+  // The drafts the draft layer is expected to make in a round that asks for k: a draft is made when those before it
+  // are, at each place's share made.
+  double place_drafts(uint32_t k) const;
+  // The chance that it makes 0, 1, ... k of them.
+  std::vector<double> drafts_made(uint32_t k) const;
 };
 
 // The drafts for a round of one slot: how many of the lookup's to take, 0 for the draft layer's. Each choice is worth
@@ -142,8 +152,9 @@ std::vector<uint32_t> even_drafts(uint32_t n, uint32_t k, uint32_t rows, uint32_
 // The drafts each of several writing slots may make for their next round
 // (docs/adr/0078-several-slots-take-more-rows-only-when-the-slowest-writes-no-slower.md): one count k for all of
 // them, shared out as even_drafts shares it, worth the slots' expected tokens (each the row sampled last and its
-// drafts accepted, at each place's acceptance: place_expected) over the round's time, the window's (window.ms) and
-// the draft layer's pass after it (drafter, by the window's rows).
+// drafts accepted, at each place's acceptance and share made: place_expected) over the round's time, the window's
+// (window.ms) and the draft layer's pass after it (drafter, by the window's rows), at the rows the draft layer is
+// expected to make (place_drafts).
 // - even: the k with the most tokens a millisecond of a step of kEvenRows rows, and at least 1 while a slot's first
 //   draft has been checked in fewer than kFirstChecks rounds; kSharedDrafts while fewer than two widths are timed.
 // - wide: a k whose rows are more than kEvenRows, of a step of max_rows, that gives more tokens a millisecond in all

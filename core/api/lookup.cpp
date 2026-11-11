@@ -137,12 +137,16 @@ void DraftOdds::layer_round(uint32_t accepted, uint32_t drafts, uint32_t asked) 
     layer_accepted = 0.9 * layer_accepted + 0.1 * accepted;
     layer_offered = 0.9 * layer_offered + 0.1 * std::min(drafts, accepted + 1);
   }
-  // The places reached: the same, with the first place asked for and not made after the drafts accepted.
-  const uint32_t reached = std::min(std::max(drafts, asked), accepted + 1);
-  first_checks += reached > 0;
-  for (uint32_t i = 0; i < std::min(reached, kOddsPlaces); i++) {
+  // The places checked: the same. The places tried: those asked for up to the first the draft layer did not make.
+  const uint32_t checked = std::min(drafts, accepted + 1), tried = std::min(asked, drafts + 1);
+  first_checks += checked > 0 || tried > 0;
+  for (uint32_t i = 0; i < std::min(checked, kOddsPlaces); i++) {
     place_checked[i] = 0.9 * place_checked[i] + 0.1;
     place_accepted[i] = 0.9 * place_accepted[i] + (i < accepted ? 0.1 : 0.0);
+  }
+  for (uint32_t i = 0; i < std::min(tried, kOddsPlaces); i++) {
+    place_tried[i] = 0.9 * place_tried[i] + 0.1;
+    place_made[i] = 0.9 * place_made[i] + (i < drafts ? 0.1 : 0.0);
   }
 }
 
@@ -154,15 +158,37 @@ double DraftOdds::layer_expected(uint32_t k) const {
 }
 
 double DraftOdds::place_expected(uint32_t k) const {
-  // A place's acceptance: its rounds' (a weight of 1 less 0.9 to the power of their number), and the place before
-  // it's for the rest.
-  double p = layer_offered > 0 ? std::min(1.0, layer_accepted / layer_offered) : 0.0;
+  // A place's acceptance and share made: its rounds' (a weight of 1 less 0.9 to the power of their number), and the
+  // place before it's for the rest.
+  double p = layer_offered > 0 ? std::min(1.0, layer_accepted / layer_offered) : 0.0, m = 1;
   double e = 0, pi = 1;
   for (uint32_t i = 0; i < k; i++) {
-    if (i < kOddsPlaces) p = place_accepted[i] + (1 - place_checked[i]) * p;
-    e += (pi *= p);
+    if (i < kOddsPlaces) {
+      p = place_accepted[i] + (1 - place_checked[i]) * p;
+      m = place_made[i] + (1 - place_tried[i]) * m;
+    }
+    e += (pi *= p * m);
   }
   return e;
+}
+
+double DraftOdds::place_drafts(uint32_t k) const {
+  const std::vector<double> c = drafts_made(k);
+  double e = 0;
+  for (uint32_t j = 1; j <= k; j++) e += j * c[j];
+  return e;
+}
+
+std::vector<double> DraftOdds::drafts_made(uint32_t k) const {
+  std::vector<double> c(k + 1, 0.0);
+  double m = 1, pi = 1;  // the place's share made; the chance of making every draft up to it
+  for (uint32_t i = 0; i < k; i++) {
+    if (i < kOddsPlaces) m = place_made[i] + (1 - place_tried[i]) * m;
+    c[i] = pi * (1 - m);
+    pi *= m;
+  }
+  c[k] = pi;
+  return c;
 }
 
 uint32_t choose_drafts(const DraftOdds &odds, uint32_t layer_drafts, uint32_t draft_max, uint32_t lookup_drafts,
@@ -199,8 +225,22 @@ SharedChoice choose_shared_drafts(const std::vector<DraftOdds> &slots, uint32_t 
     for (uint32_t x : d) w += x;
     return w;
   };
-  // A round's time: the window's, at the misses a row of the rounds lately, and the draft layer's pass after it.
-  auto ms = [&](const std::vector<uint32_t> &d) { return window.ms(width(d)) + drafter.ms(width(d)); };
+  // A round's time: the window's, at the misses a row of the rounds lately, and the draft layer's pass after it, for
+  // each width the round may have, by the chance of each slot's drafts made.
+  auto ms = [&](const std::vector<uint32_t> &d) {
+    std::vector<double> chance(1, 1.0);  // of each number of drafts made in all
+    for (uint32_t i = 0; i < n; i++) {
+      const std::vector<double> c = slots[i].drafts_made(d[i]);
+      std::vector<double> next(chance.size() + d[i], 0.0);
+      for (size_t a = 0; a < chance.size(); a++)
+        for (size_t b = 0; b < c.size(); b++) next[a + b] += chance[a] * c[b];
+      chance = std::move(next);
+    }
+    double t = 0;
+    for (uint32_t x = 0; x < chance.size(); x++)
+      if (chance[x] > 0) t += chance[x] * (window.ms(n + x) + drafter.ms(n + x));
+    return t;
+  };
   // The slots' tokens for drafts d, in all and the fewest.
   auto sum_low = [&](const std::vector<uint32_t> &d, double &low) {
     double t = 0;

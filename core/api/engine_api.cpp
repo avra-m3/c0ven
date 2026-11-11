@@ -1029,8 +1029,8 @@ struct engine_ctx {
         rows.clear();
         for (uint32_t i = 0; i < ns; i++) {
           const uint32_t s = row0[i].slot, p = row0[i].pos;
-          // The drafts the window has room for; of them, those the slot made, and those it was asked for: a draft asked
-          // for that the draft layer did not make counts as rejected (DraftOdds' places).
+          // The drafts the window has room for; of them, those the slot made, and those it was asked for (DraftOdds'
+          // places keep the share the draft layer makes).
           const uint32_t room = std::min<uint32_t>({info.max_ctx - 1 - p, mapped_cells(s) - 1 - p, STEP_MAX_RUN - 1,
                                                     cap - (uint32_t)rows.size() - (ns - i)});
           const uint32_t ki = std::min<uint32_t>((uint32_t)drafts[i].size(), room);

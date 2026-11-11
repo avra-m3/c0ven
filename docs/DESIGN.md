@@ -587,7 +587,7 @@ as one window, and the windows of all slots run in one step. The slots share the
 ([ADR-0077](adr/0077-a-decode-step-holds-16-rows.md)): a lone slot takes up to
 7 drafts with DFlash 2 and 3 with the MTP layer. Several slots make the same number each: the one that gives the
 most tokens a millisecond in a step of 8 rows, or in one of 16 when that gives more in total and the slowest slot no fewer, from
-each slot's acceptance at each place of its drafts and the measured times of rounds of several slots
+each slot's acceptance and share of drafts made at each place of its drafts and the measured times of rounds of several slots
 ([ADR-0078](adr/0078-several-slots-take-more-rows-only-when-the-slowest-writes-no-slower.md), `core/api/lookup.h`). Each
 slot's window is accepted and committed on
 its own. A step of several slots runs no drafts when it gives one of them its second token, which already waits for
