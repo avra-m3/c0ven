@@ -11,6 +11,7 @@ constexpr uint32_t kStageSlots = 256;  // experts a layer's copies hold on a car
 constexpr uint32_t kStageBatch = 16;   // experts one pool run writes to the cards
 constexpr uint32_t kStageRound = 32;   // experts one round of SSD reads brings, a multiple of kStageBatch
 constexpr uint32_t kStageBuffers = kStageSlots + kStageBatch;  // slots a card holds: the file's start at a batch
+constexpr uint32_t kChunkRows = 2048;  // the most rows a chunk takes, whatever Options::prompt_chunk asks
 constexpr uint32_t kChunkGroup = 256;  // rows the attention takes at a time: its scores and partial sums are per row
 
 struct Model::ChunkCard {

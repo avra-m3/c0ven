@@ -98,8 +98,11 @@ struct Model::ChunkRun {
 };
 
 void Model::alloc_chunk(Card &card) {
-  const uint32_t cap = opt_.prompt_chunk;
-  if (cap % 64 || cap > D41_CHUNK_MAX) throw std::runtime_error("deepseek41's prompt chunk is a multiple of 64, at most 4,352");
+  if (opt_.prompt_chunk % 64 || opt_.prompt_chunk > D41_CHUNK_MAX)
+    throw std::runtime_error("deepseek41's prompt chunk is a multiple of 64, at most 4,352");
+  // A chunk's buffers and staging slots take room from the cards' expert cache, which decode needs; rows beyond this
+  // gain little for the experts they cost.
+  const uint32_t cap = std::min(opt_.prompt_chunk, kChunkRows);
   if (opt_.slots * D41_RING_WIDE * 1ull * D41_HD * 2 > (1ull << 31)) throw std::runtime_error("too many slots for a prompt chunk");
   card.ck = std::make_unique<ChunkCard>();
   ChunkCard &k = *card.ck;
@@ -912,5 +915,40 @@ std::vector<Candidate> Model::chunk_forward(uint32_t slot, const int32_t *tokens
   ctimes_.total = ms(t_start, Clock::now());
   return out;
 }
+
+// The engine's prompt runs. A run goes through chunk_forward, except its last rows when they feed the drafter and the
+// rows of a short run, which are decode steps: the steps store the drafter's keys for the window it attends over, and
+// a short run is cheaper that way. The drafter's rows are the prompt's last ones, so a run that no chunk is expected
+// to follow (no next tokens) ends in D41_WIN of them.
+std::vector<std::vector<Candidate>> Model::prompt_runs(const PromptRun *runs, uint32_t nruns, const int32_t *,
+                                                       uint32_t next_n) {
+  if (!chunk_cap_) throw std::runtime_error("deepseek41 has no prompt chunk: Options::prompt_chunk is 0");
+  std::vector<std::vector<Candidate>> out;
+  for (uint32_t r = 0; r < nruns; r++) {
+    const PromptRun &run = runs[r];
+    if (run.n == 0 || run.n > chunk_cap_) throw std::runtime_error("a prompt run takes 1 to prompt_chunk rows");
+    const int32_t before[3] = {run.p1, run.p2, run.p3};
+    // The token j places from the run's start (negative: before it).
+    const auto token = [&](int64_t j) { return j >= 0 ? run.tokens[j] : before[-j - 1]; };
+    uint32_t tail = run.n;
+    if (run.n > STEP_MAX_ROWS) tail = dsp_ && next_n == 0 ? std::min<uint32_t>(run.n, D41_WIN) : 0;
+    const uint32_t head = run.n - tail;
+    std::vector<Candidate> cand;
+    if (head) cand = chunk_forward(run.slot, run.tokens, before, run.pos0, head, tail == 0);
+    for (uint32_t i = head; i < run.n; i += STEP_MAX_ROWS) {
+      const uint32_t w = std::min<uint32_t>(STEP_MAX_ROWS, run.n - i);
+      StepIn rows[STEP_MAX_ROWS];
+      for (uint32_t k = 0; k < w; k++) {
+        const int64_t j = (int64_t)i + k;
+        rows[k] = {run.slot, run.pos0 + (uint32_t)j, token(j), token(j - 1), token(j - 2), token(j - 3)};
+      }
+      auto got = step(rows, w, true, true);
+      if (i + w == run.n) cand = std::move(got[w - 1]);
+    }
+    out.push_back(std::move(cand));
+  }
+  return out;
+}
+
 
 }  // namespace engine::deepseek41

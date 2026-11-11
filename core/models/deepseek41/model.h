@@ -1,6 +1,7 @@
 // deepseek41's decode step on two cards (ADR-0074): each card runs one recorded list a step, the two exchange their
-// partial sums through each other's memory, and the CPU answers the routed experts the cards do not hold. Prompts are
-// read as decode steps; the model reads no images. With Options::mtp_dir, the path of the file's drafter (a second
+// partial sums through each other's memory, and the CPU answers the routed experts the cards do not hold. A prompt of
+// more than a few rows goes through all the layers in chunks (prompt.cpp); the last rows and short prompts are decode
+// steps. The model reads no images. With Options::mtp_dir, the path of the file's drafter (a second
 // GGUF), the cards also hold the drafter: its layers follow the model's in every card's list of layers, and all of
 // its experts are on the cards.
 #pragma once
@@ -139,7 +140,7 @@ class Model final : public engine::Model {
   void draft_start(uint32_t, uint32_t) override {}
 
   std::vector<std::vector<Candidate>> prompt_runs(const PromptRun *, uint32_t, const int32_t *, uint32_t) override;
-  uint32_t prompt_chunk() const override { return 0; }
+  uint32_t prompt_chunk() const override { return chunk_cap_; }
   uint32_t fetch_rows() const override { return 0; }
   uint32_t decode_weight() const override { return 1; }
 

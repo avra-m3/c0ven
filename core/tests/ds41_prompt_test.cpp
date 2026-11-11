@@ -3,7 +3,8 @@
 // spread over each chunk (Debug::probes), then everything a later step reads: each layer's window, the compressor
 // rings and the compressed rows of the pools, and then the candidates of the decode steps that follow, written from the
 // decode slot's choices into both slots. A third slot takes the chunks again at another size, and must agree with the
-// first far more closely than the steps do. RefModel on the CPU runs two lengths too.
+// first far more closely than the steps do. The engine's call, prompt_runs, reads the tokens into the third slot in two
+// pieces and is compared the same way. RefModel on the CPU runs two lengths too.
 //
 // Needs two cards and DS41_MODEL. Settings:
 //   DS41_PROMPTS, DS41_PROMPT_IDS: a file of prompts, a line each, a name then its tokens, and the names to take
@@ -12,6 +13,7 @@
 //   DS41_CHUNK: the chunk's rows (default 512, a multiple of 64); DS41_CHUNK_B: the other size of the CPU-alone runs (default half of it,
 //     0 for none)
 //   DS41_FOLLOW: the decode steps that follow (default 24)
+//   DS41_DRAFTER: the drafter's file; then the last rows of prompt_runs' last piece run as steps
 //   DS41_REF_LENS: the lengths (default "96 160", empty for none) at which RefModel runs the same tokens and the last
 //     row's candidates of both paths are compared with its
 //   DS41_MISTAKE=1: the chunk path reads wrong tokens in the second half, and the test must fail
@@ -275,6 +277,7 @@ int run() {
   opt.hugetlb_arena = std::getenv("ENGINE_HUGETLB_ARENA") != nullptr;
   opt.experts_per_layer = std::getenv("DS41_CARD_EXPERTS") ? std::atoi(std::getenv("DS41_CARD_EXPERTS")) : -1;
   if (const char *profile = std::getenv("DS41_PROFILE")) opt.routing_profile = profile;
+  if (const char *drafter = std::getenv("DS41_DRAFTER")) opt.mtp_dir = drafter;
   Debug debug;
   debug.probes = true;
   const auto t_load = Clock::now();
@@ -435,6 +438,33 @@ int run() {
       check("index keys", d.key, kKeys);
     };
     check_state("", compare_state(model, 0, 1, L, npp));
+    // The engine's calls: prompt_runs in pieces, the first half a chunk when the prompt is shorter than one, each with the
+    // next to follow and the last without, into slot 2 (the CPU-alone runs are done with it). With a drafter the last
+    // rows run as decode steps.
+    if (opt.slots == 4 && L > 2 * STEP_MAX_ROWS) {
+      const auto run_at = [&](uint32_t pos0, uint32_t n) {
+        const auto back = [&](uint32_t k) { return pos0 >= k ? tokens[pos0 - k] : kNoToken; };
+        return deepseek41::Model::PromptRun{2, pos0, tokens.data() + pos0, n, back(1), back(2), back(3)};
+      };
+      std::vector<Candidate> got;
+      uint32_t pieces = 0;
+      for (uint32_t pos = 0; pos < L; pieces++) {
+        const uint32_t n = pos == 0 && L <= chunk ? L / 2 : std::min(chunk, L - pos), after = std::min(chunk, L - pos - n);
+        const auto run = run_at(pos, n);
+        auto out = model.prompt_runs(&run, 1, after ? tokens.data() + pos + n : nullptr, after);
+        if (pos + n == L) got = std::move(out[0]);
+        pos += n;
+      }
+      EXPECT(!got.empty(), "prompt_runs gave no candidates");
+      const double kl = kl_candidates(decode_last, got);
+      std::printf("length %u: prompt_runs in %u pieces, the last row's candidates, KL %.5f; first candidate %d (decode) and %d\n",
+                  L, pieces, kl, decode_last[0].token, got[0].token);
+      EXPECT(!std::isnan(kl), "the candidates are not numbers");
+      kls_all.push_back(kl);
+      compared_all++;
+      same_all += got[0].token == decode_last[0].token;
+      check_state("prompt_runs, ", compare_state(model, 0, 2, L, npp));
+    }
     // The candidates of the last row, and of the steps that follow, the decode slot's greedy choices fed to both.
     std::vector<double> kls;
     uint32_t same = 0;

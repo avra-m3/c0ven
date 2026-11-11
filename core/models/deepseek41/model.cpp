@@ -1532,13 +1532,9 @@ const float *Model::draft_out(uint32_t row) const {
   return dsp_->out.data() + (size_t)row * E;
 }
 
-// Prompts are read as decode steps, which store the drafter's keys.
-void Model::df_context_prompt(const StepIn *, uint32_t, uint32_t) {
-  throw std::runtime_error("deepseek41 has no prompt path: its prompts are read as decode steps");
-}
-std::vector<std::vector<Candidate>> Model::prompt_runs(const PromptRun *, uint32_t, const int32_t *, uint32_t) {
-  throw std::runtime_error("deepseek41 has no prompt path: its prompts are read as decode steps");
-}
+// The drafter is fed by the decode steps (they store each row's keys): a chunk's last rows run as steps (prompt.cpp), so the
+// context rows have nothing left to do.
+void Model::df_context_prompt(const StepIn *, uint32_t, uint32_t) {}
 
 // A slot's state outside the pages: every layer's window, then each ratio-2 source's compressor ring. Both cards hold
 // the same bits, so card 0's are saved.
