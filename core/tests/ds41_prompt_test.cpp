@@ -30,6 +30,7 @@
 #include <fstream>
 #include <map>
 #include <numeric>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -44,8 +45,8 @@ using namespace engine::deepseek41;
 namespace {
 
 // The chunk path multiplies f16 activations and the steps 8-bit ones, sums in another order, and a router's near tie can
-// go the other way, so the paths differ by their make; each limit sits a little over the largest value seen. They are
-// loose, and a race in the path (rows of one compressor cell writing in no fixed order) is far above them.
+// go the other way for a token; so streams are judged by the median row, with few rows allowed far off. Each limit sits
+// a little over the largest value seen, and a race in the path is far above them.
 // The candidates are held to ds41_decode_test's limits: median KL at most kMedianKl, same greedy pick in kSamePicks of 100.
 constexpr double kStreamRel = 0.3;
 struct StateLimit {
@@ -144,12 +145,19 @@ double rel_l2(const float *a, const float *ref, size_t n) {
 struct Stat {
   double sum = 0, worst = 0;
   uint32_t n = 0;
+  std::vector<double> all;
   void add(double v) {
     sum += v;
     worst = std::max(worst, v);
     n++;
+    all.push_back(v);
   }
   double mean() const { return n ? sum / n : 0; }
+  double median() const {
+    std::vector<double> v = all;
+    std::sort(v.begin(), v.end());
+    return v.empty() ? 0 : v[v.size() / 2];
+  }
 };
 
 constexpr uint32_t D = D41_HC_DIM;
@@ -390,6 +398,7 @@ int run() {
 
     // The same tokens, 8 rows a step, in slot 0; at the probed rows the streams are compared.
     std::vector<Stat> stream[2];
+    std::set<uint32_t> odd_rows;  // rows whose stream differs by more than 4 limits in some layer
     stream[0].resize(layers);
     stream[1].resize(layers);
     std::vector<Candidate> decode_last;
@@ -402,23 +411,33 @@ int run() {
         const auto at = chunk_probe.find(t + i);
         if (at == chunk_probe.end()) continue;
         for (uint32_t sub = 0; sub < 2; sub++)
-          for (uint32_t l = 0; l < layers; l++)
-            stream[sub][l].add(rel_l2(at->second.data() + ((size_t)sub * layers + l) * D,
-                                      model.probe(l, sub == 1) + (size_t)i * D, D));
+          for (uint32_t l = 0; l < layers; l++) {
+            const double e = rel_l2(at->second.data() + ((size_t)sub * layers + l) * D, model.probe(l, sub == 1) + (size_t)i * D, D);
+            stream[sub][l].add(e);
+            if (e > 4 * kStreamRel) {
+              std::printf("  row %u, layer %u, %s: relative error %.4f\n", t + i, l, sub ? "MoE" : "attention", e);
+              odd_rows.insert(t + i);
+            }
+          }
       }
       if (t + n == L) decode_last = out.back();
       t += n;
     }
-    std::printf("length %u, the streams' relative error, mean (worst) over %zu rows, by layer:\n", L, chunk_probe.size());
+    std::printf("length %u, the streams' relative error, median (worst) over %zu rows, by layer:\n", L, chunk_probe.size());
     double worst_stream = 0;
     for (uint32_t l = 0; l < layers; l++) {
-      std::printf("  layer %2u: attention %.4f (%.4f), MoE %.4f (%.4f)\n", l, stream[0][l].mean(), stream[0][l].worst,
-                  stream[1][l].mean(), stream[1][l].worst);
-      worst_stream = std::max({worst_stream, stream[0][l].mean(), stream[1][l].mean()});
+      std::printf("  layer %2u: attention %.4f (%.4f), MoE %.4f (%.4f)\n", l, stream[0][l].median(), stream[0][l].worst,
+                  stream[1][l].median(), stream[1][l].worst);
+      worst_stream = std::max({worst_stream, stream[0][l].median(), stream[1][l].median()});
     }
     worst_stream_all = std::max(worst_stream_all, worst_stream);
     if (worst_stream > kStreamRel) {
       std::printf("FAIL length %u: a layer's streams differ by %.4f, above %.2f\n", L, worst_stream, kStreamRel);
+      failures++;
+    }
+    if (odd_rows.size() > chunk_probe.size() / 8) {
+      std::printf("FAIL length %u: %zu of %zu rows differ by more than %.1f in some layer\n", L, odd_rows.size(),
+                  chunk_probe.size(), 4 * kStreamRel);
       failures++;
     }
 
