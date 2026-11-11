@@ -72,6 +72,7 @@ struct Slot {
   uint32_t windows_end = UINT32_MAX;  // where the last prompt piece read as decode windows ended
   engine::Lookup lookup;        // the slot's own tokens, for drafts from earlier runs of them
   engine::DraftOdds odds;
+  uint32_t asked = 0;           // the drafts asked of the draft layer for drafts, which may hold fewer
   bool lookup_round = false;    // drafts holds the lookup's drafts
   engine_slot_stats stats{};
   uint64_t last_ns = 0;         // when a plan last computed it
@@ -444,8 +445,7 @@ struct engine_ctx {
     for (uint32_t i = 0; i < n; i++)
       for (uint32_t j = 0; j <= most[i]; j++) next.push_back({rows[i].slot, rows[i].pos + 2 * STEP_MAX_RUN - j});
     const uint32_t max_rows = model->step_fits(next.data(), (uint32_t)next.size()) ? STEP_MAX_ROWS : engine::kEvenRows;
-    engine::SharedChoice c =
-        engine::choose_shared_drafts(odds, draft_max, max_rows, window_times, several_times, drafter_times);
+    engine::SharedChoice c = engine::choose_shared_drafts(odds, draft_max, max_rows, several_times, drafter_times);
     if (c.wide.empty() || n > ENGINE_MAX_STEP_SLOTS) return c.even;
     trial_wide = trials[n].wide(c) ? 1 : 0;
     trial_n = n;
@@ -665,11 +665,12 @@ struct engine_ctx {
     if (model->dflash()) {
       model->df_context_prompt(mr.data(), k, end);
       std::vector<DfSeed> seeds{{pi.slot, sl.settings, fed + 1, sl.next, draft_max, draft_history(sl)}};
-      sl.drafts = std::move(df_drafts(nullptr, 0, seeds)[0]);  // under mu, as below
+      sl.drafts = std::move(df_drafts(nullptr, 0, seeds)[0]), sl.asked = draft_max;  // under mu, as below
       return;
     }
     auto dc = model->mtp_catchup_prompt(mr.data(), k, end, {k - 1});
     sl.drafts = make_drafts(pi.slot, sl.settings, fed + 1, dc[0], 0, draft_history(sl));  // under mu: admit and release wait for it
+    sl.asked = draft_max;
   }
 
   // A plan's prompt pieces. Those of different slots that the prompt path reads go as one chunk, up to
@@ -763,12 +764,13 @@ struct engine_ctx {
     if (!mtp || sl.done) return;
     if (model->dflash()) {
       std::vector<DfSeed> seeds{{s, sl.settings, sl.fed + 1, sl.next, draft_max, draft_history(sl)}};
-      sl.drafts = std::move(df_drafts(nullptr, 0, seeds)[0]);  // under mu, as below
+      sl.drafts = std::move(df_drafts(nullptr, 0, seeds)[0]), sl.asked = draft_max;  // under mu, as below
       return;
     }
     mr.back().token = sl.next;
     auto dc = model->mtp_catchup(mr.data(), (uint32_t)mr.size(), {(uint32_t)mr.size() - 1});
     sl.drafts = make_drafts(s, sl.settings, sl.fed + 1, dc[0], 0, draft_history(sl));  // under mu, as above
+    sl.asked = draft_max;
   }
 
   // One decode step for the plan's slots, batched. Runs on the engine thread.
@@ -811,7 +813,7 @@ struct engine_ctx {
         const uint32_t take = engine::choose_drafts(sl.odds, (uint32_t)sl.drafts.size(), draft_max,
                                                     (uint32_t)look.size(), STEP_MAX_RUN, window_times);
         sl.lookup_round = take > 0;
-        if (take) look.resize(take), sl.drafts = std::move(look);
+        if (take) look.resize(take), sl.drafts = std::move(look), sl.asked = take;
       }
       // A lone writing slot with drafts runs a round; several, all writing and some with drafts, run their windows in
       // one. Also while another slot reads its prompt: the scheduler owes the writers time, not steps, and a round
@@ -891,7 +893,7 @@ struct engine_ctx {
       std::lock_guard<std::mutex> lk(mu);
       for (size_t i = 0; i < seeds.size(); i++) {
         Slot &sl = slots[seeds[i].slot];
-        if (sl.used && !sl.done) sl.drafts = d[i];
+        if (sl.used && !sl.done) sl.drafts = d[i], sl.asked = seeds[i].most;
       }
       if (rows.size() > 1) time_several((uint32_t)rows.size(), t0, sampled, misses);
       return;
@@ -921,7 +923,7 @@ struct engine_ctx {
       std::lock_guard<std::mutex> lk(mu);
       for (size_t i = 0; i < seeds.size(); i++) {
         Slot &sl = slots[seeds[i].slot];
-        if (sl.used && !sl.done) sl.drafts = d[i];
+        if (sl.used && !sl.done) sl.drafts = d[i], sl.asked = seeds[i].most;
       }
       if (rows.size() > 1) time_several((uint32_t)rows.size(), t0, sampled, misses);
       return;
@@ -935,7 +937,7 @@ struct engine_ctx {
     lk.unlock();
     auto d = make_drafts(s, st, pos, dc[0], 0, std::move(h));
     lk.lock();
-    if (slots[s].used && !slots[s].done) slots[s].drafts = d;
+    if (slots[s].used && !slots[s].done) slots[s].drafts = d, slots[s].asked = draft_max;
   }
 
   // A draft round for one slot (docs/spec/STRATA_DECODE.md, sections 1-3): row 0 (the token sampled last) and the
@@ -1005,7 +1007,7 @@ struct engine_ctx {
       d = make_drafts(s, settings, p + a + 2, dc[0], 0, std::move(hist));
     }
     std::lock_guard<std::mutex> lk(mu);
-    if (slots[s].used && !slots[s].done) slots[s].drafts = d;
+    if (slots[s].used && !slots[s].done) slots[s].drafts = d, slots[s].asked = draft_max;
   }
 
   // A draft round for several slots in one window (round, slot by slot): each slot's run of rows, its token sampled
@@ -1013,7 +1015,7 @@ struct engine_ctx {
   // the draft layer catches up on each run's accepted rows and drafts again for every slot. Runs on the engine thread.
   void rounds(uint32_t plan, const std::vector<StepIn> &row0, const std::vector<std::vector<int32_t>> &drafts) {
     const uint32_t ns = (uint32_t)row0.size();
-    std::vector<uint32_t> start(ns), k(ns);
+    std::vector<uint32_t> start(ns), k(ns), asked(ns);  // each slot's run, its drafts, and the drafts asked of it
     std::vector<StepIn> rows;
     int arm;  // the trial behind these drafts, of these slots, and its estimates
     double est_tokens, est_ms;
@@ -1027,11 +1029,14 @@ struct engine_ctx {
         rows.clear();
         for (uint32_t i = 0; i < ns; i++) {
           const uint32_t s = row0[i].slot, p = row0[i].pos;
-          uint32_t ki = (uint32_t)std::min<size_t>(drafts[i].size(), info.max_ctx - 1 - p);
-          ki = std::min(ki, mapped_cells(s) - 1 - p);
-          ki = std::min<uint32_t>({ki, STEP_MAX_RUN - 1, cap - (uint32_t)rows.size() - (ns - i)});
+          // The drafts the window has room for; of them, those the slot made, and those it was asked for: a draft asked
+          // for that the draft layer did not make counts as rejected (DraftOdds' places).
+          const uint32_t room = std::min<uint32_t>({info.max_ctx - 1 - p, mapped_cells(s) - 1 - p, STEP_MAX_RUN - 1,
+                                                    cap - (uint32_t)rows.size() - (ns - i)});
+          const uint32_t ki = std::min<uint32_t>((uint32_t)drafts[i].size(), room);
           start[i] = (uint32_t)rows.size();
           k[i] = ki;
+          asked[i] = std::min(slots[s].asked, room);
           rows.push_back(row0[i]);
           for (uint32_t j = 0; j < ki; j++) rows.push_back(row_after(rows.back(), drafts[i][j]));
         }
@@ -1089,7 +1094,7 @@ struct engine_ctx {
         Slot &sl = slots[s];
         if (!sl.used) continue;
         count_run(sl, false, k[i], a);
-        if (k[i]) sl.odds.layer_round(a, k[i]);
+        if (k[i] || asked[i]) sl.odds.layer_round(a, k[i], asked[i]);
         for (uint32_t j = 0; j <= a; j++) sl.tokens.push_back(rows[start[i] + j].token);
         sl.fed = p + a + 1;
         bool done = false;
@@ -1117,7 +1122,7 @@ struct engine_ctx {
       std::lock_guard<std::mutex> lk(mu);
       for (size_t i = 0; i < seeds.size(); i++) {
         Slot &sl = slots[seeds[i].slot];
-        if (sl.used && !sl.done) sl.drafts = d[i];
+        if (sl.used && !sl.done) sl.drafts = d[i], sl.asked = seeds[i].most;
       }
       time_several(n, t0, t1, misses, arm, ns);
       return;
@@ -1146,7 +1151,7 @@ struct engine_ctx {
     std::lock_guard<std::mutex> lk(mu);
     for (size_t i = 0; i < seeds.size(); i++) {
       Slot &sl = slots[seeds[i].slot];
-      if (sl.used && !sl.done) sl.drafts = d[i];
+      if (sl.used && !sl.done) sl.drafts = d[i], sl.asked = seeds[i].most;
     }
     time_several(n, t0, t1, misses, arm, ns);
   }

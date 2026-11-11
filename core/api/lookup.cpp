@@ -130,16 +130,38 @@ void DraftOdds::lookup_round(uint32_t accepted, uint32_t drafts) {
   lookup_failed = 0.9 * lookup_failed + (accepted < drafts ? 1 : 0);
 }
 
-void DraftOdds::layer_round(uint32_t accepted, uint32_t drafts) {
-  layer_accepted = 0.9 * layer_accepted + 0.1 * accepted;
+void DraftOdds::layer_round(uint32_t accepted, uint32_t drafts, uint32_t asked) {
   // The drafts checked: those accepted and the first one rejected; the ones after it say nothing of the acceptance.
-  layer_offered = 0.9 * layer_offered + 0.1 * std::min(drafts, accepted + 1);
+  // A round asked for drafts of which none were made leaves them be.
+  if (drafts > 0 || asked == 0) {
+    layer_accepted = 0.9 * layer_accepted + 0.1 * accepted;
+    layer_offered = 0.9 * layer_offered + 0.1 * std::min(drafts, accepted + 1);
+  }
+  // The places reached: the same, with the first place asked for and not made after the drafts accepted.
+  const uint32_t reached = std::min(std::max(drafts, asked), accepted + 1);
+  first_checks += reached > 0;
+  for (uint32_t i = 0; i < std::min(reached, kOddsPlaces); i++) {
+    place_checked[i] = 0.9 * place_checked[i] + 0.1;
+    place_accepted[i] = 0.9 * place_accepted[i] + (i < accepted ? 0.1 : 0.0);
+  }
 }
 
 double DraftOdds::layer_expected(uint32_t k) const {
   const double p = layer_offered > 0 ? std::min(1.0, layer_accepted / layer_offered) : 0.0;
   double e = 0, pi = 1;
   for (uint32_t i = 0; i < k; i++) e += (pi *= p);
+  return e;
+}
+
+double DraftOdds::place_expected(uint32_t k) const {
+  // A place's acceptance: its rounds' (a weight of 1 less 0.9 to the power of their number), and the place before
+  // it's for the rest.
+  double p = layer_offered > 0 ? std::min(1.0, layer_accepted / layer_offered) : 0.0;
+  double e = 0, pi = 1;
+  for (uint32_t i = 0; i < k; i++) {
+    if (i < kOddsPlaces) p = place_accepted[i] + (1 - place_checked[i]) * p;
+    e += (pi *= p);
+  }
   return e;
 }
 
@@ -168,7 +190,7 @@ std::vector<uint32_t> even_drafts(uint32_t n, uint32_t k, uint32_t rows, uint32_
 }
 
 SharedChoice choose_shared_drafts(const std::vector<DraftOdds> &slots, uint32_t draft_max, uint32_t max_rows,
-                                  const WindowTimes &times, const RoundTimes &window, const WindowTimes &drafter) {
+                                  const RoundTimes &window, const WindowTimes &drafter) {
   const uint32_t n = (uint32_t)slots.size();
   SharedChoice c;
   if (n == 0) return c;
@@ -177,20 +199,31 @@ SharedChoice choose_shared_drafts(const std::vector<DraftOdds> &slots, uint32_t 
     for (uint32_t x : d) w += x;
     return w;
   };
-  auto tokens = [&](uint32_t i, uint32_t d) { return 1.0 + slots[i].layer_expected(d); };
-  // The even split, as before a step held 16 rows: of the counts the spare rows of kEvenRows allow, the one with the
-  // most tokens a millisecond of times; kSharedDrafts while no window is timed.
+  // A round's time: the window's, at the misses a row of the rounds lately, and the draft layer's pass after it.
+  auto ms = [&](const std::vector<uint32_t> &d) { return window.ms(width(d)) + drafter.ms(width(d)); };
+  // The slots' tokens for drafts d, in all and the fewest.
+  auto sum_low = [&](const std::vector<uint32_t> &d, double &low) {
+    double t = 0;
+    for (uint32_t i = 0; i < n; i++) {
+      const double e = 1.0 + slots[i].place_expected(d[i]);
+      t += e;
+      low = i == 0 ? e : std::min(low, e);
+    }
+    return t;
+  };
+  // The even split: of the counts the spare rows of kEvenRows allow, the one with the most tokens a millisecond, none
+  // only once every slot's first draft is measured; kSharedDrafts while fewer than two widths are timed.
   const uint32_t even_rows = std::min(kEvenRows, max_rows), spare = even_rows > n ? even_rows - n : 0;
   const uint32_t most = std::min(draft_max, (spare + n - 1) / n);
   uint32_t take = std::min(kSharedDrafts, most);
-  if (times.ms(n) > 0) {
-    double best = 0;
+  if (window.seen() >= 2) {
+    bool measured = true;
+    for (const DraftOdds &o : slots) measured = measured && o.first_checks >= kFirstChecks;
+    double best = 0, low = 0;
     take = 0;
-    for (uint32_t k = 0; k <= most; k++) {
+    for (uint32_t k = measured ? 0 : std::min(1u, most); k <= most; k++) {
       const std::vector<uint32_t> d = even_drafts(n, k, even_rows, draft_max);
-      double t = 0;
-      for (uint32_t i = 0; i < n; i++) t += tokens(i, d[i]);
-      const double r = t / times.ms(width(d));
+      const double r = sum_low(d, low) / ms(d);
       if (r > best) best = r, take = k;
     }
   }
@@ -204,18 +237,7 @@ SharedChoice choose_shared_drafts(const std::vector<DraftOdds> &slots, uint32_t 
     return c;
   }
   // A count of the whole step's rows that gives more tokens a millisecond in total, and its slowest slot no fewer
-  // than the even split's slowest, both priced with the window and the draft layer's pass.
-  auto ms = [&](const std::vector<uint32_t> &d) { return window.ms(width(d)) + drafter.ms(width(d)); };
-  // The slots' tokens for drafts d, in all and the fewest.
-  auto sum_low = [&](const std::vector<uint32_t> &d, double &low) {
-    double t = 0;
-    for (uint32_t i = 0; i < n; i++) {
-      const double e = tokens(i, d[i]);
-      t += e;
-      low = i == 0 ? e : std::min(low, e);
-    }
-    return t;
-  };
+  // than the even split's slowest.
   const double even_ms = ms(c.even);
   double even_low = 0;
   const double even_tokens = sum_low(c.even, even_low);

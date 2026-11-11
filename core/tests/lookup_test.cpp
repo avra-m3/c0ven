@@ -43,6 +43,15 @@ std::vector<DraftOdds> slots(uint32_t n, uint32_t accepted, uint32_t offered) {
 
 std::vector<uint32_t> v(std::initializer_list<uint32_t> l) { return l; }
 
+// n slots whose draft layer's drafts are accepted at each place as p gives, the places past it as its last, measured.
+std::vector<DraftOdds> placed(uint32_t n, std::initializer_list<double> p) {
+  DraftOdds o;
+  o.layer_accepted = *p.begin(), o.layer_offered = 1, o.first_checks = engine::kFirstChecks;
+  uint32_t i = 0;
+  for (double x : p) o.place_accepted[i] = x, o.place_checked[i] = 1, i++;
+  return std::vector<DraftOdds>(n, o);
+}
+
 }  // namespace
 
 int main() {
@@ -209,6 +218,29 @@ int main() {
     DraftOdds none;
     for (int i = 0; i < 200; i++) none.layer_round(0, 3);
     EXPECT(none.layer_expected(3) < 1e-6, "never accepted: %g", none.layer_expected(3));
+    // Each place's own: the first always accepted, the second never; places no round reaches start from the place
+    // before.
+    EXPECT(std::fabs(o.place_expected(3) - 1) < 1e-6, "places: %g", o.place_expected(3));
+    DraftOdds sure;
+    for (int i = 0; i < 200; i++) sure.layer_round(3, 3);
+    EXPECT(std::fabs(sure.place_expected(7) - 7) < 1e-6, "past the places reached: %g", sure.place_expected(7));
+    // A round asked for 3 that made 1, accepted: the second place counts as rejected; the acceptance a draft does
+    // not see it.
+    DraftOdds short_made;
+    for (int i = 0; i < 200; i++) short_made.layer_round(1, 1, 3);
+    EXPECT(std::fabs(short_made.place_expected(3) - 1) < 1e-6 && std::fabs(short_made.layer_expected(3) - 3) < 1e-6,
+           "asked, not made: %g %g", short_made.place_expected(3), short_made.layer_expected(3));
+    // Asked for 2 and made none: the first place rejected, the acceptance a draft as it was.
+    DraftOdds none_made;
+    for (int i = 0; i < 200; i++) none_made.layer_round(0, 0, 2);
+    EXPECT(none_made.place_expected(2) < 1e-6 && std::fabs(none_made.layer_expected(1) - 2.0 / 3) < 1e-6 &&
+               none_made.first_checks == 200,
+           "none made: %g %g %u", none_made.place_expected(2), none_made.layer_expected(1), none_made.first_checks);
+    // A place few rounds reach keeps what they gave: the second place rejected in 50 rounds, then 200 of one draft.
+    DraftOdds kept;
+    for (int i = 0; i < 50; i++) kept.layer_round(1, 2);
+    for (int i = 0; i < 200; i++) kept.layer_round(1, 1);
+    EXPECT(kept.place_expected(2) < 1.01, "kept: %g", kept.place_expected(2));
   }
 
   // The drafts of several slots shared out of a step's rows: the rows past one a slot, at most k and draft_max each.
@@ -224,62 +256,81 @@ int main() {
   // 16 48.1; the draft layer's pass 4.5 ms up to 8 rows and 6.5 past) and no misses.
   {
     RoundTimes w;
-    WindowTimes wt, dr;
+    WindowTimes dr;
     const double t[] = {0, 0, 20, 0, 23.4, 0, 27.3, 0, 32.2, 0, 0, 0, 44, 0, 0, 0, 48.1};
     for (int i = 0; i < 4; i++)
       for (uint32_t r = 1; r <= 16; r++)
-        if (t[r] > 0) w.add(r, t[r], 0), wt.add(r, t[r]), dr.add(r, r > 8 ? 6.5 : 4.5);
-    auto even = [&](const std::vector<DraftOdds> &s, uint32_t dmax, uint32_t rows, const WindowTimes &times,
-                    const RoundTimes &win) { return choose_shared_drafts(s, dmax, rows, times, win, dr).even; };
-    auto wide = [&](const std::vector<DraftOdds> &s, uint32_t dmax, uint32_t rows, const WindowTimes &times,
-                    const RoundTimes &win) { return choose_shared_drafts(s, dmax, rows, times, win, dr).wide; };
+        if (t[r] > 0) w.add(r, t[r], 0), dr.add(r, r > 8 ? 6.5 : 4.5);
+    auto even = [&](const std::vector<DraftOdds> &s, uint32_t dmax, uint32_t rows, const RoundTimes &win) {
+      return choose_shared_drafts(s, dmax, rows, win, dr).even;
+    };
+    auto wide = [&](const std::vector<DraftOdds> &s, uint32_t dmax, uint32_t rows, const RoundTimes &win) {
+      return choose_shared_drafts(s, dmax, rows, win, dr).wide;
+    };
     // No window timed: the even split 2 each of 8 rows; until two widths are timed, the wide count 3 each of 16 rows
     // where that is more than 8.
     RoundTimes first;
-    WindowTimes none;
-    EXPECT(even(slots(2, 3, 3), 7, 16, none, first) == v({2, 2}), "no times");
-    EXPECT(wide(slots(2, 3, 3), 7, 16, none, first).empty(), "no times: 3 each of 2 slots is 8 rows");
-    EXPECT(even(slots(3, 3, 3), 7, 16, none, first) == v({2, 2, 1}), "no times, 3 slots");
-    EXPECT(wide(slots(3, 3, 3), 7, 16, none, first) == v({3, 3, 3}), "no times, 3 slots, wide");
+    EXPECT(even(slots(2, 3, 3), 7, 16, first) == v({2, 2}), "no times");
+    EXPECT(wide(slots(2, 3, 3), 7, 16, first).empty(), "no times: 3 each of 2 slots is 8 rows");
+    EXPECT(even(slots(3, 3, 3), 7, 16, first) == v({2, 2, 1}), "no times, 3 slots");
+    EXPECT(wide(slots(3, 3, 3), 7, 16, first) == v({3, 3, 3}), "no times, 3 slots, wide");
     // Every draft accepted: the even split is 3 each (8 tokens in 32.2 ms); 7 each is 16 in 54.6 ms with the draft
     // layer's pass, against 8 in 36.7, faster for both.
-    EXPECT(even(slots(2, 3, 3), 7, 16, wt, w) == v({3, 3}), "sure");
-    EXPECT(wide(slots(2, 3, 3), 7, 16, wt, w) == v({7, 7}), "sure, wide");
-    const SharedChoice sure = choose_shared_drafts(slots(2, 3, 3), 7, 16, wt, w, dr);
+    EXPECT(even(slots(2, 3, 3), 7, 16, w) == v({3, 3}), "sure");
+    EXPECT(wide(slots(2, 3, 3), 7, 16, w) == v({7, 7}), "sure, wide");
+    const SharedChoice sure = choose_shared_drafts(slots(2, 3, 3), 7, 16, w, dr);
     EXPECT(std::fabs(sure.wide_tokens - 16) < 1e-6 && std::fabs(sure.wide_ms - 54.6) < 1e-6 &&
                std::fabs(sure.even_tokens - 8) < 1e-6 && std::fabs(sure.even_ms - 36.7) < 1e-6,
            "sure, estimates: %g %g %g %g", sure.wide_tokens, sure.wide_ms, sure.even_tokens, sure.even_ms);
     // Four slots: 1 each of 8 rows (8 tokens in 36.7 ms), 3 each of 16 (16 in 54.6).
-    EXPECT(even(slots(4, 3, 3), 7, 16, wt, w) == v({1, 1, 1, 1}), "sure, 4 slots");
-    EXPECT(wide(slots(4, 3, 3), 7, 16, wt, w) == v({3, 3, 3, 3}), "sure, 4 slots, wide");
-    // Two thirds accepted: 2 each of 8 rows (4.2 tokens in 27.3 ms) beats 1 and 3, and every count of more rows.
-    EXPECT(even(slots(2, 2, 3), 7, 16, wt, w) == v({2, 2}), "two thirds");
-    EXPECT(wide(slots(2, 2, 3), 7, 16, wt, w).empty(), "two thirds, wide");
+    EXPECT(even(slots(4, 3, 3), 7, 16, w) == v({1, 1, 1, 1}), "sure, 4 slots");
+    EXPECT(wide(slots(4, 3, 3), 7, 16, w) == v({3, 3, 3, 3}), "sure, 4 slots, wide");
+    // Two thirds accepted at every place: 2 each of 8 rows (4.2 tokens in 31.8 ms) beats 1 and 3, and every count of
+    // more rows.
+    EXPECT(even(placed(2, {2.0 / 3}), 7, 16, w) == v({2, 2}), "two thirds");
+    EXPECT(wide(placed(2, {2.0 / 3}), 7, 16, w).empty(), "two thirds, wide");
+    // Four slots on prose, as the cards measured it with drafts asked for and not made counted rejected (0.68, 0.43
+    // and 0.44 at the first three places): 1 each (6.7 tokens in 36.7 ms) beats 3 each of 16 rows (8.4 in 54.6).
+    // At 0.82 for every place, 3 each would give 12.2 and be taken. On edits (0.98, 0.81, 0.87) 3 each gives 13.9
+    // against 7.9 and is taken.
+    EXPECT(even(placed(4, {0.68, 0.43, 0.44}), 7, 16, w) == v({1, 1, 1, 1}), "prose, 4 slots");
+    EXPECT(wide(placed(4, {0.68, 0.43, 0.44}), 7, 16, w).empty(), "prose, 4 slots, wide");
+    EXPECT(wide(placed(4, {0.82}), 7, 16, w) == v({3, 3, 3, 3}), "one acceptance for every place, wide");
+    EXPECT(wide(placed(4, {0.98, 0.81, 0.87}), 7, 16, w) == v({3, 3, 3, 3}), "edits, 4 slots, wide");
+    // Rows dear with misses (150 a row at 0.025 ms): at 0.3 a draft no drafts beat 1 each, but only once each slot's
+    // first draft is measured; before, 1 each.
+    RoundTimes missing;
+    for (int i = 0; i < 4; i++)
+      for (uint32_t r : {4u, 8u}) missing.add(r, t[r] + 0.025 * 150 * r, 150 * r);
+    EXPECT(even(placed(4, {0.3}), 7, 16, missing) == v({0, 0, 0, 0}), "dear rows, measured");
+    std::vector<DraftOdds> fresh = placed(4, {0.3});
+    for (DraftOdds &o : fresh) o.first_checks = engine::kFirstChecks - 1;
+    EXPECT(even(fresh, 7, 16, missing) == v({1, 1, 1, 1}), "dear rows, not measured yet");
     // Nothing accepted: no drafts.
-    EXPECT(even(slots(2, 0, 3), 7, 16, wt, w) == v({0, 0}), "never accepted");
-    EXPECT(wide(slots(2, 0, 3), 7, 16, wt, w).empty(), "never accepted, wide");
+    EXPECT(even(slots(2, 0, 3), 7, 16, w) == v({0, 0}), "never accepted");
+    EXPECT(wide(slots(2, 0, 3), 7, 16, w).empty(), "never accepted, wide");
     // One slot that accepts all and one that accepts none: more rows give more tokens in all (9 in 54.6 ms against
     // 5 in 36.7), but the slot that accepts none, the slowest, writes slower in the longer round, so there is no wide
     // count.
     std::vector<DraftOdds> mixed = {slots(1, 3, 3)[0], slots(1, 0, 3)[0]};
-    EXPECT(even(mixed, 7, 16, wt, w) == v({3, 3}), "mixed");
-    EXPECT(wide(mixed, 7, 16, wt, w).empty(), "mixed, wide");
+    EXPECT(even(mixed, 7, 16, w) == v({3, 3}), "mixed");
+    EXPECT(wide(mixed, 7, 16, w).empty(), "mixed, wide");
     // Three sure slots with draft_max 3: 3 each of 16 rows (12 tokens in 50.5 ms) gives more in all than 2, 2 and 1
     // of 8 (8 in 36.7). The first two slots write 4 tokens in 50.5 ms against 3 in 36.7, but the slowest, the third,
     // 4 against 2.
-    EXPECT(even(slots(3, 3, 3), 3, 16, wt, w) == v({2, 2, 1}), "3 slots, draft_max 3");
-    EXPECT(wide(slots(3, 3, 3), 3, 16, wt, w) == v({3, 3, 3}), "3 slots, draft_max 3, wide");
+    EXPECT(even(slots(3, 3, 3), 3, 16, w) == v({2, 2, 1}), "3 slots, draft_max 3");
+    EXPECT(wide(slots(3, 3, 3), 3, 16, w) == v({3, 3, 3}), "3 slots, draft_max 3, wide");
     // The same with the third slot accepting none: it is the slowest in both, at 1 token in 36.7 ms against 1 in
     // 50.5, so there is no wide count.
     std::vector<DraftOdds> two_sure = {slots(1, 3, 3)[0], slots(1, 3, 3)[0], slots(1, 0, 3)[0]};
-    EXPECT(wide(two_sure, 3, 16, wt, w).empty(), "3 slots, one accepting none, wide");
+    EXPECT(wide(two_sure, 3, 16, w).empty(), "3 slots, one accepting none, wide");
     // Dear wide windows: no wide count.
     RoundTimes dear = w;
     for (int i = 0; i < 4; i++) dear.add(12, 70, 0), dear.add(16, 80, 0);
-    EXPECT(wide(slots(2, 3, 3), 7, 16, wt, dear).empty(), "dear");
+    EXPECT(wide(slots(2, 3, 3), 7, 16, dear).empty(), "dear");
     // A step of 8 rows at most: the even split only.
-    EXPECT(even(slots(2, 3, 3), 7, 8, wt, w) == v({3, 3}) && wide(slots(2, 3, 3), 7, 8, wt, w).empty(), "8 rows");
-    EXPECT(even({}, 7, 16, wt, w).empty() && wide({}, 7, 16, wt, w).empty(), "no slots");
+    EXPECT(even(slots(2, 3, 3), 7, 8, w) == v({3, 3}) && wide(slots(2, 3, 3), 7, 8, w).empty(), "8 rows");
+    EXPECT(even({}, 7, 16, w).empty() && wide({}, 7, 16, w).empty(), "no slots");
   }
 
   // The trial of the wide count against the even split: the arm whose estimate times its correction (what its rounds

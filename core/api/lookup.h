@@ -85,16 +85,34 @@ class RoundTimes {
   uint32_t seen_ = 0;
 };
 
+// The places in a round of the draft layer's drafts whose acceptance DraftOdds keeps apart: the first kOddsPlaces.
+constexpr uint32_t kOddsPlaces = 8;
+
+// The rounds that must have checked a slot's first draft before several slots' even split may give it none: a round
+// without drafts measures no acceptance, so a low first guess would otherwise keep a request without drafts.
+constexpr uint32_t kFirstChecks = 4;
+
 // What one slot's rounds have accepted lately: the lookup's drafts accepted and its rounds that stopped at a draft,
 // and the draft layer's drafts accepted and checked a round (up to the first one rejected), each decayed by 0.9 a
-// round.
+// round. Also the draft layer's drafts at each place of a round, the first draft's, the second's and so on: accepted
+// and checked (reached: every draft before it accepted), each decayed by 0.9 a round that checks the place, so that a
+// place few rounds reach keeps what they gave.
 struct DraftOdds {
   double lookup_accepted = 9.0, lookup_failed = 1.0, layer_accepted = 2.0, layer_offered = 3.0;
+  double place_accepted[kOddsPlaces] = {}, place_checked[kOddsPlaces] = {};
+  uint32_t first_checks = 0;  // the rounds that checked the first place
   void lookup_round(uint32_t accepted, uint32_t drafts);
-  void layer_round(uint32_t accepted, uint32_t drafts);
+  // A round of the draft layer's drafts, of which it checked drafts and accepted accepted. asked is the drafts the
+  // round asked of the draft layer, which may have made fewer: a place asked for and reached without a draft counts
+  // as rejected in the places, as it gives no token there.
+  void layer_round(uint32_t accepted, uint32_t drafts, uint32_t asked = 0);
   // The draft layer's drafts accepted in a round of k: its acceptance a draft, accepted over checked, to the powers
   // 1 to k added (a draft counts only when those before it do).
   double layer_expected(uint32_t k) const;
+  // The same with each place's own acceptance: its rounds', which start from the place before it's (the first
+  // place's from the acceptance a draft), as if that had been their first. A slot's second and third drafts are
+  // accepted less often than its first on most text, which one acceptance for all of them hides.
+  double place_expected(uint32_t k) const;
 };
 
 // The drafts for a round of one slot: how many of the lookup's to take, 0 for the draft layer's. Each choice is worth
@@ -124,22 +142,21 @@ std::vector<uint32_t> even_drafts(uint32_t n, uint32_t k, uint32_t rows, uint32_
 // The drafts each of several writing slots may make for their next round
 // (docs/adr/0078-several-slots-take-more-rows-only-when-the-slowest-writes-no-slower.md): one count k for all of
 // them, shared out as even_drafts shares it, worth the slots' expected tokens (each the row sampled last and its
-// drafts accepted, at its acceptance) over the round's time.
-// - even: the choice before a step held 16 rows, by the windows' times (times): the k with the most tokens a
-//   millisecond of a step of kEvenRows rows, kSharedDrafts while no window is timed.
+// drafts accepted, at each place's acceptance: place_expected) over the round's time, the window's (window.ms) and
+// the draft layer's pass after it (drafter, by the window's rows).
+// - even: the k with the most tokens a millisecond of a step of kEvenRows rows, and at least 1 while a slot's first
+//   draft has been checked in fewer than kFirstChecks rounds; kSharedDrafts while fewer than two widths are timed.
 // - wide: a k whose rows are more than kEvenRows, of a step of max_rows, that gives more tokens a millisecond in all
-//   and its slowest slot at least the tokens a millisecond of the even split's slowest, priced with the window
-//   (window.ms) and the draft layer's pass after it (drafter, by the window's rows); the one with the most. Empty
+//   and its slowest slot at least the tokens a millisecond of the even split's slowest; the one with the most. Empty
 //   when none does, or with max_rows at most kEvenRows. While fewer than two widths are timed: kSharedDrafts + 1 each
 //   of max_rows rows, so that a wider width is timed.
-// With a wide count, both are priced the same way, as estimates for the trial: the slots' expected tokens and the
-// window's time with the draft layer's pass.
+// With a wide count, both carry their estimates for the trial: the slots' expected tokens and the round's time.
 struct SharedChoice {
   std::vector<uint32_t> even, wide;
   double even_tokens = 0, even_ms = 0, wide_tokens = 0, wide_ms = 0;
 };
 SharedChoice choose_shared_drafts(const std::vector<DraftOdds> &slots, uint32_t draft_max, uint32_t max_rows,
-                                  const WindowTimes &times, const RoundTimes &window, const WindowTimes &drafter);
+                                  const RoundTimes &window, const WindowTimes &drafter);
 
 // Whether rounds of several slots take choose_shared_drafts' wide count or its even split. Each arm keeps what its
 // rounds gave against what choose_shared_drafts estimated for them: the tokens they wrote over the time of their
