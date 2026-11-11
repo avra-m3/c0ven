@@ -585,11 +585,11 @@ When the decoding slots all write, a step is a draft round
 ([ADR-0029](adr/0029-the-engine-process-drafts-and-swaps.md)). For each slot, the token sampled last and its drafts run
 as one window, and the windows of all slots run in one step. The slots share the step's 16 rows, and one slot's window holds at most 8
 ([ADR-0077](adr/0077-a-decode-step-holds-16-rows.md)): a lone slot takes up to
-7 drafts with DFlash 2 and 3 with the MTP layer. With several slots, the drafts of all of them are ranked by their
-chance of being accepted, and the round verifies as many of the likeliest as give the most expected tokens a
-millisecond, by the times of windows of each width. A draft's chance is fitted to what the main model accepted, from
-the probability the sampler gave the draft
-([ADR-0078](adr/0078-a-round-of-several-slots-verifies-its-likeliest-drafts.md), `core/api/draft_choice.h`). Each slot's window is accepted and committed on
+7 drafts with DFlash 2 and 3 with the MTP layer. Several slots make the same number each: the one that gives the
+most tokens a millisecond in a step of 8 rows, or in one of 16 when that gives more in total and no slot fewer, from
+the slots' acceptance and the measured times of steps of each width
+([ADR-0078](adr/0078-several-slots-take-more-rows-only-when-none-writes-slower.md), `core/api/lookup.h`). Each
+slot's window is accepted and committed on
 its own. A step of several slots runs no drafts when it gives one of them its second token, which already waits for
 the prompt steps after its first. Writing slots draft while another slot reads its prompt: the scheduler owes them a
 share of the prompt steps' time, so a round gives them more tokens in the same time

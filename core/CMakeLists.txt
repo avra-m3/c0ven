@@ -1,7 +1,6 @@
 # The C++20 core: Level Zero, memory, loading, the step, the CPU's expert work (ADR-0022, ADR-0024).
 
 add_library(engine_core STATIC
-  api/draft_choice.cpp
   api/draft_gate.cpp
   api/lookup.cpp
   api/swap_cadence.cpp
