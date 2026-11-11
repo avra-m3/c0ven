@@ -6,7 +6,10 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
+#include <map>
+#include <memory>
 #include <immintrin.h>
 
 #include <stdexcept>
@@ -145,8 +148,8 @@ void Model::alloc_chunk(Card &card) {
   k.aa = DEV(uint16_t, R * kOutA);
   k.y = DEV(float, R * E);
   for (auto &b : k.in) b = DEV(float, R * E);
-  k.w16a = DEV(uint16_t, 20971520);
-  k.w16b = DEV(uint16_t, 20971520);
+  k.w16a = DEV(uint16_t, kDequantValues);
+  k.w16b = DEV(uint16_t, kDequantValues);
   k.ring = DEV(uint16_t, (size_t)opt_.slots * D41_RING_WIDE * D41_HD);
   k.eng_a8 = DEV(uint8_t, R * kEngA8Row);
   k.ekv = DEV(float, R * kEngKvRows);
@@ -172,11 +175,11 @@ void Model::alloc_chunk(Card &card) {
   k.tiles_s = DEV(MoeTile, A);
 #undef DEV
   for (uint32_t l = 0; l < D41_LAYERS; l++) k.stage_slot = std::max(k.stage_slot, stage_layout(experts_[l], l, card.c).bytes);
-  // The file layout's kernels read a few bytes past the last block.
   // The CPU writes the staged experts through a mapping of the buffer (ADR-0065 of the other model's path): the driver
   // writes the whole buffer first, then each page is touched through the mapping, as pages touched before the driver's
   // first copy fault again after it.
   {
+    // The file layout's kernels read a few bytes past the last block.
     const size_t bytes = (size_t)kStageBuffers * k.stage_slot + QUANT_FILE_PAD;
     k.stage = static_cast<uint8_t *>(rt_->alloc_device_mapped(card.c, bytes, k.stage_cpu));
     constexpr size_t piece = 4u << 20;
@@ -223,6 +226,49 @@ std::vector<uint32_t> Model::chunk_probe_rows(uint32_t n) const {
 const float *Model::chunk_probe(uint32_t layer, bool ffn, uint32_t i) const {
   if (!cprobe_ || layer >= D41_LAYERS || i >= kChunkProbeRows) throw std::runtime_error("no such chunk probe");
   return cprobe_ + (((size_t)(ffn ? D41_LAYERS : 0) + layer) * kChunkProbeRows + i) * D;
+}
+
+// The used bytes of a staging slot: gate rows, up rows, then the down part, without the padding between them.
+std::vector<uint8_t> Model::chunk_stage_card(uint32_t card, uint32_t slot) {
+  if (card >= 2 || slot >= kStageBuffers) throw std::runtime_error("no such staging slot");
+  Card &cd = *cards_[card];
+  if (!cd.ck) throw std::runtime_error("no such staging slot");
+  const StageLayout sl = stage_layout(experts_[D41_LAYERS - 1], D41_LAYERS - 1, card);
+  const uint64_t down = (uint64_t)E * sl.nb * sl.bb;
+  std::vector<uint8_t> raw(cd.ck->stage_slot);
+  cd.up->copy(raw.data(), cd.ck->stage + (uint64_t)slot * cd.ck->stage_slot, raw.size());
+  cd.up->synchronize();
+  std::vector<uint8_t> v;
+  v.insert(v.end(), raw.begin(), raw.begin() + sl.gate_bytes);
+  v.insert(v.end(), raw.begin() + sl.up_off, raw.begin() + sl.up_off + sl.gate_bytes);
+  v.insert(v.end(), raw.begin() + sl.down_off, raw.begin() + sl.down_off + down);
+  return v;
+}
+
+// The same bytes of an expert of the last layer, read from the file's shards.
+std::vector<uint8_t> Model::chunk_stage_file(uint32_t card, uint32_t expert) const {
+  const uint32_t l = D41_LAYERS - 1;
+  const LayerExperts &le = experts_[l];
+  const StageLayout sl = stage_layout(le, l, card);
+  const uint64_t dq = quant_block_values(le.shape.down_type), whole_row = (D41_FF / dq) * sl.bb, part_row = sl.nb * sl.bb;
+  std::vector<uint8_t> v(2 * sl.gate_bytes + (uint64_t)E * part_row);
+  std::map<uint32_t, std::unique_ptr<std::FILE, int (*)(std::FILE *)>> files;
+  const auto read = [&](const MatrixPlace &m, uint64_t off, uint8_t *to, uint64_t bytes) {
+    auto it = files.find(m.file);
+    if (it == files.end()) {
+      std::FILE *f = std::fopen(gguf_.files().at(m.file).c_str(), "rb");
+      if (!f) throw std::runtime_error("cannot open the model file");
+      it = files.emplace(m.file, std::unique_ptr<std::FILE, int (*)(std::FILE *)>(f, &std::fclose)).first;
+    }
+    if (fseeko(it->second.get(), (off_t)(m.offset + off), SEEK_SET) != 0 || std::fread(to, 1, bytes, it->second.get()) != bytes)
+      throw std::runtime_error("cannot read the model file");
+  };
+  read(le.gate, expert * le.gate_bytes + sl.r0 * sl.rb, v.data(), sl.gate_bytes);
+  read(le.up, expert * le.gate_bytes + sl.r0 * sl.rb, v.data() + sl.gate_bytes, sl.gate_bytes);
+  for (uint32_t r = 0; r < E; r++)
+    read(le.down, expert * le.down_bytes + (uint64_t)r * whole_row + sl.b0 * sl.bb, v.data() + 2 * sl.gate_bytes + (uint64_t)r * part_row,
+         part_row);
+  return v;
 }
 
 std::vector<uint8_t> Model::pool_page(uint32_t layer, uint32_t page) {
@@ -532,6 +578,9 @@ void Model::chunk_stage_fill(Card &card, uint32_t l, uint32_t slot, const Expert
     const uint8_t *down = sl.part_b ? w.down + (uint64_t)E * kPartABlocks * sl.bb : w.down;
     std::memcpy(dst + sl.down_off, down, (uint64_t)E * part_row);
   }
+  if (chunk_tuning.corrupt_stage && l == D41_LAYERS - 1 && slot == 0 && card.c == 0) dst[sl.gate_bytes / 2] ^= 1;
+  // The writes sit in this core's write-combining buffers, and only this thread's fence empties them.
+  _mm_sfence();
 }
 
 void Model::chunk_probe_copy(ze::List &L, Card &card, bool ffn, uint32_t l, const float *from, const ChunkRun &run) {
@@ -805,8 +854,11 @@ std::vector<Candidate> Model::chunk_forward(uint32_t slot, const int32_t *tokens
     for (auto &cp : cards_) cp->ck->p2->execute();
     ctimes_.record += ms(t0, t_p2);
 
-    // The staged experts: the arena's first, then the file's. The CPU puts each expert's two halves into host memory
-    // and the copy engines take them to the cards, a batch of experts at a time.
+    // The staged experts: the arena's first, then the file's, a batch at a time. Arena experts are safe to read beside
+    // the swap threads: take and put run only on the step thread, this one, and a taken expert is no longer returned by
+    // weights(), so the places those threads write are not read.
+    cstaged_.clear();
+    for (uint32_t s = 0; s < staged.size(); s++) cstaged_.push_back({staged[s].e, stage_slot(s), staged[s].arena});
     t0 = Clock::now();
     ctimes_.staged_arena += arena_n;
     ctimes_.staged_ssd += (uint32_t)staged.size() - arena_n;
@@ -843,8 +895,8 @@ std::vector<Candidate> Model::chunk_forward(uint32_t slot, const int32_t *tokens
       stage_batch(s0, (uint32_t)ssd_ids[round].size(), w, true);
       ssd_->release(round & 1);
     }
-    // A full fence sends the writes out of the CPU's write-combining buffers, and a read through the mapping returns only
-    // after they have arrived.
+    // Each writer's fence sent its writes out of its write-combining buffers. This full fence orders them before the
+    // read, and a read through the mapping returns only after the writes have arrived.
     const auto t_cw = Clock::now();
     _mm_mfence();
     for (auto &cp : cards_) (void)*(volatile uint8_t *)(cp->ck->stage_cpu);

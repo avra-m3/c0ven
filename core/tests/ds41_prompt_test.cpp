@@ -17,6 +17,7 @@
 //   DS41_REF_LENS: the lengths (default "96 160", empty for none) at which RefModel runs the same tokens and the last
 //     row's candidates of both paths are compared with its
 //   DS41_MISTAKE=1: the chunk path reads wrong tokens in the second half, and the test must fail
+//   DS41_MISTAKE_BYTE=1: one byte of a staged expert is wrong on the card, and the test must fail
 //   DS41_STAGE_ROWS, DS41_STAGE_SOURCE: ChunkTuning; DS41_TRACE: the cards' time by kernel for each chunk
 //   DS41_ARENA_GIB, DS41_CARD_EXPERTS, DS41_PROFILE: as ds41_model_test (the cards' cache is not swapped, so the
 //     slots see the same experts)
@@ -42,17 +43,10 @@ using namespace engine::deepseek41;
 
 namespace {
 
-// What differs between the paths, and why. The chunk path multiplies f16 activations and the steps 8-bit ones, so every
-// product is rounded differently; the sums run in another order; and a router's near tie can go the other way. These
-// differences start at 0.005 of a stream in layer 0 and grow to about 0.12 by layer 39, and the keys, windows and
-// compressed rows built from them differ by about 0.1 on average: this is what the two paths are made of, and no
-// smaller limit holds for them. Each limit is about 1.5 times the largest value measured over the test's lengths. A
-// race in this path (rows of one compressor cell writing in no fixed order) once gave a compressor ring error of 1.1
-// where it is 0.02 once fixed, and these limits fail that.
-// A layer's streams differ by at most kStreamRel of their size (relative L2 over a row, the mean over the rows). What a
-// later step reads is held in two ways: the mean over a state's layers, and the worst layer. The candidates are held to
-// ds41_decode_test's limits: the median KL over the positions that follow is at most kMedianKl, and the greedy pick is
-// the same at kSamePicks in 100 of them.
+// The chunk path multiplies f16 activations and the steps 8-bit ones, sums in another order, and a router's near tie can
+// go the other way, so the paths differ by their make; each limit sits a little over the largest value seen. They are
+// loose, and a race in the path (rows of one compressor cell writing in no fixed order) is far above them.
+// The candidates are held to ds41_decode_test's limits: median KL at most kMedianKl, same greedy pick in kSamePicks of 100.
 constexpr double kStreamRel = 0.3;
 struct StateLimit {
   double mean, worst;
@@ -60,9 +54,8 @@ struct StateLimit {
 constexpr StateLimit kWindows = {0.16, 0.32}, kRings = {0.22, 0.62}, kLatent = {0.12, 0.24}, kKeys = {0.10, 0.24};
 constexpr double kMedianKl = 0.002;
 constexpr uint32_t kSamePicks = 85;
-// The CPU alone answers the same experts whatever the chunk size, so two sizes differ only by rounding of sums (0 in
-// every length measured). Copied experts against the CPU alone differ as the chunk path and the steps do, by f16 against
-// 8-bit activations (state up to 0.24, candidates KL up to 0.002).
+// The CPU alone answers the same experts whatever the chunk size, so two sizes differ only by rounding of sums. Copied
+// experts against the CPU alone differ as the chunk path and the steps do.
 constexpr double kSplitRel = 0.001, kSplitKl = 0.0001;
 constexpr double kStagingRel = 0.35, kStagingKl = 0.004;
 // Against RefModel one position is compared, so the limit is the loose one of ds41_model_test: a position where the
@@ -286,6 +279,8 @@ int run() {
               model.info().experts_per_layer, (double)model.info().arena_bytes / (1ull << 30), chunk);
 
   model.chunk_tuning.trace = std::getenv("DS41_TRACE") != nullptr;
+  model.chunk_tuning.corrupt_stage = std::getenv("DS41_MISTAKE_BYTE") != nullptr;
+  uint32_t checked_arena = 0, checked_ssd = 0;  // staging slots whose bytes were compared with the file's
   model.chunk_tuning.stage_rows = env_u32("DS41_STAGE_ROWS", model.chunk_tuning.stage_rows);
   model.chunk_tuning.source = (ChunkTuning::Source)env_u32("DS41_STAGE_SOURCE", ChunkTuning::both);
   if (model.chunk_tuning.stage_rows == ChunkTuning::kStageAuto)
@@ -333,6 +328,16 @@ int run() {
                   pos, n, t, n * 1e3 / t, ct.prepare, ct.attention, ct.plan, ct.stage, ct.record, ct.fill, ct.launch, ct.ssd_wait, ct.copy_wait, ct.cpu, ct.experts,
                   ct.cpu_routings, ct.cached_routings, ct.staged_routings, ct.staged_arena, ct.staged_ssd, ct.tiles);
       if (model.chunk_tuning.trace) print_trace(model);
+      // The last layer's staging slots on the cards hold the file's bytes, from the arena and from the SSD alike.
+      for (const auto &se : model.chunk_staged())
+        for (uint32_t c = 0; c < 2; c++) {
+          if (model.chunk_stage_card(c, se.slot) != model.chunk_stage_file(c, se.expert)) {
+            std::printf("FAIL staging slot %u of card %u (expert %u, from the %s) differs from the file's bytes\n", se.slot, c,
+                        se.expert, se.arena ? "arena" : "SSD");
+            failures++;
+          }
+          (se.arena ? checked_arena : checked_ssd)++;
+        }
       std::fflush(stdout);
       const std::vector<uint32_t> rows = model.chunk_probe_rows(n);
       for (uint32_t i = 0; i < rows.size(); i++) {
@@ -551,6 +556,14 @@ int run() {
   const double median = kls_all[kls_all.size() / 2];
   std::printf("%u positions: KL median %.5f, a tenth above %.5f, worst %.5f; the same first candidate at %u\n", compared_all,
               median, kls_all[kls_all.size() * 9 / 10], kls_all.back(), same_all);
+  std::printf("staging slots of the last layer equal to the file's bytes: %u from the arena, %u from the SSD (each on both cards)\n",
+              checked_arena, checked_ssd);
+  if (model.chunk_tuning.stage_rows != 0 &&
+      ((model.chunk_tuning.source != ChunkTuning::file_only && !checked_arena) ||
+       (model.chunk_tuning.source != ChunkTuning::arena_only && !checked_ssd))) {
+    std::printf("FAIL: a source of staged experts went unchecked\n");
+    failures++;
+  }
   if (median > kMedianKl) {
     std::printf("FAIL: the candidates' median KL is %.5f, above %.3f\n", median, kMedianKl);
     failures++;

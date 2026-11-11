@@ -87,6 +87,8 @@ struct ChunkTuning {
   enum Source { both, arena_only, file_only } source = both;
   // Time every launch of the cards' lists (chunk_trace); costs a timestamp a launch.
   bool trace = false;
+  // For tests: flips one byte of the first staging slot of card 0 in the last layer, after it is written.
+  bool corrupt_stage = false;
 };
 
 // One draft of a block: the token chosen, the drafter's own chance, 0 to 1, that the model keeps it, and the candidates
@@ -161,6 +163,15 @@ class Model final : public engine::Model {
   static constexpr uint32_t kChunkProbeRows = 16;
   std::vector<uint32_t> chunk_probe_rows(uint32_t n) const;
   const float *chunk_probe(uint32_t layer, bool ffn, uint32_t i) const;
+  // For tests: the experts the last chunk staged in its last layer, and the slot of each on both cards.
+  struct StagedExpert {
+    uint32_t expert, slot;
+    bool arena;  // from the arena; otherwise from the file
+  };
+  const std::vector<StagedExpert> &chunk_staged() const { return cstaged_; }
+  // A card's bytes of such a slot (gate rows, up rows, down part) as the card holds them, and as the file gives them.
+  std::vector<uint8_t> chunk_stage_card(uint32_t card, uint32_t slot);
+  std::vector<uint8_t> chunk_stage_file(uint32_t card, uint32_t expert) const;
   // Card 0's compressed rows of one page of a layer's pool, D41_COMP_ROW_BYTES each.
   std::vector<uint8_t> pool_page(uint32_t layer, uint32_t page);
 
@@ -447,6 +458,7 @@ class Model final : public engine::Model {
   MoeTile *ctiles_s_[2] = {};        // [card]: tiles of the staged experts
   MoeTile *ctiles_[2][2] = {};       // [card][class]
   ChunkTimes ctimes_;
+  std::vector<StagedExpert> cstaged_;  // the last layer's staged experts
   std::vector<TraceRow> ctrace_[2];
 
   // The cards' pairs by layer: the expert each holds (kNoExpert while it changes), the split, the slot classes by card.

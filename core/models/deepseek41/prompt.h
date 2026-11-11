@@ -12,6 +12,8 @@ constexpr uint32_t kStageBatch = 16;   // experts one pool run writes to the car
 constexpr uint32_t kStageRound = 32;   // experts one round of SSD reads brings, a multiple of kStageBatch
 constexpr uint32_t kStageBuffers = kStageSlots + kStageBatch;  // slots a card holds: the file's start at a batch
 constexpr uint32_t kChunkRows = 2048;  // the most rows a chunk takes, whatever Options::prompt_chunk asks
+// Values of the largest dense matrix a chunk dequantises: a card's half of q_b (16384 x 1280), or of wo_b (2560 x 8192).
+constexpr size_t kDequantValues = 20971520;
 constexpr uint32_t kChunkGroup = 256;  // rows the attention takes at a time: its scores and partial sums are per row
 
 struct Model::ChunkCard {
