@@ -21,9 +21,9 @@ SHARED_ASSERT(sizeof(MoeTile) == 16, "MoeTile layout");
 // (row * experts per row + rank) of the step that route to it, so its weights are decoded once for all of them. An
 // expert more than MOE_GROUP_MAX rows route to takes a group for each MOE_GROUP_MAX of them.
 #define MOE_GROUP_MAX 8
-// The work-group that groups them (layer.cl's moe_group and router_group): a work-item an assignment, and a
-// sub-group a row in router_group.
-#define MOE_GROUP_WG 256
+// The work-group that groups them for a module of steps of up to `rows` rows (layer.cl's moe_group and
+// router_group): a work-item an assignment, and a sub-group a row in router_group.
+#define MOE_GROUP_WG(rows) (16 * (rows))
 typedef struct {
   i32 slot;                  // the expert's cache slot
   u32 n;                     // assignments, 1 .. MOE_GROUP_MAX

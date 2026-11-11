@@ -36,6 +36,13 @@ give no more tokens a second in total, or the same-tokens check differs.
 6. How many drafts several slots make is chosen as
    [ADR-0078](0078-several-slots-take-more-rows-only-when-none-writes-slower.md) says. The step's rows let two
    slots make up to 7 each, three up to 5, 4 and 4, four up to 3 each, and eight 1 each.
+7. A step of up to 8 rows runs step kernels built for 8 rows (`STEP_NARROW_ROWS`; the modules `common_r8`,
+   `qwen4exp_r8` and `qwen4exp_e256_r8`, built with `-DSTEP_ROWS=8`): the registers, tiles and grouping work-group
+   of 128 they had before this change. A wider step runs the modules built for 16 rows.
+8. With the streamed pool (`kv_resident`), the ring's fixed part holds the claims of a step of 8 rows, as before,
+   and `kv_resident`'s least value is the same. A step of more than 8 rows runs only where the ring holds every page
+   its claim can take (`Model::step_fits`): each slot's rows take at most `kvs_row_claims` pages a row, and no page
+   past its last row's and the 32 after it. Where it does not, the round takes 8 rows.
 
 ## Why
 
@@ -44,6 +51,11 @@ No part of this is measured on the cards. At three writers the gain in total tok
 can be negative where the extra rows' experts miss the cards more than the estimate assumes. The chooser reads the
 measured window times, so it stops adding drafts once a wider window gives fewer tokens a millisecond; one round in
 eight runs 2 drafts each whatever it chose.
+
+Items 7 and 8 keep the steps of 8 rows or fewer as they were. Without them, in alternating runs on two cards, a lone
+slot's window took 0.5 to 0.7 ms longer than before at the same width, and a ring sized for 16 rows' claims left the
+cache about 3 experts a layer fewer (361 against 364) (*estimate*: from runs with no record in MEASUREMENTS.md). Most
+rounds of several slots run 8 rows or fewer.
 
 ## Options not chosen
 
@@ -55,13 +67,13 @@ eight runs 2 drafts each whatever it chose.
 ## Consequences
 
 - A load records the decode step at two more widths for each card, once or twice each as the other widths are, and
-  the drafter's lists at width 16: two for DFlash 2, seven for the MTP layer. The build has 57 more modules,
-  `matvec_<type>_l<lanes>_t16`, which the dense products of a step of more than 8 rows use. Load time and card
-  memory with them are not measured.
+  the drafter's lists at width 16: two for DFlash 2, seven for the MTP layer. The build has 60 more modules: 57
+  `matvec_<type>_l<lanes>_t16`, which the dense products of a step of more than 8 rows use, and the three of item 7.
+  Load time and card memory with them are not measured.
 - The decode step's buffers hold 16 rows where they held 8, and `StepPlan`, `DraftPlan` and `CommitPlan` are twice
   as long.
-- `matvec_bf16` and `matvec_bf16_ks` keep 16 sums a lane where they kept 8, at every width. Their time in a step
-  of 8 rows or fewer is not measured.
+- In a step of more than 8 rows, `matvec_bf16` and `matvec_bf16_ks` keep 16 sums a lane.
+- With long contexts and a small ring, several slots draft over 8 rows only, as before this change (item 8).
 - Steps of two, four and more slots may also draft more than before (item 6), so a check of this change covers
   those counts as well as three.
 - `step_rows_test` checks items 3 and 4 on a card. The change is not accepted until it has passed there, with

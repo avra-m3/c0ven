@@ -23,7 +23,7 @@ static inline float sigmoid(float x) { return 1.0f / (1.0f + exp(-x)); }
 // activations, t < ntok <= BF_MAXT. post is the identity (mode 0), SiLU (1) or the sigmoid (2). lpr lanes share a row
 // (16, 8, 4 or 2), so a sub-group takes 16 / lpr rows; 4 sub-groups per work-group: groups ceil(rows / (64 / lpr)), 64.
 // Each lane reads 8 weights (16 bytes) at a time, and every token reuses them.
-#define BF_MAXT STEP_MAX_ROWS
+#define BF_MAXT STEP_ROWS
 REQD_SG __kernel void matvec_bf16(__global const ushort *W, uint rows, uint K, __global const float *x, uint x_stride,
                                   uint ntok, __global float *y, uint y_stride, uint mode, float scale, uint lpr) {
   const uint lane = sg_lane(), sub = lane % lpr;
@@ -103,13 +103,13 @@ __kernel void to_bf16_rows(__global const float *x, uint x_stride, uint K, __glo
   xb[(ulong)t * K + i] = f32_to_bf16(x[(ulong)t * x_stride + i]);
 }
 
-// y[t * y_stride + n] = post(scale * W[n] . xb[t]) on the XMX units, t < *ntok <= STEP_MAX_ROWS; post (mode as
+// y[t * y_stride + n] = post(scale * W[n] . xb[t]) on the XMX units, t < *ntok <= STEP_ROWS; post (mode as
 // matvec_bf16_ks) applies to n < post_rows, whose values also go to yb as bf16 (rows post_rows apart) when yb is set.
 // xb: bf16 rows of K (to_bf16_rows), read in tiles of 8 rows up to the tile that holds row *ntok - 1, so as many
 // rows as those tiles hold; W: N rows ldw apart. W, xb 64-byte aligned; K, ldw multiples of 32. Groups ceil(N / 16),
 // 16 ksplit (ksplit <= 64, K / ksplit a multiple of 16); sub-group 0 adds the ksplit tiles in order. A tile's sums do
 // not depend on the tiles after it.
-#define MV_TILES (STEP_MAX_ROWS / 8)
+#define MV_TILES (STEP_ROWS / 8)
 REQD_SG __kernel void mv_xmx_bf16(__global const ushort *W, uint N, uint K, uint ldw, __global const ushort *xb,
                                   __global const uint *ntok_p, __global float *y, uint y_stride, uint mode,
                                   float scale, uint post_rows, uint ksplit, __global ushort *yb) {

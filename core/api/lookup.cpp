@@ -194,6 +194,7 @@ std::vector<uint32_t> choose_shared_drafts(const std::vector<DraftOdds> &slots, 
     const double m = window.ms(width(d));
     if (t / m > even_rate) even_rate = t / m, even = std::move(d);
   }
+  if (max_rows <= kEvenRows) return even;
   // A count of the whole step's rows, where no slot writes slower than in the even split, both with the draft
   // layer's pass.
   const double even_ms = ms(even);

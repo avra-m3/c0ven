@@ -129,8 +129,9 @@ std::vector<uint32_t> even_drafts(uint32_t n, uint32_t k, uint32_t rows, uint32_
 // (drafter, by the window's rows). The even split is the k with the most tokens a millisecond of a step of kEvenRows
 // rows, the choice before a step held 16. Of the k of a step of max_rows rows that give each slot at least its tokens
 // a millisecond in the even split, the round takes the one with the most tokens a millisecond, or the even split
-// when none has more. While fewer than two widths are timed: kSharedDrafts each of kEvenRows rows, and once that
-// width is timed, kSharedDrafts + 1 each of max_rows rows, so that a wider width is timed too.
+// when none has more; with max_rows at most kEvenRows, the even split. While fewer than two widths are timed:
+// kSharedDrafts each of kEvenRows rows, and once that width is timed, kSharedDrafts + 1 each of max_rows rows, so
+// that a wider width is timed too.
 std::vector<uint32_t> choose_shared_drafts(const std::vector<DraftOdds> &slots, uint32_t draft_max, uint32_t max_rows,
                                            const RoundTimes &window, const WindowTimes &drafter);
 

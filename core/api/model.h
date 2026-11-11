@@ -176,6 +176,12 @@ class Model {
   // prompt: the rows are prompt tokens, counted for adaptive swaps as the prompt path counts them.
   virtual std::vector<std::vector<Candidate>> step(const StepIn *rows, uint32_t n, bool window = false,
                                                    bool prompt = false) = 0;
+  // Whether step takes these rows now. A step of up to STEP_MAX_RUN rows always fits; a wider one may need more of the
+  // cards' memory than the model holds for it.
+  virtual bool step_fits(const StepIn *rows, uint32_t n) const {
+    (void)rows;
+    return n > 0 && n <= STEP_MAX_ROWS;
+  }
   // Return before the cards finish; the next call on a slot's state waits for them. commit: one run, the window's
   // first n rows. commit_runs: n runs of the window, each its own sequence's.
   virtual void commit(uint32_t slot, uint32_t pos0, uint32_t n) = 0;

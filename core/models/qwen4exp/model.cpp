@@ -153,10 +153,10 @@ Model::Model(const std::string &path, const Options &opt) : opt_(opt), gguf_(pat
   if (opt_.kv_resident) {
     const uint64_t r = (uint64_t)opt_.slots * ((opt_.kv_resident + KV_PAGE_CELLS - 1) / KV_PAGE_CELLS);
     kv_res_ = r < kv_pages_ ? (uint32_t)r : 0;  // a pool no larger than the resident pages is not streamed
-    if (kv_res_ && kv_res_ <= kvs_max_miss(shape_))
+    const uint32_t run_claims = STEP_MAX_RUN * kvs_row_claims(shape_);
+    if (kv_res_ && kv_res_ <= run_claims)
       throw std::runtime_error("kv_resident must leave more than " +
-                               std::to_string(kvs_max_miss(shape_) * KV_PAGE_CELLS / opt_.slots) +
-                               " cells a slot resident");
+                               std::to_string(run_claims * KV_PAGE_CELLS / opt_.slots) + " cells a slot resident");
   }
   // Sharing moves experts in and out of the cache, so it needs the swaps, and a cache the engine sizes.
   share_ = opt_.share_kv && opt_.adapt_swaps && opt_.experts_per_layer < 0;
@@ -774,13 +774,14 @@ void Model::load_card(Card &card) {
       const uint64_t page_bytes = (uint64_t)KV_PAGE_CELLS * card.nkv * shape_.kv_head_bytes();
       if (kv_res_) {
         // Streamed (ADR-0008 item 3): kc and vc hold a ring of up to kv_res_ pages, backed as the ring grows where the
-        // pool shares the cards' memory (kv_share.cpp), from a part that holds a step's claims at least; the host
-        // copies, allocated once, hold every page.
+        // pool shares the cards' memory (kv_share.cpp), from a part that holds the claims of a step of STEP_MAX_RUN
+        // rows at least (a wider step runs where the ring holds its claims: step_fits); the host copies, allocated
+        // once, hold every page.
         uint32_t R0 = kv_res_;
         if (share_) {
-          const uint32_t x = 4 * L.idx;
-          L.kc = kv_region(card, x, page_bytes, 1, kv_res_, kvs_max_miss(shape_) + 1);
-          L.vc = kv_region(card, x + 1, page_bytes, 1, kv_res_, kvs_max_miss(shape_) + 1);
+          const uint32_t x = 4 * L.idx, floor = STEP_MAX_RUN * kvs_row_claims(shape_) + 1;
+          L.kc = kv_region(card, x, page_bytes, 1, kv_res_, floor);
+          L.vc = kv_region(card, x + 1, page_bytes, 1, kv_res_, floor);
           R0 = kv_pages_of(x, 0);
         } else {
           L.kc = upload<uint8_t>(card, nullptr, kv_res_ * page_bytes);
@@ -1182,8 +1183,8 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
   auto list = std::make_unique<ze::List>(*rt_, card.c, ze::List::regular, false, false);
   ze::List &L = *list;
   const uint32_t c = card.c, C = ncards_;
-  auto common = [&](const char *name) { return kernel(c, "common", name); };
-  auto q4 = [&](const char *name) { return kernel(c, layer_module_, name); };
+  auto common = [&](const char *name) { return kernel(c, rows_module("common", W), name); };
+  auto q4 = [&](const char *name) { return kernel(c, rows_module(layer_module_, W), name); };
   const float one = 1.0f, quarter = 1.0f / (float)shape_.hc;  // the hyper-connections' 1 / hc (4 streams: a quarter)
   const uint32_t zero = 0, mode_silu = 1;
   // The kernels read the plan from the card's copy: a word in host memory makes each launch slower
@@ -1356,7 +1357,7 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
                kSgSize);
     else
       L.launch(q4("router_group"), {card.rl, Ly.slot_map, card.x, card.ids, card.w, card.slots, nmiss, jobs, plan,
-                                    card.groups, card.ngroups}, 1, 1, 1, MOE_GROUP_WG);
+                                    card.groups, card.ngroups}, 1, 1, 1, group_wg(W));
     L.launch(q4("swiglu_a8"), {card.shg, card.shu, card.ff, plan, card.sha8}, (card.ff / 32 + 3) / 4, W, 1, 64);
     L.together(false);
     if (nslots_cached_ > 0) {
@@ -1462,8 +1463,8 @@ void Model::wait_commit() {
 // row's 64 largest logits into the host's candidate buffers. plan gives the rows.
 void Model::record_head(ze::List &L, Card &card, const StepPlan *plan, uint32_t W) {
   const uint32_t c = card.c;
-  auto common = [&](const char *name) { return kernel(c, "common", name); };
-  auto q4 = [&](const char *name) { return kernel(c, layer_module_, name); };
+  auto common = [&](const char *name) { return kernel(c, rows_module("common", W), name); };
+  auto q4 = [&](const char *name) { return kernel(c, rows_module(layer_module_, W), name); };
   const float one = 1.0f, quarter = 1.0f / (float)shape_.hc;  // the hyper-connections' 1 / hc (4 streams: a quarter)
   const uint32_t zero = 0, mode_silu = 1, gs = shape_.embd;
   uint16_t *no_bf16 = nullptr;
@@ -1518,6 +1519,24 @@ std::vector<Candidate> Model::step(uint32_t slot, uint32_t pos, int32_t token, i
   return std::move(step(&r, 1)[0]);
 }
 
+bool Model::step_fits(const StepIn *rows, uint32_t n) const {
+  if (n == 0 || n > STEP_MAX_ROWS) return false;
+  if (!kv_res_ || n <= STEP_MAX_RUN) return true;  // the ring's fixed part holds these claims
+  // Each slot's rows claim at most kvs_row_claims pages each, and none past its last row's page and the kKvsAhead
+  // after it.
+  uint64_t claims = 0;
+  for (uint32_t r = 0; r < n; r++) {
+    bool first = true;
+    for (uint32_t q = 0; q < r && first; q++) first = rows[q].slot != rows[r].slot;
+    if (!first) continue;
+    uint32_t k = 0, last = 0;
+    for (uint32_t q = r; q < n; q++)
+      if (rows[q].slot == rows[r].slot) k++, last = std::max(last, rows[q].pos);
+    claims += std::min<uint64_t>((uint64_t)k * kvs_row_claims(shape_), last / KV_PAGE_CELLS + 1 + kKvsAhead);
+  }
+  return claims < ring_level_;
+}
+
 std::vector<std::vector<Candidate>> Model::step(const StepIn *rows, uint32_t n, bool window, bool prompt) {
   if (n == 0 || n > STEP_MAX_ROWS) throw std::runtime_error("a step takes 1 to STEP_MAX_ROWS rows");
   if (window)
@@ -1532,6 +1551,7 @@ std::vector<std::vector<Candidate>> Model::step(const StepIn *rows, uint32_t n, 
     if (rows[r].slot >= opt_.slots) throw std::runtime_error("slot out of range");
     if (rows[r].pos >= opt_.max_ctx) throw std::runtime_error("position past the context");
   }
+  if (!step_fits(rows, n)) throw std::logic_error("the ring cannot hold the step's claims");
   wait_commit();
   const uint32_t W = step_width(n);
   // Streamed: the claim runs unless every row's pages are claimed already (kvs_to_), which only the rows that read

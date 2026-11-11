@@ -346,8 +346,8 @@ void Model::record_mtp(Card &card, uint32_t W, uint32_t Wr, bool chain) {
   auto list = std::make_unique<ze::List>(*rt_, card.c, ze::List::regular);
   ze::List &L = *list;
   const uint32_t c = card.c, C = ncards_, E = shape_.embd;
-  auto common = [&](const char *name) { return kernel(c, "common", name); };
-  auto q4 = [&](const char *name) { return kernel(c, mtp_module_, name); };  // built for mtp_experts_
+  auto common = [&](const char *name) { return kernel(c, rows_module("common", W), name); };
+  auto q4 = [&](const char *name) { return kernel(c, rows_module(mtp_module_, W), name); };  // built for mtp_experts_
   // The kernels read the plans from the card's copies, as the decode step's do.
   const StepPlan *pl = M.plan, *pr = Wr < W ? M.rest : M.plan;
   const uint32_t *nrows = &M.plan->nrows, *nrest = &pr->nrows;
@@ -423,7 +423,7 @@ void Model::record_mtp(Card &card, uint32_t W, uint32_t Wr, bool chain) {
     MissJob *nojobs = nullptr;
     L.launch(q4("router"), {card.rl, M.slot_map, card.x, card.ids, card.w, card.slots, nmiss, nojobs, pr}, Wr, 1, 1,
              kSgSize);
-    L.launch(q4("moe_group"), {card.slots, pr, card.groups, card.ngroups}, 1, 1, 1, MOE_GROUP_WG);
+    L.launch(q4("moe_group"), {card.slots, pr, card.groups, card.ngroups}, 1, 1, 1, group_wg(W));
     {
       const uint32_t qk = quant_block_values(mtp_type_);
       uint32_t gbpr = E / qk, xs = (uint32_t)a8_bytes(E), per = shape_.used, K = E;

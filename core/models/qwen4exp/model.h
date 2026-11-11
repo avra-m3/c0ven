@@ -97,6 +97,8 @@ class Model final : public engine::Model {
   // With window, the recurrent state is what waits for commit; the KV is written in place.
   std::vector<std::vector<Candidate>> step(const StepIn *rows, uint32_t n, bool window = false,
                                            bool prompt = false) override;
+  // Streamed, a step of more than STEP_MAX_RUN rows fits where the ring holds every page its claim can take.
+  bool step_fits(const StepIn *rows, uint32_t n) const override;
   // Draft-layer passes run beside a commit's work on the cards.
   void commit(uint32_t slot, uint32_t pos0, uint32_t n) override;
   void commit_runs(const CommitRun *runs, uint32_t n) override;

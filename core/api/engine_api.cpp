@@ -424,14 +424,20 @@ struct engine_ctx {
 
   // The drafts each row's slot of a step or round of several slots may make for the next: choose_shared_drafts from
   // their acceptance and several_times and drafter_times, and kSharedDrafts each of kEvenRows rows every
-  // kSharedCheck-th time. Under mu.
+  // kSharedCheck-th time. Over STEP_MAX_ROWS rows where the model would take the next round's rows with the most
+  // drafts each, past this round's rows and the next's (STEP_MAX_RUN each); else over kEvenRows. Under mu.
   std::vector<uint32_t> shared_drafts(const std::vector<StepIn> &rows) {
     const uint32_t n = (uint32_t)rows.size();
     if (++shared_choices % engine::kSharedCheck == 0)
       return engine::even_drafts(n, engine::kSharedDrafts, engine::kEvenRows, draft_max);
     std::vector<engine::DraftOdds> odds;
     for (const StepIn &r : rows) odds.push_back(slots[r.slot].odds);
-    return engine::choose_shared_drafts(odds, draft_max, STEP_MAX_ROWS, several_times, drafter_times);
+    const std::vector<uint32_t> most = engine::even_drafts(n, draft_max, STEP_MAX_ROWS, draft_max);
+    std::vector<StepIn> next;
+    for (uint32_t i = 0; i < n; i++)
+      for (uint32_t j = 0; j <= most[i]; j++) next.push_back({rows[i].slot, rows[i].pos + 2 * STEP_MAX_RUN - j});
+    const uint32_t max_rows = model->step_fits(next.data(), (uint32_t)next.size()) ? STEP_MAX_ROWS : engine::kEvenRows;
+    return engine::choose_shared_drafts(odds, draft_max, max_rows, several_times, drafter_times);
   }
 
   // A step or round of several slots: its window of rows from t0 to t1, when its rows' tokens are sampled (a round's
@@ -994,16 +1000,21 @@ struct engine_ctx {
     std::vector<uint32_t> start(ns), k(ns);
     std::vector<StepIn> rows;
     {
+      // STEP_MAX_ROWS rows at most, or STEP_MAX_RUN where the model cannot take more now (Model::step_fits).
       std::lock_guard<std::mutex> lk(mu);
-      for (uint32_t i = 0; i < ns; i++) {
-        const uint32_t s = row0[i].slot, p = row0[i].pos;
-        uint32_t ki = (uint32_t)std::min<size_t>(drafts[i].size(), info.max_ctx - 1 - p);
-        ki = std::min(ki, mapped_cells(s) - 1 - p);
-        ki = std::min<uint32_t>({ki, STEP_MAX_RUN - 1, STEP_MAX_ROWS - (uint32_t)rows.size() - (ns - i)});
-        start[i] = (uint32_t)rows.size();
-        k[i] = ki;
-        rows.push_back(row0[i]);
-        for (uint32_t j = 0; j < ki; j++) rows.push_back(row_after(rows.back(), drafts[i][j]));
+      for (const uint32_t cap : {(uint32_t)STEP_MAX_ROWS, (uint32_t)STEP_MAX_RUN}) {
+        rows.clear();
+        for (uint32_t i = 0; i < ns; i++) {
+          const uint32_t s = row0[i].slot, p = row0[i].pos;
+          uint32_t ki = (uint32_t)std::min<size_t>(drafts[i].size(), info.max_ctx - 1 - p);
+          ki = std::min(ki, mapped_cells(s) - 1 - p);
+          ki = std::min<uint32_t>({ki, STEP_MAX_RUN - 1, cap - (uint32_t)rows.size() - (ns - i)});
+          start[i] = (uint32_t)rows.size();
+          k[i] = ki;
+          rows.push_back(row0[i]);
+          for (uint32_t j = 0; j < ki; j++) rows.push_back(row_after(rows.back(), drafts[i][j]));
+        }
+        if (model->step_fits(rows.data(), (uint32_t)rows.size())) break;
       }
     }
     const uint32_t n = (uint32_t)rows.size();

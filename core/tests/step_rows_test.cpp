@@ -1,7 +1,8 @@
-// Level 3 (docs/TESTING.md): the decode kernels that take more than 8 of a step's rows. layer.cl's moe_group puts every
-// cached assignment of a step of up to STEP_MAX_ROWS rows in one group of at most MOE_GROUP_MAX, an expert more rows
-// route to split in order of its assignments; common.cl's mv_xmx_bf16 gives rows 0 to 7 the same bits at every row
-// count, and every row within 2e-3 of the largest |reference| (TESTING.md, "Tolerances").
+// Level 3 (docs/TESTING.md): the decode kernels that take more than 8 of a step's rows, and their builds for steps of
+// up to 8 (_r8). layer.cl's moe_group puts every cached assignment of a step of up to its build's rows in one group of
+// at most MOE_GROUP_MAX, an expert more rows route to split in order of its assignments; common.cl's mv_xmx_bf16 gives
+// rows 0 to 7 the same bits in both builds and at every row count, and every row within 2e-3 of the largest
+// |reference| (TESTING.md, "Tolerances").
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -84,32 +85,40 @@ int main() {
         s[r * Q_USED + k] = v;
       }
     std::memcpy(slots, s.data(), s.size() * 4);
-    for (uint32_t nrows : {1u, 8u, 9u, 12u, 16u}) {
-      std::memset(plan, 0, sizeof(StepPlan));
-      plan->nrows = nrows;
-      std::memset(groups, 0xff, STEP_MAX_ROWS * Q_USED * sizeof(MoeGroup));
-      L.launch(lib.get(card, "qwen4exp", "moe_group"), {slots, plan, groups, ngroups}, 1, 1, 1, MOE_GROUP_WG);
-      L.synchronize();
-      const std::vector<Group> want = host_groups(s, nrows * Q_USED);
-      if (*ngroups != want.size()) {
-        std::printf("FAIL moe_group, %u rows: %u groups, want %zu\n", nrows, *ngroups, want.size());
-        failures++;
-        continue;
-      }
-      for (size_t g = 0; g < want.size(); g++) {
-        bool ok = groups[g].slot == want[g].slot && groups[g].n == want[g].asg.size();
-        for (uint32_t i = 0; ok && i < groups[g].n; i++) ok = groups[g].asg[i] == want[g].asg[i];
-        if (!ok) {
-          std::printf("FAIL moe_group, %u rows: group %zu (slot %d, %u assignments)\n", nrows, g, groups[g].slot,
-                      groups[g].n);
+    // The build for steps of up to 8 rows and the one for 16, each up to its rows.
+    const struct {
+      const char *module;
+      uint32_t rows;
+    } builds[] = {{"qwen4exp_r8", STEP_NARROW_ROWS}, {"qwen4exp", STEP_MAX_ROWS}};
+    for (const auto &b : builds)
+      for (uint32_t nrows : {1u, 8u, 9u, 12u, 16u}) {
+        if (nrows > b.rows) continue;
+        std::memset(plan, 0, sizeof(StepPlan));
+        plan->nrows = nrows;
+        std::memset(groups, 0xff, STEP_MAX_ROWS * Q_USED * sizeof(MoeGroup));
+        L.launch(lib.get(card, b.module, "moe_group"), {slots, plan, groups, ngroups}, 1, 1, 1,
+                 MOE_GROUP_WG(b.rows));
+        L.synchronize();
+        const std::vector<Group> want = host_groups(s, nrows * Q_USED);
+        if (*ngroups != want.size()) {
+          std::printf("FAIL moe_group (%s), %u rows: %u groups, want %zu\n", b.module, nrows, *ngroups, want.size());
           failures++;
-          break;
+          continue;
+        }
+        for (size_t g = 0; g < want.size(); g++) {
+          bool ok = groups[g].slot == want[g].slot && groups[g].n == want[g].asg.size();
+          for (uint32_t i = 0; ok && i < groups[g].n; i++) ok = groups[g].asg[i] == want[g].asg[i];
+          if (!ok) {
+            std::printf("FAIL moe_group (%s), %u rows: group %zu (slot %d, %u assignments)\n", b.module, nrows, g,
+                        groups[g].slot, groups[g].n);
+            failures++;
+            break;
+          }
         }
       }
-    }
   }
 
-  // mv_xmx_bf16 at 8, 12 and 16 rows.
+  // mv_xmx_bf16 at 8 rows from the build for 8 (common_r8), and at 8, 12 and 16 from the build for 16.
   {
     const uint32_t N = 96, K = 256, ks = 4;
     std::mt19937 rng(11);
@@ -128,10 +137,15 @@ int main() {
     const float one = 1.0f;
     uint16_t *no_yb = nullptr;
     std::vector<float> first8;
-    for (uint32_t n : {8u, 12u, 16u}) {
+    const struct {
+      const char *module;
+      uint32_t n;
+    } runs[] = {{"common_r8", 8}, {"common", 8}, {"common", 12}, {"common", 16}};
+    for (const auto &run : runs) {
+      const uint32_t n = run.n;
       *ntok = n;
       std::fill(y, y + (size_t)STEP_MAX_ROWS * N, NAN);
-      L.launch(lib.get(card, "common", "mv_xmx_bf16"), {dW, N, K, K, dX, ntok, y, N, zero, one, N, ks, no_yb},
+      L.launch(lib.get(card, run.module, "mv_xmx_bf16"), {dW, N, K, K, dX, ntok, y, N, zero, one, N, ks, no_yb},
                (N + 15) / 16, 1, 1, 16 * ks);
       L.synchronize();
       double big = 0, worst = 0;
@@ -144,12 +158,12 @@ int main() {
           worst = std::max(worst, std::fabs(ref - y[(size_t)t * N + i]));
         }
       if (!(worst <= 2e-3 * big)) {
-        std::printf("FAIL mv_xmx_bf16, %u rows: off by %g of %g\n", n, worst, big);
+        std::printf("FAIL mv_xmx_bf16 (%s), %u rows: off by %g of %g\n", run.module, n, worst, big);
         failures++;
       }
-      if (n == 8) first8.assign(y, y + (size_t)8 * N);
+      if (first8.empty()) first8.assign(y, y + (size_t)8 * N);
       else if (std::memcmp(first8.data(), y, (size_t)8 * N * 4) != 0) {
-        std::printf("FAIL mv_xmx_bf16, %u rows: rows 0-7 differ from the 8-row product\n", n);
+        std::printf("FAIL mv_xmx_bf16 (%s), %u rows: rows 0-7 differ from common_r8's 8-row product\n", run.module, n);
         failures++;
       }
     }

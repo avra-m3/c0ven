@@ -31,10 +31,11 @@ inline constexpr uint32_t kCpuRows = 3;
 // p_idx_score_xmx's work-group (prompt_attn.cl): IDX_XMX_ROWS rows by kIdxXmxSg sub-groups of 16 IDX_XMX_TB blocks.
 inline constexpr uint32_t kIdxXmxRows = 16, kIdxXmxSg = 4, kIdxXmxBlocks = 16 * 2 * kIdxXmxSg;
 // The streamed pool (kvs_claim): the logical pages a claim takes past each row's, so the steps that open them need
-// no claim; the pages a step's rows can claim at most, its miss list; and what a width's list without the claim adds
-// to its key (Model::record).
+// no claim; the pages a row's claim takes at most; the pages a step's rows can claim at most, its miss list; and what
+// a width's list without the claim adds to its key (Model::record).
 inline constexpr uint32_t kKvsAhead = 32;
-inline uint32_t kvs_max_miss(const Shape &s) { return STEP_MAX_ROWS * (s.idx_blocks() + 2 + kKvsAhead); }
+inline uint32_t kvs_row_claims(const Shape &s) { return s.idx_blocks() + 2 + kKvsAhead; }
+inline uint32_t kvs_max_miss(const Shape &s) { return STEP_MAX_ROWS * kvs_row_claims(s); }
 inline constexpr uint32_t kKvsSkipList = 16;
 inline constexpr uint32_t kMvKsRows = 512;  // dense products of up to this many rows split K (matvec_ks)
 // The decode step's widths, each with its own lists: a step runs the smallest of at least its rows, and its products
@@ -45,6 +46,13 @@ inline uint32_t step_width(uint32_t n) {
     if (W >= n) return W;
   return STEP_MAX_ROWS;
 }
+// The module a list of W decode rows takes its step kernels from: base's build for the steps of up to
+// STEP_NARROW_ROWS rows (base_r8) up to that many, base past it; and its grouping work-group (moe_group,
+// router_group).
+inline std::string rows_module(const std::string &base, uint32_t W) {
+  return W <= STEP_NARROW_ROWS ? base + "_r8" : base;
+}
+inline uint32_t group_wg(uint32_t W) { return MOE_GROUP_WG(W <= STEP_NARROW_ROWS ? STEP_NARROW_ROWS : STEP_MAX_ROWS); }
 // A prompt token's weight in the swap counts against a written token's 1: there are many, and decode is what the
 // cache serves.
 inline constexpr float kPromptRouting = 0.05f;

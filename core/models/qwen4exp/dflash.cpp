@@ -265,6 +265,7 @@ void Model::record_df(Card &card, uint32_t W, bool block) {
   ze::List &L = *list;
   const uint32_t c = card.c, C = ncards_, E = DF_EMBD;
   auto df = [&](const char *name) { return kernel(c, "qwen4exp_dflash", name); };
+  auto common = [&](const char *name) { return kernel(c, rows_module("common", W), name); };
   const uint32_t zero = 0, nq = D.nq, nkv = D.nkv, qd = nq * DF_D, kd = nkv * DF_D;
   const float one = 1.0f;
   DraftPlan *pl = block ? D.bplan : D.cplan;
@@ -275,7 +276,7 @@ void Model::record_df(Card &card, uint32_t W, bool block) {
   auto bf16mv = [&](const uint16_t *Wt, uint32_t rows, uint32_t K, const uint16_t *xb, float *y,
                     ze_event_handle_t signal = nullptr) {
     if (opt_.trace) L.label("mv_xmx_bf16 " + std::to_string(rows) + "x" + std::to_string(K));
-    L.launch(kernel(c, "common", "mv_xmx_bf16"), {Wt, rows, K, K, xb, nrows, y, rows, zero, one, rows, 4u, no_yb},
+    L.launch(common("mv_xmx_bf16"), {Wt, rows, K, K, xb, nrows, y, rows, zero, one, rows, 4u, no_yb},
              (rows + 15) / 16, 1, 1, 16 * 4, 1, 1, signal);
   };
   L.copy(pl, block ? dfbplan_ : dfcplan_, sizeof(DraftPlan));
@@ -342,12 +343,12 @@ void Model::record_df(Card &card, uint32_t W, bool block) {
   uint16_t *no_b = nullptr;
   L.launch(df("df_norm"), {D.h, D.norm, pl, D.hn, no_b}, W, 1, 1, 256);
   const uint32_t units = E / 32 * W, gs = E;
-  L.launch(kernel(c, "common", "quantize_a8"), {D.hn, gs, gs, W, card.xa8}, (units + 3) / 4, 1, 1, 64);
+  L.launch(common("quantize_a8"), {D.hn, gs, gs, W, card.xa8}, (units + 3) / 4, 1, 1, 64);
   matvec(L, card, card.head, card.xa8, card.logits, W);
   uint32_t *ti = dtop_idx_ + (size_t)c * STEP_MAX_ROWS * opt_.candidates;
   float *tv = dtop_val_ + (size_t)c * STEP_MAX_ROWS * opt_.candidates;
-  L.launch(kernel(c, "common", "topk_rows"), {card.logits, card.vocab_n, card.vocab_n, opt_.candidates, card.vocab0,
-                                              nrows, ti, tv, dtop_n_ + (size_t)c * STEP_MAX_ROWS},
+  L.launch(common("topk_rows"), {card.logits, card.vocab_n, card.vocab_n, opt_.candidates, card.vocab0, nrows, ti, tv,
+                                 dtop_n_ + (size_t)c * STEP_MAX_ROWS},
            W, 1, 1, 1024);
   L.close();
   D.block_lists[W] = std::move(list);
