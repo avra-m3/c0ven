@@ -207,8 +207,9 @@ SharedChoice choose_shared_drafts(const std::vector<DraftOdds> &slots, uint32_t 
   // split, both priced with the window and the draft layer's pass.
   auto ms = [&](const std::vector<uint32_t> &d) { return window.ms(width(d)) + drafter.ms(width(d)); };
   const double even_ms = ms(c.even);
-  double best_rate = 0;
-  for (uint32_t i = 0; i < n; i++) best_rate += tokens(i, c.even[i]) / even_ms;
+  double even_tokens = 0;
+  for (uint32_t i = 0; i < n; i++) even_tokens += tokens(i, c.even[i]);
+  double best_rate = even_tokens / even_ms;
   for (uint32_t k = 1; k <= draft_max; k++) {
     std::vector<uint32_t> d = even_drafts(n, k, max_rows, draft_max);
     if (width(d) <= kEvenRows) continue;
@@ -220,24 +221,36 @@ SharedChoice choose_shared_drafts(const std::vector<DraftOdds> &slots, uint32_t 
       slower |= e / m < tokens(i, c.even[i]) / even_ms;
       t += e;
     }
-    if (!slower && t / m > best_rate) best_rate = t / m, c.wide = std::move(d);
+    if (!slower && t / m > best_rate) best_rate = t / m, c.wide = std::move(d), c.wide_tokens = t, c.wide_ms = m;
   }
+  if (!c.wide.empty()) c.even_tokens = even_tokens, c.even_ms = even_ms;
   return c;
 }
 
-bool RoundTrial::wide() {
+bool RoundTrial::wide(const SharedChoice &c) {
+  if (c.wide_ms <= 0 || c.even_ms <= 0) return rounds_[1] <= rounds_[0];
   picks_++;
   if (rounds_[0] < kTrialRounds || rounds_[1] < kTrialRounds) return rounds_[1] <= rounds_[0];
-  const bool faster = rate(true) > rate(false);
+  const bool faster =
+      c.wide_tokens / c.wide_ms * correction(true) > c.even_tokens / c.even_ms * correction(false);
   return picks_ % kTrialCheck == 0 ? !faster : faster;
 }
 
-void RoundTrial::add_round(bool wide, double tokens, double ms) {
-  tokens_[wide] = tokens_[wide] * (1 - kTrialDecay) + tokens;
-  ms_[wide] = ms_[wide] * (1 - kTrialDecay) + ms;
+void RoundTrial::add_round(bool wide, double tokens, double ms, double est_tokens, double est_ms) {
+  if (est_tokens <= 0 || est_ms <= 0) return;
+  const double keep = 1 - kTrialDecay;
+  tokens_[wide] = tokens_[wide] * keep + tokens, ms_[wide] = ms_[wide] * keep + ms;
+  est_tokens_[wide] = est_tokens_[wide] * keep + est_tokens, est_ms_[wide] = est_ms_[wide] * keep + est_ms;
   rounds_[wide]++;
 }
 
-void RoundTrial::add_time(bool wide, double ms) { ms_[wide] += ms; }
+void RoundTrial::add_time(bool wide, double ms) {
+  if (rounds_[wide] > 0) ms_[wide] += ms;
+}
+
+double RoundTrial::correction(bool wide) const {
+  if (ms_[wide] <= 0 || est_ms_[wide] <= 0 || est_tokens_[wide] <= 0) return 1;
+  return (tokens_[wide] / ms_[wide]) / (est_tokens_[wide] / est_ms_[wide]);
+}
 
 }  // namespace engine

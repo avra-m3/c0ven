@@ -42,18 +42,25 @@ alternating order, give any request fewer tokens a second, or fewer in total.
    `RoundTimes`, 3 each of 16 rows, so that a wider one is timed. There is no wide count when no number qualifies,
    or when the step could not hold the next round's rows (ADR-0077).
 4. Where there is a wide count, a trial for each number of slots (`RoundTrial`) chooses between it and the even
-   split by what each gives on the cards: the tokens its rounds write over the time of their windows and of the
-   draft layer's passes after them, each decayed by 1/16 a round of its own. Until each has 8 rounds the two
-   alternate; then the one with more tokens a millisecond, and every sixteenth choice the other, so that its rate
-   stays current.
+   split. Item 3 prices both the same way. Each arm keeps the tokens its rounds wrote over the time of their
+   windows and of the draft layer's passes after them, and item 3's estimates for those rounds, each decayed by
+   1/16 a round of its own; its correction is the first rate over the second. Until each has 8 rounds the two
+   alternate; then the arm whose estimate for the round, times its correction, is the higher, and every 32nd
+   choice the other, so that its correction stays current.
 5. A round verifies every draft made. A lone slot's round is unchanged.
 
 ## Why
 
 Item 2 makes the even split the commit before's choice, so a case where the wide count never wins runs as before
-but for the trial's rounds: 8 of the wide count at first, then one in 16. A wide count 10% slower costs about 0.6%
+but for the trial's rounds: 8 of the wide count at first, then one in 32. A wide count 10% slower costs about 0.3%
 once the trial has run. Item 4 judges the wide count by the tokens the rounds write, so a wrong acceptance or time
 in item 3's estimate no longer picks it.
+
+Item 4 compares each arm with its estimate, not with the other arm's rate. An arm that has not run for a while
+last ran on other text: in a probe on two cards, three requests copying text after three writing essays kept the
+even split, as the wide count's rate was still the essays' (0.16 tokens a ms against the even split's 0.19 on the
+copied text), while its rounds on the copied text gave 0.22 (*estimate*, from one run with a round log). The
+estimates follow the text the slots write now; the corrections carry what the estimates get wrong for each arm.
 
 Item 3 offers the step's other rows only where every request gains by the core's estimates. A host simulation
 runs item 3 alone and the 8-row choice on made-up requests: acceptances that fall 0.05 a place, each request's
@@ -79,6 +86,7 @@ rare to be timed twice.
 - Item 3's estimate alone, without the trial, and with the even split priced by item 1's times. It was 2 to 6%
   under the 8-row choice with three and four requests (Context).
 - A trial of every number of drafts. Each needs its own rounds, and a slow one costs every request while it runs.
+- A trial that compares the arms' measured rates. One arm's rate is from whatever text it last ran on (Why).
 - A number of drafts for each slot, the most tokens a millisecond with the floor of item 3. Each slot's acceptance
   rests on its own few rounds; in the simulation four requests with few misses were 4.7% slower than the 8-row
   choice.
@@ -92,6 +100,8 @@ rare to be timed twice.
   of slots, for as long as the engine runs. A trial's rates come from earlier requests too; the decay and the
   sixteenth choice let new ones replace them.
 - The first 16 rounds of a number of slots that has a wide count alternate between the two.
+- Requests that repeat text they were given, such as copies or code returned with a change, accept nearly every
+  draft; there the wide count's rounds write the most.
 - With four requests whose rows miss few experts, rounds run 16 rows, 3 drafts each, where they ran 8, 1 each, if
   those rounds write more tokens a millisecond.
 - `lookup_test` checks items 1 to 4 without a card. The change is not accepted until the alternating runs in

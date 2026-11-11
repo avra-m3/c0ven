@@ -132,30 +132,38 @@ std::vector<uint32_t> even_drafts(uint32_t n, uint32_t k, uint32_t rows, uint32_
 //   draft layer's pass after it (drafter, by the window's rows); the one with the most. Empty when none does, or
 //   with max_rows at most kEvenRows. While fewer than two widths are timed: kSharedDrafts + 1 each of max_rows rows,
 //   so that a wider width is timed.
+// With a wide count, both are priced the same way, as estimates for the trial: the slots' expected tokens and the
+// window's time with the draft layer's pass.
 struct SharedChoice {
   std::vector<uint32_t> even, wide;
+  double even_tokens = 0, even_ms = 0, wide_tokens = 0, wide_ms = 0;
 };
 SharedChoice choose_shared_drafts(const std::vector<DraftOdds> &slots, uint32_t draft_max, uint32_t max_rows,
                                   const WindowTimes &times, const RoundTimes &window, const WindowTimes &drafter);
 
-// Whether rounds of several slots take choose_shared_drafts' wide count or its even split, by what each gives as the
-// rounds run: the tokens its rounds write over the time of their windows and of the draft layer's passes after them,
-// each decayed by kTrialDecay a round of its own. Until each has kTrialRounds rounds the two alternate;
-// then the one with more tokens a millisecond, and every kTrialCheck-th choice the other, so that its rate stays
-// current. The core keeps one for each number of slots.
+// Whether rounds of several slots take choose_shared_drafts' wide count or its even split. Each arm keeps what its
+// rounds gave against what choose_shared_drafts estimated for them: the tokens they wrote over the time of their
+// windows and of the draft layer's passes after them, and the estimated tokens over the estimated time, each decayed
+// by kTrialDecay a round of its own. An arm's correction is the first rate over the second. A round's estimates
+// follow the slots' text and the misses of the moment, so the corrections compare the arms even when one last ran on
+// other text. Until each arm has kTrialRounds rounds the two alternate; then the arm whose estimate for this round,
+// times its correction, is the higher, and every kTrialCheck-th choice the other, so that its correction stays
+// current. A choice without estimates is not counted and takes the wide count while the arms have as many rounds.
+// The core keeps one for each number of slots.
 constexpr uint32_t kTrialRounds = 8;
-constexpr uint32_t kTrialCheck = 16;
+constexpr uint32_t kTrialCheck = 32;
 constexpr double kTrialDecay = 1.0 / 16;
 class RoundTrial {
  public:
-  bool wide();  // this choice's: true for the wide count
-  void add_round(bool wide, double tokens, double ms);  // a round's tokens and window
-  void add_time(bool wide, double ms);                  // the draft layer's pass after a round
-  double rate(bool wide) const { return ms_[wide] > 0 ? tokens_[wide] / ms_[wide] : 0; }
+  bool wide(const SharedChoice &c);  // this choice's: true for the wide count
+  // A round's tokens and window, with its arm's estimates.
+  void add_round(bool wide, double tokens, double ms, double est_tokens, double est_ms);
+  void add_time(bool wide, double ms);  // the draft layer's pass after a round
+  double correction(bool wide) const;   // 1 before the arm's first round with estimates
   uint32_t rounds(bool wide) const { return rounds_[wide]; }
 
  private:
-  double tokens_[2] = {}, ms_[2] = {};
+  double tokens_[2] = {}, ms_[2] = {}, est_tokens_[2] = {}, est_ms_[2] = {};
   uint32_t rounds_[2] = {}, picks_ = 0;
 };
 

@@ -14,6 +14,7 @@ using engine::DraftOdds;
 using engine::even_drafts;
 using engine::Lookup;
 using engine::RoundTimes;
+using engine::SharedChoice;
 using engine::WindowTimes;
 
 namespace {
@@ -244,6 +245,10 @@ int main() {
     // layer's pass, against 8 in 36.7, faster for both.
     EXPECT(even(slots(2, 3, 3), 7, 16, wt, w) == v({3, 3}), "sure");
     EXPECT(wide(slots(2, 3, 3), 7, 16, wt, w) == v({7, 7}), "sure, wide");
+    const SharedChoice sure = choose_shared_drafts(slots(2, 3, 3), 7, 16, wt, w, dr);
+    EXPECT(std::fabs(sure.wide_tokens - 16) < 1e-6 && std::fabs(sure.wide_ms - 54.6) < 1e-6 &&
+               std::fabs(sure.even_tokens - 8) < 1e-6 && std::fabs(sure.even_ms - 36.7) < 1e-6,
+           "sure, estimates: %g %g %g %g", sure.wide_tokens, sure.wide_ms, sure.even_tokens, sure.even_ms);
     // Four slots: 1 each of 8 rows (8 tokens in 36.7 ms), 3 each of 16 (16 in 54.6).
     EXPECT(even(slots(4, 3, 3), 7, 16, wt, w) == v({1, 1, 1, 1}), "sure, 4 slots");
     EXPECT(wide(slots(4, 3, 3), 7, 16, wt, w) == v({3, 3, 3, 3}), "sure, 4 slots, wide");
@@ -271,35 +276,61 @@ int main() {
     EXPECT(even({}, 7, 16, wt, w).empty() && wide({}, 7, 16, wt, w).empty(), "no slots");
   }
 
-  // The trial of the wide count against the even split: alternate until each has kTrialRounds rounds, then the one
-  // with more tokens a millisecond, and every kTrialCheck-th choice the other.
+  // The trial of the wide count against the even split: alternate until each has kTrialRounds rounds, then the arm
+  // whose estimate times its correction (what its rounds gave over what was estimated for them) is the higher, and
+  // every kTrialCheck-th choice the other.
   {
-    auto run = [](double wide_rate, double even_rate, uint32_t picks) {
+    auto choice = [](double wide_tokens, double wide_ms, double even_tokens, double even_ms) {
+      SharedChoice c;
+      c.even = {1, 1, 1}, c.wide = {3, 3, 3};
+      c.wide_tokens = wide_tokens, c.wide_ms = wide_ms, c.even_tokens = even_tokens, c.even_ms = even_ms;
+      return c;
+    };
+    // Rounds that give wide_rate and even_rate tokens a millisecond, against estimates of 0.2 for both.
+    auto run = [&](double wide_rate, double even_rate, uint32_t picks) {
       engine::RoundTrial tr;
+      const SharedChoice c = choice(10, 50, 6, 30);
       uint32_t wides = 0;
       for (uint32_t i = 0; i < picks; i++) {
-        const bool w = tr.wide();
+        const bool w = tr.wide(c);
         wides += w;
-        tr.add_round(w, (w ? wide_rate : even_rate) * 30, 30);
+        tr.add_round(w, (w ? wide_rate : even_rate) * 30, 30, w ? 10 : 6, w ? 50 : 30);
       }
       return wides;
     };
     engine::RoundTrial tr;
     bool alternate = true;
     for (uint32_t i = 0; i < 2 * engine::kTrialRounds; i++) {
-      const bool w = tr.wide();
+      const bool w = tr.wide(choice(10, 50, 6, 30));
       alternate = alternate && w == (i % 2 == 0);
-      tr.add_round(w, 6, 30);
+      tr.add_round(w, 6, 30, 6, 30);
     }
     EXPECT(alternate, "alternates while trying");
     const uint32_t picks = 2 * engine::kTrialRounds + 10 * engine::kTrialCheck;
     // Past the trial's 2 kTrialRounds picks, each kTrialCheck-th the other: the slower one 10 times in all.
     EXPECT(run(0.25, 0.2, picks) == picks - engine::kTrialRounds - 10, "faster wide: %u", run(0.25, 0.2, picks));
     EXPECT(run(0.2, 0.25, picks) == engine::kTrialRounds + 10, "slower wide: %u", run(0.2, 0.25, picks));
-    // The draft layer's passes count against the arm whose drafts they made.
+    // Corrections carry to other text: on text A the wide count gave 0.8 of its estimate and the even split all of
+    // it. On text B the wide count's estimate is 0.4 tokens a ms and the even split's 0.25: 0.32 against 0.25, the
+    // wide count. On text C 0.26 against 0.25: 0.208, the even split.
+    engine::RoundTrial t3;
+    for (uint32_t i = 0; i < engine::kTrialRounds; i++)
+      t3.add_round(true, 8, 40, 10, 40), t3.add_round(false, 9, 50, 9, 50);
+    EXPECT(std::fabs(t3.correction(true) - 0.8) < 1e-9 && std::fabs(t3.correction(false) - 1) < 1e-9,
+           "corrections: %g %g", t3.correction(true), t3.correction(false));
+    EXPECT(t3.wide(choice(20, 50, 10, 40)), "text B");
+    EXPECT(!t3.wide(choice(13, 50, 10, 40)), "text C");
+    // The draft layer's pass after a round counts in its arm's time.
     engine::RoundTrial t2;
-    t2.add_round(true, 10, 40), t2.add_round(false, 8, 40), t2.add_time(true, 20);
-    EXPECT(std::fabs(t2.rate(true) - 10.0 / 60) < 1e-9 && std::fabs(t2.rate(false) - 0.2) < 1e-9, "draft time");
+    t2.add_round(true, 10, 40, 10, 50), t2.add_time(true, 10);
+    EXPECT(std::fabs(t2.correction(true) - 1) < 1e-9 && t2.correction(false) == 1, "draft time");
+    // Without estimates (fewer than two widths timed) a choice is not counted and takes the wide count while the
+    // arms have as many rounds; a round without estimates is not counted.
+    engine::RoundTrial t4;
+    bool all_wide = true;
+    for (int i = 0; i < 5; i++) all_wide = all_wide && t4.wide(choice(10, 0, 6, 0));
+    t4.add_round(true, 10, 40, 0, 0);
+    EXPECT(all_wide && t4.rounds(true) == 0, "no estimates");
   }
 
   std::printf("lookup_test: ok\n");

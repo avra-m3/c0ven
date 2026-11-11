@@ -152,10 +152,11 @@ struct engine_ctx {
   engine::RoundTimes several_times;
   engine::WindowTimes drafter_times;
   // The wide count against the even split, by the number of slots; the choice behind the drafts made last (-1: no
-  // trial, 0: the even split, 1: the wide count) and its slots. Under mu.
+  // trial, 0: the even split, 1: the wide count), its slots, and choose_shared_drafts' estimates for it. Under mu.
   engine::RoundTrial trials[ENGINE_MAX_STEP_SLOTS + 1];
   int trial_wide = -1;
   uint32_t trial_n = 0;
+  double trial_tokens = 0, trial_ms = 0;
   engine::SwapCadence swap_cadence;  // when the next swap round is due; under mu
   engine_stats stats{};  // the counters (include/engine_api.h); the model's are copied in at each plan's end
   uint64_t t_open = 0;
@@ -446,8 +447,10 @@ struct engine_ctx {
     engine::SharedChoice c =
         engine::choose_shared_drafts(odds, draft_max, max_rows, window_times, several_times, drafter_times);
     if (c.wide.empty() || n > ENGINE_MAX_STEP_SLOTS) return c.even;
-    trial_wide = trials[n].wide() ? 1 : 0;
+    trial_wide = trials[n].wide(c) ? 1 : 0;
     trial_n = n;
+    trial_tokens = trial_wide ? c.wide_tokens : c.even_tokens;
+    trial_ms = trial_wide ? c.wide_ms : c.even_ms;
     return trial_wide ? c.wide : c.even;
   }
 
@@ -1012,11 +1015,13 @@ struct engine_ctx {
     const uint32_t ns = (uint32_t)row0.size();
     std::vector<uint32_t> start(ns), k(ns);
     std::vector<StepIn> rows;
-    int arm;  // the trial behind these drafts, of these slots
+    int arm;  // the trial behind these drafts, of these slots, and its estimates
+    double est_tokens, est_ms;
     {
       // STEP_MAX_ROWS rows at most, or STEP_MAX_RUN where the model cannot take more now (Model::step_fits).
       std::lock_guard<std::mutex> lk(mu);
       arm = trial_n == ns ? trial_wide : -1;
+      est_tokens = trial_tokens, est_ms = trial_ms;
       trial_wide = -1;
       for (const uint32_t cap : {(uint32_t)STEP_MAX_ROWS, (uint32_t)STEP_MAX_RUN}) {
         rows.clear();
@@ -1077,7 +1082,7 @@ struct engine_ctx {
       if (arm >= 0) {
         double written = 0;
         for (uint32_t i = 0; i < ns; i++) written += acc[i] + 1;
-        trials[ns].add_round(arm == 1, written, (t1 - t0) * 1e-6);
+        trials[ns].add_round(arm == 1, written, (t1 - t0) * 1e-6, est_tokens, est_ms);
       }
       for (uint32_t i = 0; i < ns; i++) {
         const uint32_t s = row0[i].slot, p = row0[i].pos, a = acc[i];
