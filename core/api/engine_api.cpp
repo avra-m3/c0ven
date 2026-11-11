@@ -151,6 +151,11 @@ struct engine_ctx {
   // layer's drafts by the window's rows. What shared_drafts weighs drafts against. Under mu.
   engine::RoundTimes several_times;
   engine::WindowTimes drafter_times;
+  // The wide count against the even split, by the number of slots; the choice behind the drafts made last (-1: no
+  // trial, 0: the even split, 1: the wide count) and its slots. Under mu.
+  engine::RoundTrial trials[ENGINE_MAX_STEP_SLOTS + 1];
+  int trial_wide = -1;
+  uint32_t trial_n = 0;
   engine::SwapCadence swap_cadence;  // when the next swap round is due; under mu
   engine_stats stats{};  // the counters (include/engine_api.h); the model's are copied in at each plan's end
   uint64_t t_open = 0;
@@ -422,12 +427,13 @@ struct engine_ctx {
     return d;
   }
 
-  // The drafts each row's slot of a step or round of several slots may make for the next: choose_shared_drafts from
-  // their acceptance and several_times and drafter_times, and kSharedDrafts each of kEvenRows rows every
-  // kSharedCheck-th time. Over STEP_MAX_ROWS rows where the model would take the next round's rows with the most
+  // The drafts each row's slot of a step or round of several slots may make for the next: kSharedDrafts each of
+  // kEvenRows rows every kSharedCheck-th time; else choose_shared_drafts' even split, or its wide count where the
+  // slots' trial takes it. Over STEP_MAX_ROWS rows where the model would take the next round's rows with the most
   // drafts each, past this round's rows and the next's (STEP_MAX_RUN each); else over kEvenRows. Under mu.
   std::vector<uint32_t> shared_drafts(const std::vector<StepIn> &rows) {
     const uint32_t n = (uint32_t)rows.size();
+    trial_wide = -1;
     if (++shared_choices % engine::kSharedCheck == 0)
       return engine::even_drafts(n, engine::kSharedDrafts, engine::kEvenRows, draft_max);
     std::vector<engine::DraftOdds> odds;
@@ -437,15 +443,22 @@ struct engine_ctx {
     for (uint32_t i = 0; i < n; i++)
       for (uint32_t j = 0; j <= most[i]; j++) next.push_back({rows[i].slot, rows[i].pos + 2 * STEP_MAX_RUN - j});
     const uint32_t max_rows = model->step_fits(next.data(), (uint32_t)next.size()) ? STEP_MAX_ROWS : engine::kEvenRows;
-    return engine::choose_shared_drafts(odds, draft_max, max_rows, several_times, drafter_times);
+    engine::SharedChoice c =
+        engine::choose_shared_drafts(odds, draft_max, max_rows, window_times, several_times, drafter_times);
+    if (c.wide.empty() || n > ENGINE_MAX_STEP_SLOTS) return c.even;
+    trial_wide = trials[n].wide() ? 1 : 0;
+    trial_n = n;
+    return trial_wide ? c.wide : c.even;
   }
 
   // A step or round of several slots: its window of rows from t0 to t1, when its rows' tokens are sampled (a round's
-  // and a step's alike), for which the CPU computed misses experts, and the draft layer's drafts after it, up to now.
-  // Under mu.
-  void time_several(uint32_t rows, uint64_t t0, uint64_t t1, uint32_t misses) {
+  // and a step's alike), for which the CPU computed misses experts, and the draft layer's drafts after it, up to now,
+  // which the trial behind the round's drafts counts (arm, of arm_n slots; -1 for none). Under mu.
+  void time_several(uint32_t rows, uint64_t t0, uint64_t t1, uint32_t misses, int arm = -1, uint32_t arm_n = 0) {
+    const double drafter_ms = (now_ns() - t1) * 1e-6;
     several_times.add(rows, (t1 - t0) * 1e-6, misses);
-    drafter_times.add(rows, (now_ns() - t1) * 1e-6);
+    drafter_times.add(rows, drafter_ms);
+    if (arm >= 0) trials[arm_n].add_time(arm == 1, drafter_ms);
   }
 
   // A draft round's window of n rows that took ns, and a slot's run in it: k drafts verified, a accepted, from the
@@ -999,9 +1012,12 @@ struct engine_ctx {
     const uint32_t ns = (uint32_t)row0.size();
     std::vector<uint32_t> start(ns), k(ns);
     std::vector<StepIn> rows;
+    int arm;  // the trial behind these drafts, of these slots
     {
       // STEP_MAX_ROWS rows at most, or STEP_MAX_RUN where the model cannot take more now (Model::step_fits).
       std::lock_guard<std::mutex> lk(mu);
+      arm = trial_n == ns ? trial_wide : -1;
+      trial_wide = -1;
       for (const uint32_t cap : {(uint32_t)STEP_MAX_ROWS, (uint32_t)STEP_MAX_RUN}) {
         rows.clear();
         for (uint32_t i = 0; i < ns; i++) {
@@ -1058,6 +1074,11 @@ struct engine_ctx {
       window_times.add(n, (t1 - t0) * 1e-6);
       swap_cadence.step(n, ss.layers_missed, (t1 - t0) * 1e-6);
       count_round(n, t1 - t0, ss);
+      if (arm >= 0) {
+        double written = 0;
+        for (uint32_t i = 0; i < ns; i++) written += acc[i] + 1;
+        trials[ns].add_round(arm == 1, written, (t1 - t0) * 1e-6);
+      }
       for (uint32_t i = 0; i < ns; i++) {
         const uint32_t s = row0[i].slot, p = row0[i].pos, a = acc[i];
         Slot &sl = slots[s];
@@ -1093,7 +1114,7 @@ struct engine_ctx {
         Slot &sl = slots[seeds[i].slot];
         if (sl.used && !sl.done) sl.drafts = d[i];
       }
-      time_several(n, t0, t1, misses);
+      time_several(n, t0, t1, misses, arm, ns);
       return;
     }
     // The draft layer needs no rejected row: its cell is written again before any row reads it. Each live slot's
@@ -1122,7 +1143,7 @@ struct engine_ctx {
       Slot &sl = slots[seeds[i].slot];
       if (sl.used && !sl.done) sl.drafts = d[i];
     }
-    time_several(n, t0, t1, misses);
+    time_several(n, t0, t1, misses, arm, ns);
   }
 
   void run() {

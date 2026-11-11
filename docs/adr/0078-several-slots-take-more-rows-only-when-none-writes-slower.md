@@ -20,6 +20,10 @@ alternating order, give any request fewer tokens a second, or fewer in total.
   width mixes requests with different misses, and a width timed once keeps that time.
 - After a round, the draft layer's pass takes 4 to 5 ms for a block of up to 8 rows and about 6.5 ms past 8
   (*estimate*, from the same runs). A round pays it whatever its drafts.
+- Choosing by the core's estimates alone, with the 8-row choice priced by the times of item 1 below, ran more rows
+  a round than the commit before it with four requests (7.7 against 7.2) and was 2% slower in total; three
+  requests of mixed text were 6% slower (*estimate*, from the same kind of runs). One acceptance a slot for every
+  place in its drafts overstates the later drafts when most rounds accept one.
 
 ## Decision
 
@@ -29,23 +33,31 @@ alternating order, give any request fewer tokens a second, or fewer in total.
    cost of its misses, and the misses a row of the rounds lately. A width's time is that net time and its rows'
    misses at the cost. A width not timed twice is on the line through the nearest timed ones; below the
    narrowest, on the line through the two narrowest, and no less than in proportion to the rows.
-2. The even split is the choice before ADR-0077: one number for all slots, each at most its part of a step of 8
-   rows, the number with the most tokens a millisecond of the window (`choose_shared_drafts`).
-3. A number of the whole step's 16 rows, shared out the same way, replaces the even split when it gives more tokens
-   a millisecond in total and every slot at least its tokens a millisecond in the even split, both priced with the
-   window and the draft layer's pass. Of those, the one with the most tokens a millisecond.
-4. Until two widths are timed: 2 drafts each of 8 rows, and once that width is timed, 3 each of 16 rows, so that a
-   wider one is timed too. Every eighth choice is 2 each of 8 rows, as before ADR-0077.
+2. The even split is the choice before ADR-0077, unchanged: one number for all slots, each at most its part of a
+   step of 8 rows, the number with the most tokens a millisecond of the windows of every round (`window_times`),
+   2 each while no window is timed and every eighth choice.
+3. The wide count is a number of the whole step's 16 rows, shared out the same way, that gives more tokens a
+   millisecond in total and every slot at least its tokens a millisecond in the even split, both priced with item
+   1's times and the draft layer's pass; of those, the one with the most. Until two widths are timed by
+   `RoundTimes`, 3 each of 16 rows, so that a wider one is timed. There is no wide count when no number qualifies,
+   or when the step could not hold the next round's rows (ADR-0077).
+4. Where there is a wide count, a trial for each number of slots (`RoundTrial`) chooses between it and the even
+   split by what each gives on the cards: the tokens its rounds write over the time of their windows and of the
+   draft layer's passes after them, each decayed by 1/16 a round of its own. Until each has 8 rounds the two
+   alternate; then the one with more tokens a millisecond, and every sixteenth choice the other, so that its rate
+   stays current.
 5. A round verifies every draft made. A lone slot's round is unchanged.
 
 ## Why
 
-Item 3 keeps every request at least as fast as the 8-row choice, by the core's own estimates, and gives the step's
-other rows only where all the requests gain. A request's speed beside others no longer depends on whether their
-drafts are accepted.
+Item 2 makes the even split the commit before's choice, so a case where the wide count never wins runs as before
+but for the trial's rounds: 8 of the wide count at first, then one in 16. A wide count 10% slower costs about 0.6%
+once the trial has run. Item 4 judges the wide count by the tokens the rounds write, so a wrong acceptance or time
+in item 3's estimate no longer picks it.
 
-A host simulation runs this code and the 8-row choice on made-up requests: acceptances that fall 0.05 a place, each
-request's rows missing at its own rate, and the costs in Context with 1.5 ms between rounds. In nine cases of 2 to 6
+Item 3 offers the step's other rows only where every request gains by the core's estimates. A host simulation
+runs item 3 alone and the 8-row choice on made-up requests: acceptances that fall 0.05 a place, each request's
+rows missing at its own rate, and the costs in Context with 1.5 ms between rounds. In nine cases of 2 to 6
 requests, 3,000 rounds each, eight are within 0.2% of the 8-row choice in total and within 0.6% for the slowest
 request; four requests with 8 misses a row give 7.4% more in total and 7.3% more for the slowest. This is not a
 measurement of the cards.
@@ -56,13 +68,17 @@ where acceptance is 0.5 to 0.6, and the slowest request lost 7%.
 
 Item 1's line below the narrowest width: a width priced as the narrowest timed one never looks cheaper, so it is
 never run. In the simulation, three requests that started at 8 and 12 rows never ran 6 and stayed at 8, 1.7% slower
-in total. Item 4 times two widths because a step with no drafts, one row a slot, is too rare to be timed twice.
+in total. Item 3's first wide count times a second width because a step with no drafts, one row a slot, is too
+rare to be timed twice.
 
 ## Options not chosen
 
 - Ranking the drafts of all slots by their chance of being accepted, as vLLM's adaptive verification does
   (`vllm/v1/worker/gpu/spec_decode/adaptive_verification.py` at commit `b2b5ae8`). It was 1 to 12% under the 8-row
   choice on the cards (Context).
+- Item 3's estimate alone, without the trial, and with the even split priced by item 1's times. It was 2 to 6%
+  under the 8-row choice with three and four requests (Context).
+- A trial of every number of drafts. Each needs its own rounds, and a slow one costs every request while it runs.
 - A number of drafts for each slot, the most tokens a millisecond with the floor of item 3. Each slot's acceptance
   rests on its own few rounds; in the simulation four requests with few misses were 4.7% slower than the 8-row
   choice.
@@ -72,9 +88,11 @@ in total. Item 4 times two widths because a step with no drafts, one row a slot,
 
 ## Consequences
 
-- `choose_shared_drafts` gives each slot's drafts. `window_times` still times a lone slot's rounds for the lookup's
-  choice.
-- With four requests whose rows miss few experts, rounds run 16 rows, 3 drafts each, where they ran 8, 1 each.
-- The first rounds of several slots run 2 drafts each and then 3, before the times decide.
+- `choose_shared_drafts` gives the even split and the wide count; the core keeps one `RoundTrial` for each number
+  of slots, for as long as the engine runs. A trial's rates come from earlier requests too; the decay and the
+  sixteenth choice let new ones replace them.
+- The first 16 rounds of a number of slots that has a wide count alternate between the two.
+- With four requests whose rows miss few experts, rounds run 16 rows, 3 drafts each, where they ran 8, 1 each, if
+  those rounds write more tokens a millisecond.
 - `lookup_test` checks items 1 to 4 without a card. The change is not accepted until the alternating runs in
   "Revisit when" show no request slower.

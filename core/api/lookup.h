@@ -104,8 +104,7 @@ struct DraftOdds {
 uint32_t choose_drafts(const DraftOdds &odds, uint32_t layer_drafts, uint32_t draft_max, uint32_t lookup_drafts,
                        uint32_t max_rows, const WindowTimes &times);
 
-// The drafts each of several writing slots makes until two widths of their rounds are timed, and every
-// kSharedCheck-th time.
+// The drafts each of several writing slots makes while no window is timed, and every kSharedCheck-th time.
 constexpr uint32_t kSharedDrafts = 2;
 
 // Every this many choices for several slots the core makes kSharedDrafts each of a step of kEvenRows rows, whatever
@@ -122,17 +121,42 @@ constexpr uint32_t kEvenRows = 8;
 // spare / n and the first spare % n one more, each at most draft_max.
 std::vector<uint32_t> even_drafts(uint32_t n, uint32_t k, uint32_t rows, uint32_t draft_max);
 
-// The drafts each of several writing slots makes for their next round
-// (docs/adr/0078-several-slots-take-more-rows-only-when-none-writes-slower.md). One count k for all of them, shared
-// out as even_drafts shares it, is worth the slots' expected tokens (each the row sampled last and its drafts
-// accepted, at its acceptance) over the round's time: its window's (window.ms) and the draft layer's pass after it
-// (drafter, by the window's rows). The even split is the k with the most tokens a millisecond of a step of kEvenRows
-// rows, the choice before a step held 16. Of the k of a step of max_rows rows that give each slot at least its tokens
-// a millisecond in the even split, the round takes the one with the most tokens a millisecond, or the even split
-// when none has more; with max_rows at most kEvenRows, the even split. While fewer than two widths are timed:
-// kSharedDrafts each of kEvenRows rows, and once that width is timed, kSharedDrafts + 1 each of max_rows rows, so
-// that a wider width is timed too.
-std::vector<uint32_t> choose_shared_drafts(const std::vector<DraftOdds> &slots, uint32_t draft_max, uint32_t max_rows,
-                                           const RoundTimes &window, const WindowTimes &drafter);
+// The drafts each of several writing slots may make for their next round
+// (docs/adr/0078-several-slots-take-more-rows-only-when-none-writes-slower.md): one count k for all of them, shared
+// out as even_drafts shares it, worth the slots' expected tokens (each the row sampled last and its drafts accepted,
+// at its acceptance) over the round's time.
+// - even: the choice before a step held 16 rows, by the windows' times (times): the k with the most tokens a
+//   millisecond of a step of kEvenRows rows, kSharedDrafts while no window is timed.
+// - wide: a k whose rows are more than kEvenRows, of a step of max_rows, that gives more tokens a millisecond in all
+//   and each slot at least its tokens a millisecond in the even split, priced with the window (window.ms) and the
+//   draft layer's pass after it (drafter, by the window's rows); the one with the most. Empty when none does, or
+//   with max_rows at most kEvenRows. While fewer than two widths are timed: kSharedDrafts + 1 each of max_rows rows,
+//   so that a wider width is timed.
+struct SharedChoice {
+  std::vector<uint32_t> even, wide;
+};
+SharedChoice choose_shared_drafts(const std::vector<DraftOdds> &slots, uint32_t draft_max, uint32_t max_rows,
+                                  const WindowTimes &times, const RoundTimes &window, const WindowTimes &drafter);
+
+// Whether rounds of several slots take choose_shared_drafts' wide count or its even split, by what each gives as the
+// rounds run: the tokens its rounds write over the time of their windows and of the draft layer's passes after them,
+// each decayed by kTrialDecay a round of its own. Until each has kTrialRounds rounds the two alternate;
+// then the one with more tokens a millisecond, and every kTrialCheck-th choice the other, so that its rate stays
+// current. The core keeps one for each number of slots.
+constexpr uint32_t kTrialRounds = 8;
+constexpr uint32_t kTrialCheck = 16;
+constexpr double kTrialDecay = 1.0 / 16;
+class RoundTrial {
+ public:
+  bool wide();  // this choice's: true for the wide count
+  void add_round(bool wide, double tokens, double ms);  // a round's tokens and window
+  void add_time(bool wide, double ms);                  // the draft layer's pass after a round
+  double rate(bool wide) const { return ms_[wide] > 0 ? tokens_[wide] / ms_[wide] : 0; }
+  uint32_t rounds(bool wide) const { return rounds_[wide]; }
+
+ private:
+  double tokens_[2] = {}, ms_[2] = {};
+  uint32_t rounds_[2] = {}, picks_ = 0;
+};
 
 }  // namespace engine

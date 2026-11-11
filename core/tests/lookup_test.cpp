@@ -223,40 +223,83 @@ int main() {
   // 16 48.1; the draft layer's pass 4.5 ms up to 8 rows and 6.5 past) and no misses.
   {
     RoundTimes w;
-    WindowTimes dr;
+    WindowTimes wt, dr;
     const double t[] = {0, 0, 20, 0, 23.4, 0, 27.3, 0, 32.2, 0, 0, 0, 44, 0, 0, 0, 48.1};
     for (int i = 0; i < 4; i++)
       for (uint32_t r = 1; r <= 16; r++)
-        if (t[r] > 0) w.add(r, t[r], 0), dr.add(r, r > 8 ? 6.5 : 4.5);
-    // Until two widths are timed: 2 each of 8 rows, then once that width is timed 3 each of 16 rows.
+        if (t[r] > 0) w.add(r, t[r], 0), wt.add(r, t[r]), dr.add(r, r > 8 ? 6.5 : 4.5);
+    auto even = [&](const std::vector<DraftOdds> &s, uint32_t dmax, uint32_t rows, const WindowTimes &times,
+                    const RoundTimes &win) { return choose_shared_drafts(s, dmax, rows, times, win, dr).even; };
+    auto wide = [&](const std::vector<DraftOdds> &s, uint32_t dmax, uint32_t rows, const WindowTimes &times,
+                    const RoundTimes &win) { return choose_shared_drafts(s, dmax, rows, times, win, dr).wide; };
+    // No window timed: the even split 2 each of 8 rows; until two widths are timed, the wide count 3 each of 16 rows
+    // where that is more than 8.
     RoundTimes first;
-    EXPECT(choose_shared_drafts(slots(2, 3, 3), 7, 16, first, dr) == v({2, 2}), "no times");
-    EXPECT(choose_shared_drafts(slots(3, 3, 3), 7, 16, first, dr) == v({2, 2, 1}), "no times, 3 slots");
-    first.add(6, 27.3, 0), first.add(6, 27.3, 0);
-    EXPECT(choose_shared_drafts(slots(2, 3, 3), 7, 16, first, dr) == v({3, 3}), "6 rows timed");
-    // Every draft accepted: the even split is 3 each (8 tokens in 36.7 ms, 4 a slot); 7 each is 16 in 54.6 ms, 8 a
-    // slot, faster for both.
-    EXPECT(choose_shared_drafts(slots(2, 3, 3), 7, 16, w, dr) == v({7, 7}), "sure");
+    WindowTimes none;
+    EXPECT(even(slots(2, 3, 3), 7, 16, none, first) == v({2, 2}), "no times");
+    EXPECT(wide(slots(2, 3, 3), 7, 16, none, first).empty(), "no times: 3 each of 2 slots is 8 rows");
+    EXPECT(even(slots(3, 3, 3), 7, 16, none, first) == v({2, 2, 1}), "no times, 3 slots");
+    EXPECT(wide(slots(3, 3, 3), 7, 16, none, first) == v({3, 3, 3}), "no times, 3 slots, wide");
+    // Every draft accepted: the even split is 3 each (8 tokens in 32.2 ms); 7 each is 16 in 54.6 ms with the draft
+    // layer's pass, against 8 in 36.7, faster for both.
+    EXPECT(even(slots(2, 3, 3), 7, 16, wt, w) == v({3, 3}), "sure");
+    EXPECT(wide(slots(2, 3, 3), 7, 16, wt, w) == v({7, 7}), "sure, wide");
     // Four slots: 1 each of 8 rows (8 tokens in 36.7 ms), 3 each of 16 (16 in 54.6).
-    EXPECT(choose_shared_drafts(slots(4, 3, 3), 7, 16, w, dr) == v({3, 3, 3, 3}), "sure, 4 slots");
-    // Half accepted: 2 each of 8 rows (3.5 tokens in 31.8 ms) beats every count of more rows.
-    EXPECT(choose_shared_drafts(slots(2, 1, 2), 7, 16, w, dr) == v({2, 2}), "half");
+    EXPECT(even(slots(4, 3, 3), 7, 16, wt, w) == v({1, 1, 1, 1}), "sure, 4 slots");
+    EXPECT(wide(slots(4, 3, 3), 7, 16, wt, w) == v({3, 3, 3, 3}), "sure, 4 slots, wide");
+    // Two thirds accepted: 2 each of 8 rows (4.2 tokens in 27.3 ms) beats 1 and 3, and every count of more rows.
+    EXPECT(even(slots(2, 2, 3), 7, 16, wt, w) == v({2, 2}), "two thirds");
+    EXPECT(wide(slots(2, 2, 3), 7, 16, wt, w).empty(), "two thirds, wide");
     // Nothing accepted: no drafts.
-    EXPECT(choose_shared_drafts(slots(2, 0, 3), 7, 16, w, dr) == v({0, 0}), "never accepted");
+    EXPECT(even(slots(2, 0, 3), 7, 16, wt, w) == v({0, 0}), "never accepted");
+    EXPECT(wide(slots(2, 0, 3), 7, 16, wt, w).empty(), "never accepted, wide");
     // One slot that accepts all and one that accepts none: more rows give more tokens in all (9 in 54.6 ms against
-    // 5 in 36.7), but the slot that accepts none writes slower in the longer round, so the even split stays.
+    // 5 in 36.7), but the slot that accepts none writes slower in the longer round, so there is no wide count.
     std::vector<DraftOdds> mixed = {slots(1, 3, 3)[0], slots(1, 0, 3)[0]};
-    EXPECT(choose_shared_drafts(mixed, 7, 16, w, dr) == v({3, 3}), "mixed");
+    EXPECT(even(mixed, 7, 16, wt, w) == v({3, 3}), "mixed");
+    EXPECT(wide(mixed, 7, 16, wt, w).empty(), "mixed, wide");
     // Three sure slots with draft_max 3: 3 each of 16 rows (12 tokens in 50.5 ms) gives more in all than 2, 2 and 1
     // of 8 (8 in 36.7), but the first two slots would write 4 tokens in 50.5 ms against 3 in 36.7.
-    EXPECT(choose_shared_drafts(slots(3, 3, 3), 3, 16, w, dr) == v({2, 2, 1}), "3 slots, draft_max 3");
-    // Dear wide windows keep the even split.
+    EXPECT(even(slots(3, 3, 3), 3, 16, wt, w) == v({2, 2, 1}), "3 slots, draft_max 3");
+    EXPECT(wide(slots(3, 3, 3), 3, 16, wt, w).empty(), "3 slots, draft_max 3, wide");
+    // Dear wide windows: no wide count.
     RoundTimes dear = w;
     for (int i = 0; i < 4; i++) dear.add(12, 70, 0), dear.add(16, 80, 0);
-    EXPECT(choose_shared_drafts(slots(2, 3, 3), 7, 16, dear, dr) == v({3, 3}), "dear");
-    // A step of 8 rows at most: the even split.
-    EXPECT(choose_shared_drafts(slots(2, 3, 3), 7, 8, w, dr) == v({3, 3}), "8 rows");
-    EXPECT(choose_shared_drafts({}, 7, 16, w, dr).empty(), "no slots");
+    EXPECT(wide(slots(2, 3, 3), 7, 16, wt, dear).empty(), "dear");
+    // A step of 8 rows at most: the even split only.
+    EXPECT(even(slots(2, 3, 3), 7, 8, wt, w) == v({3, 3}) && wide(slots(2, 3, 3), 7, 8, wt, w).empty(), "8 rows");
+    EXPECT(even({}, 7, 16, wt, w).empty() && wide({}, 7, 16, wt, w).empty(), "no slots");
+  }
+
+  // The trial of the wide count against the even split: alternate until each has kTrialRounds rounds, then the one
+  // with more tokens a millisecond, and every kTrialCheck-th choice the other.
+  {
+    auto run = [](double wide_rate, double even_rate, uint32_t picks) {
+      engine::RoundTrial tr;
+      uint32_t wides = 0;
+      for (uint32_t i = 0; i < picks; i++) {
+        const bool w = tr.wide();
+        wides += w;
+        tr.add_round(w, (w ? wide_rate : even_rate) * 30, 30);
+      }
+      return wides;
+    };
+    engine::RoundTrial tr;
+    bool alternate = true;
+    for (uint32_t i = 0; i < 2 * engine::kTrialRounds; i++) {
+      const bool w = tr.wide();
+      alternate = alternate && w == (i % 2 == 0);
+      tr.add_round(w, 6, 30);
+    }
+    EXPECT(alternate, "alternates while trying");
+    const uint32_t picks = 2 * engine::kTrialRounds + 10 * engine::kTrialCheck;
+    // Past the trial's 2 kTrialRounds picks, each kTrialCheck-th the other: the slower one 10 times in all.
+    EXPECT(run(0.25, 0.2, picks) == picks - engine::kTrialRounds - 10, "faster wide: %u", run(0.25, 0.2, picks));
+    EXPECT(run(0.2, 0.25, picks) == engine::kTrialRounds + 10, "slower wide: %u", run(0.2, 0.25, picks));
+    // The draft layer's passes count against the arm whose drafts they made.
+    engine::RoundTrial t2;
+    t2.add_round(true, 10, 40), t2.add_round(false, 8, 40), t2.add_time(true, 20);
+    EXPECT(std::fabs(t2.rate(true) - 10.0 / 60) < 1e-9 && std::fabs(t2.rate(false) - 0.2) < 1e-9, "draft time");
   }
 
   std::printf("lookup_test: ok\n");

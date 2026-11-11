@@ -167,53 +167,77 @@ std::vector<uint32_t> even_drafts(uint32_t n, uint32_t k, uint32_t rows, uint32_
   return d;
 }
 
-std::vector<uint32_t> choose_shared_drafts(const std::vector<DraftOdds> &slots, uint32_t draft_max, uint32_t max_rows,
-                                           const RoundTimes &window, const WindowTimes &drafter) {
-  const uint32_t n = (uint32_t)slots.size(), even_rows = std::min(kEvenRows, max_rows);
-  if (n == 0) return {};
+SharedChoice choose_shared_drafts(const std::vector<DraftOdds> &slots, uint32_t draft_max, uint32_t max_rows,
+                                  const WindowTimes &times, const RoundTimes &window, const WindowTimes &drafter) {
+  const uint32_t n = (uint32_t)slots.size();
+  SharedChoice c;
+  if (n == 0) return c;
   auto width = [n](const std::vector<uint32_t> &d) {
     uint32_t w = n;
     for (uint32_t x : d) w += x;
     return w;
   };
-  if (window.seen() < 2) {
-    std::vector<uint32_t> d = even_drafts(n, kSharedDrafts, even_rows, draft_max);
-    if (!window.timed(width(d))) return d;
-    std::vector<uint32_t> wide = even_drafts(n, kSharedDrafts + 1, max_rows, draft_max);
-    return window.timed(width(wide)) ? d : wide;
-  }
-  auto ms = [&](const std::vector<uint32_t> &d) { return window.ms(width(d)) + drafter.ms(width(d)); };
   auto tokens = [&](uint32_t i, uint32_t d) { return 1.0 + slots[i].layer_expected(d); };
-  // The even split, as before a step held 16 rows: the count with the most tokens a millisecond of its window.
-  std::vector<uint32_t> even;
-  double even_rate = -1;
-  for (uint32_t k = 0; k <= draft_max; k++) {
-    std::vector<uint32_t> d = even_drafts(n, k, even_rows, draft_max);
-    double t = 0;
-    for (uint32_t i = 0; i < n; i++) t += tokens(i, d[i]);
-    const double m = window.ms(width(d));
-    if (t / m > even_rate) even_rate = t / m, even = std::move(d);
+  // The even split, as before a step held 16 rows: of the counts the spare rows of kEvenRows allow, the one with the
+  // most tokens a millisecond of times; kSharedDrafts while no window is timed.
+  const uint32_t even_rows = std::min(kEvenRows, max_rows), spare = even_rows > n ? even_rows - n : 0;
+  const uint32_t most = std::min(draft_max, (spare + n - 1) / n);
+  uint32_t take = std::min(kSharedDrafts, most);
+  if (times.ms(n) > 0) {
+    double best = 0;
+    take = 0;
+    for (uint32_t k = 0; k <= most; k++) {
+      const std::vector<uint32_t> d = even_drafts(n, k, even_rows, draft_max);
+      double t = 0;
+      for (uint32_t i = 0; i < n; i++) t += tokens(i, d[i]);
+      const double r = t / times.ms(width(d));
+      if (r > best) best = r, take = k;
+    }
   }
-  if (max_rows <= kEvenRows) return even;
-  // A count of the whole step's rows, where no slot writes slower than in the even split, both with the draft
-  // layer's pass.
-  const double even_ms = ms(even);
-  std::vector<uint32_t> best = even;
+  c.even = even_drafts(n, take, even_rows, draft_max);
+  if (max_rows <= kEvenRows) return c;
+  // Until two widths are timed, kSharedDrafts + 1 each of max_rows rows, where that is more than kEvenRows, so that
+  // a wider width is timed.
+  if (window.seen() < 2) {
+    std::vector<uint32_t> wide = even_drafts(n, kSharedDrafts + 1, max_rows, draft_max);
+    if (width(wide) > kEvenRows) c.wide = std::move(wide);
+    return c;
+  }
+  // A count of the whole step's rows that gives more tokens a millisecond in total and no slot fewer than the even
+  // split, both priced with the window and the draft layer's pass.
+  auto ms = [&](const std::vector<uint32_t> &d) { return window.ms(width(d)) + drafter.ms(width(d)); };
+  const double even_ms = ms(c.even);
   double best_rate = 0;
-  for (uint32_t i = 0; i < n; i++) best_rate += tokens(i, even[i]) / even_ms;
+  for (uint32_t i = 0; i < n; i++) best_rate += tokens(i, c.even[i]) / even_ms;
   for (uint32_t k = 1; k <= draft_max; k++) {
     std::vector<uint32_t> d = even_drafts(n, k, max_rows, draft_max);
+    if (width(d) <= kEvenRows) continue;
     const double m = ms(d);
     double t = 0;
     bool slower = false;
     for (uint32_t i = 0; i < n; i++) {
       const double e = tokens(i, d[i]);
-      slower |= e / m < tokens(i, even[i]) / even_ms;
+      slower |= e / m < tokens(i, c.even[i]) / even_ms;
       t += e;
     }
-    if (!slower && t / m > best_rate) best_rate = t / m, best = std::move(d);
+    if (!slower && t / m > best_rate) best_rate = t / m, c.wide = std::move(d);
   }
-  return best;
+  return c;
 }
+
+bool RoundTrial::wide() {
+  picks_++;
+  if (rounds_[0] < kTrialRounds || rounds_[1] < kTrialRounds) return rounds_[1] <= rounds_[0];
+  const bool faster = rate(true) > rate(false);
+  return picks_ % kTrialCheck == 0 ? !faster : faster;
+}
+
+void RoundTrial::add_round(bool wide, double tokens, double ms) {
+  tokens_[wide] = tokens_[wide] * (1 - kTrialDecay) + tokens;
+  ms_[wide] = ms_[wide] * (1 - kTrialDecay) + ms;
+  rounds_[wide]++;
+}
+
+void RoundTrial::add_time(bool wide, double ms) { ms_[wide] += ms; }
 
 }  // namespace engine
