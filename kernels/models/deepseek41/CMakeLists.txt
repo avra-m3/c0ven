@@ -19,7 +19,14 @@ engine_add_kernel_module(deepseek41_dsp SOURCE kernels/models/deepseek41/layer.c
 engine_add_kernel_module(deepseek41_og_q8_0 SOURCE kernels/models/deepseek41/output.cl
                          OPTIONS -DQTYPE=QT_Q8_0 -DLANES=4 -I${CMAKE_SOURCE_DIR}/kernels/quant
                          ${DEEPSEEK41_KERNEL_INCLUDES})
-set(deepseek41_modules deepseek41 deepseek41_attn deepseek41_check deepseek41_og deepseek41_dsp deepseek41_og_q8_0)
+# The prompt chunk path (core/models/deepseek41/prompt.cpp): attention with a window cache as long as a chunk and a
+# window (D41_RING_WIDE in layout.h, which this number must equal), and the kernels around its products.
+engine_add_kernel_module(deepseek41_attn_wide SOURCE kernels/models/deepseek41/attn.cl
+                         OPTIONS -DD41_RING=4480 ${DEEPSEEK41_KERNEL_INCLUDES})
+engine_add_kernel_module(deepseek41_prompt SOURCE kernels/models/deepseek41/prompt.cl
+                         OPTIONS ${DEEPSEEK41_KERNEL_INCLUDES})
+set(deepseek41_modules deepseek41 deepseek41_attn deepseek41_attn_wide deepseek41_prompt deepseek41_check deepseek41_og
+    deepseek41_dsp deepseek41_og_q8_0)
 
 # The routed experts' products at the file's types, one module per kernel, type and largest group:
 # deepseek41_moe_gate_up_<type>_g<a> and deepseek41_moe_down_<type>_g<a>. The down modules read the codebook through

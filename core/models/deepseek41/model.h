@@ -23,6 +23,7 @@
 #include "models/deepseek41/engram.h"
 #include "models/deepseek41/layout.h"
 #include "models/deepseek41/tiers.h"
+#include "moe_tile.h"
 #include "ze/library.h"
 
 namespace engine::deepseek41 {
@@ -51,6 +52,18 @@ struct StepTimes {
 // What the tests ask for beyond Options.
 struct Debug {
   bool probes = false;  // card 0 copies the streams out after every sublayer, and what a step stores for the drafter
+};
+
+// Where the last prompt chunk's time went, ms, and what it did.
+struct ChunkTimes {
+  double total = 0;
+  double prepare = 0;   // the embeddings and the Engram rows, on the host
+  double attention = 0; // the cards' lists up to the routers
+  double plan = 0;      // the host's tile lists
+  double cpu = 0;       // the CPU's experts
+  double experts = 0;   // the cards' lists from the tiles on
+  uint32_t cpu_routings = 0, cached_routings = 0;  // routings the CPU answered, and the cards' tiles
+  uint32_t tiles = 0;
 };
 
 // One draft of a block: the token chosen, the drafter's own chance, 0 to 1, that the model keeps it, and the candidates
@@ -107,6 +120,19 @@ class Model final : public engine::Model {
   uint32_t prompt_chunk() const override { return 0; }
   uint32_t fetch_rows() const override { return 0; }
   uint32_t decode_weight() const override { return 1; }
+
+  // The prompt chunk path (prompt.cpp): rows pos .. pos + n - 1 of slot's sequence, n at most Options::prompt_chunk,
+  // through all the layers at once. seq holds the sequence's tokens from position 0 to pos + n - 1. Stores the rows'
+  // keys and returns the last row's candidates when logits is set, else none. The sequence's pages must be set.
+  std::vector<Candidate> chunk_forward(uint32_t slot, const int32_t *seq, uint32_t pos, uint32_t n, bool logits);
+  const ChunkTimes &chunk_times() const { return ctimes_; }
+  // For tests, with Debug::probes: the rows of the last chunk whose streams are kept (up to kChunkProbeRows, spread
+  // over the chunk, first and last among them), and a probed row's streams as probe gives a step's.
+  static constexpr uint32_t kChunkProbeRows = 16;
+  std::vector<uint32_t> chunk_probe_rows(uint32_t n) const;
+  const float *chunk_probe(uint32_t layer, bool ffn, uint32_t i) const;
+  // Card 0's compressed rows of one page of a layer's pool, D41_COMP_ROW_BYTES each.
+  std::vector<uint8_t> pool_page(uint32_t layer, uint32_t page);
 
   uint64_t slot_state_bytes() override;
   void save_slot(uint32_t slot, uint8_t *dst) override;
@@ -184,8 +210,11 @@ class Model final : public engine::Model {
     int32_t *slot_map = nullptr;   // expert to its pair, -1 when the cards do not hold it
     uint32_t split = 0x7fffffffu, flip = 0;
   };
+  struct ChunkCard;
   struct Card {
+    ~Card();
     uint32_t c = 0;
+    std::unique_ptr<ChunkCard> ck;  // the prompt chunk path's buffers and lists
     std::unique_ptr<ze::List> up;
     std::mutex up_mu;  // for the load's threads
     std::unique_ptr<ze::List> swap_up;  // the swap thread's copies
@@ -297,6 +326,20 @@ class Model final : public engine::Model {
                     const uint16_t *xb, float *y);
   void wait(ze::List &L, Card &card, const char *name, uint32_t *raise, const uint32_t *flag,
             const uint32_t *nmiss = nullptr, uint32_t W = 0);
+  // The prompt chunk path (prompt.cpp).
+  struct ChunkRun;
+  void alloc_chunk(Card &card);
+  void chunk_engram_rows(uint32_t table, const int32_t *seq, uint32_t pos, uint32_t n, uint8_t *dst);
+  void chunk_dequant(ze::List &L, Card &card, const Mat &m, uint16_t *out);
+  void chunk_gemm(ze::List &L, Card &card, bool bf16, const uint16_t *w, uint32_t N, uint32_t K, const void *x,
+                  uint32_t ldx, const uint32_t *ntok, uint32_t rows, void *y, uint32_t ldy, bool yhalf, const char *name);
+  void chunk_to_f16(ze::List &L, Card &card, const float *in, uint16_t *out, uint64_t n);
+  void chunk_hc_mix(ze::List &L, Card &card, const float *fn, const ChunkRun &run);
+  void chunk_engram(ze::List &L, Card &card, uint32_t l, const ChunkRun &run);
+  void chunk_attention(ze::List &L, Card &card, uint32_t l, const ChunkRun &run);
+  void chunk_router(ze::List &L, Card &card, uint32_t l, const ChunkRun &run);
+  void chunk_experts(ze::List &L, Card &card, uint32_t l, const ChunkRun &run);
+  void chunk_probe_copy(ze::List &L, Card &card, bool ffn, uint32_t l, const float *from, const ChunkRun &run);
   void record(Card &card, uint32_t W);
   void record_engram(ze::List &L, Card &card, uint32_t l, uint32_t W);
   void record_attention(ze::List &L, Card &card, uint32_t l, uint32_t W);
@@ -355,6 +398,21 @@ class Model final : public engine::Model {
   StepStats stats_;
   MissCounts counts_;
   StepTimes times_;
+  // The prompt chunk path's host side: pinned buffers sized for Options::prompt_chunk rows.
+  uint32_t chunk_cap_ = 0;
+  float *cembed_ = nullptr;          // [row][D41_EMBD]
+  D41Row *crows_ = nullptr;          // [row]
+  D41Row *crowsc_ = nullptr;         // [row]: the same, without the early even rows a ratio-2 compressor's ring need not see
+  uint32_t *cwords_ = nullptr;       // the lists' counts: n, a full group's rows, the last group's, the two classes' tiles
+  uint32_t *creal_ = nullptr;        // [group of 8 rows]: its real rows
+  D41MissJob *cjobs_ = nullptr;      // [row]: the posting card's records of the layer in hand
+  float *cpu_cy_ = nullptr;          // [row][D41_EMBD]: the CPU's answers
+  uint8_t *ceng_a8_ = nullptr;       // [row][a token's gathered Engram rows as a8]
+  float *cprobe_ = nullptr;          // [sublayer][layer][kChunkProbeRows][D41_HC_DIM]
+  uint32_t *crowidx_ = nullptr;      // the layer's cached assignments in expert order: their rows
+  int32_t *cyidx_ = nullptr;         // [row][rank]: the assignment's place in that order, or -1
+  MoeTile *ctiles_[2][2] = {};       // [card][class]
+  ChunkTimes ctimes_;
 
   // The cards' pairs by layer: the expert each holds (kNoExpert while it changes), the split, the slot classes by card.
   static constexpr uint32_t kNoExpert = 0xffffffffu;

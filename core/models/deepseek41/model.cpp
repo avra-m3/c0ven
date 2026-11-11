@@ -1,4 +1,5 @@
 #include "models/deepseek41/model.h"
+#include "models/deepseek41/prompt.h"
 
 #include <immintrin.h>
 
@@ -269,6 +270,7 @@ Model::Model(const std::string &path, const Options &opt, const Debug &debug) : 
     card.grids = upload<uint8_t>(card, codebooks().data(), QGRID_BYTES);
     card.layers.resize(dsp_ ? kAllLayers : D41_LAYERS);
     alloc_buffers(card);
+    if (opt_.prompt_chunk) alloc_chunk(card);
   }
   for (uint32_t l = 0; l < D41_LAYERS; l++) load_layer(l);
   {
