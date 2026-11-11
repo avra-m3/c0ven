@@ -90,12 +90,14 @@ it checks, set the price of its third, and a count of 3 each looked 11% faster t
 prose where the round log has them level. A later place is checked only when the ones before it are accepted, so its
 rounds are few; a place takes the place before it's for the weight its rounds do not carry, and keeps what its
 rounds gave while no round reaches it. A draft asked for and not made gives no token and takes no row. Counted as
-rejected at the rows asked for, it priced such rounds 4 to 8% high in the round log; on prose, 2, 2 and 1 drafts
-came out level with 1 each, and three requests ran fewer rows than the 8-row choice and wrote slower (Context). The
-share made prices both the tokens and the rows. Each width is priced by its chance because a window's time jumps
-from 8 rows to 9 (Context): with `lookup_test`'s times and three slots on prose, 2 each of 16 rows looks 1.7% faster
-than 2, 2 and 1 at the mean of the rows made, and is 4.4% slower by each width's chance. On copied and edited text
-the draft layer makes nearly every draft asked, so there the count of 16 rows keeps its gain.
+rejected at the rows asked for, it priced such rounds 4 to 8% high in the round log, and three requests ran fewer
+rows than the 8-row choice and wrote slower (Context). The share made prices both the tokens and the rows. In the
+same log, three requests on prose had 0.81, 0.73 and 0.53 of the first three drafts asked for made, and 0.83, 0.74
+and 0.65 of those made accepted; with `lookup_test`'s times, 2, 2 and 1 drafts are then 5% faster than 1 each, and
+priced at the rows asked 1 each was 1% faster. Each width is priced by its chance because a window's time jumps
+from 8 rows to 9 (Context): with the same figures, 2 each of 16 rows looks 1.9% faster than 2, 2 and 1 at the mean
+of the rows made, and is 2.3% slower by each width's chance. On copied and edited text the draft layer makes nearly
+every draft asked, so there the count of 16 rows keeps its gain.
 
 A case where the wide count never wins runs the even split but for the trial's rounds of it: one in 16 until it
 has 8, then one in 32. A wide count 10% slower costs about 0.3% once it has 8 rounds. Item 5 judges the wide count by

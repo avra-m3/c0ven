@@ -310,12 +310,12 @@ int main() {
     EXPECT(wide(placed(4, {0.68, 0.43, 0.44}), 7, 16, w).empty(), "prose, 4 slots, wide");
     EXPECT(wide(placed(4, {0.82}), 7, 16, w) == v({3, 3, 3, 3}), "one acceptance for every place, wide");
     EXPECT(wide(placed(4, {0.98, 0.81, 0.87}), 7, 16, w) == v({3, 3, 3, 3}), "edits, 4 slots, wide");
-    // Three slots on prose as the cards measured it: drafts made accepted 0.81, 0.71 and 0.65 at the first three
-    // places, made 0.85, 0.8 and 0.8 of the times asked for. 2, 2 and 1 make 3.9 drafts (5.85 tokens in 34.1 ms) and
-    // beat 1 each (2.55 drafts, 5.07 tokens in 30.9 ms); priced at the rows asked, the two were level (36.7 and 31.8
-    // ms). 2 each of 16 rows (6.24 tokens in 38.1 ms, 9 rows in 3 rounds of 10) and 3 each (6.85 in 43.7) are not
-    // taken.
-    const std::vector<DraftOdds> prose = placed(3, {0.81, 0.71, 0.65}, {0.85, 0.8, 0.8});
+    // Three slots on prose as a log of every round on the cards had three writers: drafts made accepted 0.83, 0.74
+    // and 0.65 at the first three places, made 0.81, 0.73 and 0.53 of the times asked for. 2, 2 and 1 make 3.6
+    // drafts (5.74 tokens in 33.4 ms) and beat 1 each (2.4 drafts, 5.02 tokens in 30.7 ms); priced at the rows asked
+    // (36.7 and 31.8 ms), 1 each was ahead. 2 each of 16 rows (6.11 tokens in 36.4 ms, 9 rows in 1 round of 5) and 3
+    // each (6.48 in 39.9) are not taken.
+    const std::vector<DraftOdds> prose = placed(3, {0.83, 0.74, 0.65}, {0.81, 0.73, 0.53});
     EXPECT(even(prose, 7, 16, w) == v({2, 2, 1}), "prose, 3 slots, drafts not made");
     EXPECT(wide(prose, 7, 16, w).empty(), "prose, 3 slots, drafts not made, wide");
     // Rows dear with misses (150 a row at 0.025 ms): at 0.3 a draft no drafts beat 1 each, but only once each slot's
