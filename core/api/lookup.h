@@ -122,16 +122,16 @@ constexpr uint32_t kEvenRows = 8;
 std::vector<uint32_t> even_drafts(uint32_t n, uint32_t k, uint32_t rows, uint32_t draft_max);
 
 // The drafts each of several writing slots may make for their next round
-// (docs/adr/0078-several-slots-take-more-rows-only-when-none-writes-slower.md): one count k for all of them, shared
-// out as even_drafts shares it, worth the slots' expected tokens (each the row sampled last and its drafts accepted,
-// at its acceptance) over the round's time.
+// (docs/adr/0078-several-slots-take-more-rows-only-when-the-slowest-writes-no-slower.md): one count k for all of
+// them, shared out as even_drafts shares it, worth the slots' expected tokens (each the row sampled last and its
+// drafts accepted, at its acceptance) over the round's time.
 // - even: the choice before a step held 16 rows, by the windows' times (times): the k with the most tokens a
 //   millisecond of a step of kEvenRows rows, kSharedDrafts while no window is timed.
 // - wide: a k whose rows are more than kEvenRows, of a step of max_rows, that gives more tokens a millisecond in all
-//   and each slot at least its tokens a millisecond in the even split, priced with the window (window.ms) and the
-//   draft layer's pass after it (drafter, by the window's rows); the one with the most. Empty when none does, or
-//   with max_rows at most kEvenRows. While fewer than two widths are timed: kSharedDrafts + 1 each of max_rows rows,
-//   so that a wider width is timed.
+//   and its slowest slot at least the tokens a millisecond of the even split's slowest, priced with the window
+//   (window.ms) and the draft layer's pass after it (drafter, by the window's rows); the one with the most. Empty
+//   when none does, or with max_rows at most kEvenRows. While fewer than two widths are timed: kSharedDrafts + 1 each
+//   of max_rows rows, so that a wider width is timed.
 // With a wide count, both are priced the same way, as estimates for the trial: the slots' expected tokens and the
 // window's time with the draft layer's pass.
 struct SharedChoice {

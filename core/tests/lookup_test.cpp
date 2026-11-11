@@ -259,14 +259,20 @@ int main() {
     EXPECT(even(slots(2, 0, 3), 7, 16, wt, w) == v({0, 0}), "never accepted");
     EXPECT(wide(slots(2, 0, 3), 7, 16, wt, w).empty(), "never accepted, wide");
     // One slot that accepts all and one that accepts none: more rows give more tokens in all (9 in 54.6 ms against
-    // 5 in 36.7), but the slot that accepts none writes slower in the longer round, so there is no wide count.
+    // 5 in 36.7), but the slot that accepts none, the slowest, writes slower in the longer round, so there is no wide
+    // count.
     std::vector<DraftOdds> mixed = {slots(1, 3, 3)[0], slots(1, 0, 3)[0]};
     EXPECT(even(mixed, 7, 16, wt, w) == v({3, 3}), "mixed");
     EXPECT(wide(mixed, 7, 16, wt, w).empty(), "mixed, wide");
     // Three sure slots with draft_max 3: 3 each of 16 rows (12 tokens in 50.5 ms) gives more in all than 2, 2 and 1
-    // of 8 (8 in 36.7), but the first two slots would write 4 tokens in 50.5 ms against 3 in 36.7.
+    // of 8 (8 in 36.7). The first two slots write 4 tokens in 50.5 ms against 3 in 36.7, but the slowest, the third,
+    // 4 against 2.
     EXPECT(even(slots(3, 3, 3), 3, 16, wt, w) == v({2, 2, 1}), "3 slots, draft_max 3");
-    EXPECT(wide(slots(3, 3, 3), 3, 16, wt, w).empty(), "3 slots, draft_max 3, wide");
+    EXPECT(wide(slots(3, 3, 3), 3, 16, wt, w) == v({3, 3, 3}), "3 slots, draft_max 3, wide");
+    // The same with the third slot accepting none: it is the slowest in both, at 1 token in 36.7 ms against 1 in
+    // 50.5, so there is no wide count.
+    std::vector<DraftOdds> two_sure = {slots(1, 3, 3)[0], slots(1, 3, 3)[0], slots(1, 0, 3)[0]};
+    EXPECT(wide(two_sure, 3, 16, wt, w).empty(), "3 slots, one accepting none, wide");
     // Dear wide windows: no wide count.
     RoundTimes dear = w;
     for (int i = 0; i < 4; i++) dear.add(12, 70, 0), dear.add(16, 80, 0);

@@ -34,7 +34,7 @@ give no more tokens a second in total, or the same-tokens check differs.
    have the same bits as with one tile.
 5. `engine_info.max_step_rows` reports 16. `ENGINE_MAX_STEP_SLOTS` stays 8, and the ABI version does not change.
 6. How many drafts several slots make is chosen as
-   [ADR-0078](0078-several-slots-take-more-rows-only-when-none-writes-slower.md) says. The step's rows let two
+   [ADR-0078](0078-several-slots-take-more-rows-only-when-the-slowest-writes-no-slower.md) says. The step's rows let two
    slots make up to 7 each, three up to 5, 4 and 4, four up to 3 each, and eight 1 each.
 7. A step of up to 8 rows runs step kernels built for 8 rows (`STEP_NARROW_ROWS`; the modules `common_r8`,
    `qwen4exp_r8` and `qwen4exp_e256_r8`, built with `-DSTEP_ROWS=8`): the registers, tiles and grouping work-group

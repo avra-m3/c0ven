@@ -203,25 +203,31 @@ SharedChoice choose_shared_drafts(const std::vector<DraftOdds> &slots, uint32_t 
     if (width(wide) > kEvenRows) c.wide = std::move(wide);
     return c;
   }
-  // A count of the whole step's rows that gives more tokens a millisecond in total and no slot fewer than the even
-  // split, both priced with the window and the draft layer's pass.
+  // A count of the whole step's rows that gives more tokens a millisecond in total, and its slowest slot no fewer
+  // than the even split's slowest, both priced with the window and the draft layer's pass.
   auto ms = [&](const std::vector<uint32_t> &d) { return window.ms(width(d)) + drafter.ms(width(d)); };
+  // The slots' tokens for drafts d, in all and the fewest.
+  auto sum_low = [&](const std::vector<uint32_t> &d, double &low) {
+    double t = 0;
+    for (uint32_t i = 0; i < n; i++) {
+      const double e = tokens(i, d[i]);
+      t += e;
+      low = i == 0 ? e : std::min(low, e);
+    }
+    return t;
+  };
   const double even_ms = ms(c.even);
-  double even_tokens = 0;
-  for (uint32_t i = 0; i < n; i++) even_tokens += tokens(i, c.even[i]);
+  double even_low = 0;
+  const double even_tokens = sum_low(c.even, even_low);
   double best_rate = even_tokens / even_ms;
   for (uint32_t k = 1; k <= draft_max; k++) {
     std::vector<uint32_t> d = even_drafts(n, k, max_rows, draft_max);
     if (width(d) <= kEvenRows) continue;
     const double m = ms(d);
-    double t = 0;
-    bool slower = false;
-    for (uint32_t i = 0; i < n; i++) {
-      const double e = tokens(i, d[i]);
-      slower |= e / m < tokens(i, c.even[i]) / even_ms;
-      t += e;
-    }
-    if (!slower && t / m > best_rate) best_rate = t / m, c.wide = std::move(d), c.wide_tokens = t, c.wide_ms = m;
+    double low = 0;
+    const double t = sum_low(d, low);
+    if (low / m >= even_low / even_ms && t / m > best_rate)
+      best_rate = t / m, c.wide = std::move(d), c.wide_tokens = t, c.wide_ms = m;
   }
   if (!c.wide.empty()) c.even_tokens = even_tokens, c.even_ms = even_ms;
   return c;
