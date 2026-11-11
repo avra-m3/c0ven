@@ -264,6 +264,11 @@ int main() {
     EXPECT(even_drafts(2, 7, 8, 3) == v({3, 3}), "draft_max 3");
     EXPECT(even_drafts(8, 2, 8, 7) == std::vector<uint32_t>(8, 0), "8 of 8");
     EXPECT(even_drafts(9, 2, 8, 7) == std::vector<uint32_t>(9, 0), "more slots than rows");
+    // The one draft more from slot first on, past the last from the first.
+    EXPECT(even_drafts(3, 2, 8, 7, 1) == v({1, 2, 2}), "3 of 8 from the second");
+    EXPECT(even_drafts(3, 2, 8, 7, 2) == v({2, 1, 2}), "3 of 8 from the third");
+    EXPECT(even_drafts(3, 7, 16, 7, 2) == v({4, 4, 5}), "3 of 16 from the third");
+    EXPECT(even_drafts(3, 7, 16, 7, 4) == v({4, 5, 4}), "first past the slots");
   }
 
   // The drafts of several slots, with times like the cards' (windows of 2 rows 20 ms, 4 23.4, 6 27.3, 8 32.2, 9 40,
@@ -341,6 +346,20 @@ int main() {
     // 4 against 2.
     EXPECT(even(slots(3, 3, 3), 3, 16, w) == v({2, 2, 1}), "3 slots, draft_max 3");
     EXPECT(wide(slots(3, 3, 3), 3, 16, w) == v({3, 3, 3}), "3 slots, draft_max 3, wide");
+    // The same choice from the third slot on: 2, 1 and 2, with the same estimates (each slot's tokens and the round's
+    // time are means over the three starts).
+    const SharedChoice from0 = choose_shared_drafts(slots(3, 3, 3), 3, 16, w, dr, 0);
+    const SharedChoice from2 = choose_shared_drafts(slots(3, 3, 3), 3, 16, w, dr, 2);
+    EXPECT(from2.even == v({2, 1, 2}) && from2.wide == v({3, 3, 3}), "3 slots from the third");
+    EXPECT(std::fabs(from0.even_tokens - from2.even_tokens) < 1e-9 && std::fabs(from0.even_ms - from2.even_ms) < 1e-9,
+           "3 slots from the third, estimates: %g %g", from2.even_tokens, from2.even_ms);
+    // The choice does not hang on the slots' order: two slots that accept every draft and one that accepts none, last
+    // or first, take 2 each of 8 rows (6.33 tokens on average in 36.7 ms), and no wide count.
+    std::vector<DraftOdds> none_last = {slots(1, 3, 3)[0], slots(1, 3, 3)[0], slots(1, 0, 3)[0]};
+    std::vector<DraftOdds> none_first = {slots(1, 0, 3)[0], slots(1, 3, 3)[0], slots(1, 3, 3)[0]};
+    const SharedChoice nl = choose_shared_drafts(none_last, 3, 16, w, dr, 0);
+    const SharedChoice nf = choose_shared_drafts(none_first, 3, 16, w, dr, 0);
+    EXPECT(nl.even == nf.even && nl.wide.empty() && nf.wide.empty(), "order of the slots");
     // The same with the third slot accepting none: it is the slowest in both, at 1 token in 36.7 ms against 1 in
     // 50.5, so there is no wide count.
     std::vector<DraftOdds> two_sure = {slots(1, 3, 3)[0], slots(1, 3, 3)[0], slots(1, 0, 3)[0]};

@@ -146,15 +146,18 @@ constexpr uint32_t kSharedCheck = 8;
 constexpr uint32_t kEvenRows = 8;
 
 // The drafts of n slots with k at most each, of a step of rows rows: the rows past one a slot shared out, each slot
-// spare / n and the first spare % n one more, each at most draft_max.
-std::vector<uint32_t> even_drafts(uint32_t n, uint32_t k, uint32_t rows, uint32_t draft_max);
+// spare / n and spare % n of them one more, from slot first on (past the last, from the first), each at most
+// draft_max.
+std::vector<uint32_t> even_drafts(uint32_t n, uint32_t k, uint32_t rows, uint32_t draft_max, uint32_t first = 0);
 
 // The drafts each of several writing slots may make for their next round
 // (docs/adr/0078-several-slots-take-more-rows-only-when-the-slowest-writes-no-slower.md): one count k for all of
 // them, shared out as even_drafts shares it, worth the slots' expected tokens (each the row sampled last and its
 // drafts accepted, at each place's acceptance and share made: place_expected) over the round's time, the window's
 // (window.ms) and the draft layer's pass after it (drafter, by the window's rows), at the rows the draft layer is
-// expected to make (place_drafts).
+// expected to make (place_drafts). Where k leaves some slots one draft more than others, the remainder goes to the
+// slots from first on, and the core moves first on a choice at a time; so a slot's tokens and the round's time are
+// their means over the n slots first may be.
 // - even: the k with the most tokens a millisecond of a step of kEvenRows rows, and at least 1 while a slot's first
 //   draft has been checked in fewer than kFirstChecks rounds; kSharedDrafts while fewer than two widths are timed.
 // - wide: a k whose rows are more than kEvenRows, of a step of max_rows, that gives more tokens a millisecond in all
@@ -167,7 +170,7 @@ struct SharedChoice {
   double even_tokens = 0, even_ms = 0, wide_tokens = 0, wide_ms = 0;
 };
 SharedChoice choose_shared_drafts(const std::vector<DraftOdds> &slots, uint32_t draft_max, uint32_t max_rows,
-                                  const RoundTimes &window, const WindowTimes &drafter);
+                                  const RoundTimes &window, const WindowTimes &drafter, uint32_t first = 0);
 
 // Whether rounds of several slots take choose_shared_drafts' wide count or its even split. Each arm keeps what its
 // rounds gave against what choose_shared_drafts estimated for them: the tokens they wrote over the time of their

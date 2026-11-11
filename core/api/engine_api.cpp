@@ -432,12 +432,14 @@ struct engine_ctx {
   // The drafts each row's slot of a step or round of several slots may make for the next: kSharedDrafts each of
   // kEvenRows rows every kSharedCheck-th time; else choose_shared_drafts' even split, or its wide count where the
   // slots' trial takes it. Over STEP_MAX_ROWS rows where the model would take the next round's rows with the most
-  // drafts each, past this round's rows and the next's (STEP_MAX_RUN each); else over kEvenRows. Under mu.
+  // drafts each, past this round's rows and the next's (STEP_MAX_RUN each); else over kEvenRows. A split's one draft
+  // more for some slots goes to the next slots each choice. Under mu.
   std::vector<uint32_t> shared_drafts(const std::vector<StepIn> &rows) {
     const uint32_t n = (uint32_t)rows.size();
+    const uint32_t first = shared_choices % n;
     trial_wide = -1;
     if (++shared_choices % engine::kSharedCheck == 0)
-      return engine::even_drafts(n, engine::kSharedDrafts, engine::kEvenRows, draft_max);
+      return engine::even_drafts(n, engine::kSharedDrafts, engine::kEvenRows, draft_max, first);
     std::vector<engine::DraftOdds> odds;
     for (const StepIn &r : rows) odds.push_back(slots[r.slot].odds);
     const std::vector<uint32_t> most = engine::even_drafts(n, draft_max, STEP_MAX_ROWS, draft_max);
@@ -445,7 +447,8 @@ struct engine_ctx {
     for (uint32_t i = 0; i < n; i++)
       for (uint32_t j = 0; j <= most[i]; j++) next.push_back({rows[i].slot, rows[i].pos + 2 * STEP_MAX_RUN - j});
     const uint32_t max_rows = model->step_fits(next.data(), (uint32_t)next.size()) ? STEP_MAX_ROWS : engine::kEvenRows;
-    engine::SharedChoice c = engine::choose_shared_drafts(odds, draft_max, max_rows, several_times, drafter_times);
+    engine::SharedChoice c =
+        engine::choose_shared_drafts(odds, draft_max, max_rows, several_times, drafter_times, first);
     if (c.wide.empty() || n > ENGINE_MAX_STEP_SLOTS) return c.even;
     trial_wide = trials[n].wide(c) ? 1 : 0;
     trial_n = n;

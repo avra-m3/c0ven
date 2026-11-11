@@ -80,6 +80,9 @@ alternating order, give the slowest request fewer tokens a second, or fewer in t
    and every 32nd choice the other (every 16th while the other has fewer than 8 rounds), so that its correction
    stays current.
 6. A round verifies every draft made. A lone slot's round is unchanged.
+7. Where a number leaves some slots one draft more than others (2, 2 and 1 of 8 rows for three slots), those drafts
+   go to the next slots at each choice, so each slot has them as often as the others. Items 3 and 4 then take each
+   slot's tokens and the round's time as their means over the slots the drafts may start from.
 
 ## Why
 

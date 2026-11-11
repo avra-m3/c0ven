@@ -208,18 +208,20 @@ uint32_t choose_drafts(const DraftOdds &odds, uint32_t layer_drafts, uint32_t dr
   return take;
 }
 
-std::vector<uint32_t> even_drafts(uint32_t n, uint32_t k, uint32_t rows, uint32_t draft_max) {
+std::vector<uint32_t> even_drafts(uint32_t n, uint32_t k, uint32_t rows, uint32_t draft_max, uint32_t first) {
   std::vector<uint32_t> d(n, 0);
   const uint32_t spare = rows > n ? rows - n : 0;
-  for (uint32_t i = 0; i < n; i++) d[i] = std::min({k, draft_max, spare / n + (i < spare % n ? 1u : 0u)});
+  for (uint32_t i = 0; i < n; i++)
+    d[i] = std::min({k, draft_max, spare / n + ((i + n - first % n) % n < spare % n ? 1u : 0u)});
   return d;
 }
 
 SharedChoice choose_shared_drafts(const std::vector<DraftOdds> &slots, uint32_t draft_max, uint32_t max_rows,
-                                  const RoundTimes &window, const WindowTimes &drafter) {
+                                  const RoundTimes &window, const WindowTimes &drafter, uint32_t first) {
   const uint32_t n = (uint32_t)slots.size();
   SharedChoice c;
   if (n == 0) return c;
+  first %= n;
   auto width = [n](const std::vector<uint32_t> &d) {
     uint32_t w = n;
     for (uint32_t x : d) w += x;
@@ -241,15 +243,24 @@ SharedChoice choose_shared_drafts(const std::vector<DraftOdds> &slots, uint32_t 
       if (chance[x] > 0) t += chance[x] * (window.ms(n + x) + drafter.ms(n + x));
     return t;
   };
-  // The slots' tokens for drafts d, in all and the fewest.
-  auto sum_low = [&](const std::vector<uint32_t> &d, double &low) {
+  // A count k each of rows rows: the slots' tokens in all and the fewest a slot has, and the round's time. Where some
+  // slots get one draft more, each slot's tokens and the time are means over the n slots that draft may start from,
+  // as the core moves that start each choice.
+  auto price = [&](uint32_t k, uint32_t rows, double &total, double &low) {
+    std::vector<double> tokens(n, 0.0);
     double t = 0;
-    for (uint32_t i = 0; i < n; i++) {
-      const double e = 1.0 + slots[i].place_expected(d[i]);
-      t += e;
-      low = i == 0 ? e : std::min(low, e);
+    const uint32_t starts = even_drafts(n, k, rows, draft_max, 0) == even_drafts(n, k, rows, draft_max, 1) ? 1 : n;
+    for (uint32_t f = 0; f < starts; f++) {
+      const std::vector<uint32_t> d = even_drafts(n, k, rows, draft_max, f);
+      for (uint32_t i = 0; i < n; i++) tokens[i] += 1.0 + slots[i].place_expected(d[i]);
+      t += ms(d);
     }
-    return t;
+    total = 0;
+    for (uint32_t i = 0; i < n; i++) {
+      total += tokens[i] / starts;
+      low = i == 0 ? tokens[i] / starts : std::min(low, tokens[i] / starts);
+    }
+    return t / starts;
   };
   // The even split: of the counts the spare rows of kEvenRows allow, the one with the most tokens a millisecond, none
   // only once every slot's first draft is measured; kSharedDrafts while fewer than two widths are timed.
@@ -259,37 +270,34 @@ SharedChoice choose_shared_drafts(const std::vector<DraftOdds> &slots, uint32_t 
   if (window.seen() >= 2) {
     bool measured = true;
     for (const DraftOdds &o : slots) measured = measured && o.first_checks >= kFirstChecks;
-    double best = 0, low = 0;
+    double best = 0;
     take = 0;
     for (uint32_t k = measured ? 0 : std::min(1u, most); k <= most; k++) {
-      const std::vector<uint32_t> d = even_drafts(n, k, even_rows, draft_max);
-      const double r = sum_low(d, low) / ms(d);
-      if (r > best) best = r, take = k;
+      double total = 0, low = 0;
+      const double m = price(k, even_rows, total, low);
+      if (total / m > best) best = total / m, take = k;
     }
   }
-  c.even = even_drafts(n, take, even_rows, draft_max);
+  c.even = even_drafts(n, take, even_rows, draft_max, first);
   if (max_rows <= kEvenRows) return c;
   // Until two widths are timed, kSharedDrafts + 1 each of max_rows rows, where that is more than kEvenRows, so that
   // a wider width is timed.
   if (window.seen() < 2) {
-    std::vector<uint32_t> wide = even_drafts(n, kSharedDrafts + 1, max_rows, draft_max);
+    std::vector<uint32_t> wide = even_drafts(n, kSharedDrafts + 1, max_rows, draft_max, first);
     if (width(wide) > kEvenRows) c.wide = std::move(wide);
     return c;
   }
   // A count of the whole step's rows that gives more tokens a millisecond in total, and its slowest slot no fewer
   // than the even split's slowest.
-  const double even_ms = ms(c.even);
-  double even_low = 0;
-  const double even_tokens = sum_low(c.even, even_low);
+  double even_tokens = 0, even_low = 0;
+  const double even_ms = price(take, even_rows, even_tokens, even_low);
   double best_rate = even_tokens / even_ms;
   for (uint32_t k = 1; k <= draft_max; k++) {
-    std::vector<uint32_t> d = even_drafts(n, k, max_rows, draft_max);
-    if (width(d) <= kEvenRows) continue;
-    const double m = ms(d);
-    double low = 0;
-    const double t = sum_low(d, low);
+    if (width(even_drafts(n, k, max_rows, draft_max)) <= kEvenRows) continue;
+    double t = 0, low = 0;
+    const double m = price(k, max_rows, t, low);
     if (low / m >= even_low / even_ms && t / m > best_rate)
-      best_rate = t / m, c.wide = std::move(d), c.wide_tokens = t, c.wide_ms = m;
+      best_rate = t / m, c.wide = even_drafts(n, k, max_rows, draft_max, first), c.wide_tokens = t, c.wide_ms = m;
   }
   if (!c.wide.empty()) c.even_tokens = even_tokens, c.even_ms = even_ms;
   return c;
