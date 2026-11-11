@@ -118,10 +118,10 @@ __kernel void hc_mix(__global const float *n, __global const float *a, __global 
 }
 
 // The up projection and hc_mix in one, on the XMX units: dpas up projection of lrb (bf16 rows of Q_HC_LR, in tiles of
-// 8 rows up to the tile that holds the plan's last row; to_bf16_rows), 16 of W's value-major rows a sub-group (4
-// values' a for the 4 streams), then hc_mix's sum in stream order. A work-group's 8 sub-groups write 32 values of x,
-// also as bf16 into xb (rows Q_EMBD apart) and as a8 into xa (a8.h; rows Q_EMBD + Q_EMBD / 8 bytes apart, sub-group m
-// storing rows m, m + 8, ...). Groups (Q_HC_DIM / 128), 128.
+// 8 rows up to the tile that holds the plan's last row, whose rows past it come as zeros as in mv_xmx_bf16;
+// to_bf16_rows), 16 of W's value-major rows a sub-group (4 values' a for the 4 streams), then hc_mix's sum in stream
+// order. A work-group's 8 sub-groups write 32 values of x, also as bf16 into xb (rows Q_EMBD apart) and as a8 into xa
+// (a8.h; rows Q_EMBD + Q_EMBD / 8 bytes apart, sub-group m storing rows m, m + 8, ...). Groups (Q_HC_DIM / 128), 128.
 #define UPM_SGS 8
 REQD_SG __kernel void hc_up_mix_xmx(__global const ushort *W, __global const ushort *lrb, __global const float *n,
                                     __global const StepPlan *plan, __global float *x, __global uchar *xa,
@@ -137,7 +137,7 @@ REQD_SG __kernel void hc_up_mix_xmx(__global const ushort *W, __global const ush
     __attribute__((opencl_unroll_hint)) for (uint t = 0; t < STEP_ROWS / 8; t++) {
       if (t < tiles) {
         ushort a[8];
-        intel_sub_group_2d_block_read_16b_8r16x1c((__global void *)lrb, Q_HC_LR * 2, 8 * tiles, Q_HC_LR * 2,
+        intel_sub_group_2d_block_read_16b_8r16x1c((__global void *)lrb, Q_HC_LR * 2, ntok, Q_HC_LR * 2,
                                                   (int2)(k, 8 * t), a);
         acc[t] = dpas_bf16(as_short8(vload8(0, a)), as_int8(vload8(0, b)), acc[t]);
       }

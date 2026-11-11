@@ -105,10 +105,10 @@ __kernel void to_bf16_rows(__global const float *x, uint x_stride, uint K, __glo
 
 // y[t * y_stride + n] = post(scale * W[n] . xb[t]) on the XMX units, t < *ntok <= STEP_ROWS; post (mode as
 // matvec_bf16_ks) applies to n < post_rows, whose values also go to yb as bf16 (rows post_rows apart) when yb is set.
-// xb: bf16 rows of K (to_bf16_rows), read in tiles of 8 rows up to the tile that holds row *ntok - 1, so as many
-// rows as those tiles hold; W: N rows ldw apart. W, xb 64-byte aligned; K, ldw multiples of 32. Groups ceil(N / 16),
-// 16 ksplit (ksplit <= 64, K / ksplit a multiple of 16); sub-group 0 adds the ksplit tiles in order. A tile's sums do
-// not depend on the tiles after it.
+// xb: bf16 rows of K (to_bf16_rows), read in tiles of 8 rows up to the tile that holds row *ntok - 1; the block reads'
+// height is *ntok, so the last tile's rows past it come as zeros without a read of memory (faster). W: N rows ldw
+// apart. W, xb 64-byte aligned; K, ldw multiples of 32. Groups ceil(N / 16), 16 ksplit (ksplit <= 64, K / ksplit a
+// multiple of 16); sub-group 0 adds the ksplit tiles in order. A tile's sums do not depend on the tiles after it.
 #define MV_TILES (STEP_ROWS / 8)
 REQD_SG __kernel void mv_xmx_bf16(__global const ushort *W, uint N, uint K, uint ldw, __global const ushort *xb,
                                   __global const uint *ntok_p, __global float *y, uint y_stride, uint mode,
@@ -124,7 +124,7 @@ REQD_SG __kernel void mv_xmx_bf16(__global const ushort *W, uint N, uint K, uint
     __attribute__((opencl_unroll_hint)) for (uint t = 0; t < MV_TILES; t++) {
       if (t < tiles) {
         ushort a[8];
-        intel_sub_group_2d_block_read_16b_8r16x1c((__global void *)xb, K * 2, 8 * tiles, K * 2, (int2)(k, 8 * t), a);
+        intel_sub_group_2d_block_read_16b_8r16x1c((__global void *)xb, K * 2, ntok, K * 2, (int2)(k, 8 * t), a);
         acc[t] = dpas_bf16(as_short8(vload8(0, a)), as_int8(vload8(0, b)), acc[t]);
       }
     }
