@@ -40,12 +40,15 @@ foreach(type ${ENGINE_QUANT_TYPES})
                            OPTIONS -DQTYPE=QT_${type} -DLAYOUT_FILE -cl-intel-256-GRF-per-thread -I${CMAKE_SOURCE_DIR}/kernels/quant)
 endforeach()
 
-# The routed experts' gate and up products with the SwiGLU limit at 10 (kernels/include/swiglu.h), in the runs layout,
-# for the types deepseek41's experts use.
+# The routed experts' gate and up products with the SwiGLU limit at 10 (kernels/include/swiglu.h), in the runs layout
+# (qgemm_<type>_limit10) and in the file's (qgemm_<type>_file_limit10), for the types deepseek41's experts use.
 foreach(type IQ1_S IQ1_M IQ2_XXS IQ2_S)
   string(TOLOWER ${type} lower)
   engine_add_kernel_module(qgemm_${lower}_limit10 SOURCE kernels/quant/qgemm.cl
                            OPTIONS -DQTYPE=QT_${type} -DSWIGLU_LIMIT=10.0f -cl-intel-256-GRF-per-thread
+                           -I${CMAKE_SOURCE_DIR}/kernels/quant)
+  engine_add_kernel_module(qgemm_${lower}_file_limit10 SOURCE kernels/quant/qgemm.cl
+                           OPTIONS -DQTYPE=QT_${type} -DLAYOUT_FILE -DSWIGLU_LIMIT=10.0f -cl-intel-256-GRF-per-thread
                            -I${CMAKE_SOURCE_DIR}/kernels/quant)
 endforeach()
 

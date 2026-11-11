@@ -121,11 +121,17 @@ __kernel void ds_dsp_bias_add(__global const float *logits, uint n, __global con
 
 // The 24 raw mixes of W rows: m[r][j] = (fn_j . X_r) / sqrt(ss[r] / D41_HC_DIM + D41_EPS), fn D41_MIX rows of
 // D41_HC_DIM (hc_attn_fn or hc_ffn_fn). A work-group is a row of fn; its sub-groups split K, and all W rows share each
-// weight read, sums through local memory. Groups D41_MIX, 16 ksplit with ksplit dividing 320 and at most 32.
+// weight read, sums through local memory. Groups (D41_MIX, ceil(W / STEP_MAX_ROWS)), 16 ksplit with ksplit dividing 320
+// and at most 32: the second group index takes eight rows a time, for a prompt chunk's more than eight.
 REQD_SG __kernel void ds_hc_mix(__global const float *fn, __global const float *X, __global const float *ss, uint W,
                                 __global float *m) {
   __local float red[STEP_MAX_ROWS][32];
   const uint j = get_group_id(0), s = sg_id(), lane = sg_lane();
+  const uint t0 = get_group_id(1) * STEP_MAX_ROWS;
+  X += (ulong)t0 * D41_HC_DIM;
+  ss += t0;
+  m += (ulong)t0 * D41_MIX;
+  W = min(W - t0, (uint)STEP_MAX_ROWS);
   const uint nsg = get_local_size(0) / SG_SIZE, kc = D41_HC_DIM / nsg;
   __global const float *f = fn + (ulong)j * D41_HC_DIM + s * kc;
   __global const float *x = X + s * kc;

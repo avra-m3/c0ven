@@ -7,6 +7,10 @@
 
 namespace engine::deepseek41 {
 
+constexpr uint32_t kStageSlots = 256;  // experts a layer's copies hold on a card
+constexpr uint32_t kStageBatch = 16;   // experts one pool run writes to the cards
+constexpr uint32_t kStageRound = 32;   // experts one round of SSD reads brings, a multiple of kStageBatch
+constexpr uint32_t kStageBuffers = kStageSlots + kStageBatch;  // slots a card holds: the file's start at a batch
 constexpr uint32_t kChunkGroup = 256;  // rows the attention takes at a time: its scores and partial sums are per row
 
 struct Model::ChunkCard {
@@ -44,7 +48,12 @@ struct Model::ChunkCard {
   uint16_t *xg = nullptr, *hbuf = nullptr, *ybuf = nullptr, *sh = nullptr;
   int32_t *yidx = nullptr;
   uint32_t *rowidx = nullptr;
-  MoeTile *tiles[2] = {nullptr, nullptr};
+  MoeTile *tiles[2] = {nullptr, nullptr}, *tiles_s = nullptr;
+  uint8_t *stage = nullptr;      // staging slots of stage_slot bytes: a card's halves of experts in the file's layout
+  uint8_t *stage_cpu = nullptr;  // the same bytes, where the CPU writes them
+  uint64_t stage_slot = 0;
+  std::unique_ptr<ze::List> p3;              // the layer's closing list
+  uint64_t *ts[3] = {nullptr, nullptr, nullptr};  // the lists' launch timestamps, when tracing
 };
 
 }  // namespace engine::deepseek41

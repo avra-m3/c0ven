@@ -7,6 +7,8 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <immintrin.h>
+
 #include <stdexcept>
 
 #include "ggml.h"
@@ -48,6 +50,34 @@ void a8_row(const float *x, uint32_t K, uint8_t *a) {
   }
 }
 
+// A card's half of a staged expert in the file's layout: the gate and up rows of the card's class and the down blocks of
+// those rows' columns, each matrix after the last at a 256-byte boundary. The cards take the two classes in turn, so the
+// two halves of an expert are the cached pairs' two halves.
+struct StageLayout {
+  uint32_t rows = 0, nb = 0;             // gate and up rows, and the down blocks a row of the part
+  uint64_t rb = 0, bb = 0;               // bytes of a gate row, and of a down block
+  uint64_t r0 = 0, b0 = 0;               // the first gate row, and the first down block of the part
+  uint64_t gate_bytes = 0, up_off = 0, down_off = 0, bytes = 0;
+  bool part_b = false;
+};
+
+StageLayout stage_layout(const LayerExperts &le, uint32_t l, uint32_t c) {
+  StageLayout s;
+  const uint32_t gt = le.shape.gate_type, dt = le.shape.down_type;
+  s.part_b = (c ^ (l & 1)) != 0;
+  s.rows = s.part_b ? D41_PART_B : D41_PART_A;
+  s.rb = (E / quant_block_values(gt)) * quant_block_bytes(gt);
+  s.bb = quant_block_bytes(dt);
+  s.nb = s.rows / quant_block_values(dt);
+  s.r0 = s.part_b ? D41_PART_A : 0;
+  s.b0 = s.r0 / quant_block_values(dt);
+  s.gate_bytes = s.rows * s.rb;
+  s.up_off = (s.gate_bytes + 255) / 256 * 256;
+  s.down_off = 2 * s.up_off;
+  s.bytes = (s.down_off + (uint64_t)E * s.nb * s.bb + 255) / 256 * 256;
+  return s;
+}
+
 using Clock = std::chrono::steady_clock;
 double ms(Clock::time_point a, Clock::time_point b) { return std::chrono::duration<double, std::milli>(b - a).count(); }
 
@@ -58,13 +88,13 @@ Model::Card::~Card() = default;
 // What one chunk keeps while it runs, and the host's plan for the layer in hand.
 struct Model::ChunkRun {
   uint32_t n = 0, slot = 0, pos0 = 0, step = 0;
-  const int32_t *seq = nullptr;
   bool logits = false;
   uint32_t groups() const { return (n + kChunkGroup - 1) / kChunkGroup; }
   uint32_t group_rows(uint32_t g) const { return std::min(kChunkGroup, n - g * kChunkGroup); }
   // The layer's cached assignments in expert order, by card and class.
   uint32_t nasg = 0;
   std::vector<MoeTile> tiles[2][2];
+  std::vector<MoeTile> stiles[2];  // the staged experts' tiles by card
 };
 
 void Model::alloc_chunk(Card &card) {
@@ -136,7 +166,26 @@ void Model::alloc_chunk(Card &card) {
   k.yidx = DEV(int32_t, A);
   k.rowidx = DEV(uint32_t, A);
   for (auto &t : k.tiles) t = DEV(MoeTile, A);
+  k.tiles_s = DEV(MoeTile, A);
 #undef DEV
+  for (uint32_t l = 0; l < D41_LAYERS; l++) k.stage_slot = std::max(k.stage_slot, stage_layout(experts_[l], l, card.c).bytes);
+  // The file layout's kernels read a few bytes past the last block.
+  // The CPU writes the staged experts through a mapping of the buffer (ADR-0065 of the other model's path): the driver
+  // writes the whole buffer first, then each page is touched through the mapping, as pages touched before the driver's
+  // first copy fault again after it.
+  {
+    const size_t bytes = (size_t)kStageBuffers * k.stage_slot + QUANT_FILE_PAD;
+    k.stage = static_cast<uint8_t *>(rt_->alloc_device_mapped(card.c, bytes, k.stage_cpu));
+    constexpr size_t piece = 4u << 20;
+    uint8_t *zero = static_cast<uint8_t *>(rt_->alloc_host(piece));
+    std::memset(zero, 0, piece);
+    ze::List warm(*rt_, card.c, ze::List::immediate, true);
+    for (size_t off = 0; off < bytes; off += piece) warm.copy(k.stage + off, zero, std::min(piece, bytes - off));
+    warm.synchronize();
+    rt_->free(zero);
+    for (size_t off = 0; off < bytes; off += 4096) *(volatile uint8_t *)(k.stage_cpu + off) = 0;
+    _mm_sfence();
+  }
   if (card.c != 0) return;
   chunk_cap_ = cap;
   const auto host = [&](size_t bytes) {
@@ -154,8 +203,10 @@ void Model::alloc_chunk(Card &card) {
   ceng_a8_ = static_cast<uint8_t *>(host(R * kEngA8Row));
   crowidx_ = static_cast<uint32_t *>(host(A * 4));
   cyidx_ = static_cast<int32_t *>(host(A * 4));
+  cnmiss_ = static_cast<uint32_t *>(host(R8 * 4));
   for (auto &c : ctiles_)
     for (auto &t : c) t = static_cast<MoeTile *>(host(A * sizeof(MoeTile)));
+  for (auto &t : ctiles_s_) t = static_cast<MoeTile *>(host(A * sizeof(MoeTile)));
   if (debug_.probes) cprobe_ = static_cast<float *>(host((size_t)2 * D41_LAYERS * kChunkProbeRows * D * 4));
 }
 
@@ -183,12 +234,11 @@ std::vector<uint8_t> Model::pool_page(uint32_t layer, uint32_t page) {
 }
 
 // A token's three predecessors hash with it into the Engram rows, gathered and made a8 for the chunk.
-void Model::chunk_engram_rows(uint32_t table, const int32_t *seq, uint32_t pos, uint32_t n, uint8_t *dst) {
+void Model::chunk_engram_rows(uint32_t table, const int32_t *tokens, const int32_t *prev, uint32_t n, uint8_t *dst) {
   std::vector<uint64_t> ids((size_t)n * D41_ENG_COLS);
   for (uint32_t r = 0; r < n; r++) {
-    const uint32_t p = pos + r;
-    const auto back = [&](uint32_t k) { return p >= k ? seq[p - k] : kNoToken; };
-    const auto h = hash_->rows(seq[p], back(1), back(2), back(3), table);
+    const auto back = [&](uint32_t k) { return r >= k ? tokens[r - k] : prev[k - r - 1]; };
+    const auto h = hash_->rows(tokens[r], back(1), back(2), back(3), table);
     std::copy(h.begin(), h.end(), ids.begin() + (size_t)r * D41_ENG_COLS);
   }
   std::vector<float> f((size_t)n * D41_ENG_G);
@@ -226,11 +276,8 @@ void Model::chunk_to_f16(ze::List &L, Card &card, const float *in, uint16_t *out
 // The sublayer's raw mixes of every row, eight rows to a launch, then its mixes.
 void Model::chunk_hc_mix(ze::List &L, Card &card, const float *fn, const ChunkRun &run) {
   ChunkCard &k = *card.ck;
-  for (uint32_t g0 = 0; g0 < run.n; g0 += STEP_MAX_ROWS) {
-    const uint32_t W = std::min<uint32_t>(STEP_MAX_ROWS, run.n - g0);
-    L.launch(kernel(card, "deepseek41", "ds_hc_mix"), {fn, k.X + (size_t)g0 * D, k.ss + g0, W, k.m + (size_t)g0 * D41_MIX},
-             D41_MIX, 1, 1, 16 * D41_HC_KSPLIT);
-  }
+  L.launch(kernel(card, "deepseek41", "ds_hc_mix"), {fn, k.X, k.ss, run.n, k.m}, D41_MIX, (run.n + STEP_MAX_ROWS - 1) / STEP_MAX_ROWS, 1,
+           16 * D41_HC_KSPLIT);
 }
 
 // Engram's injection before layer l's attention, as record_engram does it for a step.
@@ -346,11 +393,8 @@ void Model::chunk_router(ze::List &L, Card &card, uint32_t l, const ChunkRun &ru
   const uint32_t n = run.n;
   const bool posts = l % 2 == card.c;
   chunk_to_f16(L, card, k.xf, k.xh, (uint64_t)n * E);
-  for (uint32_t g0 = 0; g0 < n; g0 += STEP_MAX_ROWS) {
-    const uint32_t W = std::min<uint32_t>(STEP_MAX_ROWS, n - g0);
-    L.launch(kernel(card, "deepseek41", "ds_hc_mix"),
-             {ly.ffn_fn, k.X1 + (size_t)g0 * D, k.ss + g0, W, k.m + (size_t)g0 * D41_MIX}, D41_MIX, 1, 1, 16 * D41_HC_KSPLIT);
-  }
+  L.launch(kernel(card, "deepseek41", "ds_hc_mix"), {ly.ffn_fn, k.X1, k.ss, n, k.m}, D41_MIX, (n + STEP_MAX_ROWS - 1) / STEP_MAX_ROWS, 1,
+           16 * D41_HC_KSPLIT);
   L.launch(kernel(card, "deepseek41", "ds_hc_sinkhorn"), {k.m, ly.ffn_scale, ly.ffn_base, k.fmix}, n, 1, 1, 16);
   chunk_gemm(L, card, true, ly.gate_inp, D41_EXPERTS, E, k.xb, E, k.words, n, k.rlogits, D41_EXPERTS, false, "gemm router");
   const uint32_t eight = STEP_MAX_ROWS;
@@ -364,13 +408,12 @@ void Model::chunk_router(ze::List &L, Card &card, uint32_t l, const ChunkRun &ru
   }
 }
 
-// The cached experts' tiles, the shared expert, the card's partial sum, the exchange and the next layer's input.
-void Model::chunk_experts(ze::List &L, Card &card, uint32_t l, const ChunkRun &run) {
+// The cached experts' tiles and the shared expert's part; the copies of the staged experts and the CPU's answers are
+// still on their way while these run.
+void Model::chunk_experts_a(ze::List &L, Card &card, uint32_t l, const ChunkRun &run) {
   ChunkCard &k = *card.ck;
   Layer &ly = card.layers[l];
-  Card &other = *cards_[1 - card.c];
   const uint32_t n = run.n;
-  const bool posts = l % 2 == card.c;
   const LayerExperts &le = layer_experts(l);
   const uint32_t gt = le.shape.gate_type, dt = le.shape.down_type;
   const uint32_t xsig = quant_pairs_sigma(gt), hsig = quant_pairs_sigma(dt);
@@ -406,6 +449,32 @@ void Model::chunk_experts(ze::List &L, Card &card, uint32_t l, const ChunkRun &r
   L.launch(kernel(card, "deepseek41_prompt", "dp_swiglu_f16"), {k.sgu, two_ff, ff, k.sh}, n, 1, 1, 256);
   chunk_dequant(L, card, ly.sh_down, k.w16b);
   chunk_gemm(L, card, false, k.w16b, E, ff, k.sh, ff, k.words, n, k.shared, E, false, "gemm shared down");
+}
+
+// The staged experts' tiles, the card's partial sum, the exchange and the next layer's input.
+void Model::chunk_experts_b(ze::List &L, Card &card, uint32_t l, const ChunkRun &run) {
+  ChunkCard &k = *card.ck;
+  Card &other = *cards_[1 - card.c];
+  const uint32_t n = run.n;
+  const bool posts = l % 2 == card.c;
+  const LayerExperts &le = layer_experts(l);
+  const uint32_t gt = le.shape.gate_type, dt = le.shape.down_type;
+  const uint32_t hsig = quant_pairs_sigma(dt);
+  const uint32_t zero = 0;
+
+  if (const size_t nt = run.stiles[card.c].size()) {
+    const StageLayout sl = stage_layout(le, l, card.c);
+    const uint32_t bpr_gate = E / quant_block_values(gt), ldx = E, kx = E, edim = E;
+    const uint32_t *count = k.words + 5;
+    L.label("staged expert gate and up");
+    L.launch(kernel(card, ("qgemm_" + lower(ggml_type_label(gt)) + "_file_limit10").c_str(), "moe_gate_up_t"),
+             {k.stage, k.stage_slot, k.tiles_s, count, sl.rows, bpr_gate, sl.up_off, k.xg, kx, ldx, k.hbuf, hsig, card.grids},
+             (sl.rows + 63) / 64, (uint32_t)nt, 1, 64);
+    L.label("staged expert down");
+    L.launch(kernel(card, ("qgemm_" + lower(ggml_type_label(dt)) + "_file").c_str(), "moe_down_t"),
+             {k.stage, k.stage_slot, sl.down_off, k.tiles_s, count, edim, sl.nb, zero, k.hbuf, sl.rows, k.ybuf, card.grids},
+             (E + 63) / 64, (uint32_t)nt, 1, 64);
+  }
 
   const void *cpu = posts ? cpu_cy_ : nullptr;
   L.launch(kernel(card, "deepseek41_prompt", "dp_combine"),
@@ -443,6 +512,25 @@ void Model::chunk_experts(ze::List &L, Card &card, uint32_t l, const ChunkRun &r
   chunk_probe_copy(L, card, true, l, k.X, run);
 }
 
+// Puts the card's half of expert w into staging slot `slot` in host memory: its rows of gate and up, and its part of
+// down. The arena keeps down as part A's blocks of every row and then part B's; the file's down is whole, and a part of
+// it is a block range of every row.
+void Model::chunk_stage_fill(Card &card, uint32_t l, uint32_t slot, const ExpertWeights &w, bool whole_down) {
+  const LayerExperts &le = layer_experts(l);
+  const StageLayout sl = stage_layout(le, l, card.c);
+  const uint64_t dq = quant_block_values(le.shape.down_type), whole_row = (D41_FF / dq) * sl.bb, part_row = sl.nb * sl.bb;
+  uint8_t *dst = card.ck->stage_cpu + (uint64_t)slot * card.ck->stage_slot;
+  std::memcpy(dst, w.gate + sl.r0 * sl.rb, sl.gate_bytes);
+  std::memcpy(dst + sl.up_off, w.up + sl.r0 * sl.rb, sl.gate_bytes);
+  if (whole_down) {
+    for (uint32_t r = 0; r < E; r++)
+      std::memcpy(dst + sl.down_off + (uint64_t)r * part_row, w.down + (uint64_t)r * whole_row + sl.b0 * sl.bb, part_row);
+  } else {
+    const uint8_t *down = sl.part_b ? w.down + (uint64_t)E * kPartABlocks * sl.bb : w.down;
+    std::memcpy(dst + sl.down_off, down, (uint64_t)E * part_row);
+  }
+}
+
 void Model::chunk_probe_copy(ze::List &L, Card &card, bool ffn, uint32_t l, const float *from, const ChunkRun &run) {
   if (!cprobe_ || card.c != 0) return;
   const std::vector<uint32_t> rows = chunk_probe_rows(run.n);
@@ -451,12 +539,19 @@ void Model::chunk_probe_copy(ze::List &L, Card &card, bool ffn, uint32_t l, cons
 }
 
 std::vector<Candidate> Model::chunk_forward(uint32_t slot, const int32_t *seq, uint32_t pos, uint32_t n, bool logits) {
+  int32_t prev[3];
+  for (uint32_t k = 1; k <= 3; k++) prev[k - 1] = pos >= k ? seq[pos - k] : kNoToken;
+  return chunk_forward(slot, seq + pos, prev, pos, n, logits);
+}
+
+std::vector<Candidate> Model::chunk_forward(uint32_t slot, const int32_t *tokens, const int32_t *prev, uint32_t pos, uint32_t n,
+                                            bool logits) {
   if (!chunk_cap_) throw std::runtime_error("deepseek41 has no prompt chunk: Options::prompt_chunk is 0");
   if (n == 0 || n > chunk_cap_) throw std::runtime_error("a prompt chunk takes 1 to Options::prompt_chunk rows");
   if (slot >= opt_.slots) throw std::runtime_error("slot out of range");
   if (pos + n > opt_.max_ctx) throw std::runtime_error("position past the context");
   for (uint32_t q = pos; q < pos + n; q++) {
-    if (seq[q] < 0 || (uint32_t)seq[q] >= vocab_) throw std::runtime_error("a token outside the vocabulary");
+    if (tokens[q - pos] < 0 || (uint32_t)tokens[q - pos] >= vocab_) throw std::runtime_error("a token outside the vocabulary");
     if (pt_[(size_t)slot * npp_ + q / KV_PAGE_CELLS] == D41_NO_PAGE) throw std::runtime_error("a row's page is not set");
   }
   ctimes_ = {};
@@ -465,7 +560,6 @@ std::vector<Candidate> Model::chunk_forward(uint32_t slot, const int32_t *seq, u
   run.n = n;
   run.slot = slot;
   run.pos0 = pos;
-  run.seq = seq;
   run.logits = logits;
 
   // The embeddings, the rows' records and the counts the lists read.
@@ -477,7 +571,7 @@ std::vector<Candidate> Model::chunk_forward(uint32_t slot, const int32_t *seq, u
     // would be overwritten by a later row of the same cell, in no fixed order: it stores nothing.
     crowsc_[r] = crows_[r];
     if (!((pos + r) & 1) && r + 16 < n) crowsc_[r].slot = D41_NO_ROW;
-    to_float(te.data + (uint64_t)seq[pos + r] * te.row_bytes(), cembed_ + (size_t)r * E, E);
+    to_float(te.data + (uint64_t)tokens[r] * te.row_bytes(), cembed_ + (size_t)r * E, E);
   }
   for (uint32_t g = 0; g * 8 < n; g++) creal_[g] = std::min<uint32_t>(8, n - g * 8);
   std::memset(cwords_, 0, 128);
@@ -488,6 +582,29 @@ std::vector<Candidate> Model::chunk_forward(uint32_t slot, const int32_t *seq, u
   }
   ctimes_.prepare += ms(t_start, Clock::now());
 
+  // With tracing, the card's timestamps after every launch of list `which` (0: to the routers, 1 and 2: the second list's
+  // parts), added to the kernel's row.
+  constexpr size_t kTraceCap = 16384;
+  const auto trace_on = [&](Card &cp, ze::List &L, uint32_t which) {
+    if (!chunk_tuning.trace) return;
+    if (!cp.ck->ts[which]) cp.ck->ts[which] = static_cast<uint64_t *>(rt_->alloc_host(kTraceCap * 8));
+    L.trace(cp.ck->ts[which], kTraceCap);
+  };
+  const auto trace_add = [&](Card &cp, ze::List &L, uint32_t which) {
+    if (!chunk_tuning.trace) return;
+    const ze::Card &dev = rt_->cards()[cp.c];
+    const uint64_t *stamp = cp.ck->ts[which];
+    auto &rows = ctrace_[cp.c];
+    const std::vector<std::string> &names = L.trace_names();
+    for (size_t i = 0; i < names.size(); i++) {
+      auto row = std::find_if(rows.begin(), rows.end(), [&](const TraceRow &r) { return r.kernel == names[i]; });
+      if (row == rows.end()) row = rows.insert(rows.end(), TraceRow{names[i], 0, 0});
+      row->launches++;
+      row->ms += (double)((stamp[i + 1] - stamp[i]) & dev.timestamp_mask) * 1e3 / (double)dev.timer_hz;
+    }
+  };
+  for (auto &t : ctrace_) t.clear();
+
   const auto start_lists = [&](bool second) {
     plan_->step = ++step_;
     plan_->real = 1;
@@ -497,6 +614,7 @@ std::vector<Candidate> Model::chunk_forward(uint32_t slot, const int32_t *seq, u
       auto &list = second ? cp->ck->p2 : cp->ck->p1;
       if (!list) list = std::make_unique<ze::List>(*rt_, cp->c, ze::List::regular);
       list->reset_list();
+      trace_on(*cp, *list, second ? 1 : 0);
       list->copy(cp->plan, plan_, sizeof(StepWords));
       list->copy(cp->ck->words, cwords_ + 16 * cp->c, 64);
     }
@@ -509,6 +627,7 @@ std::vector<Candidate> Model::chunk_forward(uint32_t slot, const int32_t *seq, u
     }
     for (auto &cp : cards_) (second ? cp->ck->p2 : cp->ck->p1)->execute();
     for (auto &cp : cards_) (second ? cp->ck->p2 : cp->ck->p1)->synchronize();
+    for (auto &cp : cards_) trace_add(*cp, *(second ? cp->ck->p2 : cp->ck->p1), second ? 1 : 0);
     for (uint32_t c = 0; c < 2; c++)
       if (stuck_[16 * c]) throw std::runtime_error("card " + std::to_string(c) + " gave up a wait of the prompt chunk");
   };
@@ -517,7 +636,7 @@ std::vector<Candidate> Model::chunk_forward(uint32_t slot, const int32_t *seq, u
   std::vector<uint32_t> nmiss(n + 8);
   for (uint32_t l = 0; l < D41_LAYERS; l++) {
     auto t0 = Clock::now();
-    if (engram_of(l) >= 0) chunk_engram_rows((uint32_t)engram_of(l), seq, pos, n, ceng_a8_);
+    if (engram_of(l) >= 0) chunk_engram_rows((uint32_t)engram_of(l), tokens, prev, n, ceng_a8_);
     ctimes_.prepare += ms(t0, Clock::now());
 
     // The first list: to the router.
@@ -541,7 +660,7 @@ std::vector<Candidate> Model::chunk_forward(uint32_t slot, const int32_t *seq, u
     run_lists(false);
     ctimes_.attention += ms(t0, Clock::now());
 
-    // The host: which experts the cards hold, and the CPU's.
+    // The host: which experts the cards hold, which the copies bring to them, and which the CPU answers.
     t0 = Clock::now();
     {
       Card &c0 = *cards_[0];
@@ -550,16 +669,54 @@ std::vector<Candidate> Model::chunk_forward(uint32_t slot, const int32_t *seq, u
       c0.up->copy(nmiss.data(), c0.ck->nmiss, (size_t)n * 4);
       c0.up->synchronize();
     }
+    const LayerExperts &le = layer_experts(l);
     const std::vector<uint32_t> &pairs = pairs_[l];
     const uint32_t npairs = (uint32_t)pairs.size();
     std::vector<std::vector<std::pair<uint32_t, uint32_t>>> by_pair(npairs);  // (row, rank)
+    std::vector<std::vector<std::pair<uint32_t, uint32_t>>> by_miss(D41_EXPERTS);
     for (uint32_t r = 0; r < n; r++)
       for (uint32_t j = 0; j < D41_USED; j++) {
         const int32_t p = slots[(size_t)r * D41_USED + j];
-        if (p >= 0) by_pair[(uint32_t)p].push_back({r, j});
+        if (p >= 0)
+          by_pair[(uint32_t)p].push_back({r, j});
+        else
+          by_miss[(uint32_t)ids[(size_t)r * D41_USED + j]].push_back({r, j});
       }
+
+    // The experts the cards lack that enough rows route to, the ones with most rows first, up to the staging slots.
+    const ChunkTuning &tu = chunk_tuning;
+    struct Staged {
+      uint32_t e;
+      bool arena;
+    };
+    std::vector<Staged> staged;
+    const uint32_t stage_rows = tu.stage_rows == ChunkTuning::kStageAuto ? (n < 128 ? 4 : 1) : tu.stage_rows;
+    if (stage_rows) {
+      std::vector<std::pair<uint32_t, uint32_t>> cand;  // (rows, expert)
+      for (uint32_t e = 0; e < D41_EXPERTS; e++) {
+        if (by_miss[e].size() < stage_rows) continue;
+        const bool in_arena = arena_->weights(l, e).gate != nullptr;
+        if (tu.source == ChunkTuning::arena_only && !in_arena) continue;
+        cand.push_back({(uint32_t)by_miss[e].size(), e});
+      }
+      std::stable_sort(cand.begin(), cand.end(), [](auto &a, auto &b) { return a.first > b.first; });
+      if (cand.size() > kStageSlots) cand.resize(kStageSlots);
+      std::sort(cand.begin(), cand.end(), [](auto &a, auto &b) { return a.second < b.second; });
+      for (auto &c : cand)
+        staged.push_back({c.second, tu.source != ChunkTuning::file_only && arena_->weights(l, c.second).gate != nullptr});
+      // The arena's first: the copies of slots run from the start, the file's after them.
+      std::stable_sort(staged.begin(), staged.end(), [](const Staged &a, const Staged &b) { return a.arena > b.arena; });
+    }
+
+    // The arena's experts take the slots from 0 and the file's those from the next batch, so that a batch of slots comes
+    // from one source.
+    uint32_t arena_n = 0;
+    while (arena_n < staged.size() && staged[arena_n].arena) arena_n++;
+    const uint32_t ssd_base = (arena_n + kStageBatch - 1) / kStageBatch * kStageBatch;
+    const auto stage_slot = [&](uint32_t s) { return s < arena_n ? s : ssd_base + (s - arena_n); };
     for (auto &c : run.tiles)
       for (auto &t : c) t.clear();
+    for (auto &t : run.stiles) t.clear();
     std::fill(cyidx_, cyidx_ + (size_t)n * D41_USED, -1);
     uint32_t at = 0;
     for (uint32_t p = 0; p < npairs; p++) {
@@ -578,9 +735,120 @@ std::vector<Candidate> Model::chunk_forward(uint32_t slot, const int32_t *seq, u
     }
     run.nasg = at;
     ctimes_.cached_routings += at;
+    std::vector<uint8_t> is_staged(D41_EXPERTS, 0);
+    for (uint32_t s = 0; s < staged.size(); s++) {
+      const auto &list = by_miss[staged[s].e];
+      is_staged[staged[s].e] = 1;
+      for (size_t i = 0; i < list.size(); i++) {
+        crowidx_[at + i] = list[i].first;
+        cyidx_[(size_t)list[i].first * D41_USED + list[i].second] = (int32_t)(at + i);
+      }
+      for (uint32_t c = 0; c < 2; c++)
+        for (size_t i = 0; i < list.size(); i += MOE_TILE)
+          run.stiles[c].push_back({staged[s].e, stage_slot(s), (uint32_t)(at + i), (uint32_t)std::min<size_t>(MOE_TILE, list.size() - i)});
+      at += (uint32_t)list.size();
+      ctimes_.staged_routings += (uint32_t)list.size();
+    }
+    run.nasg = at;
+    // The CPU keeps the others: each row's record loses the staged experts.
+    for (uint32_t r = 0; r < n; r++) {
+      D41MissJob &job = cjobs_[r];
+      uint32_t kept = 0;
+      for (uint32_t m = 0; m < job.nmiss; m++) {
+        if (is_staged[(uint32_t)job.ids[m]]) continue;
+        job.ids[kept] = job.ids[m];
+        job.w[kept] = job.w[m];
+        kept++;
+      }
+      job.nmiss = kept;
+      cnmiss_[r] = kept;
+    }
     ctimes_.plan += ms(t0, Clock::now());
 
-    // The CPU answers the experts the cards do not hold, rows in slices whose SSD reads fit the ring.
+    t0 = Clock::now();
+    // The second list in two parts: the cached experts' tiles and the shared expert now, the rest when the copies and
+    // the CPU are done.
+    for (uint32_t c = 0; c < 2; c++) {
+      for (uint32_t ci = 0; ci < 2; ci++) cwords_[16 * c + 3 + ci] = (uint32_t)run.tiles[c][ci].size();
+      cwords_[16 * c + 5] = (uint32_t)run.stiles[c].size();
+    }
+    start_lists(true);
+    for (auto &cp : cards_) {
+      ChunkCard &k = *cp->ck;
+      ze::List &L = *k.p2;
+      L.copy(k.yidx, cyidx_, (size_t)n * D41_USED * 4);
+      L.copy(k.nmiss, cnmiss_, (size_t)n * 4);
+      for (uint32_t ci = 0; ci < 2; ci++) {
+        const auto &t = run.tiles[cp->c][ci];
+        if (t.empty()) continue;
+        std::memcpy(ctiles_[cp->c][ci], t.data(), t.size() * sizeof(MoeTile));
+        L.copy(k.tiles[ci], ctiles_[cp->c][ci], t.size() * sizeof(MoeTile));
+      }
+      const auto &st = run.stiles[cp->c];
+      if (!st.empty()) {
+        std::memcpy(ctiles_s_[cp->c], st.data(), st.size() * sizeof(MoeTile));
+        L.copy(k.tiles_s, ctiles_s_[cp->c], st.size() * sizeof(MoeTile));
+      }
+      chunk_experts_a(L, *cp, l, run);
+      L.close();
+      if (!k.p3) k.p3 = std::make_unique<ze::List>(*rt_, cp->c, ze::List::regular);
+      k.p3->reset_list();
+      trace_on(*cp, *k.p3, 2);
+      chunk_experts_b(*k.p3, *cp, l, run);
+      k.p3->copy(stuck_ + 16 * cp->c, &cp->plan->stuck, 4);
+      k.p3->close();
+    }
+    const auto t_p2 = Clock::now();
+    for (auto &cp : cards_) cp->ck->p2->execute();
+    ctimes_.record += ms(t0, t_p2);
+
+    // The staged experts: the arena's first, then the file's. The CPU puts each expert's two halves into host memory
+    // and the copy engines take them to the cards, a batch of experts at a time.
+    t0 = Clock::now();
+    ctimes_.staged_arena += arena_n;
+    ctimes_.staged_ssd += (uint32_t)staged.size() - arena_n;
+    const auto stage_batch = [&](uint32_t s0, uint32_t count, const std::vector<ExpertWeights> &w, bool whole) {
+      const auto t_f = Clock::now();
+      pool_->run((uint64_t)count * 2, [&](uint64_t t) {
+        const uint32_t i = (uint32_t)(t >> 1);
+        chunk_stage_fill(*cards_[t & 1], l, s0 + i, w[i], whole);
+      });
+      ctimes_.fill += ms(t_f, Clock::now());
+    };
+    // The file's experts in rounds the ring holds, the first read while the arena's are copied.
+    std::vector<std::vector<uint32_t>> ssd_ids;
+    for (uint32_t s = arena_n; s < staged.size(); s++) {
+      if (ssd_ids.empty() || ssd_ids.back().size() == kStageRound) ssd_ids.emplace_back();
+      ssd_ids.back().push_back(staged[s].e);
+    }
+    std::vector<ExpertWeights> ssd_w;
+    if (!ssd_ids.empty()) ssd_->start(0, le, ssd_ids[0], ssd_w);
+    for (uint32_t s0 = 0; s0 < arena_n; s0 += kStageBatch) {
+      const uint32_t count = std::min(arena_n - s0, kStageBatch);
+      std::vector<ExpertWeights> w;
+      for (uint32_t s = s0; s < s0 + count; s++) w.push_back(arena_->weights(l, staged[s].e));
+      stage_batch(s0, count, w, false);
+    }
+    for (size_t round = 0; round < ssd_ids.size(); round++) {
+      const auto t_w = Clock::now();
+      ssd_->wait();
+      ctimes_.ssd_wait += ms(t_w, Clock::now());
+      std::vector<ExpertWeights> w = std::move(ssd_w);
+      ssd_w.clear();
+      if (round + 1 < ssd_ids.size()) ssd_->start((round + 1) & 1, le, ssd_ids[round + 1], ssd_w);
+      const uint32_t s0 = ssd_base + (uint32_t)round * kStageRound;
+      stage_batch(s0, (uint32_t)ssd_ids[round].size(), w, true);
+      ssd_->release(round & 1);
+    }
+    // A full fence sends the writes out of the CPU's write-combining buffers, and a read through the mapping returns only
+    // after they have arrived.
+    const auto t_cw = Clock::now();
+    _mm_mfence();
+    for (auto &cp : cards_) (void)*(volatile uint8_t *)(cp->ck->stage_cpu);
+    ctimes_.copy_wait += ms(t_cw, Clock::now());
+    ctimes_.stage += ms(t0, Clock::now());
+
+    // The CPU answers the experts that stayed with it, rows in slices whose SSD reads fit the ring.
     t0 = Clock::now();
     {
       const D41MissJob *jobs = cjobs_;
@@ -615,26 +883,19 @@ std::vector<Candidate> Model::chunk_forward(uint32_t slot, const int32_t *seq, u
     }
     ctimes_.cpu += ms(t0, Clock::now());
 
-    // The second list.
+    // The second list's end.
     t0 = Clock::now();
-    for (uint32_t c = 0; c < 2; c++)
-      for (uint32_t ci = 0; ci < 2; ci++) cwords_[16 * c + 3 + ci] = (uint32_t)run.tiles[c][ci].size();
-    start_lists(true);
+    for (auto &cp : cards_) cp->ck->p3->execute();
+    for (auto &cp : cards_) cp->ck->p2->synchronize();
+    for (auto &cp : cards_) cp->ck->p3->synchronize();
     for (auto &cp : cards_) {
-      ChunkCard &k = *cp->ck;
-      ze::List &L = *k.p2;
-      L.copy(k.yidx, cyidx_, (size_t)n * D41_USED * 4);
-      for (uint32_t ci = 0; ci < 2; ci++) {
-        const auto &t = run.tiles[cp->c][ci];
-        if (t.empty()) continue;
-        std::memcpy(ctiles_[cp->c][ci], t.data(), t.size() * sizeof(MoeTile));
-        L.copy(k.tiles[ci], ctiles_[cp->c][ci], t.size() * sizeof(MoeTile));
-      }
-      chunk_experts(L, *cp, l, run);
+      trace_add(*cp, *cp->ck->p2, 1);
+      trace_add(*cp, *cp->ck->p3, 2);
     }
-    run_lists(true);
-    ctimes_.tiles += (uint32_t)(run.tiles[0][0].size() + run.tiles[0][1].size());
-    ctimes_.experts += ms(t0, Clock::now());
+    for (uint32_t c = 0; c < 2; c++)
+      if (stuck_[16 * c]) throw std::runtime_error("card " + std::to_string(c) + " gave up a wait of the prompt chunk");
+    ctimes_.tiles += (uint32_t)(run.tiles[0][0].size() + run.tiles[0][1].size() + run.stiles[0].size());
+    ctimes_.experts += ms(t_p2, Clock::now());
   }
 
   std::vector<Candidate> out;

@@ -62,8 +62,30 @@ struct ChunkTimes {
   double plan = 0;      // the host's tile lists
   double cpu = 0;       // the CPU's experts
   double experts = 0;   // the cards' lists from the tiles on
+  double stage = 0;     // the copies' lists and the SSD reads of the experts staged on the cards
+  double ssd_wait = 0;  // of that, waiting for the SSD
+  double record = 0;    // of that, recording the copy lists and the second list
+  double copy_wait = 0; // of that, waiting for the copies to land after the SSD rounds
+  double fill = 0;      // of that, the CPU putting the experts into host memory
+  double launch = 0;    // of that, starting the copies to the cards
   uint32_t cpu_routings = 0, cached_routings = 0;  // routings the CPU answered, and the cards' tiles
+  uint32_t staged_routings = 0;                     // routings answered by experts copied to the cards
+  uint32_t staged_arena = 0, staged_ssd = 0;        // experts copied from the arena, and read from the SSD and copied
   uint32_t tiles = 0;
+};
+
+// How a chunk treats the experts the cards do not hold. Set before chunk_forward.
+struct ChunkTuning {
+  // An expert that this many rows or more of a chunk route to is copied to the cards; fewer rows go to the CPU. 0: the
+  // CPU answers them all. kStageAuto: 4 for a chunk of under 128 rows, where a copy costs more than the CPU's answer
+  // saves, and 1 for a larger one, where the copies are shared by many rows.
+  static constexpr uint32_t kStageAuto = ~0u;
+  uint32_t stage_rows = kStageAuto;
+  // Where staged experts come from: the arena where it holds them and the file otherwise; only the arena (the others
+  // go to the CPU); or only the file.
+  enum Source { both, arena_only, file_only } source = both;
+  // Time every launch of the cards' lists (chunk_trace); costs a timestamp a launch.
+  bool trace = false;
 };
 
 // One draft of a block: the token chosen, the drafter's own chance, 0 to 1, that the model keeps it, and the candidates
@@ -125,7 +147,14 @@ class Model final : public engine::Model {
   // through all the layers at once. seq holds the sequence's tokens from position 0 to pos + n - 1. Stores the rows'
   // keys and returns the last row's candidates when logits is set, else none. The sequence's pages must be set.
   std::vector<Candidate> chunk_forward(uint32_t slot, const int32_t *seq, uint32_t pos, uint32_t n, bool logits);
+  // The same from the rows' tokens alone: tokens[r] is position pos + r's, and prev the three before pos, the nearest
+  // first (kNoToken before the start).
+  std::vector<Candidate> chunk_forward(uint32_t slot, const int32_t *tokens, const int32_t *prev, uint32_t pos, uint32_t n,
+                                       bool logits);
   const ChunkTimes &chunk_times() const { return ctimes_; }
+  ChunkTuning chunk_tuning;
+  // With chunk_tuning.trace, card c's time by kernel over the last chunk's lists, in launch order of first use.
+  std::vector<TraceRow> chunk_trace(uint32_t card) const { return ctrace_[card]; }
   // For tests, with Debug::probes: the rows of the last chunk whose streams are kept (up to kChunkProbeRows, spread
   // over the chunk, first and last among them), and a probed row's streams as probe gives a step's.
   static constexpr uint32_t kChunkProbeRows = 16;
@@ -329,7 +358,7 @@ class Model final : public engine::Model {
   // The prompt chunk path (prompt.cpp).
   struct ChunkRun;
   void alloc_chunk(Card &card);
-  void chunk_engram_rows(uint32_t table, const int32_t *seq, uint32_t pos, uint32_t n, uint8_t *dst);
+  void chunk_engram_rows(uint32_t table, const int32_t *tokens, const int32_t *prev, uint32_t n, uint8_t *dst);
   void chunk_dequant(ze::List &L, Card &card, const Mat &m, uint16_t *out);
   void chunk_gemm(ze::List &L, Card &card, bool bf16, const uint16_t *w, uint32_t N, uint32_t K, const void *x,
                   uint32_t ldx, const uint32_t *ntok, uint32_t rows, void *y, uint32_t ldy, bool yhalf, const char *name);
@@ -338,7 +367,9 @@ class Model final : public engine::Model {
   void chunk_engram(ze::List &L, Card &card, uint32_t l, const ChunkRun &run);
   void chunk_attention(ze::List &L, Card &card, uint32_t l, const ChunkRun &run);
   void chunk_router(ze::List &L, Card &card, uint32_t l, const ChunkRun &run);
-  void chunk_experts(ze::List &L, Card &card, uint32_t l, const ChunkRun &run);
+  void chunk_experts_a(ze::List &L, Card &card, uint32_t l, const ChunkRun &run);
+  void chunk_experts_b(ze::List &L, Card &card, uint32_t l, const ChunkRun &run);
+  void chunk_stage_fill(Card &card, uint32_t l, uint32_t slot, const ExpertWeights &w, bool whole_down);
   void chunk_probe_copy(ze::List &L, Card &card, bool ffn, uint32_t l, const float *from, const ChunkRun &run);
   void record(Card &card, uint32_t W);
   void record_engram(ze::List &L, Card &card, uint32_t l, uint32_t W);
@@ -411,8 +442,11 @@ class Model final : public engine::Model {
   float *cprobe_ = nullptr;          // [sublayer][layer][kChunkProbeRows][D41_HC_DIM]
   uint32_t *crowidx_ = nullptr;      // the layer's cached assignments in expert order: their rows
   int32_t *cyidx_ = nullptr;         // [row][rank]: the assignment's place in that order, or -1
+  uint32_t *cnmiss_ = nullptr;       // [row]: the experts left to the CPU
+  MoeTile *ctiles_s_[2] = {};        // [card]: tiles of the staged experts
   MoeTile *ctiles_[2][2] = {};       // [card][class]
   ChunkTimes ctimes_;
+  std::vector<TraceRow> ctrace_[2];
 
   // The cards' pairs by layer: the expert each holds (kNoExpert while it changes), the split, the slot classes by card.
   static constexpr uint32_t kNoExpert = 0xffffffffu;
