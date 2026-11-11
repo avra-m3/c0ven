@@ -17,8 +17,9 @@ give no more tokens a second in total, or the same-tokens check differs.
 - The core chooses how many drafts several slots make from their acceptance and the measured time of windows of
   each width (`choose_shared_drafts`, [the record](../measurements/MEASUREMENTS.md#2026-10-19-draft-rounds-several-writers)).
   It cannot choose more than the step holds.
-- One more row in a step of three slots costs about 4.45 ms, most of it the CPU's products for experts the cards do
-  not hold (*estimate*: from runs with no record in MEASUREMENTS.md).
+- A round's window on two cards takes a fixed time for its width, 32.2 ms at 8 rows, 39.6 at 9 and 48.1 at 16, and
+  0.026 ms for each expert the CPU computes, about 100 a row with two requests and 8 with four
+  ([the record](../measurements/MEASUREMENTS.md#2026-11-11-step-rows-16-one-draft-count)).
 
 ## Decision
 
@@ -46,11 +47,12 @@ give no more tokens a second in total, or the same-tokens check differs.
 
 ## Why
 
-No part of this is measured on the cards. At three writers the gain in total tokens a second is at most about 2%
-(*estimate*: the acceptance of DFlash 2's third to fifth drafts above, against 4.45 ms for each row they add). It
-can be negative where the extra rows' experts miss the cards more than the estimate assumes. The chooser reads the
-measured window times, so it stops adding drafts once a wider window gives fewer tokens a millisecond; one round in
-eight runs 2 drafts each whatever it chose.
+A step of more than 8 rows pays where the slots accept most of their drafts. In alternating runs on two cards, with
+the drafts chosen as ADR-0078 says, three requests copying text wrote 7.0% more tokens a second than with steps of 8
+rows and four editing code 10.6% more, while two to four requests on prose or mixed text wrote within the runs'
+spread ([the record](../measurements/MEASUREMENTS.md#2026-11-11-step-rows-16-one-draft-count)). A window's ninth row
+costs more than its eighth (Context), and on prose later drafts are accepted less often and often not made, so
+there a step of more than 8 rows is rarely chosen.
 
 Items 7 and 8 keep the steps of 8 rows or fewer as they were. Without them, in alternating runs on two cards, a lone
 slot's window took 0.5 to 0.7 ms longer than before at the same width, and a ring sized for 16 rows' claims left the

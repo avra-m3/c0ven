@@ -14,12 +14,13 @@ alternating order, give the slowest request fewer tokens a second, or fewer in t
   their chance of being accepted, both gave fewer tokens a second than the 8-row choice, 1 to 12% in alternating
   runs on two cards (*estimate*: from runs with no record in MEASUREMENTS.md). Ranking gives the rows to the slots
   whose drafts are accepted, so a slot whose drafts are rejected writes slower.
-- On two cards a window's time is about a fixed time for its width (22 ms for 3 rows, 32 for 8, 40 for 9, 48 for
-  16) and 0.026 ms for each expert the CPU computes in it. The experts a row misses change with the requests' text:
-  about 8 a row with four requests, about 100 with two (*estimate*, from the same runs). One table of times by
-  width mixes requests with different misses, and a width timed once keeps that time.
-- After a round, the draft layer's pass takes 4 to 5 ms for a block of up to 8 rows and about 6.5 ms past 8
-  (*estimate*, from the same runs). A round pays it whatever its drafts.
+- On two cards a window's time is about a fixed time for its width (22.2 ms for 3 rows, 32.2 for 8, 39.6 for 9,
+  48.1 for 16) and 0.026 ms for each expert the CPU computes in it. The experts a row misses change with the
+  requests' text: about 8 a row with four requests, about 100 with two. After a round, the draft layer's pass takes
+  4.8 to 5.1 ms for a block of 4 to 8 rows and 7.0 to 7.4 ms past 8
+  ([the record](../measurements/MEASUREMENTS.md#2026-11-11-step-rows-16-one-draft-count)); a round pays it whatever
+  its drafts. One table of times by width mixes requests with different misses, and a width timed once keeps that
+  time.
 - The 8-row choice prices a width by the mean of all windows of that width since load, of any number of slots and
   any text. With four requests, after three requests of mixed text, it priced 8 rows at 46.8 ms where the four
   requests' rounds took 32 to 34, and 4 rows from lone rounds; it gave the four requests no drafts. A step without
@@ -27,12 +28,13 @@ alternating order, give the slowest request fewer tokens a second, or fewer in t
   without drafts but for every eighth choice. In alternating runs on two cards, runs of the 8-row choice and of
   this change alike went 59 to 79 steps without drafts with four requests, 3 to 5% under the other runs, and up to
   177 steps with four requests editing text, 9% under (*estimate*, from runs with no record in MEASUREMENTS.md).
-- A slot's drafts are accepted less often the later their place. In a log of every round on two cards, prose had
-  0.80 to 0.82 of first drafts accepted, 0.67 to 0.75 of second drafts and 0.65 of third. The draft layer also
-  stops at a draft below its probability floor: on prose it made fewer drafts than asked for 33 to 46% of slots,
-  on copied and edited text 8 to 15%. Counting a draft asked for and not made as rejected, prose had 0.59 to 0.75 at
-  the first place and 0.43 to 0.68 at the second; copied and edited text 0.98 to 1.00 at the first and 0.81 to 1.00
-  later (*estimate*, from one run with a round log).
+- A slot's drafts are accepted less often the later their place, and the draft layer stops at a draft below its
+  probability floor. In a log of every round on two cards, three requests on prose made 0.81, 0.73 and 0.53 of the
+  first three drafts asked for, and had 0.83, 0.74 and 0.65 of those made accepted; on prose a round held fewer
+  drafts than it asked for in 33 to 46% of its slots, on copied and edited text in 8 to 15%
+  ([the record](../measurements/MEASUREMENTS.md#2026-11-11-step-rows-16-one-draft-count)). Counting a draft asked
+  for and not made as rejected, prose had 0.59 to 0.75 at the first place and 0.43 to 0.68 at the second; copied and
+  edited text 0.98 to 1.00 at the first and 0.81 to 1.00 later (*estimate*, from the same log).
 - In the same log, by the drafts asked: four requests on prose wrote 0.172 tokens a ms with 1 each and 0.171 with
   2 each; three on prose 0.151 with 1, 1 and 1 and 0.152 with 2, 2 and 1; three of mixed text 0.129 and 0.119;
   three copying text 0.239 with 4 each of 15 rows against 0.196; four editing text 0.171 with 3 each of 16 rows
@@ -91,10 +93,9 @@ prose where the round log has them level. A later place is checked only when the
 rounds are few; a place takes the place before it's for the weight its rounds do not carry, and keeps what its
 rounds gave while no round reaches it. A draft asked for and not made gives no token and takes no row. Counted as
 rejected at the rows asked for, it priced such rounds 4 to 8% high in the round log, and three requests ran fewer
-rows than the 8-row choice and wrote slower (Context). The share made prices both the tokens and the rows. In the
-same log, three requests on prose had 0.81, 0.73 and 0.53 of the first three drafts asked for made, and 0.83, 0.74
-and 0.65 of those made accepted; with `lookup_test`'s times, 2, 2 and 1 drafts are then 5% faster than 1 each, and
-priced at the rows asked 1 each was 1% faster. Each width is priced by its chance because a window's time jumps
+rows than the 8-row choice and wrote slower (Context). The share made prices both the tokens and the rows. With
+the shares in Context for three requests on prose and `lookup_test`'s times, 2, 2 and 1 drafts are 5% faster than 1
+each, and priced at the rows asked 1 each was 1% faster. Each width is priced by its chance because a window's time jumps
 from 8 rows to 9 (Context): with the same figures, 2 each of 16 rows looks 1.9% faster than 2, 2 and 1 at the mean
 of the rows made, and is 2.3% slower by each width's chance. On copied and edited text the draft layer makes nearly
 every draft asked, so there the count of 16 rows keeps its gain.
@@ -168,5 +169,10 @@ rare to be timed twice.
   made, and the wide count is rarely offered.
 - With three requests that accept most drafts, a round can run 4 drafts each of 16 rows where the even split ran
   2, 2 and 1 of 8; the first two slots may write slightly fewer tokens a millisecond than in the even split.
+- In six rounds of alternating runs on two cards against steps of 8 rows, two to four requests on prose or mixed
+  text wrote -1.0% to +0.7% of their tokens a second in total, three copying text 7.0% more and four editing code
+  10.6% more, their slowest request 62.6 → 66.9 and 35.3 → 39.7 tokens a second
+  ([the record](../measurements/MEASUREMENTS.md#2026-11-11-step-rows-16-one-draft-count)). The slowest of three
+  requests of mixed text sampled wrote 40.4 against 42.4; it moves with the length of one request's answer.
 - `lookup_test` checks items 1 to 5 without a card. The change is not accepted until the alternating runs in
   "Revisit when" show the slowest request no slower.
