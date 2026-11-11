@@ -241,6 +241,16 @@ int run() {
     std::printf("steps: median %.1f ms, a tenth below %.1f, a tenth above %.1f; the last quarter: median %.1f, a tenth above %.1f\n",
                 at(step_ms, 0.5), at(step_ms, 0.1), at(step_ms, 0.9), at(tail, 0.5), at(tail, 0.9));
   }
+  if (opt.adapt_swaps) {
+    const SwapStats w = model.swap_stats();
+    const double nb = (double)std::max<uint64_t>(w.batches, 1), nr = (double)std::max<uint64_t>(w.refills, 1);
+    std::printf("swap batches: %llu of %.1f pairs, mapped %.1f steps after the choice; ms a batch: slots written %.1f (building %.1f, upload %.1f, "
+                "both cards summed), mapped %.1f\n",
+                (unsigned long long)w.batches, (double)w.pairs / nb, (double)w.steps_to_map / nb, w.to_loaded / nb, w.make / nb,
+                w.upload / nb, w.to_mapped / nb);
+    std::printf("refills: %llu, %.1f a batch; ms a refill: read %.2f, write %.2f, from queued to placed %.1f\n", (unsigned long long)w.refills,
+                (double)w.refills / nb, w.refill_read / nr, w.refill_write / nr, w.refill_wait / nr);
+  }
   if (std::getenv("DS41_LAYERS") && !step_ms.empty()) {
     const size_t from = layer_records.size() - std::max<size_t>(layer_records.size() / 4, 1), count = layer_records.size() - from;
     for (uint32_t l = 0; l < D41_LAYERS; l++) {

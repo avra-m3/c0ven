@@ -8,10 +8,12 @@
 #include <array>
 #include <atomic>
 #include <condition_variable>
+#include <deque>
 #include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <thread>
 #include <string>
 #include <vector>
@@ -46,6 +48,16 @@ struct StepTimes {
   double answers = 0;  // the CPU's experts
   double after = 0;    // from the last answer to the lists' end
   std::array<float, D41_LAYERS> layer_records{}, layer_answers{};  // records and answers by layer
+};
+
+// What the swaps did since the model loaded, for Options::adapt_swaps. A batch is the pairs chosen together; a refill
+// writes an expert that left the cards, or came from the file, into an arena place. Times are ms, summed over batches.
+struct SwapStats {
+  uint64_t batches = 0, pairs = 0, steps_to_map = 0;  // steps from a choice to its pairs being mapped
+  double to_loaded = 0, to_mapped = 0;                // from a choice to its slots being written, and to being mapped
+  double make = 0, upload = 0;                        // the loaders' time building slots and copying them, over both cards
+  uint64_t refills = 0;
+  double refill_read = 0, refill_write = 0, refill_wait = 0;  // the refill threads' time, and from queued to placed
 };
 
 // What the tests ask for beyond Options.
@@ -153,6 +165,7 @@ class Model final : public engine::Model {
   const MissCounts &miss_counts() const { return counts_; }
   const StepTimes &step_times() const { return times_; }
   uint64_t swaps_done() const { return swaps_done_; }
+  SwapStats swap_stats() const;
   // The experts the last step's row routed to at layer, D41_USED ids.
   const int32_t *routed(uint32_t layer, uint32_t row) const { return jobs_[(size_t)layer * STEP_MAX_ROWS + row].all; }
   // A card's kernels in the last step, with Options::trace: each name's launches and time, in the list's order.
@@ -188,7 +201,7 @@ class Model final : public engine::Model {
     uint32_t c = 0;
     std::unique_ptr<ze::List> up;
     std::mutex up_mu;  // for the load's threads
-    std::unique_ptr<ze::List> swap_up;  // the swap thread's copies
+    std::unique_ptr<ze::List> swap_up;  // the loader's copies
     uint8_t *swap_slot = nullptr;       // and the slot it builds, in pinned memory
     uint8_t *grids;
     StepWords *plan;
@@ -287,7 +300,6 @@ class Model final : public engine::Model {
   void map_expert(uint32_t l, uint32_t expert, int32_t pair);
   void advance_swaps();
   void count_routing(uint32_t n);
-  void swap_work();
   void alloc_buffers(Card &card);
 
   ze_kernel_handle_t kernel(Card &card, const char *module, const char *name);
@@ -362,26 +374,42 @@ class Model final : public engine::Model {
   std::vector<uint32_t> split_;
   std::vector<std::array<std::array<D41Class, 2>, 2>> tables_;
   // Options::adapt_swaps: an expert the CPU keeps answering takes the pair of the layer's least used one. The step
-  // thread chooses and maps between steps; the swap thread loads the slots, then refills the arena places they freed.
-  // With in kNoExpert no pair changes: out comes from the file into place, which an arena expert used less gave up.
+  // thread chooses and maps between steps. One loader a card writes the chosen slots; the refill threads then write the
+  // experts that left the cards, and those the file gave, into arena places, while the next batch is chosen and loaded.
   struct Swap {
     uint32_t l, pair, in, out;
     uint8_t *place;  // in's place in the arena, which out takes; null when in came from the file
   };
-  enum class SwapState { idle, loading, loaded, refilling, refilled, failed };
+  struct Refill {
+    uint32_t l, out;
+    uint8_t *place;
+    double queued;
+  };
+  enum class SwapState { idle, loading, loaded, failed };
   std::vector<float> heat_;  // [layer][expert]: routings, the older ones counting less
   float heat_unit_ = 1.0f;
-  std::vector<Swap> swaps_;
+  std::vector<Swap> swaps_;  // the batch being loaded or mapped
   std::vector<std::pair<uint32_t, uint32_t>> file_seen_;  // (layer, expert) the file gave since the last choice
   std::vector<std::vector<uint32_t>> missed_;             // by layer: the experts missed since the last choice
+  std::set<std::pair<uint32_t, uint32_t>> refilling_;     // (layer, expert) queued or being written to the arena
   uint32_t coldest_in_arena(uint32_t l) const;
+  void swap_load(uint32_t card);
+  void swap_refill();
+  void queue_refill(uint32_t l, uint32_t out, uint8_t *place);
   std::atomic<SwapState> swap_state_{SwapState::idle};
-  std::mutex swap_mu_;
-  std::condition_variable swap_cv_;
+  mutable std::mutex swap_mu_;
+  std::condition_variable swap_cv_, refill_cv_;
   bool swap_stop_ = false;
+  uint64_t load_gen_ = 0;
+  uint32_t loading_left_ = 0;
   std::exception_ptr swap_failed_;
-  std::thread swapper_;
+  std::deque<Refill> refill_queue_;
+  std::vector<Refill> refill_done_;
+  std::vector<std::thread> loaders_, refillers_;
   uint64_t swaps_done_ = 0;
+  SwapStats swap_stats_;
+  uint64_t step_no_ = 0, chosen_step_ = 0;
+  double chosen_at_ = 0, loaded_at_ = 0;
 };
 
 }  // namespace engine::deepseek41

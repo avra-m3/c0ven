@@ -31,6 +31,13 @@ constexpr std::chrono::seconds kPublishLimit{10};
 // at once, kSwapsALayer of a layer.
 constexpr float kHeatDecay = 0.998f, kSwapLead = 1.0f, kSwapFloor = 0.5f, kProfileSteps = 200.0f;
 constexpr size_t kSwapBatch = 16, kSwapsALayer = 2, kFileSeen = 64;
+// Threads writing experts into the arena, each with its own reads from the file. Few, since reads queued beside the
+// Engram rows' and the CPU's slow both.
+constexpr uint32_t kRefillThreads = 2;
+
+double now_ms() {
+  return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 const void *const none = nullptr;
 
 std::string blk(uint32_t l, const char *name) { return "blk." + std::to_string(l) + "." + name; }
@@ -303,13 +310,14 @@ Model::~Model() {
     engram_cv_.notify_all();
     engram_thread_.join();
   }
-  if (!swapper_.joinable()) return;
   {
     std::lock_guard<std::mutex> lk(swap_mu_);
     swap_stop_ = true;
   }
   swap_cv_.notify_all();
-  swapper_.join();
+  refill_cv_.notify_all();
+  for (std::thread &t : loaders_) t.join();
+  for (std::thread &t : refillers_) t.join();
 }
 
 // A step's Engram rows, a table at a time in the order its layers come: gathered, made a8 in host memory, then the
@@ -622,7 +630,8 @@ void Model::load_experts() {
       cp->swap_up = std::make_unique<ze::List>(*rt_, cp->c, ze::List::immediate, true);
       cp->swap_slot = static_cast<uint8_t *>(rt_->alloc_host(slot_bytes));
     }
-    swapper_ = std::thread([this] { swap_work(); });
+    for (uint32_t c = 0; c < 2; c++) loaders_.emplace_back([this, c] { swap_load(c); });
+    for (uint32_t i = 0; i < kRefillThreads; i++) refillers_.emplace_back([this] { swap_refill(); });
   }
   if (opt_.arena_bytes == 0) return;
   for (uint32_t l = 0; l < D41_LAYERS; l++) arena_->fill(ssd_->direct(), l, experts_[l], in_arena[l]);
@@ -720,39 +729,59 @@ void Model::map_expert(uint32_t l, uint32_t expert, int32_t pair) {
   for (auto &cp : cards_) cp->up->copy(cp->layers[l].slot_map + expert, &pair, 4);
 }
 
-// Between steps: the experts the swap thread loaded are mapped, and the arena places it refilled.
+// Between steps: the arena places the refill threads wrote are mapped, and the experts the loaders wrote are mapped
+// on the cards, which frees the arena places of those that came from it for the experts that left.
 void Model::advance_swaps() {
-  const SwapState state = swap_state_.load(std::memory_order_acquire);
-  if (state == SwapState::failed) std::rethrow_exception(swap_failed_);
-  if (state != SwapState::loaded && state != SwapState::refilled) return;
-  bool refill = false;
-  for (Swap &w : swaps_) {
-    if (state == SwapState::loaded) {
-      if (w.in != kNoExpert) {
-        map_expert(w.l, w.in, (int32_t)w.pair);
-        pairs_[w.l][w.pair] = w.in;
-        w.place = arena_->take(w.l, w.in);
-        // in came from the file: out takes the place of the arena's least used expert of the layer, if used less.
-        const uint32_t cold = w.place ? kNoExpert : coldest_in_arena(w.l);
-        const float *heat = heat_.data() + (size_t)w.l * D41_EXPERTS;
-        if (cold != kNoExpert && heat[cold] < heat[w.out]) w.place = arena_->take(w.l, cold);
-      }
-      refill = refill || w.place;
-    } else if (w.place) {
-      arena_->put(w.l, experts_[w.l], w.out, w.place);
-    }
-  }
-  if (state == SwapState::loaded)
-    for (auto &cp : cards_) cp->up->synchronize();
-  if (!refill) {
-    swaps_done_ += swaps_.size();
-    swaps_.clear();
-  }
+  if (swap_state_.load(std::memory_order_acquire) == SwapState::failed) std::rethrow_exception(swap_failed_);
+  std::vector<Refill> done;
   {
     std::lock_guard<std::mutex> lk(swap_mu_);
-    swap_state_.store(refill ? SwapState::refilling : SwapState::idle, std::memory_order_release);
+    done.swap(refill_done_);
   }
-  swap_cv_.notify_all();
+  for (const Refill &r : done) {
+    arena_->put(r.l, experts_[r.l], r.out, r.place);
+    refilling_.erase({r.l, r.out});
+  }
+  if (swap_state_.load(std::memory_order_acquire) != SwapState::loaded) return;
+  const double mapped_at = now_ms();
+  std::vector<Refill> queued;
+  for (Swap &w : swaps_) {
+    map_expert(w.l, w.in, (int32_t)w.pair);
+    pairs_[w.l][w.pair] = w.in;
+    w.place = arena_->take(w.l, w.in);
+    // in came from the file: out takes the place of the arena's least used expert of the layer, if used less.
+    const uint32_t cold = w.place ? kNoExpert : coldest_in_arena(w.l);
+    const float *heat = heat_.data() + (size_t)w.l * D41_EXPERTS;
+    if (cold != kNoExpert && heat[cold] < heat[w.out]) w.place = arena_->take(w.l, cold);
+    if (w.place) queued.push_back({w.l, w.out, w.place, mapped_at});
+  }
+  for (auto &cp : cards_) cp->up->synchronize();
+  swaps_done_ += swaps_.size();
+  swap_stats_.batches++, swap_stats_.pairs += swaps_.size(), swap_stats_.steps_to_map += step_no_ - chosen_step_;
+  swap_stats_.to_loaded += loaded_at_ - chosen_at_, swap_stats_.to_mapped += mapped_at - chosen_at_;
+  swaps_.clear();
+  for (const Refill &r : queued) refilling_.insert({r.l, r.out});
+  {
+    std::lock_guard<std::mutex> lk(swap_mu_);
+    for (const Refill &r : queued) refill_queue_.push_back(r);
+    swap_state_.store(SwapState::idle, std::memory_order_release);
+  }
+  refill_cv_.notify_all();
+}
+
+// An expert the file gave, or that left the cards, goes to an arena place in the background.
+void Model::queue_refill(uint32_t l, uint32_t out, uint8_t *place) {
+  refilling_.insert({l, out});
+  {
+    std::lock_guard<std::mutex> lk(swap_mu_);
+    refill_queue_.push_back({l, out, place, now_ms()});
+  }
+  refill_cv_.notify_all();
+}
+
+SwapStats Model::swap_stats() const {
+  std::lock_guard<std::mutex> lk(swap_mu_);
+  return swap_stats_;
 }
 
 // The arena's least used expert of layer l, or kNoExpert.
@@ -764,9 +793,10 @@ uint32_t Model::coldest_in_arena(uint32_t l) const {
   return out;
 }
 
-// After a step of n rows: the routings' counts, and with the swap thread idle the next changes: the experts missed
+// After a step of n rows: the routings' counts, and with the loaders idle the next changes: the experts missed
 // since the last choice that lead their layer's least used pairs, and the experts the file gave.
 void Model::count_routing(uint32_t n) {
+  step_no_++;
   heat_unit_ /= kHeatDecay;
   if (heat_unit_ > 1e6f) {
     for (float &h : heat_) h /= heat_unit_;
@@ -788,7 +818,8 @@ void Model::count_routing(uint32_t n) {
           file_seen_.push_back(seen);
       }
     }
-  if (swap_state_.load(std::memory_order_acquire) != SwapState::idle) return;
+  // A queue of refills longer than two batches holds the next choice back.
+  if (swap_state_.load(std::memory_order_acquire) != SwapState::idle || refilling_.size() > 2 * kSwapBatch) return;
 
   struct Lead {
     float by;
@@ -800,7 +831,7 @@ void Model::count_routing(uint32_t n) {
     // The experts missed since the last choice, most used first, against the layer's least used pairs.
     std::vector<uint32_t> in, out;
     for (uint32_t e : missed_[l])
-      if (std::find(pairs_[l].begin(), pairs_[l].end(), e) == pairs_[l].end()) in.push_back(e);
+      if (std::find(pairs_[l].begin(), pairs_[l].end(), e) == pairs_[l].end() && !refilling_.count({l, e})) in.push_back(e);
     missed_[l].clear();
     for (uint32_t k = 0; k < pairs_[l].size(); k++)
       if (pairs_[l][k] != kNoExpert) out.push_back(k);
@@ -817,20 +848,23 @@ void Model::count_routing(uint32_t n) {
   std::sort(leads.begin(), leads.end(), [](const Lead &a, const Lead &b) { return a.by > b.by; });
   if (leads.size() > kSwapBatch) leads.resize(kSwapBatch);
   // An expert the file gave takes the arena place of its layer's least used expert there, once it has been used
-  // more: the swap thread reads it in, so the next step that routes to it finds it in memory.
+  // more: a refill thread reads it in, so a later step that routes to it finds it in memory.
   uint32_t admitted = 0;
   for (const auto &[l, e] : file_seen_) {
     if (admitted == kSwapBatch) break;
     const float *heat = heat_.data() + (size_t)l * D41_EXPERTS;
     const bool coming = std::any_of(leads.begin(), leads.end(), [&, l = l, e = e](const Lead &x) { return x.swap.l == l && x.swap.in == e; });
-    if (coming || arena_->weights(l, e).gate || std::find(pairs_[l].begin(), pairs_[l].end(), e) != pairs_[l].end()) continue;
+    if (coming || arena_->weights(l, e).gate || refilling_.count({l, e}) ||
+        std::find(pairs_[l].begin(), pairs_[l].end(), e) != pairs_[l].end())
+      continue;
     const uint32_t out = coldest_in_arena(l);
     if (out == kNoExpert || heat[e] <= heat[out]) continue;
-    swaps_.push_back({l, 0, kNoExpert, e, arena_->take(l, out)});
+    queue_refill(l, e, arena_->take(l, out));
+    swaps_done_++;
     admitted++;
   }
   file_seen_.clear();
-  if (leads.empty() && swaps_.empty()) return;
+  if (leads.empty()) return;
   // The pairs' experts leave the cards now: their slots are written while the next steps run.
   for (const Lead &lead : leads) {
     const Swap &w = lead.swap;
@@ -839,69 +873,108 @@ void Model::count_routing(uint32_t n) {
     swaps_.push_back(w);
   }
   for (auto &cp : cards_) cp->up->synchronize();
+  chosen_step_ = step_no_, chosen_at_ = now_ms();
   {
     std::lock_guard<std::mutex> lk(swap_mu_);
+    load_gen_++;
+    loading_left_ = (uint32_t)loaders_.size();
     swap_state_.store(SwapState::loading, std::memory_order_release);
   }
   swap_cv_.notify_all();
 }
 
-// The swap thread: loads the incoming experts' slots from the arena or the file, and later writes the outgoing ones
-// into the arena places the incoming left.
-void Model::swap_work() {
+// A loader: writes its card's half of each chosen pair's slot, from the arena or the file.
+void Model::swap_load(uint32_t c) {
   uint64_t gate_bytes = 0, down_bytes = 0;
   for (const LayerExperts &le : experts_) gate_bytes = std::max(gate_bytes, le.gate_bytes), down_bytes = std::max(down_bytes, le.down_bytes);
   AlignedBuffer bufs[3] = {aligned_buffer(gate_bytes + 2 * DirectReader::kAlign), aligned_buffer(gate_bytes + 2 * DirectReader::kAlign),
                            aligned_buffer(down_bytes + 2 * DirectReader::kAlign)};
   const DirectReader &reader = ssd_->direct();
-  const auto read = [&](const LayerExperts &le, uint32_t e, const uint8_t *m[3]) {
-    m[0] = reader.read_one(le.gate.file, le.gate.offset + e * le.gate_bytes, le.gate_bytes, bufs[0].get());
-    m[1] = reader.read_one(le.up.file, le.up.offset + e * le.gate_bytes, le.gate_bytes, bufs[1].get());
-    m[2] = reader.read_one(le.down.file, le.down.offset + e * le.down_bytes, le.down_bytes, bufs[2].get());
-  };
+  Card &card = *cards_[c];
+  uint64_t seen = 0;
   for (;;) {
-    SwapState state;
     {
       std::unique_lock<std::mutex> lk(swap_mu_);
-      swap_cv_.wait(lk, [&] {
-        state = swap_state_.load(std::memory_order_acquire);
-        return swap_stop_ || state == SwapState::loading || state == SwapState::refilling;
-      });
+      swap_cv_.wait(lk, [&] { return swap_stop_ || load_gen_ != seen; });
       if (swap_stop_) return;
+      seen = load_gen_;
     }
+    double make = 0, upload = 0;
+    std::exception_ptr error;
     try {
       for (const Swap &w : swaps_) {
         const LayerExperts &le = experts_[w.l];
         const uint8_t *m[3];
-        if (state == SwapState::refilling) {
-          if (!w.place) continue;
-          read(le, w.out, m);
-          ExpertArena::write(le, m[0], m[1], m[2], w.place);
-          continue;
-        }
-        if (w.in == kNoExpert) continue;
         const ExpertWeights held = arena_->weights(w.l, w.in);
         const uint8_t *down_b = nullptr;
         if (held.gate) {
           m[0] = held.gate, m[1] = held.up, m[2] = held.down;
           down_b = held.down + (uint64_t)E * kPartABlocks * quant_block_bytes(le.shape.down_type);
         } else {
-          read(le, w.in, m);
+          m[0] = reader.read_one(le.gate.file, le.gate.offset + w.in * le.gate_bytes, le.gate_bytes, bufs[0].get());
+          m[1] = reader.read_one(le.up.file, le.up.offset + w.in * le.gate_bytes, le.gate_bytes, bufs[1].get());
+          m[2] = reader.read_one(le.down.file, le.down.offset + w.in * le.down_bytes, le.down_bytes, bufs[2].get());
         }
-        for (uint32_t c = 0; c < 2; c++) {
-          Card &card = *cards_[c];
-          make_slot(w.l, c, w.pair, m[0], m[1], m[2], down_b, card.swap_slot);
-          card.swap_up->copy(slot_at(w.l, c, w.pair), card.swap_slot, pair_class(w.l, c, w.pair).slot_bytes);
-          card.swap_up->synchronize();
-        }
+        const double t0 = now_ms();
+        make_slot(w.l, c, w.pair, m[0], m[1], m[2], down_b, card.swap_slot);
+        const double t1 = now_ms();
+        card.swap_up->copy(slot_at(w.l, c, w.pair), card.swap_slot, pair_class(w.l, c, w.pair).slot_bytes);
+        card.swap_up->synchronize();
+        make += t1 - t0, upload += now_ms() - t1;
       }
-      state = state == SwapState::loading ? SwapState::loaded : SwapState::refilled;
     } catch (...) {
-      swap_failed_ = std::current_exception();
-      state = SwapState::failed;
+      error = std::current_exception();
     }
     std::lock_guard<std::mutex> lk(swap_mu_);
-    swap_state_.store(state, std::memory_order_release);
+    swap_stats_.make += make, swap_stats_.upload += upload;
+    if (error) {
+      swap_failed_ = error;
+      swap_state_.store(SwapState::failed, std::memory_order_release);
+    }
+    if (--loading_left_ == 0 && swap_state_.load(std::memory_order_acquire) == SwapState::loading) {
+      loaded_at_ = now_ms();
+      swap_state_.store(SwapState::loaded, std::memory_order_release);
+    }
+  }
+}
+
+// A refill thread: reads an expert from the file and writes it into its arena place.
+void Model::swap_refill() {
+  uint64_t gate_bytes = 0, down_bytes = 0;
+  for (const LayerExperts &le : experts_) gate_bytes = std::max(gate_bytes, le.gate_bytes), down_bytes = std::max(down_bytes, le.down_bytes);
+  AlignedBuffer bufs[3] = {aligned_buffer(gate_bytes + 2 * DirectReader::kAlign), aligned_buffer(gate_bytes + 2 * DirectReader::kAlign),
+                           aligned_buffer(down_bytes + 2 * DirectReader::kAlign)};
+  const DirectReader &reader = ssd_->direct();
+  for (;;) {
+    Refill r;
+    {
+      std::unique_lock<std::mutex> lk(swap_mu_);
+      refill_cv_.wait(lk, [&] { return swap_stop_ || !refill_queue_.empty(); });
+      if (swap_stop_) return;
+      r = refill_queue_.front();
+      refill_queue_.pop_front();
+    }
+    double read = 0, write = 0;
+    try {
+      const LayerExperts &le = experts_[r.l];
+      const double t0 = now_ms();
+      const uint8_t *m[3];
+      m[0] = reader.read_one(le.gate.file, le.gate.offset + r.out * le.gate_bytes, le.gate_bytes, bufs[0].get());
+      m[1] = reader.read_one(le.up.file, le.up.offset + r.out * le.gate_bytes, le.gate_bytes, bufs[1].get());
+      m[2] = reader.read_one(le.down.file, le.down.offset + r.out * le.down_bytes, le.down_bytes, bufs[2].get());
+      const double t1 = now_ms();
+      ExpertArena::write(le, m[0], m[1], m[2], r.place);
+      read = t1 - t0, write = now_ms() - t1;
+    } catch (...) {
+      std::lock_guard<std::mutex> lk(swap_mu_);
+      swap_failed_ = std::current_exception();
+      swap_state_.store(SwapState::failed, std::memory_order_release);
+      continue;
+    }
+    std::lock_guard<std::mutex> lk(swap_mu_);
+    refill_done_.push_back(r);
+    swap_stats_.refills++, swap_stats_.refill_read += read, swap_stats_.refill_write += write;
+    swap_stats_.refill_wait += now_ms() - r.queued;
   }
 }
 
