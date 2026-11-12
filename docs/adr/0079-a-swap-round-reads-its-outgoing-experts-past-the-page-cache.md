@@ -78,3 +78,6 @@ On two cards, in three ABBA rounds against reads through the mapping, one reques
 - On one card, with the 8,050-token prompt, decode was 9.7% ± 4.9 slower over five ABBA rounds and its rounds 0.9
   ms slower at the median, with one reading task or two; the cause is not found
   ([the record](../measurements/MEASUREMENTS.md#2026-11-12-swap-reads-past-the-page-cache)).
+- In the check's scenarios on two cards, one request wrote 2.3% faster at the median, but four requests at once were
+  1.8% to 3.6% slower on each request and three writers beside a prompt 1.2% slower in total, inside main's ranges.
+  More writers make more n-gram reads, which may wait behind the swap thread's reads; this is not measured.
