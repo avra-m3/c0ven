@@ -188,6 +188,12 @@ rare to be timed twice.
 - The spare drafts to the slots expected to write the fewest tokens, with no turns, and to slots they make slower.
   The same estimates: with three requests copying text one slot is always short, and a slot that accepts few
   drafts takes rows it gains nothing from (*estimate*).
+- Of the slots one more draft makes faster, the one expected to write the fewest tokens first, then the others by
+  what one more adds. With three of mixed text on two cards, 2.9% more in total than main and the slow request 0.7
+  tokens a second faster; sampled, 6.4% more in total and the slow request 2.7 slower, in every order of two rounds.
+  The request that writes the most takes a spare draft in most rounds and makes nearly every draft it asks for, so
+  each round is longer, while the other two share one spare draft
+  ([the record](../measurements/MEASUREMENTS.md#2026-11-12-spare-drafts-to-the-slowest)).
 - The spare drafts to the next slots at each choice, whatever their tokens (item 7 before this). With three of
   mixed text sent in three orders, the slow request wrote 0.5 tokens a second less than on main and the slowest
   over the fastest was 0.044 lower; with item 7, 0.6 more and 0.009 higher (Why).
