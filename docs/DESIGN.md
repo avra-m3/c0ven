@@ -205,7 +205,7 @@ The rules, from the header:
   list, fence or event while the engine thread may, since Level Zero lets one thread at a time use a list. It waits
   for the queued plans, as `engine_checkpoint`, `engine_restore` and `engine_sleep` do, or hands the work to the engine
   thread, which does it before its next plan, as `engine_admit` does with the slot's reset and `engine_admit_images`
-  with the images ([ADR-0072](adr/0072-one-thread-uses-the-cards.md)). A build with `ENGINE_CHECK_LISTS`, or without
+  with the images ([ADR-0075](adr/0075-one-thread-uses-the-cards.md)). A build with `ENGINE_CHECK_LISTS`, or without
   `NDEBUG`, throws from a list called from a second thread while one is inside it.
 - Calls are coarse: a few per step. A call through `ctypes` costs 0.3-2.3 µs
   ([the design-inputs record](measurements/MEASUREMENTS.md#2026-10-13-design-inputs)).

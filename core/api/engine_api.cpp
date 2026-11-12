@@ -2,7 +2,7 @@
 // page changes, its prompt pieces through the prompt path, then one decode step for its decode slots, batched. The
 // caller's thread only copies requests in, queues plans, takes events out, asks for checkpoints and puts the engine to
 // sleep and wakes it. It calls the model only once the engine thread is idle (drain), and hands it other model work
-// (Slot::reset_due), since the model's lists take one thread at a time (docs/adr/0072-one-thread-uses-the-cards.md).
+// (Slot::reset_due), since the model's lists take one thread at a time (docs/adr/0075-one-thread-uses-the-cards.md).
 #include "engine_api.h"
 
 #include <algorithm>

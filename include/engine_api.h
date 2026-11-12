@@ -5,7 +5,7 @@
  *   - C++ owns all memory and threads; Python owns every decision.
  *   - The core's engine thread runs the plans. A call on the caller's thread never uses a command list, fence or event
  *     while the engine thread may: it waits for the queued plans (checkpoint, restore, sleep) or leaves the work to
- *     the engine thread, before its next plan (admit, admit_images) (docs/adr/0072-one-thread-uses-the-cards.md).
+ *     the engine thread, before its next plan (admit, admit_images) (docs/adr/0075-one-thread-uses-the-cards.md).
  * engine/api/abi.py mirrors this file by hand; engine_abi_layout() lets a test check every size and offset.
  * Symbols carry the prefix engine_ (ADR-0024, item 2). */
 #ifndef ENGINE_API_H

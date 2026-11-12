@@ -1,4 +1,4 @@
-# ADR-0072: one thread at a time uses the cards' command lists
+# ADR-0075: one thread at a time uses the cards' command lists
 
 **Status:** draft. 2026-11-09.
 **Revisit when:** a C ABI call needs the cards and can neither wait for the queued plans nor leave its work to the

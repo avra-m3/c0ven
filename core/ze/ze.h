@@ -150,7 +150,7 @@ class EventPool {
 // the launches recorded between together(true) and together(false) may run at the same time, and the next command
 // waits for all of them (docs/measurements/MEASUREMENTS.md#2026-10-16-decode-launches-together).
 // One thread at a time may call a list, its fence included: Level Zero does not lock them
-// (docs/adr/0072-one-thread-uses-the-cards.md). A build with ENGINE_CHECK_LISTS, or without NDEBUG, throws from a
+// (docs/adr/0075-one-thread-uses-the-cards.md). A build with ENGINE_CHECK_LISTS, or without NDEBUG, throws from a
 // call made while another thread is inside one.
 class List {
  public:

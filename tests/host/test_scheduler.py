@@ -248,7 +248,7 @@ class LateStepDone(SpyEngine):
 
 
 class ResetFails(SpyEngine):
-    """The core resets an admitted slot on its engine thread before the next plan (ADR-0072). Here that reset fails,
+    """The core resets an admitted slot on its engine thread before the next plan (ADR-0075). Here that reset fails,
     so the plan after the admission ends with the core's error, which the native engine reports with no slot."""
 
     def __init__(self) -> None:
