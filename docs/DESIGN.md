@@ -238,7 +238,10 @@ The rules ([ADR-0033](adr/0033-paged-kv-kept-by-python.md)):
   ahead, 256 cells at a time, so that few plans carry page changes.
 - An admitted request reserves pages for its prompt and the 320 cells after it (64 + 256). A writing slot reserves
   each later block when it maps it ([ADR-0068](adr/0068-kv-pages-are-reserved-as-a-sequence-grows.md)). When
-  the pool cannot give a block, the checkpoints that hold the last reference to a page are evicted. If that is not
+  the pool cannot give an admission its pages or a slot a block, the checkpoints that hold the last reference to a
+  page are evicted, least recently used first. A checkpoint whose pages a slot or a longer checkpoint also holds
+  frees nothing and stays, so a conversation that waits loses its end first and a conversation in a slot loses
+  nothing ([ADR-0076](adr/0076-an-admission-evicts-only-checkpoints-that-free-pages.md)). If that is not
   enough and a slot stalls, the newest slot of the lowest priority is stopped. Its request waits again with the
   tokens it wrote added to its prompt, and the front end gets no token twice. While a slot waits for a page, no
   request is admitted.
