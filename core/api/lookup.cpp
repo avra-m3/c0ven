@@ -21,12 +21,15 @@ double width_ms(const double *at, uint32_t widths, uint32_t r) {
   while (hi < widths && at[hi] == 0) hi++;
   if (lo > 0 && hi < widths) return at[lo] + (at[hi] - at[lo]) * (r - lo) / (hi - lo);
   if (lo > 0) {
-    // Past the widest seen: on the line through the two widest seen, so the fixed part of a window is not scaled with
-    // the rows. Times in proportion to the rows overprice a wide window, and a width never chosen is never measured.
-    uint32_t below = lo - 1;
+    // Past the widest seen: on a line from the widest, so the fixed part of a window is not scaled with the rows. Times
+    // in proportion to the rows overprice a wide window, and a width never chosen is never measured. The gentler of
+    // the two slopes, so one slow round at the widest does not price every wider width out.
+    uint32_t below = lo - 1, narrowest = 1;
     while (below > 0 && at[below] == 0) below--;
     if (below == 0) return at[lo] * r / lo;
-    return at[lo] + std::max(0.0, (at[lo] - at[below]) / (lo - below)) * (r - lo);
+    while (at[narrowest] == 0) narrowest++;
+    const double slope = std::min((at[lo] - at[below]) / (lo - below), (at[lo] - at[narrowest]) / (lo - narrowest));
+    return at[lo] + std::max(0.0, slope) * (r - lo);
   }
   if (hi == widths) return 0;
   // Below the narrowest seen: on the line through the two narrowest seen, no dearer than the narrowest and no less
@@ -322,15 +325,17 @@ SharedChoice choose_shared_drafts(const std::vector<DraftOdds> &slots, uint32_t 
     return c;
   }
   // A count of the whole step's rows that gives more tokens a millisecond in total, and its slowest slot no fewer
-  // than the even split's slowest.
-  double best_rate = even_tokens / even_ms;
+  // than the even split's slowest (ahead); else, for the trial's checks, the one with the most tokens a millisecond.
+  double best_rate = 0;
   for (uint32_t k = 1; k <= draft_max; k++) {
     if (width(even_drafts(n, k, max_rows, draft_max)) <= kEvenRows) continue;
     double t = 0, low = 0;
     std::vector<uint32_t> d;
     const double m = price(k, max_rows, t, low, d);
-    if (low / m >= even_low / even_ms && t / m > best_rate && (!fits || fits(d))) {
-      best_rate = t / m, c.wide_tokens = t, c.wide_ms = m;
+    const bool ahead = low / m >= even_low / even_ms && t / m > even_tokens / even_ms;
+    const bool better = c.wide.empty() || (ahead != c.wide_ahead ? ahead : t / m > best_rate);
+    if (better && (!fits || fits(d))) {
+      best_rate = t / m, c.wide_ahead = ahead, c.wide_tokens = t, c.wide_ms = m;
       c.wide = std::move(d);
     }
   }
@@ -356,7 +361,7 @@ bool RoundTrial::wide(const SharedChoice &c) {
   if (c.wide_ms <= 0 || c.even_ms <= 0) return rounds_[1] <= rounds_[0];
   picks_++;
   const bool faster =
-      c.wide_tokens / c.wide_ms * correction(true) > c.even_tokens / c.even_ms * correction(false);
+      c.wide_ahead && c.wide_tokens / c.wide_ms * correction(true) > c.even_tokens / c.even_ms * correction(false);
   const uint32_t check = rounds_[!faster] < kTrialRounds ? kTrialCheck / 2 : kTrialCheck;
   return picks_ % check == 0 ? !faster : faster;
 }

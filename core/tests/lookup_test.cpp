@@ -147,6 +147,14 @@ int main() {
     EXPECT(dearer.ms(2) == 26.0, "below, a narrower width dearer: %g", dearer.ms(2));
     steep.add(8, 64.0);
     EXPECT(steep.ms(2) == 13.0, "below, in proportion: %g", steep.ms(2));
+    // Past the widest seen: from the widest at the gentler slope of the line through the two widest and the line
+    // through the narrowest and the widest. 2, 8 and 10 rows at 20, 32 and 44 ms: 6 ms a row against 3, so 16 rows
+    // are 62 ms, not 80. At 20, 38 and 40 ms: 1 ms a row against 2.5, so 46 ms.
+    WindowTimes slow_widest, flat_widest;
+    slow_widest.add(2, 20.0), slow_widest.add(8, 32.0), slow_widest.add(10, 44.0);
+    flat_widest.add(2, 20.0), flat_widest.add(8, 38.0), flat_widest.add(10, 40.0);
+    EXPECT(slow_widest.ms(16) == 62.0 && flat_widest.ms(16) == 46.0, "past, gentler: %g %g", slow_widest.ms(16),
+           flat_widest.ms(16));
   }
 
   // A round of several slots' time: each width's time less its misses at one cost a miss.
@@ -343,8 +351,10 @@ int main() {
     auto even = [&](const std::vector<DraftOdds> &s, uint32_t dmax, uint32_t rows, const RoundTimes &win) {
       return choose_shared_drafts(s, dmax, rows, win, dr).even;
     };
+    // The wide count the trial may take by the estimates: one ahead, or one before two widths are timed.
     auto wide = [&](const std::vector<DraftOdds> &s, uint32_t dmax, uint32_t rows, const RoundTimes &win) {
-      return choose_shared_drafts(s, dmax, rows, win, dr).wide;
+      const SharedChoice c = choose_shared_drafts(s, dmax, rows, win, dr);
+      return c.wide_ahead || c.wide_ms == 0 ? c.wide : std::vector<uint32_t>{};
     };
     // No window timed: the even split 2 each of 8 rows; until two widths are timed, the wide count 3 each of 16 rows
     // where that is more than 8.
@@ -419,16 +429,26 @@ int main() {
     std::vector<DraftOdds> none_first = {slots(1, 0, 3)[0], slots(1, 3, 3)[0], slots(1, 3, 3)[0]};
     const SharedChoice nl = choose_shared_drafts(none_last, 3, 16, w, dr, 0);
     const SharedChoice nf = choose_shared_drafts(none_first, 3, 16, w, dr, 0);
-    EXPECT(nl.even == v({2, 2, 1}) && nf.even == v({1, 2, 2}) && nl.wide.empty() && nf.wide.empty(),
+    EXPECT(nl.even == v({2, 2, 1}) && nf.even == v({1, 2, 2}) && !nl.wide_ahead && !nf.wide_ahead,
            "order of the slots");
     // The same with the third slot accepting none: it is the slowest in both, at 1 token in 36.7 ms against 1 in
     // 50.5, so there is no wide count.
     std::vector<DraftOdds> two_sure = {slots(1, 3, 3)[0], slots(1, 3, 3)[0], slots(1, 0, 3)[0]};
     EXPECT(wide(two_sure, 3, 16, w).empty(), "3 slots, one accepting none, wide");
-    // Dear wide windows: no wide count.
+    // Dear wide windows: no wide count ahead, but the one with the most tokens a millisecond for the trial's checks,
+    // with its estimates.
     RoundTimes dear = w;
     for (int i = 0; i < 4; i++) dear.add(12, 70, 0), dear.add(16, 80, 0);
     EXPECT(wide(slots(2, 3, 3), 7, 16, dear).empty(), "dear");
+    const SharedChoice dc = choose_shared_drafts(slots(2, 3, 3), 7, 16, dear, dr);
+    double dear_best = 0;
+    for (uint32_t k = 4; k <= 7; k++) {
+      const double ms = dear.ms(2 * k + 2) + dr.ms(2 * k + 2);
+      dear_best = std::max(dear_best, (2.0 * k + 2) / ms);
+    }
+    EXPECT(!dc.wide.empty() && !dc.wide_ahead && std::fabs(dc.wide_tokens / dc.wide_ms - dear_best) < 1e-9 &&
+               dc.even_ms > 0,
+           "dear, for the checks: %zu %g %g", dc.wide.size(), dc.wide_tokens / dc.wide_ms, dear_best);
     // A step of 8 rows at most: the even split only.
     EXPECT(even(slots(2, 3, 3), 7, 8, w) == v({3, 3}) && wide(slots(2, 3, 3), 7, 8, w).empty(), "8 rows");
     EXPECT(even({}, 7, 16, w).empty() && wide({}, 7, 16, w).empty(), "no slots");
@@ -475,16 +495,17 @@ int main() {
   // gave over what was estimated for them, from kTrialPrior) is the higher, and every kTrialCheck-th choice the other
   // (every kTrialCheck / 2-th while it has fewer than kTrialRounds rounds).
   {
-    auto choice = [](double wide_tokens, double wide_ms, double even_tokens, double even_ms) {
+    auto choice = [](double wide_tokens, double wide_ms, double even_tokens, double even_ms, bool ahead = true) {
       SharedChoice c;
       c.even = {1, 1, 1}, c.wide = {3, 3, 3};
       c.wide_tokens = wide_tokens, c.wide_ms = wide_ms, c.even_tokens = even_tokens, c.even_ms = even_ms;
+      c.wide_ahead = ahead;
       return c;
     };
     // Rounds that give wide_rate and even_rate tokens a millisecond, against estimates of 0.2 for both.
-    auto run = [&](double wide_rate, double even_rate, uint32_t picks) {
+    auto run = [&](double wide_rate, double even_rate, uint32_t picks, bool ahead = true) {
       engine::RoundTrial tr;
-      const SharedChoice c = choice(10, 50, 6, 30);
+      const SharedChoice c = choice(10, 50, 6, 30, ahead);
       uint32_t wides = 0;
       for (uint32_t i = 0; i < picks; i++) {
         const bool w = tr.wide(c);
@@ -503,6 +524,11 @@ int main() {
     const uint32_t picks = 2000, faster = run(0.25, 0.2, picks), slower = run(0.2, 0.25, picks);
     EXPECT(faster >= picks - picks / engine::kTrialCheck - 5 * engine::kTrialCheck / 2, "faster wide: %u", faster);
     EXPECT(slower <= engine::kTrialRounds + picks / engine::kTrialCheck + 1, "slower wide: %u", slower);
+    // A wide count not ahead by choose_shared_drafts' estimates runs on the checks alone, however well its rounds go:
+    // every 16th choice until it has kTrialRounds rounds, then every 32nd.
+    const uint32_t behind = run(0.25, 0.2, picks, false);
+    EXPECT(behind >= picks / engine::kTrialCheck && behind <= engine::kTrialRounds + picks / engine::kTrialCheck + 1,
+           "not ahead: %u", behind);
     // Corrections carry to other text: on text A the wide count gave 0.8 of its estimate (0.81 or so with the prior)
     // and the even split all of it. On text B the wide count's estimate is 0.4 tokens a ms and the even split's
     // 0.25: about 0.32 against 0.25, the wide count. On text C 0.26 against 0.25: about 0.21, the even split.

@@ -36,9 +36,12 @@ class Lookup {
 
 
 // A width not seen yet, in WindowTimes and RoundTimes alike: between two seen, on the line through them; past the
-// widest seen, on the line through the two widest and no less than the widest (in proportion to the rows while one
-// width is seen); below the narrowest seen, on the line through the two narrowest, no dearer than the narrowest and
-// no less than in proportion to the rows (the narrowest's time while one width is seen).
+// widest seen, from the widest at the gentler slope of the line through the two widest and the line through the
+// narrowest and the widest, and no less than the widest (in proportion to the rows while one width is seen); below the
+// narrowest seen, on the line through the two narrowest, no dearer than the narrowest and no less than in proportion to
+// the rows (the narrowest's time while one width is seen). One slow round at a wide width makes the line through the
+// two widest steep and prices every wider width out; a width priced too low is run and timed, one priced too high
+// never is.
 
 // How a window's time grows with its rows, from the rounds the core runs: each width's running mean, and a width not
 // seen yet as above. A width's second time replaces its first, which may hold the first run of the width's lists.
@@ -175,14 +178,16 @@ std::vector<uint32_t> split_drafts(const std::vector<DraftOdds> &slots, uint32_t
 // - even: the k with the most tokens a millisecond of a step of kEvenRows rows, and at least 1 while a slot's first
 //   draft has been checked in fewer than kFirstChecks rounds; kSharedDrafts while fewer than two widths are timed.
 // - wide: a k whose rows are more than kEvenRows, of a step of max_rows, that gives more tokens a millisecond in all
-//   and its slowest slot at least the tokens a millisecond of the even split's slowest; the one with the most. Empty
-//   when none does, or with max_rows at most kEvenRows. While fewer than two widths are timed: kSharedDrafts + 1 each
-//   of max_rows rows, so that a wider width is timed. Where fits is given, only a split it holds is taken: the core
-//   asks whether the cards' memory takes the round (Model::step_fits).
+//   and its slowest slot at least the tokens a millisecond of the even split's slowest (ahead); the one with the most.
+//   Where none does, the k with the most tokens a millisecond, not ahead: the trial takes it only on its checks, so
+//   that a wide width priced too high is timed again. Empty with max_rows at most kEvenRows. While fewer than two
+//   widths are timed: kSharedDrafts + 1 each of max_rows rows, so that a wider width is timed. Where fits is given,
+//   only a split it holds is taken: the core asks whether the cards' memory takes the round (Model::step_fits).
 // With a wide count, both carry their estimates for the trial: the slots' expected tokens and the round's time.
 struct SharedChoice {
   std::vector<uint32_t> even, wide;
   double even_tokens = 0, even_ms = 0, wide_tokens = 0, wide_ms = 0;
+  bool wide_ahead = false;
 };
 SharedChoice choose_shared_drafts(const std::vector<DraftOdds> &slots, uint32_t draft_max, uint32_t max_rows,
                                   const RoundTimes &window, const WindowTimes &drafter, uint32_t first = 0,
@@ -200,9 +205,10 @@ std::vector<uint32_t> window_drafts(const std::vector<uint32_t> &made, uint32_t 
 // by kTrialDecay a round of its own. An arm's correction is the first rate over the second, starting from
 // kTrialPrior (as kTrialPriorRounds rounds at its first round's estimates). A round's estimates follow the slots'
 // text and the misses of the moment, so the corrections compare the arms even when one last ran on other text. A
-// round takes the arm whose estimate times its correction is the higher, and every kTrialCheck-th choice the other
-// (every kTrialCheck / 2-th while the other has fewer than kTrialRounds rounds), so that its correction stays
-// current. A choice without estimates is not counted and takes the wide count while the arms have as many rounds.
+// round takes the arm whose estimate times its correction is the higher (the even split where the wide count is not
+// ahead), and every kTrialCheck-th choice the other (every kTrialCheck / 2-th while the other has fewer than
+// kTrialRounds rounds), so that its correction and its widths' times stay current. A choice without estimates is not
+// counted and takes the wide count while the arms have as many rounds.
 // The core keeps one for each number of slots.
 constexpr uint32_t kTrialRounds = 8;
 constexpr uint32_t kTrialCheck = 32;

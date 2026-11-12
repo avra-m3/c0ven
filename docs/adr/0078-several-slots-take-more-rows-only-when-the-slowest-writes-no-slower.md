@@ -53,10 +53,11 @@ alternating order, give the slowest request fewer tokens a second, or fewer in t
    (`drafter_times`). `RoundTimes` fits one cost a miss across the widths and keeps each width's time less that
    cost of its misses, and the misses a row of the rounds lately. A width's time is that net time and its rows'
    misses at the cost. A width not timed twice, there and in `drafter_times` alike, is on the line through the
-   nearest timed ones; past the widest, on the line through the two widest and no less than the widest; below the
-   narrowest, on the line through the two narrowest, no dearer than the narrowest and no less than in proportion to
-   the rows. A round of a number of drafts is priced at the time of each width it may have and the draft layer's
-   pass after it, by the chance of that width from item 2's shares of drafts made.
+   nearest timed ones; past the widest, from the widest at the gentler slope of the line through the two widest and
+   the line through the narrowest and the widest, and no less than the widest; below the narrowest, on the line
+   through the two narrowest, no dearer than the narrowest and no less than in proportion to the rows. A round of a
+   number of drafts is priced at the time of each width it may have and the draft layer's pass after it, by the
+   chance of that width from item 2's shares of drafts made.
 2. Each slot keeps two figures at each of the first 8 places of its drafts (`DraftOdds`): the share of the rounds
    that asked for a draft there, after the draft layer made the one before, in which it made it; and the acceptance
    of the drafts made there, in the rounds that checked the place, every draft before it accepted. Each is decayed
@@ -71,17 +72,18 @@ alternating order, give the slowest request fewer tokens a second, or fewer in t
 4. The wide count is a number of the whole step's 16 rows, shared out the same way, that gives more tokens a
    millisecond in total, and its slowest slot at least the tokens a millisecond of the even split's slowest, both
    by items 1 and 2; of those, the one with the most. Until two widths are timed by `RoundTimes`, 3 each of 16 rows,
-   so that a wider one is timed. Only a number whose next round the step could hold counts (ADR-0077), and there is
-   no wide count when none qualifies. Where the step cannot hold a round's rows when it runs, as the ring shrinks
-   between the choice and the round, the round takes 8 rows, shared out one draft at a time to each slot with more
-   drafts made, and counts in neither arm of item 5's trial.
+   so that a wider one is timed. Only a number whose next round the step could hold counts (ADR-0077). Where none
+   qualifies, the one of those with the most tokens a millisecond is the wide count for item 5's checks alone, so
+   that a wide width priced too high is timed again. Where the step cannot hold a round's rows when it runs, as the
+   ring shrinks between the choice and the round, the round takes 8 rows, shared out one draft at a time to each
+   slot with more drafts made, and counts in neither arm of item 5's trial.
 5. Where there is a wide count, a trial for each number of slots (`RoundTrial`) chooses between it and the even
    split. Each arm keeps the tokens its rounds wrote over the time of their windows and of the draft layer's passes
    after them, and items 3 and 4's estimates for those rounds, each decayed by 1/16 a round of its own; its
    correction is the first rate over the second, starting from 0.85 for the wide count and 1 for the even split, as
-   4 rounds at the arm's first estimates. A round takes the arm whose estimate, times its correction, is the higher,
-   and every 32nd choice the other (every 16th while the other has fewer than 8 rounds), so that its correction
-   stays current.
+   4 rounds at the arm's first estimates. A round takes the arm whose estimate, times its correction, is the higher
+   (the even split where the wide count does not qualify), and every 32nd choice the other (every 16th while the
+   other has fewer than 8 rounds), so that its correction and its widths' times stay current.
 6. A round verifies every draft made. A lone slot's round is unchanged.
 7. Where a number leaves some slots one draft more than others (2, 2 and 1 of 8 rows for three slots), those drafts
    go first to the slots one more draft makes faster (its tokens over the round's time with its row, by items 1 and
@@ -163,6 +165,16 @@ Item 1's line below the narrowest width: a width priced as the narrowest timed o
 never run. In the simulation, three requests that started at 8 and 12 rows never ran 6 and stayed at 8, 1.7% slower
 in total. Item 4's first wide count times a second width because a step with no drafts, one row a slot, is too
 rare to be timed twice.
+
+Item 1's slope past the widest width and item 4's count for the checks: the same holds for wide widths priced too
+high. In a trace of three requests copying text on two cards, two slow rounds at 11 and 12 rows put the line
+through the two widest at 14 ms a row and 16 rows at 162 ms. No wide count qualified after that, so none ran and
+those widths were not timed again: the requests took 8 rows in 99 of 110 rounds and wrote 41.6 tokens a second,
+where three other loads of the same build or the one before took 15 and 16 rows and wrote about 45. In the two
+loads that timed 16 rows, the line through 3 and 12 rows put 16 at 124.5 and 110.0 ms against the 126.2 and
+111.0 timed, and the line through 11 and 12 at 140.3 and 114.2 (*estimate*, from each load's last table). A
+width priced too low is run and timed; the checks cost a wide count that does not qualify one round in 32 once it
+has 8.
 
 ## Options not chosen
 
