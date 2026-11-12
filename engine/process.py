@@ -554,7 +554,7 @@ def main(argv: list[str] | None = None) -> int:
         from engine.api.native import cards as read_cards  # noqa: PLC0415
 
         try:
-            cards = read_cards()
+            cards = [host.slot_link(c) for c in read_cards()]
         except EngineError as exc:
             print(protocol.Error(None, f"cards: {exc}").encode(), flush=True)
             return 1
