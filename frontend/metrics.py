@@ -29,6 +29,8 @@ def derive(report: Mapping[str, str]) -> dict[str, float]:
     from the slot's own tokens, each counting the one token a run always gives and the drafts accepted. Side by side
     they say which source pays. `accepted_per_run` for `layer` and `lookup`: drafts accepted each time a slot drafted.
     `undrafted_share`: of the plain steps, those with drafting on where every row wrote and no slot had a draft.
+    `reading_round_share`: of the writers' rounds and undrafted steps run while another slot read its prompt, the
+    rounds.
     `busy`: the engine thread's time in plans over the time since open; `swap_share` the swap rounds' part of it.
     `prompt_rows_per_s` and `window_rows_per_s`: prompt rows through the prompt path and as decode windows.
     `ngram_hit_rate`: the n-gram table's rows served from its cache."""
@@ -58,6 +60,7 @@ def derive(report: Mapping[str, str]) -> dict[str, float]:
     ratio("layer_accepted_per_run", count("layer_accepted"), count("layer_runs"))
     ratio("lookup_accepted_per_run", count("lookup_accepted"), count("lookup_runs"))
     ratio("undrafted_share", count("undrafted_steps"), count("steps"))
+    ratio("reading_round_share", count("reading_rounds"), count("reading_rounds") + count("reading_steps"))
     ratio("busy", count("busy_ns"), count("up_ns"))
     ratio("swap_share", count("swap_ns"), count("busy_ns"))
     ratio("prompt_rows_per_s", count("prompt_rows"), count("prompt_ns"), 1e9)

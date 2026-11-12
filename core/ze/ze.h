@@ -24,6 +24,10 @@ void check(ze_result_t r, const char *what);
 // caller goes through this one.
 ze_result_t init();
 
+// True once a list has timed out in this process: the driver's calls, and its teardown at a normal exit, would wait on
+// the stuck queue.
+bool queue_stuck();
+
 struct Card {
   ze_device_handle_t device = nullptr;
   std::string name;

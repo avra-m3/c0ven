@@ -21,14 +21,15 @@ void Model::note_routing(uint32_t layer, const int32_t *ids, uint32_t n, float w
     if (ids[k] >= 0 && ids[k] < (int32_t)shape_.experts) u[ids[k]] += weight;
 }
 
-// The prompt path's counts of the last chunk (P.prof, kept when swaps are on) into the decayed counts, then zeroed.
-void Model::note_prompt_routing() {
+// The prompt path's counts of the last chunk (P.prof, kept when swaps are on) into the decayed counts when add, then
+// zeroed.
+void Model::note_prompt_routing(bool add) {
   const PromptCard *P = cards_[0]->pc.get();
   if (!P || !P->prof) return;
-  std::vector<uint32_t> v(shape_.layers * shape_.experts);
-  cards_[0]->up->copy(v.data(), P->prof, v.size() * 4);
+  std::vector<uint32_t> v(add ? shape_.layers * shape_.experts : 0);
+  if (add) cards_[0]->up->copy(v.data(), P->prof, v.size() * 4);
   const uint32_t z = 0;
-  cards_[0]->up->fill(P->prof, &z, 4, v.size() * 4);
+  cards_[0]->up->fill(P->prof, &z, 4, (uint64_t)shape_.layers * shape_.experts * 4);
   cards_[0]->up->synchronize();
   for (size_t i = 0; i < v.size(); i++) use_[i] += kPromptRouting * (float)v[i];
 }

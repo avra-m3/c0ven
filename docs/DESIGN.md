@@ -88,9 +88,13 @@ flowchart TB
 
 The front end starts the engine process as its child and talks to it in token ids, one line per message over a pipe
 ([`protocol.py`](../protocol.py)). Every line about a request carries its id. If the engine dies, every request in
-flight gets an error and the next request starts it again. An engine that fails sends `ERR -` and exits with no
-teardown, because a queue on the cards may never finish and the driver's calls would wait on it; the kernel frees the
-cards. A child that has not exited 10 s after `ERR -` is killed. A fault on the cards cannot take down the API
+flight gets an error and the next request starts it again. An engine that fails sends `ERR -` and exits. A child
+that has not exited 10 s after `ERR -` is killed. The engine exits through the driver's teardown, the one step that
+stops the copy loop the driver keeps running on each card after a copy: a process that ends with one running can leave
+that card's copy engine unable to run new work, and the next start then hangs
+([measured](measurements/MEASUREMENTS.md#2026-11-06-copy-engine-stuck-after-exit)). The one exception is a command
+list that timed out: its queue never finishes, the teardown and the driver's other calls would wait on it, so the
+engine skips them and the kernel frees the cards. A fault on the cards cannot take down the API
 ([ADR-0022](adr/0022-two-processes-python-and-cpp.md)).
 
 One engine process drives both cards. Host memory that both cards read must come from one Level Zero context that
@@ -258,6 +262,14 @@ The rules ([ADR-0033](adr/0033-paged-kv-kept-by-python.md)):
   rows only. The KV cells of rejected rows are overwritten when those positions come again
   ([MODEL_LAYER.md, 2.8](spec/MODEL_LAYER.md#28-what-must-be-saved-to-roll-back-rejected-draft-tokens)).
 
+### Past the trained context
+
+A context above the file's `context_length`, 262,144 tokens, rotates K, Q and the indexer's queries and pooled keys by YaRN, with
+`s = context / context_length` ([MODEL_LAYER.md, section 3.3](spec/MODEL_LAYER.md#33-rope-821-832),
+[ADR-0073](adr/0073-past-the-trained-context-the-rotation-is-scaled-by-yarn.md)). The core takes `s` from `max_ctx` and the file at
+load, in `core/models/qwen4exp/yarn.h`, so it is the same for every request on the server. K in the cache is stored
+rotated, and so holds for that `s` only. The draft layers do not scale: they attend over a short window of positions.
+
 ### The indexer on two cards: split by position
 
 The indexer picks which 2,048 cached positions each query attends to, by scoring one key per position block. Each
@@ -347,7 +359,7 @@ No card is kept busy to hold its clock up. In decode both cards stay at 2,400 MH
 | Each card's VRAM (`zeMemAllocDevice`) | The card's half of every layer's weights and of each cached expert, its KV pages and state heads, its buffers and recorded lists |
 | Pinned host memory (`zeMemAllocHost`) | Each card's K and V of every KV page. What both cards or the CPU read: step plans, the misses' jobs and answers, the one-row exchanges, the step's n-gram rows, the cards' candidates, the checkpoints, the image encoder's weights |
 | The expert arena: the engine's own memory, from `mmap` in 1 GiB pieces, in huge pages while the host keeps free 2 MiB blocks; with `--hugepages`, in the host's reserved huge pages while they last ([ADR-0066](adr/0066-the-arena-may-take-reserved-huge-pages.md)) | Every expert no card caches, each in one place. The CPU reads it for misses and copies from it for short prompt chunks, and the copy engines read it in place for longer chunks and swaps. The driver cannot move this memory under the host's reclaim, and it counts against the engine's cgroup ([ADR-0035](adr/0035-the-arena-in-the-engines-own-memory.md); [known limits](../README.md#known-limits)) |
-| RAM | The n-gram rows already read, in a cache; or the whole n-gram table, when the host has room for it ([ADR-0057](adr/0057-the-engine-reads-the-host-it-runs-on.md)) |
+| RAM | The n-gram rows already read, in a cache of 1,048,576 rows; or the whole n-gram table, when the host has room for it ([ADR-0057](adr/0057-the-engine-reads-the-host-it-runs-on.md)). With `--hugepages` and `--ngram-ram auto`, the reserved huge pages the arena leaves at its largest hold the table, its first part when the rest fits the host's memory, or else a cache of as many rows as they hold ([ADR-0070](adr/0070-the-ngram-table-takes-the-huge-pages-the-arena-leaves.md)) |
 | The SSD | The n-gram table, 28.8 GB, read with `O_DIRECT` past the page cache ([ADR-0015](adr/0015-ngram-table-on-the-ssd.md)), unless it is in RAM |
 
 The engine never uses shared memory (`zeMemAllocShared`), because the driver moves its pages without the engine
@@ -408,13 +420,14 @@ weights in RAM, so a wake reads only the cards' part of the model again
 ## 7. Timing and debugging
 
 The core keeps its last 4,096 timing records, one for each prompt piece, decode step or draft round, with its rows
-and the experts the CPU computed. `engine_read_timing` takes them out. The core stores only these small binary
+and the experts the CPU computed, and one for the draft pass after a plan's step or round (rows 0). `engine_read_timing` takes them out. The core stores only these small binary
 records. Python adds them up and formats them.
 
 The core also keeps counters since open, `engine_stats` in [`include/engine_api.h`](../include/engine_api.h): plans
 and the engine thread's time in them; prompt chunks and windowed pieces with their rows and time; decode steps that
 verified no drafts, with their rows, time, the experts the CPU computed and the layers that missed; draft rounds the
-same, and each slot's run in a round by the source of its drafts, the draft layer or the slot's own tokens, with the
+same; the steps whose rows all wrote and had no drafts, and of those and of the rounds, the ones run while another slot
+read its prompt; and each slot's run in a round by the source of its drafts, the draft layer or the slot's own tokens, with the
 drafts verified and accepted and the rounds' time; swap rounds, the experts they swapped and their time; stalls,
 checkpoints and restores; the n-gram table's rows, cache hits and SSD reads; and the experts cached per layer at the
 last plan's end, beside the fewest the load keeps room for (ADR-0045). Each counter is one addition where the timing record is already written, so the step pays nothing
@@ -428,7 +441,8 @@ ended. A thread of its own reads that from `pswpout` in `/proc/vmstat` once a se
 the value; a host without the file reports no such counter. Each request's `DONE` line carries its wait for a slot,
 its steps and its drafts. `/metrics` reports both, and the ratios read from the counters (`frontend/metrics.py`): a step's and a
 round's time, misses per decode row, tokens per second of card time in plain steps and in rounds by draft source,
-drafts accepted per run, the engine thread's busy share and the swap rounds' part of it. With `--metrics-log`, the
+drafts accepted per run, the share of the writers' passes beside a reading slot that ran as rounds, the engine
+thread's busy share and the swap rounds' part of it. With `--metrics-log`, the
 `frontend.metrics` logger writes each request's record as it ends, and the counters and ratios at that interval and at
 shutdown, each as one JSON object on a line with an `event` of `request` or `snapshot`. The counters start from zero
 with each process, so a log store is what keeps them.
@@ -439,7 +453,9 @@ by them ([ADR-0017](adr/0017-scheduling-several-requests.md)). Every piece pays 
 read whole, and a longer one in pieces, each holding the writers about as long as a short prompt does
 ([ADR-0044](adr/0044-a-short-prompt-is-read-whole.md)). The core reports `fetch_rows`, the longest chunk whose
 uncached experts are fetched as its router picks them ([ADR-0046](adr/0046-a-short-chunk-fetches-the-experts-its-router-picks.md));
-a longer chunk copies every uncached expert, and is slower near that size. A piece holds at most `fetch_rows` less
+a longer chunk copies every uncached expert, and is slower near that size. The cost model fits a second fixed part
+and part per row for such chunks, and prices them on it once it has seen one; until their sizes differ enough to
+split the two parts, a row costs what it does on the fetch path. A piece holds at most `fetch_rows` less
 the three writers' rows that may ride in its chunk, and at most 1,024 rows: 1,021 on qwen4exp with experts left
 uncached (`fetch_rows` 1,024), 1,024 with every expert cached (`fetch_rows` 0). A long prompt's piece aims between the budget and
 1.6 times it: past the budget, up to where more time returns little in a score of prompt rows plus decode tokens, each
@@ -448,7 +464,17 @@ one stays at the budget. A plan's pieces are priced at most 1.6 times the budget
 writers longest. These come from chunk times and writers' gaps measured at piece sizes of 256 to 3,072 rows
 ([the record](measurements/MEASUREMENTS.md#2026-11-01-whole-rows-and-stretch)) and a mixed load
 ([the record](measurements/MEASUREMENTS.md#2026-11-01-full-prompt-pieces),
-[the rule](measurements/MEASUREMENTS.md#2026-11-01-piece-rule-with-a-slow-split)). With `ENGINE_CACHE_DIR` set,
+[the rule](measurements/MEASUREMENTS.md#2026-11-01-piece-rule-with-a-slow-split)).
+
+Beside writers a whole chunk is `--chunk-rows` less three rows, 4,349, since the core adds the writers' rows only
+while a chunk is short of 4,352 rows ([ADR-0053](adr/0053-writers-rows-ride-in-a-prompt-chunk.md)). When such a
+chunk, priced on the second line, costs at most 1.6 times the budget, a piece beside writers is a whole chunk
+instead, or the rows left before the prompt's end or its next checkpoint, and other prompts may join a chunk up to a
+whole one while the plan stays within 1.6 times the budget
+([ADR-0069](adr/0069-a-prompt-piece-may-be-a-whole-chunk-when-the-budget-fits-one.md)). Just past the fetch path a
+chunk reads fewer rows a second than a 1,021-row piece, so a piece that leaves the fetch path goes to a whole chunk.
+The default budget, 500 ms, fits no whole chunk. [OPTIONS.md](OPTIONS.md#long-prompt-pieces-beside-writers) gives
+the setting and the writers' gaps that come with it. With `ENGINE_CACHE_DIR` set,
 the engine process writes the cost model there at each sleep and at exit, one file for each model file, engine version
 and set of options (the key of the working memory's file), and the next start and wake begin from it instead of the
 estimates. The protocol's
@@ -566,8 +592,11 @@ When the decoding slots all write, a step is a draft round
 as one window, and the windows of all slots run in one step. The slots share the step's 8 rows: a lone slot takes up to
 7 drafts with DFlash 2 and 3 with the MTP layer, and each of several as many as give the most tokens a millisecond, from the slots' acceptance and the times of
 windows of each width (2 until a window is timed), fewer as there are more of them. Each slot's window is accepted and committed on
-its own. A step of several slots runs no drafts while any slot has prompt left to read, or when it gives one of them its
-second token ([the record](measurements/MEASUREMENTS.md#2026-10-19-draft-rounds-several-writers)). A draft is accepted while it
+its own. A step of several slots runs no drafts when it gives one of them its second token, which already waits for
+the prompt steps after its first. Writing slots draft while another slot reads its prompt: the scheduler owes them a
+share of the prompt steps' time, so a round gives them more tokens in the same time
+([ADR-0071](adr/0071-writers-draft-while-a-slot-reads-its-prompt.md), `core/api/draft_gate.h`). A step whose rows
+include a prompt token, and a writer's row in a prompt chunk, run no drafts. A draft is accepted while it
 equals what the main model samples at its place, and the main model samples one more token after the accepted ones. The
 accepted rows are committed, and the draft layer reads them and drafts again. Drafting stops at a draft whose
 probability under the request's sampler is below 0.5. Drafts never change the tokens, because the main model samples
@@ -596,14 +625,17 @@ never waits for the CPU, and each further draft is one more pass (`core/models/q
 The core counts which experts the requests route to. Between plans it lets the uncached experts used most replace the
 cached ones used least, up to 64 in a round, shared out among the slots that wrote in the plan before (32 for two, 16
 for four): after a plan that ends a prompt, and otherwise once the time the CPU's misses have cost since the last
-round reaches that round's time, at least 4 plans and at most 16 after it, never while a slot is reading its prompt
-(`core/models/qwen4exp/swap.cpp`, `core/api/swap_cadence.h`). A missed layer's cost is a line through the decode steps'
+round reaches that round's time, at least 4 plans and at most 16 after it
+(`core/models/qwen4exp/swap.cpp`, `core/api/swap_cadence.h`). While a slot reads its prompt and no slot writes, no
+round runs; while any slot writes, rounds keep this cadence beside the prompt, and the prompt's routing stays out of
+the counts ([ADR-0074](adr/0074-swap-rounds-beside-a-prompt.md)). A missed layer's cost is a line through the decode steps'
 times against their missed layers, for each step width. Until a round is timed and a cost is fitted, a round follows
 every 4th plan. While several slots write, a round follows every 16th plan. When the KV pool and the cache share the
 cards (section 6), a round also moves blocks between them: to the pool when the pages backed above those in use run
 low, and back to the cache, with the most used uncached experts, when many are free. A swap changes which experts the CPU computes, and so their rounding. Tokens repeat
 exactly from run to run only with `--deterministic`, which turns swaps off
-([ADR-0029](adr/0029-the-engine-process-drafts-and-swaps.md)).
+([ADR-0029](adr/0029-the-engine-process-drafts-and-swaps.md)), and the CPU's part in a short chunk
+([ADR-0072](adr/0072-on-one-card-the-cpu-computes-a-short-chunks-rarest-experts.md)).
 A round holds the engine thread only to append the halves' copies, switch the maps and wait for the cards' copies,
 about 3 ms; the swap thread chooses the next round's swaps and builds their halves from the arena behind the steps
 ([the record](measurements/MEASUREMENTS.md#2026-10-20-swap-round-behind-the-steps)).
@@ -618,8 +650,11 @@ and a request behind that round would wait for it.
 
 The prompt path reads up to 4,352 tokens in one pass on both cards, from up to four sequences at once. The products
 run on the cards' matrix units (XMX). Each card's copy engine streams the experts the card does not cache from the
-arena, two layers ahead, so the CPU computes nothing for a prompt. That streaming is most of a short chunk's time, and
-prompts read in one chunk share it ([ADR-0017](adr/0017-scheduling-several-requests.md), item 2). An image's encoder
+arena, two layers ahead. That streaming is most of a short chunk's time, and prompts read in one chunk share it
+([ADR-0017](adr/0017-scheduling-several-requests.md), item 2). On one card, in a chunk of 1,024 rows or fewer, the CPU
+computes the uncached experts that three rows or fewer picked, in place of copying them
+([ADR-0072](adr/0072-on-one-card-the-cpu-computes-a-short-chunks-rarest-experts.md)); otherwise it computes nothing for a
+prompt. An image's encoder
 runs just before the chunk that holds the image's tokens. Its weights stream through the prompt path's staging slots,
 so it holds no VRAM of its own ([ADR-0031](adr/0031-images-through-the-prompt-path.md)).
 [DEVELOPING.md](DEVELOPING.md#how-a-prompt-chunk-runs) gives the kernels.

@@ -1,6 +1,7 @@
 # ADR-0053: writing slots' next tokens ride in a prompt chunk as runs of one row
 
-**Status:** draft, 2026-10-28; not accepted.
+**Status:** draft, 2026-10-28; not accepted. Item 1's "as for several writers in a decode step" superseded by
+[ADR-0071](0071-writers-draft-while-a-slot-reads-its-prompt.md) (draft): those writers now draft.
 **Revisit when:** a writing slot's drafts can ride with its row, a prompt chunk stops staging every expert its rows
 route to, or the writers' tokens beside an arriving prompt are measured to fall.
 

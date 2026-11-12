@@ -360,6 +360,7 @@ def three_tiers(**more: object) -> ModelMemory:
         "draft_kv_host": 0,
         "checkpoint_bytes": 0,
         "max_context": 4096,
+        "trained_context": 4096,
         "ngram_bytes": 0,
         "layer_expert_bytes": (8 * MIB, 8 * MIB, 12 * MIB, 12 * MIB),
         "ssd_tier": True,

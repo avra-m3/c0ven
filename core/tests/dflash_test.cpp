@@ -1,8 +1,8 @@
 // The DFlash 2 drafter (core/models/qwen4exp/dflash.cpp) against a float CPU version of the same model, from its
-// tensor files: the main model's features of 2,056 positions (a reference prompt, repeated) as context, then a block
-// of 8 rows, each of which sees the last DF_WINDOW positions. Gate: each row's final hidden state within 2% (relative
-// RMS) of the CPU's; the cards keep activations in bf16. Then two slots' blocks in one pass give each slot exactly the
-// candidates it gets alone.
+// model.safetensors: the main model's features of 2,056 positions (a reference prompt, repeated) as context, then a
+// block of 8 rows, each of which sees the last DF_WINDOW positions. Gate: each row's final hidden state within 2%
+// (relative RMS) of the CPU's; the cards keep activations in bf16. Then two slots' blocks in one pass give each slot
+// exactly the candidates it gets alone.
 #include <unistd.h>
 
 #include <algorithm>
@@ -47,11 +47,7 @@ float bf16f(uint16_t h) {
 }
 
 std::vector<float> tensor(const std::string &dir, const std::string &name, size_t n) {
-  std::ifstream f(dir + "/" + name, std::ios::binary);
-  EXPECT(f, "cannot open %s", name.c_str());
-  std::vector<uint16_t> h(n);
-  f.read(reinterpret_cast<char *>(h.data()), (std::streamsize)n * 2);
-  EXPECT((size_t)f.gcount() == n * 2, "%s is short", name.c_str());
+  const std::vector<uint16_t> h = engine::qwen4exp::read_df_tensor(dir, name, n);
   std::vector<float> v(n);
   for (size_t i = 0; i < n; i++) v[i] = bf16f(h[i]);
   return v;
@@ -232,7 +228,7 @@ int main(int argc, char **argv) {
   if (path.empty()) return test::skip("model not found under FLASH_MODEL_DIR");
   const char *dd = std::getenv("FLASH_DFLASH_DIR");
   const std::string dir = dd ? dd : "/models/dflash";
-  if (access((dir + "/dflash-manifest.json").c_str(), R_OK) != 0) return test::skip("no DFlash 2 files in " + dir);
+  if (!engine::qwen4exp::is_dflash_dir(dir)) return test::skip("no DFlash 2 files in " + dir);
   const int32_t mask = engine::qwen4exp::read_df_config(dir).mask_token;
   EXPECT(argc >= 2, "usage: dflash_test <reference dir>");
   const uint32_t N = DF_WINDOW + 8, B = 8;

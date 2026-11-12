@@ -23,7 +23,7 @@ extern "C" {
 #define ENGINE_API
 #endif
 
-#define ENGINE_API_VERSION 19
+#define ENGINE_API_VERSION 22
 
 typedef enum {
   ENGINE_OK = 0,
@@ -58,6 +58,11 @@ typedef struct {
                                   default: slots x the context's */
   uint32_t kv_resident_cells;  /* K and V cells per slot kept in VRAM, the rest in host memory (ADR-0008 item 3);
                                   0: every cell */
+  uint64_t ngram_huge_bytes;   /* bytes of the host's reserved huge pages for the n-gram table, a multiple of their
+                                  size (ADR-0070): with NGRAM_RAM the table's first part, the rest in the process's
+                                  own memory; without it the row cache, as many rows as they hold, when that is more
+                                  than the default 1,048,576. If they cannot be mapped, the log says so and the table
+                                  is read from the file with the default cache. 0: none */
 } engine_config;
 
 #define ENGINE_CONFIG_EXPERTS_SET 1u  /* experts_per_layer is meaningful, 0 included */
@@ -107,6 +112,8 @@ typedef struct {
                                   one way (all experts cached, or a model with one path) */
   uint32_t decode_weight;      /* what a decode token is worth in prompt rows when the scheduler sizes a prompt piece
                                   beside writers; 0: decode does not count */
+  uint64_t ngram_cache_rows;   /* rows the n-gram table's cache holds */
+  uint64_t ngram_huge_bytes;   /* the n-gram table's or its cache's bytes in reserved huge pages */
 } engine_info;
 
 /* A request's sampling and stopping, copied once by admit. The core samples in llama.cpp's order: penalties, top-k,
@@ -195,11 +202,12 @@ typedef struct {
   uint32_t value;
 } engine_event;
 
-/* One timing record (docs/DESIGN.md, section 7): a prompt piece or a decode step, as the engine ran it. */
+/* One timing record (docs/DESIGN.md, section 7): a prompt piece, a decode step or round, or the draft pass after one, as the engine ran it. */
 typedef enum {
   ENGINE_TIMING_PROMPT = 1,
   ENGINE_TIMING_DECODE = 2,
-  ENGINE_TIMING_ROUND = 3      /* a draft round: rows = the window's rows, misses as decode */
+  ENGINE_TIMING_ROUND = 3,     /* a draft round: rows = the window's rows, misses as decode */
+  ENGINE_TIMING_DRAFT = 4      /* the rest of a plan's decode after its step or round: the draft layer's pass; rows 0 */
 } engine_timing_kind;
 
 typedef struct {
@@ -254,6 +262,8 @@ typedef struct {
   uint64_t experts_cached;     /* experts cached per layer at the last plan's end, the mean over the layers */
   uint64_t experts_floor;      /* the fewest the load keeps room for, whatever the KV pool holds (ENGINE_CONFIG_SHARE_KV) */
   uint64_t idle_rounds;        /* of the swap rounds, those run while no plan came */
+  uint64_t reading_steps;      /* of the undrafted steps, those run while another slot read its prompt */
+  uint64_t reading_rounds;     /* of the rounds, those run while another slot read its prompt */
 } engine_stats;
 
 /* One slot's counters since admit: its own decode, not its prompt. */
@@ -346,9 +356,14 @@ ENGINE_API engine_status engine_wake(engine_ctx *e, engine_info *info);
 ENGINE_API const char *engine_last_error(const engine_ctx *e);
 
 /* Frees everything. Once a command list has timed out ("did not finish a list"), the cards' memory and queues stay,
- * as the driver's calls would wait on the stuck queue. The caller then ends the process with _exit, because the
- * driver's teardown at a normal exit waits on it too. */
+ * as the driver's calls would wait on the stuck queue. */
 ENGINE_API void engine_close(engine_ctx *e);
+
+/* 1 once a command list has timed out in this process, else 0. The driver's teardown at a normal exit waits on the
+ * stuck queue, so the caller then ends the process with _exit. Otherwise it exits normally: the teardown stops the
+ * driver's loop on each card's copy engine, and a process that ends with one running can leave that copy engine unable
+ * to run the next process's work. */
+ENGINE_API int engine_queue_stuck(void);
 
 /* One card the engine can use, as Level Zero reports it (ZE_AFFINITY_MASK applies). */
 typedef struct {

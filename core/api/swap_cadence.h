@@ -1,5 +1,5 @@
 // When a swap round is due: once the time the CPU's expert misses have cost since the last round reaches the time that
-// round took. Apart from the C ABI's code so that it is tested without a card.
+// round took, and whether one runs beside a prompt. Apart from the C ABI's code so that it is tested without a card.
 #pragma once
 
 #include <cstdint>
@@ -52,5 +52,19 @@ class SwapCadence {
   uint32_t plans_ = 0;   // plans since the last round
   bool fitted_ = false;  // a cost was estimated for some step
 };
+
+// Whether a swap round runs after a plan, given whether it ended a prompt (prompt_ended), whether the cadence has one
+// due, whether a slot still reads its prompt (reading) and the slots that write (writing). With a prompt read and
+// nobody writing, none: the cache serves decode, and a round there slowed the prompt
+// (docs/measurements/MEASUREMENTS.md#2026-10-16-swaps-and-prompts). Otherwise after a prompt's end or when due.
+inline bool swap_round_runs(bool prompt_ended, bool due, bool reading, uint32_t writing) {
+  if (reading && writing == 0) return false;
+  return prompt_ended || due;
+}
+
+// Whether a prompt chunk's routing joins the swap counts, given the slots that wrote when its plan began: only while
+// none does. Beside writers, a long prompt's counts would outweigh theirs and the cache would follow the prompt, whose
+// chunks stage every expert they route to anyway.
+inline bool count_prompt_routing(uint32_t writing) { return writing == 0; }
 
 }  // namespace engine

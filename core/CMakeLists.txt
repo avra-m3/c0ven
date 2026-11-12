@@ -1,6 +1,7 @@
 # The C++20 core: Level Zero, memory, loading, the step, the CPU's expert work (ADR-0022, ADR-0024).
 
 add_library(engine_core STATIC
+  api/draft_gate.cpp
   api/lookup.cpp
   api/swap_cadence.cpp
   api/sampling.cpp
@@ -12,6 +13,7 @@ add_library(engine_core STATIC
   load/gguf.cpp
   load/runs.cpp
   models/open.cpp
+  util/json.cpp
   util/parallel.cpp
   ze/ze.cpp)
 target_include_directories(engine_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/shared

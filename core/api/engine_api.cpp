@@ -23,6 +23,7 @@
 #include <utility>
 #include <vector>
 
+#include "api/draft_gate.h"
 #include "api/lookup.h"
 #include "api/model.h"
 #include "api/open_engine.h"
@@ -147,7 +148,9 @@ struct engine_ctx {
   bool running = false;  // a plan is being run
   bool idle_due = false;  // with swaps on, a plan has run since the idle rounds last settled (idle_rounds)
   bool prompt_ended = false;  // the plan being run read some slot's last prompt token
+  uint64_t step_end_ns = 0;   // where the plan's decode step or round ended; 0 until it has run one
   uint32_t writers = 0;  // the slots the plan being run decoded
+  uint32_t writing_at_start = 0;  // the slots writing when the plan being run began (writing_slots)
   uint32_t shared_choices = 0;  // shared_most's choices, for its kSharedCheck; under mu
   engine::WindowTimes window_times;  // decode steps of one slot and rounds of any number, by their rows
   engine::SwapCadence swap_cadence;  // when the next swap round is due; under mu
@@ -167,6 +170,7 @@ struct engine_ctx {
   void record(engine_timing t) {
     if (timing.size() == kTimingRing) timing.pop_front();
     timing.push_back(t);
+    if (t.kind == ENGINE_TIMING_DECODE || t.kind == ENGINE_TIMING_ROUND) step_end_ns = t.end_ns;
   }
 
   bool media(int32_t tok) const { return engine::is_media(image_shape, tok); }
@@ -478,6 +482,13 @@ struct engine_ctx {
     return false;
   }
 
+  // The slots that have read their whole prompt and are not done. Under mu.
+  uint32_t writing_slots() const {
+    uint32_t n = 0;
+    for (const Slot &sl : slots) n += sl.used && !sl.done && sl.fed >= sl.prompt.size();
+    return n;
+  }
+
   // A prompt piece as read from its slot before it runs.
   struct Piece {
     uint32_t slot = 0, pos0 = 0, n = 0;
@@ -548,8 +559,8 @@ struct engine_ctx {
   }
 
   // A writer's row the prompt path has read, at row end - 1 of the chunk: as a decode step's row, its token joins the
-  // slot and the next is sampled; the draft layer reads the row so its cells stay whole, and makes no drafts while a
-  // prompt is read, as for several writers in decode. Runs on the engine thread.
+  // slot and the next is sampled; the draft layer reads the row so its cells stay whole, and makes no drafts
+  // (docs/adr/0053-writers-rows-ride-in-a-prompt-chunk.md). Runs on the engine thread.
   void writer_read(const Piece &pi, const std::vector<Candidate> &cand, uint32_t end) {
     StepIn row;
     {
@@ -567,7 +578,7 @@ struct engine_ctx {
     if (model->dflash())
       model->df_context_prompt(&row, 1, end);
     else
-      model->mtp_catchup_prompt(&row, 1, end, {});  // writes its cell; no drafts while a prompt is read
+      model->mtp_catchup_prompt(&row, 1, end, {});  // writes its cell; no drafts
   }
 
   // Pieces of different slots through the prompt path as one chunk: the experts are staged once for all their rows
@@ -650,7 +661,7 @@ struct engine_ctx {
       if (chunk.empty()) return;
       prompt_chunk(plan, chunk);
       rows = 0;
-      if (swaps) model->note_prompt_routing();
+      if (swaps) model->note_prompt_routing(engine::count_prompt_routing(writing_at_start));
     };
     for (uint32_t i = 0; i < sp.npieces && i < ENGINE_MAX_PROMPT_PIECES; i++) {
       // A piece of a slot already in the chunk starts where that one ends.
@@ -663,7 +674,7 @@ struct engine_ctx {
       if (!prepare_piece(sp.pieces[i], window, pi)) continue;
       if (pi.windowed) {  // its slot is not in the chunk, which can wait for it
         prompt_windows(plan, StepIn{pi.slot, pi.pos0, pi.toks[0], pi.p1, pi.p2, pi.p3}, pi.toks, pi.restart);
-        if (swaps) model->note_prompt_routing();
+        if (swaps) model->note_prompt_routing(engine::count_prompt_routing(writing_at_start));
         continue;
       }
       if (chunk.size() == PROMPT_MAX_RUNS || rows + pi.n > info.prompt_chunk) flush();
@@ -742,7 +753,6 @@ struct engine_ctx {
   void decode(uint32_t plan, const engine_step_plan &p) {
     std::vector<StepIn> rows;
     std::vector<uint32_t> who;
-    bool all_writing = true;  // no row reads a prompt token
     {
       std::lock_guard<std::mutex> lk(mu);
       for (uint32_t i = 0; i < p.nslots && i < ENGINE_MAX_STEP_SLOTS; i++) {
@@ -760,7 +770,6 @@ struct engine_ctx {
           continue;
         }
         int32_t tok = sl.fed < sl.prompt.size() ? sl.prompt[sl.fed] : sl.next;
-        all_writing = all_writing && sl.fed >= sl.prompt.size();
         uint32_t pos = sl.fed;
         rows.push_back(row_at(s, pos, tok, sl.tokens));
         who.push_back(s);
@@ -768,6 +777,7 @@ struct engine_ctx {
     }
     writers = (uint32_t)rows.size();
     if (rows.empty()) return;
+    engine::StepChoice choice;
     {
       std::unique_lock<std::mutex> lk(mu);
       Slot &sl = slots[who[0]];
@@ -781,25 +791,24 @@ struct engine_ctx {
         sl.lookup_round = take > 0;
         if (take) look.resize(take), sl.drafts = std::move(look);
       }
-      if (rows.size() == 1 && model->drafting() && sl.fed >= sl.prompt.size() && !sl.drafts.empty()) {
-        std::vector<int32_t> d = sl.drafts;
-        lk.unlock();
-        round(plan, rows[0], d);
-        return;
-      }
-      // Several slots, all writing, some with drafts: their windows in one pass. Not while a prompt is read, nor for a
-      // slot's second token, which already waits for the prompt steps after its first: a round there would lengthen
-      // the step that ends the wait (docs/measurements/MEASUREMENTS.md#2026-10-19-draft-rounds-several-writers).
-      bool writing = model->drafting() && rows.size() > 1 && !reading(), any = false;
+      // A lone writing slot with drafts runs a round; several, all writing and some with drafts, run their windows in
+      // one. Also while another slot reads its prompt: the scheduler owes the writers time, not steps, and a round
+      // gives more tokens in it (api/draft_gate.h, docs/adr/0071-writers-draft-while-a-slot-reads-its-prompt.md).
+      std::vector<engine::GateRow> gate;
       std::vector<std::vector<int32_t>> ds;
       for (uint32_t s : who) {
-        writing = writing && slots[s].fed >= slots[s].prompt.size() && slots[s].generated > 1;
-        any = any || !slots[s].drafts.empty();
-        ds.push_back(slots[s].drafts);
+        const Slot &w = slots[s];
+        gate.push_back({w.fed >= w.prompt.size(), w.generated, !w.drafts.empty()});
+        ds.push_back(w.drafts);
       }
-      if (writing && any) {
+      choice = engine::choose_step(model->drafting(), reading(), gate);
+      if (choice.kind != engine::StepKind::kStep) {
+        stats.reading_rounds += choice.beside_reader;
         lk.unlock();
-        rounds(plan, rows, ds);
+        if (choice.kind == engine::StepKind::kRound)
+          round(plan, rows[0], ds[0]);
+        else
+          rounds(plan, rows, ds);
         return;
       }
     }
@@ -818,7 +827,8 @@ struct engine_ctx {
       stats.step_ns += t1 - t0;
       stats.step_misses += ss.misses;
       stats.step_layers_missed += ss.layers_missed;
-      if (all_writing && model->drafting()) stats.undrafted_steps++;
+      stats.undrafted_steps += choice.undrafted;
+      stats.reading_steps += choice.undrafted && choice.beside_reader;
       for (size_t i = 0; i < rows.size(); i++) {
         uint32_t s = who[i];
         Slot &sl = slots[s];
@@ -844,7 +854,7 @@ struct engine_ctx {
       {
         std::lock_guard<std::mutex> lk(mu);
         const uint32_t n = (uint32_t)mr.size(), most = n > 1 ? shared_most(mr) : draft_max;
-        for (uint32_t i = 0; i < n && (n == 1 || !reading()); i++) {
+        for (uint32_t i = 0; i < n; i++) {
           const Slot &sl = slots[mr[i].slot];
           if (sl.used && !sl.done && sl.fed >= sl.prompt.size())
             seeds.push_back({mr[i].slot, sl.settings, sl.fed + 1, sl.next, draft_share(i, n, most),
@@ -859,13 +869,12 @@ struct engine_ctx {
       }
       return;
     }
-    std::vector<uint32_t> keep;  // the rows that may draft
+    std::vector<uint32_t> keep;  // the rows that may draft: the writing slots'
     {
       std::lock_guard<std::mutex> lk(mu);
-      const bool read = reading();
       for (uint32_t i = 0; i < mr.size(); i++) {
         const Slot &sl = slots[mr[i].slot];
-        if (sl.used && !sl.done && (mr.size() == 1 ? sl.fed >= sl.prompt.size() : !read)) keep.push_back(i);
+        if (sl.used && !sl.done && sl.fed >= sl.prompt.size()) keep.push_back(i);
       }
     }
     auto dc = model->mtp_catchup(mr.data(), (uint32_t)mr.size(), keep);
@@ -873,7 +882,6 @@ struct engine_ctx {
       std::vector<DraftSeed> seeds;
       {
         std::lock_guard<std::mutex> lk(mu);
-        if (reading()) return;
         const uint32_t most = shared_most(mr);
         for (uint32_t j = 0; j < keep.size(); j++) {
           const uint32_t i = keep[j];
@@ -1053,13 +1061,8 @@ struct engine_ctx {
         mr.push_back({r.slot, r.pos, j < acc[i] ? rows[start[i] + j + 1].token : picks[i][acc[i]], kNoToken, kNoToken});
       }
     if (model->dflash()) {
-      bool read;
-      {
-        std::lock_guard<std::mutex> lk(mu);
-        read = reading();  // a request admitted while the round ran: no drafts
-      }
       std::vector<DfSeed> seeds;
-      for (uint32_t i = 0; i < ns && !read; i++)
+      for (uint32_t i = 0; i < ns; i++)
         if (live[i]) {
           if (penalised(settings[i])) hist[i].push_back(picks[i][acc[i]]);
           seeds.push_back({row0[i].slot, settings[i], row0[i].pos + acc[i] + 2, picks[i][acc[i]], draft_share(i, ns, most),
@@ -1085,10 +1088,6 @@ struct engine_ctx {
       if (live[i]) keep.push_back((uint32_t)ma.size() - 1);
     }
     auto dc = model->mtp_catchup(ma.data(), (uint32_t)ma.size(), keep, from.data());
-    {
-      std::lock_guard<std::mutex> lk(mu);
-      if (reading()) return;  // a request admitted while the round ran
-    }
     std::vector<DraftSeed> seeds;
     for (uint32_t i = 0, j = 0; i < ns; i++)
       if (live[i]) {
@@ -1120,7 +1119,9 @@ struct engine_ctx {
         seq = ++plans_taken;
         running = true;
         prompt_ended = false;
+        step_end_ns = 0;
         writers = 0;
+        writing_at_start = writing_slots();
       }
       const uint64_t t_plan = now_ns();
       try {
@@ -1137,20 +1138,26 @@ struct engine_ctx {
         apply_pages(pages);
         prompt_pieces(seq, plan);
         decode(seq, plan);
+        {
+          // What the plan's decode did after its step or round: the sampling and the draft layer's pass. It is part
+          // of the plan's time, which the owed time counts (docs/adr/0071-writers-draft-while-a-slot-reads-its-prompt.md).
+          std::lock_guard<std::mutex> lk(mu);
+          if (step_end_ns) record({ENGINE_TIMING_DRAFT, seq, 0, 0, step_end_ns, now_ns()});
+        }
         idle_due = swaps;
         // A swap round after a plan that ended a prompt, and otherwise once the time the CPU's misses have cost since
         // the last round reaches that round's time, within 4 to 16 plans of it (api/swap_cadence.h); 4 and 16 until
-        // both are known, and 16 while several slots write. Never while a slot reads its prompt
-        // (docs/measurements/MEASUREMENTS.md#2026-10-16-drafting-and-swaps). While several slots write, the round's swaps are
-        // shared out: the cache follows several requests' routing at once.
-        bool due;
+        // both are known, and 16 while several slots write. None while a prompt is read and no slot writes
+        // (docs/adr/0074-swap-rounds-beside-a-prompt.md). While several slots write, the round's swaps are shared
+        // out: the cache follows several requests' routing at once.
+        bool run_round;
         {
           std::lock_guard<std::mutex> lk(mu);
           swap_cadence.plan();
-          due = prompt_ended || swap_cadence.due(writers);
+          run_round = engine::swap_round_runs(prompt_ended, swap_cadence.due(writers), reading(), writing_slots());
         }
         uint64_t swapped = 0, swap_ns = 0;
-        if (swaps && due && !prompt_reading()) {
+        if (swaps && run_round) {
           const uint64_t t0 = now_ns();
           swapped = model->swap_round(64 / std::max<uint32_t>(1, writers));
           swap_ns = now_ns() - t0;
@@ -1225,14 +1232,6 @@ struct engine_ctx {
       stats.swaps += swapped;
       stats.swap_ns += t1 - t0;
     }
-  }
-
-  // Whether a slot is still reading its prompt.
-  bool prompt_reading() {
-    std::lock_guard<std::mutex> lk(mu);
-    for (const Slot &sl : slots)
-      if (sl.used && !sl.done && sl.fed < sl.prompt.size()) return true;
-    return false;
   }
 
   // Waits until every queued plan has run. Under the lock lk.
@@ -1317,9 +1316,11 @@ engine_status open_engine(const engine_config *config, engine_info *info, engine
     opt.kv_pages = config->kv_pages;
     opt.kv_resident = config->kv_resident_cells;
     opt.adapt_swaps = (config->flags & ENGINE_CONFIG_SWAPS) != 0;
+    opt.rare_on_cpu = opt.adapt_swaps;  // both change a request's rounding; --deterministic turns both off
     opt.share_kv = (config->flags & ENGINE_CONFIG_SHARE_KV) != 0;
     opt.ngram_in_ram = (config->flags & ENGINE_CONFIG_NGRAM_RAM) != 0;
     opt.hugetlb_arena = (config->flags & ENGINE_CONFIG_HUGETLB) != 0;
+    opt.ngram_huge_bytes = config->ngram_huge_bytes;
     auto e = std::make_unique<engine_ctx>();
     e->model = opener(config->model_path, opt);
     e->image_shape = e->model->image_shape();
@@ -1341,6 +1342,8 @@ engine_status open_engine(const engine_config *config, engine_info *info, engine
     e->info.ngram_in_ram = li.ngram_in_ram ? 1 : 0;
     e->info.loader_bytes_per_s = li.loader_bytes_per_s;
     e->info.ngram_read_us = li.ngram_read_us;
+    e->info.ngram_cache_rows = li.ngram_cache_rows;
+    e->info.ngram_huge_bytes = li.ngram_huge_bytes;
     e->info.copy_bytes_per_s[0] = li.copy_bytes_per_s[0];
     e->info.copy_bytes_per_s[1] = li.copy_bytes_per_s[1];
     e->info.prompt_chunk = e->model->prompt_chunk();
@@ -1682,6 +1685,8 @@ void engine_close(engine_ctx *e) {
   delete e;
 }
 
+int engine_queue_stuck(void) { return engine::ze::queue_stuck() ? 1 : 0; }
+
 engine_status engine_cards(engine_card *cards, uint32_t cap, uint32_t *n) {
   if (!n) return ENGINE_BAD_ARGUMENT;
   try {
@@ -1718,7 +1723,8 @@ uint32_t engine_abi_layout(engine_abi_row *table, uint32_t cap) {
       ROW(engine_config, flags), ROW(engine_config, reserve_bytes), ROW(engine_config, prompt_chunk),
       ROW(engine_config, checkpoints), ROW(engine_config, routing_profile), ROW(engine_config, mtp_dir),
       ROW(engine_config, draft_max), ROW(engine_config, draft_min_p), ROW(engine_config, vision_path),
-      ROW(engine_config, kv_pages), ROW(engine_config, kv_resident_cells), SIZE(engine_config),
+      ROW(engine_config, kv_pages), ROW(engine_config, kv_resident_cells), ROW(engine_config, ngram_huge_bytes),
+      SIZE(engine_config),
       ROW(engine_info, api_version), ROW(engine_info, cards), ROW(engine_info, slots), ROW(engine_info, max_ctx),
       ROW(engine_info, experts_per_layer), ROW(engine_info, vocab), ROW(engine_info, device_bytes),
       ROW(engine_info, arena_bytes), ROW(engine_info, load_seconds), ROW(engine_info, prompt_chunk),
@@ -1727,7 +1733,7 @@ uint32_t engine_abi_layout(engine_abi_row *table, uint32_t cap) {
       ROW(engine_info, host_read_bytes_per_s), ROW(engine_info, loader_threads), ROW(engine_info, ngram_in_ram),
       ROW(engine_info, loader_bytes_per_s), ROW(engine_info, ngram_read_us), ROW(engine_info, copy_bytes_per_s),
       ROW(engine_info, expert_budget), ROW(engine_info, fetch_rows), ROW(engine_info, decode_weight),
-      SIZE(engine_info),
+      ROW(engine_info, ngram_cache_rows), ROW(engine_info, ngram_huge_bytes), SIZE(engine_info),
       ROW(engine_settings, temperature), ROW(engine_settings, top_k), ROW(engine_settings, top_p),
       ROW(engine_settings, max_tokens), ROW(engine_settings, seed), ROW(engine_settings, n_stop),
       ROW(engine_settings, stop), ROW(engine_settings, min_p), ROW(engine_settings, penalty_last_n),
@@ -1757,7 +1763,8 @@ uint32_t engine_abi_layout(engine_abi_row *table, uint32_t cap) {
       ROW(engine_stats, swaps), ROW(engine_stats, swap_ns), ROW(engine_stats, stalls),
       ROW(engine_stats, checkpoints_taken), ROW(engine_stats, restores), ROW(engine_stats, ngram_rows),
       ROW(engine_stats, ngram_hits), ROW(engine_stats, ngram_reads), ROW(engine_stats, experts_cached),
-      ROW(engine_stats, experts_floor), ROW(engine_stats, idle_rounds), SIZE(engine_stats),
+      ROW(engine_stats, experts_floor), ROW(engine_stats, idle_rounds), ROW(engine_stats, reading_steps),
+      ROW(engine_stats, reading_rounds), SIZE(engine_stats),
       ROW(engine_slot_stats, steps), ROW(engine_slot_stats, rounds), ROW(engine_slot_stats, drafts),
       ROW(engine_slot_stats, accepted), ROW(engine_slot_stats, lookup_rounds), ROW(engine_slot_stats, lookup_drafts),
       ROW(engine_slot_stats, lookup_accepted), SIZE(engine_slot_stats),

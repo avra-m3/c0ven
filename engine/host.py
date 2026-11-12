@@ -42,6 +42,8 @@ class Host:
     huge_pages_free: int | None = None
     """The reserved huge pages (`vm.nr_hugepages`) no process holds or has reserved: (`HugePages_Free` -
     `HugePages_Rsvd`) x `Hugepagesize`, bytes."""
+    huge_page_size: int | None = None
+    """`Hugepagesize`: the default size of a reserved huge page, bytes."""
 
     @property
     def memory_limit(self) -> int | None:
@@ -190,6 +192,7 @@ def read(root: Path = Path("/"), affinity: set[int] | None = None) -> Host:
         mem_available=mi.get("MemAvailable"),
         swap_total=mi.get("SwapTotal"),
         huge_pages_free=huge_pages_free(mi),
+        huge_page_size=mi.get("Hugepagesize"),
         cgroup_memory_max=_limit(cg / "memory.max") if cg else None,
         cgroup_swap_max=_limit(cg / "memory.swap.max") if cg else None,
         memlock=None if soft == resource.RLIM_INFINITY else soft,

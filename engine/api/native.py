@@ -150,6 +150,7 @@ def load_library(path: Path | None = None) -> ctypes.CDLL:
         "engine_wake": ([_ctx, ctypes.POINTER(abi.CInfo)], ctypes.c_int),
         "engine_last_error": ([_ctx], ctypes.c_char_p),
         "engine_close": ([_ctx], None),
+        "engine_queue_stuck": ([], ctypes.c_int),
         "engine_abi_layout": ([ctypes.POINTER(abi.CAbiRow), _u32], _u32),
         "engine_cards": ([ctypes.POINTER(abi.CCard), _u32, _p_u32], ctypes.c_int),
     }
@@ -220,6 +221,7 @@ class Core(Protocol):
     def wake(self) -> abi.CInfo: ...
     def last_error(self) -> str: ...
     def close(self) -> None: ...
+    def queue_stuck(self) -> bool: ...
 
 
 class CtypesCore:
@@ -320,6 +322,9 @@ class CtypesCore:
         self._lib.engine_close(self._ctx)
         self._ctx = _ctx()
 
+    def queue_stuck(self) -> bool:
+        return bool(self._lib.engine_queue_stuck())
+
 
 @dataclass(slots=True)
 class _Slot:
@@ -400,6 +405,7 @@ class NativeEngine:
             c.flags |= abi.ConfigFlag.NGRAM_RAM
         if config.hugetlb_arena:
             c.flags |= abi.ConfigFlag.HUGETLB
+        c.ngram_huge_bytes = config.ngram_hugetlb
         if config.reserve_bytes:
             c.reserve_bytes = config.reserve_bytes
         self._draft_dir = config.draft_dir.encode()
@@ -449,6 +455,8 @@ class NativeEngine:
             loader_bytes_per_s=float(info.loader_bytes_per_s),
             ngram_in_ram=bool(info.ngram_in_ram),
             ngram_read_us=float(info.ngram_read_us),
+            ngram_cache_rows=int(info.ngram_cache_rows),
+            ngram_huge_bytes=int(info.ngram_huge_bytes),
             copy_bytes_per_s=tuple(float(info.copy_bytes_per_s[i]) for i in range(info.cards)),
             expert_budget=tuple(int(info.expert_budget[i]) for i in range(info.cards)),
             fetch_rows=int(info.fetch_rows),
@@ -608,6 +616,9 @@ class NativeEngine:
         self._asleep = False
         self._slots.clear()
         self._queued.clear()
+
+    def queue_stuck(self) -> bool:
+        return self._core.queue_stuck()
 
     # The adapter.
 
