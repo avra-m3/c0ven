@@ -204,6 +204,30 @@ int main() {
     EXPECT(std::fabs(u.ms(8) - (32 + 0.025 * u.misses_row() * 8)) < 1e-3, "with misses: %g", u.ms(8));
   }
 
+  // The cost a miss from few rounds with nearly the same misses. The first 30 rounds and steps of several slots of
+  // three requests on prose on two cards, as traced: the 8th and 10th rounds of 7 rows had 503 and 505 CPU experts
+  // and took 38.5 and 45.5 ms, which fitted 3.50 ms a miss and priced 3 rows at 893 ms and 8 at 2,381; the 22nd, of
+  // 7 rows, took 135.1 ms. A measured cost is about 0.026 ms. Priced in proportion to the rows, 8 rows cost 2.67
+  // times 3 rows; measured, 8 rows took 1.6 times 3 rows.
+  {
+    static const struct {
+      uint32_t rows, misses;
+      double ms;
+    } traced[] = {{2, 173, 45.1}, {8, 514, 49.8}, {3, 140, 29.0}, {3, 234, 29.4}, {6, 747, 50.5},
+                  {7, 832, 49.6}, {10, 849, 93.4}, {7, 503, 38.5}, {10, 916, 55.1}, {7, 505, 45.5},
+                  {8, 570, 43.1}, {3, 213, 28.8}, {3, 171, 25.4}, {7, 534, 40.6}, {7, 465, 40.9},
+                  {7, 657, 45.8}, {4, 331, 33.5}, {8, 701, 47.9}, {8, 627, 65.6}, {6, 434, 45.0},
+                  {9, 809, 63.4}, {7, 692, 135.1}, {7, 508, 70.2}, {3, 243, 39.3}, {3, 248, 32.0},
+                  {3, 258, 31.2}, {7, 738, 50.8}, {3, 310, 32.5}, {3, 367, 33.6}, {3, 289, 31.1}};
+    RoundTimes r;
+    for (int i = 0; i < 30; i++) {
+      r.add(traced[i].rows, traced[i].ms, traced[i].misses);
+      if (i == 9 || i == 29)
+        EXPECT(r.miss_ms() < 0.1 && r.ms(8) < 2 * r.ms(3) && r.ms(3) > 20 && r.ms(3) < 40,
+               "after %d: cost %g, 3 rows %g, 8 rows %g", i + 1, r.miss_ms(), r.ms(3), r.ms(8));
+    }
+  }
+
   // The choice, with times like the cards' (1 row 16 ms, 4 rows 26, 8 rows 64).
   {
     WindowTimes w;

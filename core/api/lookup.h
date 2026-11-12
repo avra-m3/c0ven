@@ -61,7 +61,10 @@ class WindowTimes {
 // computes in it. A miss costs about the same whatever the window's width, while the misses a row change with the
 // slots' text, so each width keeps its times and misses (decayed by 1/16 a round of the width), one cost a miss is
 // fitted across the widths (each width's times against its misses), and a width's net time is its time less that
-// cost of its misses. A width's second round replaces its first, which may hold the first run of the width's lists,
+// cost of its misses. The cost used is the fit less its standard error, and 0 while the rounds leave no spare to
+// measure that error by: a fit from few rounds with nearly the same misses is mostly noise, and a cost too high
+// leaves every width no net time and prices a window in proportion to its rows. A width's second round replaces its
+// first, which may hold the first run of the width's lists,
 // and only a width timed twice is seen. A width seen is never dearer than a wider one seen, and a width not seen is
 // priced as WindowTimes prices it.
 class RoundTimes {
@@ -69,7 +72,7 @@ class RoundTimes {
   void add(uint32_t rows, double ms, uint32_t misses);
   // A window of rows' time without misses; 0 while no width has been seen.
   double net(uint32_t rows) const { return net_[std::min(rows, kWidths - 1)]; }
-  // The time a miss adds, in milliseconds; 0 until the widths' misses differ.
+  // The time a miss adds, in milliseconds; 0 until the widths' misses differ and the rounds are enough to tell.
   double miss_ms() const { return miss_ms_; }
   // The misses a row of the rounds lately, of any width, decayed by 1/8 a round; 0 before the first.
   double misses_row() const { return misses_row_ < 0 ? 0 : misses_row_; }
@@ -82,7 +85,8 @@ class RoundTimes {
  private:
   static constexpr uint32_t kWidths = STEP_MAX_ROWS + 1;  // 0 to STEP_MAX_ROWS
   struct Sums {
-    double n = 0, m = 0, t = 0, mm = 0, mt = 0;  // weight, misses, ms, misses squared, misses times ms
+    // weight, misses, ms, misses squared, misses times ms, ms squared
+    double n = 0, m = 0, t = 0, mm = 0, mt = 0, tt = 0;
     uint32_t rounds = 0;
   };
   void refresh();
