@@ -2,7 +2,9 @@
 
 **Status:** accepted, 2026-10-17, provisional: a sleep and a wake end to end beside another model on the cards, and
 the eviction they may cause, confirm or revise it. Its numbers are from the
-[sleep and wake record](../measurements/MEASUREMENTS.md#2026-10-17-sleep-and-wake).
+[sleep and wake record](../measurements/MEASUREMENTS.md#2026-10-17-sleep-and-wake). Item 7 superseded in part by
+[ADR-0079](0079-a-swap-round-reads-its-outgoing-experts-past-the-page-cache.md) (draft): the swaps read past the
+page cache too.
 **Revisit when:** a wake swaps the host's other memory out or takes far longer than its estimate; Level Zero can
 import host memory that both cards read; or the arena's RAM is needed back while the engine sleeps.
 

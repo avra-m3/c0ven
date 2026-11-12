@@ -354,7 +354,7 @@ No card is kept busy to hold its clock up. In decode both cards stay at 2,400 MH
 | Pinned host memory (`zeMemAllocHost`) | Each card's K and V of every KV page. What both cards or the CPU read: step plans, the misses' jobs and answers, the one-row exchanges, the step's n-gram rows, the cards' candidates, the checkpoints, the image encoder's weights |
 | The expert arena: the engine's own memory, from `mmap` in 1 GiB pieces, in huge pages while the host keeps free 2 MiB blocks; with `--hugepages`, in the host's reserved huge pages while they last ([ADR-0066](adr/0066-the-arena-may-take-reserved-huge-pages.md)) | Every expert no card caches, each in one place. The CPU reads it for misses and copies from it for short prompt chunks, and the copy engines read it in place for longer chunks and swaps. The driver cannot move this memory under the host's reclaim, and it counts against the engine's cgroup ([ADR-0035](adr/0035-the-arena-in-the-engines-own-memory.md); [known limits](../README.md#known-limits)) |
 | RAM | The n-gram rows already read, in a cache of 1,048,576 rows; or the whole n-gram table, when the host has room for it ([ADR-0057](adr/0057-the-engine-reads-the-host-it-runs-on.md)). With `--hugepages` and `--ngram-ram auto`, the reserved huge pages the arena leaves at its largest hold the table, its first part when the rest fits the host's memory, or else a cache of as many rows as they hold ([ADR-0070](adr/0070-the-ngram-table-takes-the-huge-pages-the-arena-leaves.md)) |
-| The SSD | The n-gram table, 28.8 GB, read with `O_DIRECT` past the page cache ([ADR-0015](adr/0015-ngram-table-on-the-ssd.md)), unless it is in RAM |
+| The SSD | The n-gram table, 28.8 GB, read with `O_DIRECT` past the page cache ([ADR-0015](adr/0015-ngram-table-on-the-ssd.md)), unless it is in RAM. The model file, read past the page cache by the load and by each swap round for the experts that leave the cards, two reads at a time beside the n-gram table's ([ADR-0079](adr/0079-a-swap-round-reads-its-outgoing-experts-past-the-page-cache.md)) |
 
 The engine never uses shared memory (`zeMemAllocShared`), because the driver moves its pages without the engine
 knowing.
@@ -632,7 +632,9 @@ exactly from run to run only with `--deterministic`, which turns swaps off
 ([ADR-0072](adr/0072-on-one-card-the-cpu-computes-a-short-chunks-rarest-experts.md)).
 A round holds the engine thread only to append the halves' copies, switch the maps and wait for the cards' copies,
 about 3 ms; the swap thread chooses the next round's swaps and builds their halves from the arena behind the steps
-([the record](measurements/MEASUREMENTS.md#2026-10-20-swap-round-behind-the-steps)).
+([the record](measurements/MEASUREMENTS.md#2026-10-20-swap-round-behind-the-steps)), and reads the experts that leave
+the cards from the model file past the page cache, two reads at a time, so that the next round need not wait for it
+([ADR-0079](adr/0079-a-swap-round-reads-its-outgoing-experts-past-the-page-cache.md)).
 Once no plan has come for 100 ms, the engine thread keeps running rounds on the counts as they stand, without decaying
 them, one each time the swap thread is done, until a round chooses nothing: the cache catches up with the routing,
 and the KV pool and the cache settle, while nothing waits. A plan that comes waits at most for the round in hand.
