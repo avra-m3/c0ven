@@ -8,7 +8,8 @@ backend at `3cf0325` and ggml ([ADR-0012](adr/0012-correctness-reference.md)). B
 [reference outputs](measurements/REFERENCE_OUTPUTS.md). Tests use `pytest`, `numpy` to compare tensors, and plain
 executables under `ctest` for the core's unit tests ([ADR-0004](adr/0004-write-or-reuse.md)).
 
-Level Zero has no CPU device, so every kernel test needs a B60 ([ADR-0001](adr/0001-level-zero-from-scratch.md)).
+Level Zero has no CPU device, so every kernel test needs a Battlemage card, a B60 or a
+[B65](measurements/MEASUREMENTS.md#2026-11-12-arc-pro-b65) ([ADR-0001](adr/0001-level-zero-from-scratch.md)).
 "The machine" means [the test machine](measurements/MEASUREMENTS.md#the-test-machine).
 
 ## The levels
