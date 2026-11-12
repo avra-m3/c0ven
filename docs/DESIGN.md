@@ -368,8 +368,10 @@ before load that the options fit the host, and gives the core its page count. Th
 `engine/host.py`: the plan's pinned total and a working-set estimate must fit under the smaller of `MemAvailable`, the
 cgroup's `memory.max` and `--ram-max`, or the engine refuses to load and prints options that fit
 ([ADR-0057](adr/0057-the-engine-reads-the-host-it-runs-on.md)). Each load prints a fit report, the values read beside
-the plan's figures and the core's, and sends it in INFO as `fit_*` facts. The core fits as many experts per
-layer on each card as its physical memory allows, after setting aside `reserve_bytes` (1 GiB) for the driver's own use
+the plan's figures and the core's, and sends it in INFO as `fit_*` facts. A card's PCIe link there is the slowest
+between the card and the CPU, read from sysfs, so a card with a PCIe switch on board shows its slot's link.
+The core fits as many experts per layer on each card as its physical memory allows, after setting aside `reserve_bytes`
+(1 GiB) for the driver's own use
 and some free ([ADR-0027](adr/0027-the-c-abi-as-the-core-was-optimised.md), item 3). It reports the memory it had left for them
 (`engine_info.expert_budget`). The plan's working memory per card, everything outside the weights, the draft layer,
 the sequences' reserve and the experts, is an estimate from the slots, the context, the KV pool and the drafter until a load shows the core's: with `ENGINE_CACHE_DIR` set, the core's
