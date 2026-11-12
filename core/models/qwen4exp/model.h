@@ -329,7 +329,8 @@ class Model final : public engine::Model {
   void install_copies();
   void log_share(const char *why, std::chrono::steady_clock::time_point t0 = {});
   void fill_piece(uint32_t l, uint32_t e, uint8_t *piece);  // expert e's matrices from the file, as the arena holds them
-  void release_expert(uint32_t l, uint32_t e);               // its pages of the file back to the host
+  // One of them, part 0 gate, 1 up or 2 down, read with O_DIRECT on the calling thread (ADR-0079).
+  void fill_part(uint32_t l, uint32_t e, uint8_t *piece, uint32_t part);
   uint8_t *spare_piece(uint64_t need);
   uint8_t *arena_piece(uint64_t need);
   void *hugetlb_piece();
@@ -369,6 +370,7 @@ class Model final : public engine::Model {
     AlignedBuffer buf;
   };
   std::unique_ptr<DirectReader> reader_;  // during a load
+  std::unique_ptr<DirectReader> swap_reader_;  // the swaps' and evictions' reads of experts, from any thread
   std::unordered_map<std::string, StagedTensor> staged_;
   LoadInfo info_;
   StepStats stats_;

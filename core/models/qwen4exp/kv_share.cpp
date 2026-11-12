@@ -308,8 +308,6 @@ void Model::fill_evict(Pool &pool) {
     const Evict &ev = *v[i].first;
     fill_piece(ev.l, ev.victims[v[i].second], host_layers_[ev.l]->pieces[ev.first + v[i].second]);
   });
-  for (const Evict &ev : evict_next_)
-    for (uint32_t e : ev.victims) release_expert(ev.l, e);
 }
 
 // The planned eviction, its pieces filled: the experts in the slots a layer gives up move into the slots below that

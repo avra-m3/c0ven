@@ -3,6 +3,7 @@
 // the uncached experts used most replace the cached ones used least. A swap changes which experts the CPU computes,
 // and so their rounding: runs that compare tokens turn swaps off (Options::adapt_swaps, ADR-0016's switches).
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstring>
 #include <thread>
@@ -14,6 +15,11 @@
 namespace engine::qwen4exp {
 
 using namespace detail;
+
+namespace {
+// The swap thread's reads of the model file in flight at once (start_round, ADR-0079).
+constexpr uint64_t kFileReaders = 2;
+}  // namespace
 
 void Model::note_routing(uint32_t layer, const int32_t *ids, uint32_t n, float weight) {
   float *u = &use_[(size_t)layer * shape_.experts];
@@ -37,7 +43,8 @@ void Model::note_prompt_routing(bool add) {
 // A round applies the previous round's choice: the incoming experts' halves into their cache slots and the maps,
 // waited for once. Behind the next steps, a thread copies the outgoing experts into the arena pieces the incoming ones
 // left (settle_moves), and the swap thread chooses the next round's swaps from the counts as they were at this round,
-// builds the incoming experts' halves from the arena and reads the outgoing ones from the file into spare pieces.
+// builds the incoming experts' halves from the arena and reads the outgoing ones from the file into spare pieces
+// (ADR-0079).
 // With Options::share_kv the round first moves memory between the KV pool and the cache (kv_share.cpp): while the KV
 // needs memory or the cache can refill, that is the round's choice instead of swaps, made on the engine thread.
 uint32_t Model::swap_round(uint32_t max_swaps, bool decay) {
@@ -209,23 +216,29 @@ void Model::start_round(std::vector<float> use, uint32_t max_swaps) {
   swap_bg_ = std::thread([this, slot_max, restage, use = std::move(use), max_swaps, old = std::move(retired_)]() mutable {
     old.clear();
     if (max_swaps) choose_swaps(use, max_swaps);
-    std::vector<std::pair<uint32_t, uint32_t>> victims;  // (eviction, victim)
-    for (uint32_t v = 0; v < evict_next_.size(); v++)
-      for (uint32_t k = 0; k < evict_next_[v].victims.size(); k++) victims.push_back({v, k});
-    const uint64_t nw = swap_next_.size() * (ncards_ + 1);
-    swap_pool_->run(nw + victims.size(), [&](uint64_t i) {
-      if (i >= nw) {
-        const Evict &ev = evict_next_[victims[i - nw].first];
-        const uint32_t k = victims[i - nw].second;
-        fill_piece(ev.l, ev.victims[k], host_layers_[ev.l]->pieces[ev.first + k]);
+    // Each matrix of the outgoing experts and of a planned eviction's victims, into their pieces.
+    struct Read {
+      uint32_t l, e;
+      uint8_t *piece;
+    };
+    std::vector<Read> reads;
+    for (const SwapPlan &w : swap_next_)
+      if (w.out != kNoExpert) reads.push_back({w.l, w.out, w.piece});
+    for (const Evict &ev : evict_next_)
+      for (uint32_t k = 0; k < ev.victims.size(); k++)
+        reads.push_back({ev.l, ev.victims[k], host_layers_[ev.l]->pieces[ev.first + k]});
+    // The first kFileReaders tasks read the file, one matrix at a time each, while the others build the incoming
+    // halves: more reads at once slow the n-gram table's reads from the same disk, which the steps wait for.
+    std::atomic<uint64_t> next_read{0};
+    swap_pool_->run(kFileReaders + swap_next_.size() * ncards_, [&](uint64_t i) {
+      if (i < kFileReaders) {
+        for (uint64_t r; (r = next_read++) < 3 * reads.size();)
+          fill_part(reads[r / 3].l, reads[r / 3].e, reads[r / 3].piece, (uint32_t)(r % 3));
         return;
       }
-      const SwapPlan &w = swap_next_[i / (ncards_ + 1)];
-      const uint32_t k = i % (ncards_ + 1);
-      if (k == ncards_) {
-        if (w.out != kNoExpert) fill_piece(w.l, w.out, w.piece);
-        return;
-      }
+      i -= kFileReaders;
+      const SwapPlan &w = swap_next_[i / ncards_];
+      const uint32_t k = i % ncards_;
       // The incoming expert's half from its matrices in host memory, the arena's layout: gate and up as the file
       // has them, and down as one region per card (write_down), so card c's blocks are region c's whole rows.
       const GgufTensor &g = gguf_.tensor(blk(w.l, "ffn_gate_exps.weight")), &d = gguf_.tensor(blk(w.l, "ffn_down_exps.weight"));
@@ -235,19 +248,12 @@ void Model::start_round(std::vector<float> use, uint32_t max_swaps) {
       const ExpertWeights &x = host_layers_[w.l]->weights[w.in];
       const uint32_t f0 = card.c * card.ff, dqk = quant_block_values(d.type);
       const uint64_t gbpr = shape_.embd / quant_block_values(g.type), part = ed / x.down_parts;
-      uint8_t *buf = swap_buf_ + ((i / (ncards_ + 1)) * ncards_ + k) * slot_max;
+      uint8_t *buf = swap_buf_ + i * slot_max;
       to_runs(g.type, {{x.gate, g.row_bytes(), f0, card.ff, 0, gbpr}}, buf);
       to_runs(g.type, {{x.up, g.row_bytes(), f0, card.ff, 0, gbpr}}, buf + L.up_off);
       to_runs(d.type, {{x.down + card.c * part, d.row_bytes() / x.down_parts, 0, shape_.embd, 0, card.ff / dqk}},
               buf + L.down_off);
     });
-    // The file's pages the round read, back to the host: a long session's swaps would otherwise refill the page
-    // cache that load gave back, and a host that reclaims it moves the engine's buffers
-    // (docs/measurements/MEASUREMENTS.md#2026-10-17-decode-stalls-eviction).
-    for (const SwapPlan &w : swap_next_)
-      if (w.out != kNoExpert) release_expert(w.l, w.out);
-    for (const Evict &ev : evict_next_)
-      for (uint32_t e : ev.victims) release_expert(ev.l, e);
     if (restage) {
       const Staging st = staging_after();
       for (auto &card : cards_) next_copies_.push_back(prompt_copies(*card, st, next_copy_count_));
@@ -258,21 +264,27 @@ void Model::start_round(std::vector<float> use, uint32_t max_swaps) {
 }
 
 void Model::fill_piece(uint32_t l, uint32_t e, uint8_t *piece) {
-  const GgufTensor &g = gguf_.tensor(blk(l, "ffn_gate_exps.weight")), &u = gguf_.tensor(blk(l, "ffn_up_exps.weight")),
-                   &d = gguf_.tensor(blk(l, "ffn_down_exps.weight"));
-  const uint64_t eg = g.bytes / shape_.experts, ed = d.bytes / shape_.experts;
-  std::memcpy(piece, g.data + e * eg, eg);
-  std::memcpy(piece + eg, u.data + e * eg, eg);
-  write_down(piece + 2 * eg, d.data + e * ed, shape_.embd, d.row_bytes(), host_layers_[l]->down_parts);
+  for (uint32_t part = 0; part < 3; part++) fill_part(l, e, piece, part);
 }
 
-void Model::release_expert(uint32_t l, uint32_t e) {
-  const GgufTensor &g = gguf_.tensor(blk(l, "ffn_gate_exps.weight")), &u = gguf_.tensor(blk(l, "ffn_up_exps.weight")),
-                   &d = gguf_.tensor(blk(l, "ffn_down_exps.weight"));
-  const uint64_t eg = g.bytes / shape_.experts, ed = d.bytes / shape_.experts;
-  gguf_.release(g, e * eg, eg);
-  gguf_.release(u, e * eg, eg);
-  gguf_.release(d, e * ed, ed);
+// Past the page cache, as the load reads: through the mapping each page fault waits for a small read of its own, and
+// the pages read had to be given back to the host.
+void Model::fill_part(uint32_t l, uint32_t e, uint8_t *piece, uint32_t part) {
+  static const char *const names[3] = {"ffn_gate_exps.weight", "ffn_up_exps.weight", "ffn_down_exps.weight"};
+  const GgufTensor &t = gguf_.tensor(blk(l, names[part]));
+  const uint64_t each = t.bytes / shape_.experts, at = t.offset + e * each, need = DirectReader::span(at, each);
+  thread_local AlignedBuffer buf;  // the thread's widened read, kept for its next
+  thread_local uint64_t buf_bytes = 0;
+  if (need > buf_bytes) {
+    buf = aligned_buffer(need);
+    buf_bytes = need;
+  }
+  const uint8_t *p = swap_reader_->read_one(t.shard, at, each, buf.get());
+  const HostLayer &hl = *host_layers_[l];
+  if (part < 2)
+    std::memcpy(piece + part * hl.gate_bytes, p, each);
+  else
+    write_down(piece + 2 * hl.gate_bytes, p, shape_.embd, t.row_bytes(), hl.down_parts);
 }
 
 // The last round's moves done: each outgoing expert read from the arena piece its incoming one left, and the pieces

@@ -238,6 +238,7 @@ Model::Model(const std::string &path, const Options &opt) : opt_(opt), gguf_(pat
     mevents_ = std::make_unique<ze::EventPool>(*rt_, 2 * ncards_);
   }
   use_.assign((size_t)shape_.layers * shape_.experts, 0.0f);
+  swap_reader_ = std::make_unique<DirectReader>(gguf_.files(), 1);
   load_cards(true);
   info_.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
 }
