@@ -233,12 +233,11 @@ rare to be timed twice.
   total, behind in all three rounds
   ([the record](../measurements/MEASUREMENTS.md#2026-11-12-spare-drafts-to-the-slowest)).
 - On two cards, with item 7, in three rounds with the three requests sent together, measured the same way: the
-  slowest request faster in all three rounds on prose (+1.6 tokens a second), prose sampled (+3.2), copying text
-  (49.5 → 65.4) and mixed text (+0.8), and mixed text sampled -0.3 ± 1.5. The totals: prose +0.4%, sampled +3.0%,
-  copying +4.8%, mixed text sampled +0.4%, and mixed text 3.7% ± 3.6 lower, ahead in one round of three; in one order
-  of mixed text the slow request gains 4.0 tokens a second and the easy one loses about 9.
+  slowest request faster in all three rounds on prose (+1.6 tokens a second), prose sampled (+3.2) and copying text
+  (49.5 → 65.4); the totals prose +0.4%, sampled +3.0%, copying +4.8%. Mixed text in five rounds: -0.9% ± 2.7 in
+  total, its slowest +0.9, faster in all five; sampled +2.6% ± 2.0, its slowest +0.6 ± 1.1. In one order of mixed
+  text the slow request gains 4.0 tokens a second and the easy one loses about 9.
 - `lookup_test` checks items 1 to 5 and 7 without a card. The change is not accepted until the alternating runs in
-  "Revisit when" show the slowest request no slower and the total no lower. The slowest: on two cards with the
-  requests 20 ms apart, three requests of mixed text sampled are slower, level at the same length; with the requests
-  sent together, and on one card, no case is slower beyond its spread. The total: three of mixed text on two cards
-  with the requests sent together are 3.7% ± 3.6 lower.
+  "Revisit when" show the slowest request no slower and the total no lower. With the requests sent together, on one
+  card and on two, no case's slowest or total is lower beyond its spread. With the requests 20 ms apart on two cards,
+  three requests of mixed text sampled are slower, level at the same length.
