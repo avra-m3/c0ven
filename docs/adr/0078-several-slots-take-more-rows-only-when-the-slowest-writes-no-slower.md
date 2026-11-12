@@ -108,8 +108,8 @@ rounds gave while no round reaches it. A draft asked for and not made gives no t
 rejected at the rows asked for, it priced such rounds 4 to 8% high in the round log, and three requests ran fewer
 rows than the 8-row choice and wrote slower (Context). The share made prices both the tokens and the rows. With
 the shares in Context for three requests on prose and `lookup_test`'s times, 2, 2 and 1 drafts are 5% faster than 1
-each, and priced at the rows asked 1 each was 1% faster. Each width is priced by its chance because a window's time jumps
-from 8 rows to 9 (Context): with the same figures, 2 each of 16 rows looks 1.9% faster than 2, 2 and 1 at the mean
+each, and priced at the rows asked 1 each was 1% faster. Each width is priced by its chance because a window's time
+jumps from 8 rows to 9 (Context): with the same figures, 2 each of 16 rows looks 1.9% faster than 2, 2 and 1 at the mean
 of the rows made, and is 2.3% slower by each width's chance. On copied and edited text the draft layer makes nearly
 every draft asked, so there the count of 16 rows keeps its gain.
 
@@ -169,12 +169,13 @@ rare to be timed twice.
 Item 1's slope past the widest width and item 4's count for the checks: the same holds for wide widths priced too
 high. In a trace of three requests copying text on two cards, two slow rounds at 11 and 12 rows put the line
 through the two widest at 14 ms a row and 16 rows at 162 ms. No wide count qualified after that, so none ran and
-those widths were not timed again: the requests took 8 rows in 99 of 110 rounds and wrote 41.6 tokens a second,
-where three other loads of the same build or the one before took 15 and 16 rows and wrote about 45. In the two
-loads that timed 16 rows, the line through 3 and 12 rows put 16 at 124.5 and 110.0 ms against the 126.2 and
-111.0 timed, and the line through 11 and 12 at 140.3 and 114.2 (*estimate*, from each load's last table). A
-width priced too low is run and timed; the checks cost a wide count that does not qualify one round in 32 once it
-has 8.
+those widths were not timed again: the requests took 8 rows or fewer in 104 of 111 rounds and wrote 124.0 tokens a
+second, the slowest 41.1, where three other loads of the same build or the one before timed 16 rows and wrote
+131.5 to 134.7, the slowest 42.7 to 44.8. In two of those, the line through 3 and 12 rows put 16 at 124.5 and
+110.0 ms against the 126.2 and 111.0 timed, and the line through 11 and 12 at 140.3 and 114.2. With this item 1
+and item 4, two loads ran wider than 8 rows in 50 of 86 and 39 of 77 rounds of copying text
+([the record](../measurements/MEASUREMENTS.md#2026-11-12-wide-widths-timed-again)). A width priced too low is run
+and timed; the checks cost a wide count that does not qualify one round in 32 once it has 8.
 
 ## Options not chosen
 
