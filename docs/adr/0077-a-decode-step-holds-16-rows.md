@@ -58,13 +58,13 @@ give no more tokens a second in total, or the same-tokens check differs.
 ## Why
 
 A step of more than 8 rows pays where the slots accept most of their drafts. In alternating runs on two cards, with
-the drafts chosen as ADR-0078 says, three requests copying text wrote 5.8% more tokens a second than with steps of 8
-rows, four editing code 11.2% more and three on prose sampled 2.6% more. One, two, three and four requests and three
-of mixed text sampled wrote -2.4% to +0.2%, each within its spread, and three of mixed text 1.3% less. On one card,
-in three rounds, three copying text wrote 11.7% more and four editing code 9.8% more, the other cases -2.2% to +6.2%,
-each within its spread ([the record](../measurements/MEASUREMENTS.md#2026-11-12-spare-drafts-take-turns)). A
-window's ninth row still costs more than its eighth (Context), and on prose later drafts are accepted less often
-and often not made, so there a step of more than 8 rows is chosen less often.
+the drafts chosen as ADR-0078 says, three requests copying text wrote 2.4% to 5.8% more tokens a second than with
+steps of 8 rows and four editing code 11.2% more. One, two and four requests wrote -2.4% to +0.2%, each within its
+spread, and three on prose, on prose sampled and of mixed text +0.2% to +1.8%. On one card, in three rounds, three
+copying text wrote 11.7% more and four editing code 9.8% more, the other cases -2.2% to +6.2%, each within its
+spread ([the record](../measurements/MEASUREMENTS.md#2026-11-12-spare-drafts-to-the-slowest)). A window's ninth row
+still costs more than its eighth (Context), and on prose later drafts are accepted less often and often not made, so
+there a step of more than 8 rows is chosen less often.
 
 Items 4 and 9 keep a step from paying for rows it does not have. They took 4.2 ms off three slots' window of 9 rows
 and 3.6 ms off one of 13, and 0.6 and 0.7 ms off windows of 5 and 7 rows, which run the lists of 6 and 8, with the
