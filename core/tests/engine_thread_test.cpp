@@ -1,6 +1,7 @@
 // Level 1 (docs/TESTING.md): the C ABI's engine thread on a model of the test's own. No card. The model notes which
 // thread makes each call and whether two calls overlap, which the model's lists do not allow
 // (docs/adr/0075-one-thread-uses-the-cards.md).
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -115,7 +116,7 @@ class FakeModel : public Model {
   void kv_ahead() override { In in(*this, "kv", 0); }
   void kvs_drop(uint32_t slot, uint32_t) override { In in(*this, "kv", slot); }
 
-  void note_prompt_routing() override {}
+  void note_prompt_routing(bool) override {}
   uint32_t swap_round(uint32_t, bool) override { return 0; }
   bool swaps_ready() const override { return true; }
   bool swaps_settled() const override { return true; }
@@ -156,12 +157,16 @@ std::unique_ptr<Model> open_fake(const std::string &, const Options &opt) {
   return m;
 }
 
+// Plans that ended before the wait that counts them asked for them: a poll may return more events than the wait wants.
+uint32_t carried_ended = 0, carried_errors = 0;
+
 engine_ctx *open_test_engine(uint32_t slots, uint32_t max_ctx, uint32_t checkpoints) {
   engine_config c{};
   c.model_path = "fake";
   c.slots = slots;
   c.max_ctx = max_ctx;
   c.checkpoints = checkpoints;
+  carried_ended = carried_errors = 0;
   engine_ctx *e = nullptr;
   EXPECT(open_engine(&c, nullptr, &e, open_fake) == ENGINE_OK, "open: %s", engine_last_error(nullptr));
   return e;
@@ -187,19 +192,30 @@ void submit(engine_ctx *e, uint32_t slot, uint32_t map = 0, uint32_t first = 0) 
   EXPECT(engine_submit(e, &p) == ENGINE_OK, "submit: %s", engine_last_error(e));
 }
 
-// Waits for n plans to end; returns how many of them ended with an error.
+// Waits for n plans to end, counting those an earlier wait read past its n; returns how many of them ended with an
+// error.
 uint32_t wait_plans(engine_ctx *e, uint32_t n) {
   uint32_t ended = 0, errors = 0;
   const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(30);
   while (ended < n) {
+    if (carried_ended) {
+      const uint32_t take = std::min(carried_ended, n - ended);
+      const uint32_t bad = std::min(carried_errors, take);
+      ended += take;
+      errors += bad;
+      carried_ended -= take;
+      carried_errors -= bad;
+      continue;
+    }
     EXPECT(std::chrono::steady_clock::now() < until, "no plan ended in 30 s");
     engine_wait(e, 100);
     engine_event ev[64];
     uint32_t got = 0;
     EXPECT(engine_poll(e, ev, 64, &got) == ENGINE_OK, "poll");
     for (uint32_t i = 0; i < got; i++) {
-      ended += ev[i].kind == ENGINE_EVENT_STEP || ev[i].kind == ENGINE_EVENT_ERROR;
-      errors += ev[i].kind == ENGINE_EVENT_ERROR;
+      if (ev[i].kind != ENGINE_EVENT_STEP && ev[i].kind != ENGINE_EVENT_ERROR) continue;
+      carried_ended++;
+      carried_errors += ev[i].kind == ENGINE_EVENT_ERROR;
     }
   }
   return errors;
