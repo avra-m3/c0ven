@@ -15,6 +15,7 @@ using engine::even_drafts;
 using engine::Lookup;
 using engine::RoundTimes;
 using engine::SharedChoice;
+using engine::split_drafts;
 using engine::WindowTimes;
 
 namespace {
@@ -271,6 +272,50 @@ int main() {
     EXPECT(even_drafts(3, 7, 16, 7, 4) == v({4, 5, 4}), "first past the slots");
   }
 
+  // The one draft more by the slots' tokens: first to the slots it makes faster, of them to the fewest, close slots
+  // in turns. A round here takes 30 ms and 1 a row.
+  {
+    auto ms = [](const std::vector<uint32_t> &d) {
+      double r = (double)d.size();
+      for (uint32_t x : d) r += x;
+      return 30 + r;
+    };
+    // Slots alike are all close: the drafts go as even_drafts gives them, from first on.
+    for (uint32_t f = 0; f < 4; f++) {
+      uint32_t turns = 0;
+      EXPECT(split_drafts(slots(3, 3, 3), 2, 8, 7, ms, f, &turns) == even_drafts(3, 2, 8, 7, f) && turns == 3,
+             "alike, from %u: %u turns", f, turns);
+    }
+    // 1 each of 8 rows: 1.9, 1.6 and 1.3 tokens in 36 ms. One more makes each faster: the slot at 1.3 takes one; the
+    // second would take the slot at 1.6 to 1.96, past the one at 1.9, so those two take it in turns.
+    const DraftOdds hi = placed(1, {0.9})[0], mid = placed(1, {0.6})[0], lo = placed(1, {0.3})[0];
+    uint32_t turns = 0;
+    EXPECT(split_drafts({hi, mid, lo}, 2, 8, 7, ms, 0, &turns) == v({2, 1, 2}) && turns == 2, "close: %u", turns);
+    EXPECT(split_drafts({hi, mid, lo}, 2, 8, 7, ms, 1) == v({1, 2, 2}), "close, the next turn");
+    EXPECT(split_drafts({hi, mid, lo}, 2, 8, 7, ms, 2) == v({2, 1, 2}), "close, past the run");
+    // 4 each of 16 rows: 4.10, 2.31 and 1.43 tokens in 45 ms. A fifth draft adds 0.002 to the slot at 0.3, slower
+    // in the round of 46 ms, so the slot at 2.31 takes it, short of the next.
+    EXPECT(split_drafts({hi, mid, lo}, 7, 16, 7, ms, 0, &turns) == v({4, 5, 4}) && turns == 1, "fewest: %u", turns);
+    EXPECT(split_drafts({lo, hi, mid}, 7, 16, 7, ms, 1) == v({4, 4, 5}), "fewest, another order");
+    // With no time, every slot one more adds to is made faster: the slot at 0.3 takes it.
+    auto none_timed = [](const std::vector<uint32_t> &) { return 0.0; };
+    EXPECT(split_drafts({hi, mid, lo}, 7, 16, 7, none_timed) == v({4, 4, 5}), "no time");
+    // Slots copying text at 0.97, 0.98 and 0.99 a draft are within a draft of each other: all take turns.
+    const std::vector<DraftOdds> copy = {placed(1, {0.97})[0], placed(1, {0.98})[0], placed(1, {0.99})[0]};
+    EXPECT(split_drafts(copy, 7, 16, 7, ms, 0, &turns) == v({5, 4, 4}) && turns == 3, "copy: %u turns", turns);
+    EXPECT(split_drafts(copy, 7, 16, 7, ms, 2) == v({4, 4, 5}), "copy, third turn");
+    // A slot that accepts none is not made faster: the two that accept every draft take the drafts.
+    const DraftOdds sure = slots(1, 3, 3)[0], none = slots(1, 0, 3)[0];
+    for (uint32_t f = 0; f < 3; f++) {
+      EXPECT(split_drafts({sure, sure, none}, 2, 8, 7, ms, f) == v({2, 2, 1}), "none last, from %u", f);
+      EXPECT(split_drafts({none, sure, sure}, 2, 8, 7, ms, f) == v({1, 2, 2}), "none first, from %u", f);
+    }
+    // No one more: k at most spare / n, or no spare rows.
+    EXPECT(split_drafts({hi, mid, lo}, 1, 8, 7, ms, 0, &turns) == v({1, 1, 1}) && turns == 1, "k 1");
+    EXPECT(split_drafts({hi, mid, lo}, 7, 3, 7, ms) == v({0, 0, 0}), "no spare rows");
+    EXPECT(split_drafts({}, 7, 16, 7, ms).empty(), "no slots");
+  }
+
   // The drafts of several slots, with times like the cards' (windows of 2 rows 20 ms, 4 23.4, 6 27.3, 8 32.2, 9 40,
   // 12 44, 16 48.1; the draft layer's pass 4.5 ms up to 8 rows and 6.5 past) and no misses.
   {
@@ -354,12 +399,13 @@ int main() {
     EXPECT(std::fabs(from0.even_tokens - from2.even_tokens) < 1e-9 && std::fabs(from0.even_ms - from2.even_ms) < 1e-9,
            "3 slots from the third, estimates: %g %g", from2.even_tokens, from2.even_ms);
     // The choice does not hang on the slots' order: two slots that accept every draft and one that accepts none, last
-    // or first, take 2 each of 8 rows (6.33 tokens on average in 36.7 ms), and no wide count.
+    // or first: the two take 2 each of 8 rows and the third 1 (7 tokens in 36.7 ms), and no wide count.
     std::vector<DraftOdds> none_last = {slots(1, 3, 3)[0], slots(1, 3, 3)[0], slots(1, 0, 3)[0]};
     std::vector<DraftOdds> none_first = {slots(1, 0, 3)[0], slots(1, 3, 3)[0], slots(1, 3, 3)[0]};
     const SharedChoice nl = choose_shared_drafts(none_last, 3, 16, w, dr, 0);
     const SharedChoice nf = choose_shared_drafts(none_first, 3, 16, w, dr, 0);
-    EXPECT(nl.even == nf.even && nl.wide.empty() && nf.wide.empty(), "order of the slots");
+    EXPECT(nl.even == v({2, 2, 1}) && nf.even == v({1, 2, 2}) && nl.wide.empty() && nf.wide.empty(),
+           "order of the slots");
     // The same with the third slot accepting none: it is the slowest in both, at 1 token in 36.7 ms against 1 in
     // 50.5, so there is no wide count.
     std::vector<DraftOdds> two_sure = {slots(1, 3, 3)[0], slots(1, 3, 3)[0], slots(1, 0, 3)[0]};

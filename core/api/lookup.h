@@ -150,14 +150,25 @@ constexpr uint32_t kEvenRows = 8;
 // draft_max.
 std::vector<uint32_t> even_drafts(uint32_t n, uint32_t k, uint32_t rows, uint32_t draft_max, uint32_t first = 0);
 
+// The same counts, with the spare % n drafts of one more going by each slot's tokens with spare / n (the row sampled
+// last and place_expected): first to the slots one more makes faster, its tokens over the round's time with it
+// (round_ms, of each slot's drafts asked; with no time, any slot it adds to) above the slot's with spare / n; then
+// to the slots that write the fewest. Two slots next to each other in that order, both made faster, are close where
+// one more draft would take the first past the second. Where the line between the slots that take one more and
+// those that do not falls inside a run of close slots, the run takes the drafts left in turns, from its slot
+// first % its length on, in the slots' order. turns, where given, is the run's length; 1 where there is none.
+std::vector<uint32_t> split_drafts(const std::vector<DraftOdds> &slots, uint32_t k, uint32_t rows, uint32_t draft_max,
+                                   const std::function<double(const std::vector<uint32_t> &)> &round_ms,
+                                   uint32_t first = 0, uint32_t *turns = nullptr);
+
 // The drafts each of several writing slots may make for their next round
 // (docs/adr/0078-several-slots-take-more-rows-only-when-the-slowest-writes-no-slower.md): one count k for all of
-// them, shared out as even_drafts shares it, worth the slots' expected tokens (each the row sampled last and its
+// them, shared out as split_drafts shares it, worth the slots' expected tokens (each the row sampled last and its
 // drafts accepted, at each place's acceptance and share made: place_expected) over the round's time, the window's
 // (window.ms) and the draft layer's pass after it (drafter, by the window's rows), at the rows the draft layer is
-// expected to make (place_drafts). Where k leaves some slots one draft more than others, the remainder goes to the
-// slots from first on, and the core moves first on a choice at a time; so a slot's tokens and the round's time are
-// their means over the n slots first may be.
+// expected to make (place_drafts). Where k leaves some slots one draft more than others, split_drafts gives them
+// from first, and the core moves first on a choice at a time; so a slot's tokens and the round's time are their
+// means over the turns of split_drafts' close slots.
 // - even: the k with the most tokens a millisecond of a step of kEvenRows rows, and at least 1 while a slot's first
 //   draft has been checked in fewer than kFirstChecks rounds; kSharedDrafts while fewer than two widths are timed.
 // - wide: a k whose rows are more than kEvenRows, of a step of max_rows, that gives more tokens a millisecond in all

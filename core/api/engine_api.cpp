@@ -147,6 +147,7 @@ struct engine_ctx {
   uint32_t writers = 0;  // the slots the plan being run decoded
   uint32_t writing_at_start = 0;  // the slots writing when the plan being run began (writing_slots)
   uint32_t shared_choices = 0;  // shared_drafts' choices, for its kSharedCheck; under mu
+  uint32_t shared_turns = 0;    // its choices by choose_shared_drafts, whose close slots take turns; under mu
   engine::WindowTimes window_times;  // decode steps of one slot and rounds of any number, by their rows
   // Steps and rounds of several slots: their windows by their rows and misses, and what follows up to the draft
   // layer's drafts by the window's rows. What shared_drafts weighs drafts against. Under mu.
@@ -432,8 +433,8 @@ struct engine_ctx {
   // The drafts each row's slot of a step or round of several slots may make for the next: kSharedDrafts each of
   // kEvenRows rows every kSharedCheck-th time; else choose_shared_drafts' even split, or its wide count where the
   // slots' trial takes it. Over STEP_MAX_ROWS rows where the model would take the next round's rows with the most
-  // drafts each, past this round's rows and the next's (STEP_MAX_RUN each); else over kEvenRows. A split's one draft
-  // more for some slots goes to the next slots each choice. Under mu.
+  // drafts each, past this round's rows and the next's (STEP_MAX_RUN each); else over kEvenRows. Where a split leaves
+  // some slots one draft more, slots close in tokens take it in turns, a choice at a time. Under mu.
   std::vector<uint32_t> shared_drafts(const std::vector<StepIn> &rows) {
     const uint32_t n = (uint32_t)rows.size();
     const uint32_t first = shared_choices % n;
@@ -448,7 +449,7 @@ struct engine_ctx {
       for (uint32_t j = 0; j <= most[i]; j++) next.push_back({rows[i].slot, rows[i].pos + 2 * STEP_MAX_RUN - j});
     const uint32_t max_rows = model->step_fits(next.data(), (uint32_t)next.size()) ? STEP_MAX_ROWS : engine::kEvenRows;
     engine::SharedChoice c =
-        engine::choose_shared_drafts(odds, draft_max, max_rows, several_times, drafter_times, first);
+        engine::choose_shared_drafts(odds, draft_max, max_rows, several_times, drafter_times, shared_turns++);
     if (c.wide.empty() || n > ENGINE_MAX_STEP_SLOTS) return c.even;
     trial_wide = trials[n].wide(c) ? 1 : 0;
     trial_n = n;

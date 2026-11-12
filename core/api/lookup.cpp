@@ -216,12 +216,57 @@ std::vector<uint32_t> even_drafts(uint32_t n, uint32_t k, uint32_t rows, uint32_
   return d;
 }
 
+std::vector<uint32_t> split_drafts(const std::vector<DraftOdds> &slots, uint32_t k, uint32_t rows, uint32_t draft_max,
+                                   const std::function<double(const std::vector<uint32_t> &)> &round_ms, uint32_t first,
+                                   uint32_t *turns) {
+  const uint32_t n = (uint32_t)slots.size();
+  if (turns) *turns = 1;
+  if (n == 0) return {};
+  const uint32_t spare = rows > n ? rows - n : 0, base = std::min({k, draft_max, spare / n});
+  const uint32_t more = std::min(k, draft_max) > base ? spare % n : 0;
+  std::vector<uint32_t> d(n, base);
+  if (more == 0) return d;
+  // Each slot's tokens with base drafts, what one more adds, and whether that makes it faster.
+  std::vector<double> tokens(n), gain(n);
+  std::vector<bool> faster(n);
+  const double t0 = round_ms(d);
+  for (uint32_t i = 0; i < n; i++) {
+    tokens[i] = 1.0 + slots[i].place_expected(base);
+    gain[i] = 1.0 + slots[i].place_expected(base + 1) - tokens[i];
+    d[i]++;
+    faster[i] = gain[i] > 0 && (t0 <= 0 || (tokens[i] + gain[i]) / round_ms(d) > tokens[i] / t0);
+    d[i]--;
+  }
+  // The slots it makes faster first, then by their tokens, fewest first.
+  std::vector<uint32_t> order(n);
+  for (uint32_t i = 0; i < n; i++) order[i] = i;
+  std::stable_sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) {
+    if (faster[a] != faster[b]) return (bool)faster[a];
+    return tokens[a] < tokens[b];
+  });
+  // Next to each other in that order, a and b are close where one more draft would take a past b.
+  auto close = [&](uint32_t a, uint32_t b) { return faster[a] && faster[b] && tokens[a] + gain[a] > tokens[b]; };
+  uint32_t lo = more - 1, hi = more;
+  if (!close(order[lo], order[hi])) {
+    for (uint32_t j = 0; j < more; j++) d[order[j]]++;
+    return d;
+  }
+  while (lo > 0 && close(order[lo - 1], order[lo])) lo--;
+  while (hi + 1 < n && close(order[hi], order[hi + 1])) hi++;
+  for (uint32_t j = 0; j < lo; j++) d[order[j]]++;
+  std::vector<uint32_t> run(order.begin() + lo, order.begin() + hi + 1);
+  std::sort(run.begin(), run.end());
+  const uint32_t g = (uint32_t)run.size();
+  for (uint32_t t = 0; t < more - lo; t++) d[run[(first + t) % g]]++;
+  if (turns) *turns = g;
+  return d;
+}
+
 SharedChoice choose_shared_drafts(const std::vector<DraftOdds> &slots, uint32_t draft_max, uint32_t max_rows,
                                   const RoundTimes &window, const WindowTimes &drafter, uint32_t first) {
   const uint32_t n = (uint32_t)slots.size();
   SharedChoice c;
   if (n == 0) return c;
-  first %= n;
   auto width = [n](const std::vector<uint32_t> &d) {
     uint32_t w = n;
     for (uint32_t x : d) w += x;
@@ -249,9 +294,9 @@ SharedChoice choose_shared_drafts(const std::vector<DraftOdds> &slots, uint32_t 
   auto price = [&](uint32_t k, uint32_t rows, double &total, double &low) {
     std::vector<double> tokens(n, 0.0);
     double t = 0;
-    const uint32_t starts = even_drafts(n, k, rows, draft_max, 0) == even_drafts(n, k, rows, draft_max, 1) ? 1 : n;
+    uint32_t starts = 1;
     for (uint32_t f = 0; f < starts; f++) {
-      const std::vector<uint32_t> d = even_drafts(n, k, rows, draft_max, f);
+      const std::vector<uint32_t> d = split_drafts(slots, k, rows, draft_max, ms, f, f == 0 ? &starts : nullptr);
       for (uint32_t i = 0; i < n; i++) tokens[i] += 1.0 + slots[i].place_expected(d[i]);
       t += ms(d);
     }
@@ -278,12 +323,12 @@ SharedChoice choose_shared_drafts(const std::vector<DraftOdds> &slots, uint32_t 
       if (total / m > best) best = total / m, take = k;
     }
   }
-  c.even = even_drafts(n, take, even_rows, draft_max, first);
+  c.even = split_drafts(slots, take, even_rows, draft_max, ms, first);
   if (max_rows <= kEvenRows) return c;
   // Until two widths are timed, kSharedDrafts + 1 each of max_rows rows, where that is more than kEvenRows, so that
   // a wider width is timed.
   if (window.seen() < 2) {
-    std::vector<uint32_t> wide = even_drafts(n, kSharedDrafts + 1, max_rows, draft_max, first);
+    std::vector<uint32_t> wide = split_drafts(slots, kSharedDrafts + 1, max_rows, draft_max, ms, first);
     if (width(wide) > kEvenRows) c.wide = std::move(wide);
     return c;
   }
@@ -296,8 +341,10 @@ SharedChoice choose_shared_drafts(const std::vector<DraftOdds> &slots, uint32_t 
     if (width(even_drafts(n, k, max_rows, draft_max)) <= kEvenRows) continue;
     double t = 0, low = 0;
     const double m = price(k, max_rows, t, low);
-    if (low / m >= even_low / even_ms && t / m > best_rate)
-      best_rate = t / m, c.wide = even_drafts(n, k, max_rows, draft_max, first), c.wide_tokens = t, c.wide_ms = m;
+    if (low / m >= even_low / even_ms && t / m > best_rate) {
+      best_rate = t / m, c.wide_tokens = t, c.wide_ms = m;
+      c.wide = split_drafts(slots, k, max_rows, draft_max, ms, first);
+    }
   }
   if (!c.wide.empty()) c.even_tokens = even_tokens, c.even_ms = even_ms;
   return c;
