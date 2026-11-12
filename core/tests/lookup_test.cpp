@@ -453,7 +453,7 @@ int main() {
   }
 
   // The drafts of several slots a window holds: all where they fit; else the spare rows one at a time to each slot
-  // that wants more, from slot first on, round after round.
+  // with more drafts made, from slot first on, round after round.
   {
     using engine::window_drafts;
     EXPECT(window_drafts(v({2, 2, 1}), 8) == v({2, 2, 1}), "8 in 8");
@@ -463,9 +463,10 @@ int main() {
     EXPECT(window_drafts(v({5, 5, 3}), 8) == v({2, 2, 1}), "16 in 8");
     EXPECT(window_drafts(v({5, 5, 3}), 8, 1) == v({1, 2, 2}), "16 in 8 from the second");
     EXPECT(window_drafts(v({5, 5, 3}), 8, 5) == v({2, 1, 2}), "first past the slots");
-    // A slot that wants fewer leaves its rows to the others.
-    EXPECT(window_drafts(v({0, 7, 7}), 8) == v({0, 3, 2}), "one wants none");
-    EXPECT(window_drafts(v({1, 7, 7}), 8) == v({1, 2, 2}), "one wants 1");
+    // A slot that made fewer leaves its rows to the others, and no row is left empty.
+    EXPECT(window_drafts(v({0, 7, 7}), 8) == v({0, 3, 2}), "one made none");
+    EXPECT(window_drafts(v({1, 7, 7}), 8) == v({1, 2, 2}), "one made 1");
+    EXPECT(window_drafts(v({1, 5, 1}), 8) == v({1, 3, 1}), "two made 1");
     EXPECT(window_drafts(std::vector<uint32_t>(8, 3), 8) == std::vector<uint32_t>(8, 0), "8 slots of 8 rows");
     EXPECT(window_drafts({}, 8).empty(), "no slots");
   }

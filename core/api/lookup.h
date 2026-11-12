@@ -188,11 +188,11 @@ SharedChoice choose_shared_drafts(const std::vector<DraftOdds> &slots, uint32_t 
                                   const RoundTimes &window, const WindowTimes &drafter, uint32_t first = 0,
                                   const std::function<bool(const std::vector<uint32_t> &)> &fits = nullptr);
 
-// The drafts each of several slots puts in a window of rows rows, of those it wants: all of them where they fit; else
-// the spare rows one at a time to each slot that wants more, from slot first on, round after round, so that no slot
-// that wants more is more than one short of another. The core uses it where the cards' memory cannot take the round
-// chosen for 16 rows, to share 8 out.
-std::vector<uint32_t> window_drafts(const std::vector<uint32_t> &want, uint32_t rows, uint32_t first = 0);
+// The drafts each of several slots puts in a window of rows rows, of those it made: all of them where they fit; else
+// the spare rows one at a time to each slot with more, from slot first on, round after round, so that no row is left
+// empty while a slot has a draft out and no slot with more is more than one short of another. The core uses it where
+// the cards' memory cannot take the round chosen for 16 rows, to share 8 out.
+std::vector<uint32_t> window_drafts(const std::vector<uint32_t> &made, uint32_t rows, uint32_t first = 0);
 
 // Whether rounds of several slots take choose_shared_drafts' wide count or its even split. Each arm keeps what its
 // rounds gave against what choose_shared_drafts estimated for them: the tokens they wrote over the time of their

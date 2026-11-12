@@ -275,17 +275,18 @@ SharedChoice choose_shared_drafts(const std::vector<DraftOdds> &slots, uint32_t 
       if (chance[x] > 0) t += chance[x] * (window.ms(n + x) + drafter.ms(n + x));
     return t;
   };
-  // A count k each of rows rows: the slots' tokens in all and the fewest a slot has, and the round's time. Where some
-  // slots get one draft more, each slot's tokens and the time are means over the n slots that draft may start from,
-  // as the core moves that start each choice.
-  auto price = [&](uint32_t k, uint32_t rows, double &total, double &low) {
+  // A count k each of rows rows: the slots' tokens in all and the fewest a slot has, and the round's time; and its
+  // split from slot first on (split). Where some slots get one draft more, each slot's tokens and the time are means
+  // over the n slots that draft may start from, as the core moves that start each choice.
+  auto price = [&](uint32_t k, uint32_t rows, double &total, double &low, std::vector<uint32_t> &split) {
     std::vector<double> tokens(n, 0.0);
     double t = 0;
     uint32_t starts = 1;
     for (uint32_t f = 0; f < starts; f++) {
-      const std::vector<uint32_t> d = split_drafts(slots, k, rows, draft_max, ms, f, f == 0 ? &starts : nullptr);
+      std::vector<uint32_t> d = split_drafts(slots, k, rows, draft_max, ms, f, f == 0 ? &starts : nullptr);
       for (uint32_t i = 0; i < n; i++) tokens[i] += 1.0 + slots[i].place_expected(d[i]);
       t += ms(d);
+      if (f == first % starts) split = std::move(d);  // split_drafts gives the same from first as from first % starts
     }
     total = 0;
     for (uint32_t i = 0; i < n; i++) {
@@ -298,19 +299,20 @@ SharedChoice choose_shared_drafts(const std::vector<DraftOdds> &slots, uint32_t 
   // only once every slot's first draft is measured; kSharedDrafts while fewer than two widths are timed.
   const uint32_t even_rows = std::min(kEvenRows, max_rows), spare = even_rows > n ? even_rows - n : 0;
   const uint32_t most = std::min(draft_max, (spare + n - 1) / n);
-  uint32_t take = std::min(kSharedDrafts, most);
+  double even_tokens = 0, even_low = 0, even_ms = 0;
   if (window.seen() >= 2) {
     bool measured = true;
     for (const DraftOdds &o : slots) measured = measured && o.first_checks >= kFirstChecks;
-    double best = 0;
-    take = 0;
+    double best = -1;
     for (uint32_t k = measured ? 0 : std::min(1u, most); k <= most; k++) {
       double total = 0, low = 0;
-      const double m = price(k, even_rows, total, low);
-      if (total / m > best) best = total / m, take = k;
+      std::vector<uint32_t> d;
+      const double m = price(k, even_rows, total, low, d);
+      if (total / m > best) best = total / m, even_tokens = total, even_low = low, even_ms = m, c.even = std::move(d);
     }
+  } else {
+    c.even = split_drafts(slots, std::min(kSharedDrafts, most), even_rows, draft_max, ms, first);
   }
-  c.even = split_drafts(slots, take, even_rows, draft_max, ms, first);
   if (max_rows <= kEvenRows) return c;
   // Until two widths are timed, kSharedDrafts + 1 each of max_rows rows, where that is more than kEvenRows, so that
   // a wider width is timed.
@@ -321,16 +323,13 @@ SharedChoice choose_shared_drafts(const std::vector<DraftOdds> &slots, uint32_t 
   }
   // A count of the whole step's rows that gives more tokens a millisecond in total, and its slowest slot no fewer
   // than the even split's slowest.
-  double even_tokens = 0, even_low = 0;
-  const double even_ms = price(take, even_rows, even_tokens, even_low);
   double best_rate = even_tokens / even_ms;
   for (uint32_t k = 1; k <= draft_max; k++) {
     if (width(even_drafts(n, k, max_rows, draft_max)) <= kEvenRows) continue;
     double t = 0, low = 0;
-    const double m = price(k, max_rows, t, low);
-    if (low / m >= even_low / even_ms && t / m > best_rate) {
-      std::vector<uint32_t> d = split_drafts(slots, k, max_rows, draft_max, ms, first);
-      if (fits && !fits(d)) continue;
+    std::vector<uint32_t> d;
+    const double m = price(k, max_rows, t, low, d);
+    if (low / m >= even_low / even_ms && t / m > best_rate && (!fits || fits(d))) {
       best_rate = t / m, c.wide_tokens = t, c.wide_ms = m;
       c.wide = std::move(d);
     }
@@ -339,15 +338,15 @@ SharedChoice choose_shared_drafts(const std::vector<DraftOdds> &slots, uint32_t 
   return c;
 }
 
-std::vector<uint32_t> window_drafts(const std::vector<uint32_t> &want, uint32_t rows, uint32_t first) {
-  const uint32_t n = (uint32_t)want.size();
+std::vector<uint32_t> window_drafts(const std::vector<uint32_t> &made, uint32_t rows, uint32_t first) {
+  const uint32_t n = (uint32_t)made.size();
   std::vector<uint32_t> d(n, 0);
   uint32_t left = rows > n ? rows - n : 0;
   for (bool more = true; more && left > 0;) {
     more = false;
     for (uint32_t t = 0; t < n && left > 0; t++) {
       const uint32_t i = (first + t) % n;
-      if (d[i] < want[i]) d[i]++, left--, more = true;
+      if (d[i] < made[i]) d[i]++, left--, more = true;
     }
   }
   return d;

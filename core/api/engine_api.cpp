@@ -1031,25 +1031,24 @@ struct engine_ctx {
       arm = trial_pick.slots == ns ? trial_pick.arm : -1;
       est_tokens = trial_pick.tokens, est_ms = trial_pick.ms;
       trial_pick = {};
-      // Each slot's drafts that its context, its mapped pages and a run have room for: those it made, and those it
-      // was asked for (DraftOdds' places keep the share the draft layer makes).
-      std::vector<uint32_t> made(ns), want(ns);
+      // Each slot's drafts that its context, its mapped pages and a run have room for (place), and of them those it
+      // made.
+      std::vector<uint32_t> place(ns), made(ns);
       for (uint32_t i = 0; i < ns; i++) {
         const uint32_t s = row0[i].slot, p = row0[i].pos;
-        const uint32_t room =
-            std::min<uint32_t>({info.max_ctx - 1 - p, mapped_cells(s) - 1 - p, STEP_MAX_RUN - 1});
-        made[i] = std::min<uint32_t>((uint32_t)drafts[i].size(), room);
-        want[i] = std::max(made[i], std::min(slots[s].asked, room));
+        place[i] = std::min<uint32_t>({info.max_ctx - 1 - p, mapped_cells(s) - 1 - p, STEP_MAX_RUN - 1});
+        made[i] = std::min<uint32_t>((uint32_t)drafts[i].size(), place[i]);
       }
-      // STEP_MAX_ROWS rows at most, shared out by window_drafts; where the model cannot take them now
-      // (Model::step_fits), STEP_MAX_RUN, and the round is no trial's, whose estimates were for the wider round.
+      // STEP_MAX_ROWS rows at most, the drafts made shared out by window_drafts; where the model cannot take them now
+      // (Model::step_fits), STEP_MAX_RUN, and the round is no trial's, whose estimates were for the wider round. The
+      // drafts asked of a slot that keeps every draft it made are those it was asked for, so DraftOdds' places see
+      // where the draft layer stopped; of one that drops some, those it keeps.
       for (const uint32_t cap : {(uint32_t)STEP_MAX_ROWS, (uint32_t)STEP_MAX_RUN}) {
-        const std::vector<uint32_t> room = engine::window_drafts(want, cap, shared_choices % ns);
+        k = engine::window_drafts(made, cap, shared_choices % ns);
         rows.clear();
         for (uint32_t i = 0; i < ns; i++) {
           start[i] = (uint32_t)rows.size();
-          k[i] = std::min(made[i], room[i]);
-          asked[i] = std::min(slots[row0[i].slot].asked, room[i]);
+          asked[i] = k[i] < made[i] ? k[i] : std::min(slots[row0[i].slot].asked, place[i]);
           rows.push_back(row0[i]);
           for (uint32_t j = 0; j < k[i]; j++) rows.push_back(row_after(rows.back(), drafts[i][j]));
         }
