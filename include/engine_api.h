@@ -88,7 +88,8 @@ typedef struct {
   double load_seconds;
   uint32_t prompt_chunk;       /* 0: prompts go one token per step */
   uint32_t checkpoints;
-  uint32_t max_step_rows;      /* decode rows per step at most */
+  uint32_t max_step_rows;      /* rows a round's window of several slots holds at most, drafts included; a plan has
+                                  ENGINE_MAX_STEP_SLOTS decode slots at most */
   uint32_t drafting;           /* 1: a plan whose decode slots all write runs a round of drafts verified in a window */
   uint32_t image_tokens_max;   /* the most tokens an image may have; 0: no images */
   uint32_t kv_pages;           /* the KV cache's pages */
@@ -152,13 +153,14 @@ typedef struct {
 
 /* One plan: page changes, applied in order before anything else; some slots' prompt pieces, each of up to window_rows
  * tokens with no image as decode windows, a longer one through the prompt path; then one decode step for the decode slots,
- * batched (up to max_step_rows). A slot still reading its prompt may be in decode: it then reads its next prompt token
- * in the step. The scheduler decides the mix and the pieces' sizes (ADR-0017). With drafting, a plan whose decode
- * slots are all writing runs a round: each slot's drafts verified in one window, and up to draft_max + 1 tokens out
- * for a lone slot, and for each of several the same number, as many as give the most tokens a millisecond while no
- * slot writes slower than in a window of 8 rows (2 until the core has timed windows). The slots share the window's
- * max_step_rows rows, so each drafts fewer as there are more of them. Several
- * slots run a round only while no slot has prompt left to read, and not for one's second token. */
+ * batched (up to ENGINE_MAX_STEP_SLOTS). A slot still reading its prompt may be in decode: it then reads its next
+ * prompt token in the step. The scheduler decides the mix and the pieces' sizes (ADR-0017). With drafting, a plan
+ * whose decode slots are all writing runs a round: each slot's drafts verified in one window, and up to draft_max + 1
+ * tokens out for a lone slot, and for each of several about the same number (some one more where the rows do not
+ * share out evenly), as many as give the most tokens a millisecond while no slot writes slower than in a window of 8
+ * rows (2 until the core has timed windows). The slots share the window's max_step_rows rows, or 8 where the cards'
+ * memory cannot take more at the moment, so each drafts fewer as there are more of them. Several slots run a round
+ * only while no slot has prompt left to read, and not for one's second token. */
 #define ENGINE_MAX_STEP_SLOTS 8
 #define ENGINE_MAX_PROMPT_PIECES 4
 typedef struct {

@@ -10,6 +10,34 @@ uint64_t key(int32_t a, int32_t b, int32_t c) {
   return ((uint64_t)(uint32_t)a << 42) ^ ((uint64_t)(uint32_t)b << 21) ^ (uint64_t)(uint32_t)c;
 }
 
+// A window of r rows' time from the widths seen (at[w] > 0, w from 1 to widths - 1), for WindowTimes and RoundTimes
+// alike: as lookup.h describes it. 0 while none is seen.
+double width_ms(const double *at, uint32_t widths, uint32_t r) {
+  r = std::min(r, widths - 1);
+  if (r == 0) return 0;
+  if (at[r] > 0) return at[r];
+  uint32_t lo = r, hi = r;
+  while (lo > 0 && at[lo] == 0) lo--;
+  while (hi < widths && at[hi] == 0) hi++;
+  if (lo > 0 && hi < widths) return at[lo] + (at[hi] - at[lo]) * (r - lo) / (hi - lo);
+  if (lo > 0) {
+    // Past the widest seen: on the line through the two widest seen, so the fixed part of a window is not scaled with
+    // the rows. Times in proportion to the rows overprice a wide window, and a width never chosen is never measured.
+    uint32_t below = lo - 1;
+    while (below > 0 && at[below] == 0) below--;
+    if (below == 0) return at[lo] * r / lo;
+    return at[lo] + std::max(0.0, (at[lo] - at[below]) / (lo - below)) * (r - lo);
+  }
+  if (hi == widths) return 0;
+  // Below the narrowest seen: on the line through the two narrowest seen, no dearer than the narrowest and no less
+  // than in proportion to the rows. A width priced too high is never run, so never timed.
+  uint32_t above = hi + 1;
+  while (above < widths && at[above] == 0) above++;
+  if (above == widths) return at[hi];
+  const double line = at[hi] - (at[above] - at[hi]) / (above - hi) * (hi - r);
+  return std::max(at[hi] * r / hi, std::min(at[hi], line));
+}
+
 }  // namespace
 
 std::vector<int32_t> Lookup::drafts(const std::vector<int32_t> &t, int32_t next, uint32_t cap,
@@ -46,24 +74,7 @@ void WindowTimes::add(uint32_t rows, double ms) {
   m = n_[rows]++ < 2 ? ms : m + (ms - m) / 16;
 }
 
-double WindowTimes::ms(uint32_t rows) const {
-  rows = std::min(rows, kWidths - 1);
-  if (ms_[rows] > 0) return ms_[rows];
-  uint32_t lo = rows, hi = rows;
-  while (lo > 0 && ms_[lo] == 0) lo--;
-  while (hi < kWidths && ms_[hi] == 0) hi++;
-  if (lo > 0 && hi < kWidths) return ms_[lo] + (ms_[hi] - ms_[lo]) * (rows - lo) / (hi - lo);
-  if (lo > 0) {
-    // Past the widest seen: on the line through the two widest seen, so the fixed part of a window is not scaled with
-    // the rows. Times in proportion to the rows overprice a wide window, and a width never chosen is never measured.
-    uint32_t below = lo - 1;
-    while (below > 0 && ms_[below] == 0) below--;
-    if (below == 0) return ms_[lo] * rows / lo;
-    return ms_[lo] + std::max(0.0, (ms_[lo] - ms_[below]) / (lo - below)) * (rows - lo);
-  }
-  if (hi < kWidths) return ms_[hi];        // below the narrowest seen: no faster than it
-  return 0;
-}
+double WindowTimes::ms(uint32_t rows) const { return width_ms(ms_, kWidths, rows); }
 
 void RoundTimes::add(uint32_t rows, double ms, uint32_t misses) {
   if (rows == 0 || rows >= kWidths) return;
@@ -97,32 +108,7 @@ void RoundTimes::refresh() {
     if (wider) at[w] = std::min(at[w], at[wider]);
     wider = w;
   }
-  for (uint32_t r = 0; r < kWidths; r++) {
-    net_[r] = 0;
-    if (seen_ == 0 || r == 0) continue;
-    if (at[r] > 0) {
-      net_[r] = at[r];
-      continue;
-    }
-    uint32_t lo = r, hi = r;
-    while (lo > 0 && at[lo] == 0) lo--;
-    while (hi < kWidths && at[hi] == 0) hi++;
-    if (lo > 0 && hi < kWidths) {
-      net_[r] = at[lo] + (at[hi] - at[lo]) * (r - lo) / (hi - lo);
-    } else if (hi < kWidths) {
-      // Below the narrowest seen: on the line through the two narrowest seen, and no less than in proportion to the
-      // rows. A width priced too high is never run, so never timed.
-      uint32_t above = hi + 1;
-      while (above < kWidths && at[above] == 0) above++;
-      net_[r] = above == kWidths ? at[hi]
-                                 : std::max(at[hi] * r / hi, at[hi] - (at[above] - at[hi]) / (above - hi) * (hi - r));
-    } else {
-      // Past the widest seen: on the line through the two widest seen, as WindowTimes.
-      uint32_t below = lo - 1;
-      while (below > 0 && at[below] == 0) below--;
-      net_[r] = below == 0 ? at[lo] : at[lo] + std::max(0.0, (at[lo] - at[below]) / (lo - below)) * (r - lo);
-    }
-  }
+  for (uint32_t r = 0; r < kWidths; r++) net_[r] = width_ms(at, kWidths, r);
 }
 
 void DraftOdds::lookup_round(uint32_t accepted, uint32_t drafts) {
@@ -263,7 +249,8 @@ std::vector<uint32_t> split_drafts(const std::vector<DraftOdds> &slots, uint32_t
 }
 
 SharedChoice choose_shared_drafts(const std::vector<DraftOdds> &slots, uint32_t draft_max, uint32_t max_rows,
-                                  const RoundTimes &window, const WindowTimes &drafter, uint32_t first) {
+                                  const RoundTimes &window, const WindowTimes &drafter, uint32_t first,
+                                  const std::function<bool(const std::vector<uint32_t> &)> &fits) {
   const uint32_t n = (uint32_t)slots.size();
   SharedChoice c;
   if (n == 0) return c;
@@ -329,7 +316,7 @@ SharedChoice choose_shared_drafts(const std::vector<DraftOdds> &slots, uint32_t 
   // a wider width is timed.
   if (window.seen() < 2) {
     std::vector<uint32_t> wide = split_drafts(slots, kSharedDrafts + 1, max_rows, draft_max, ms, first);
-    if (width(wide) > kEvenRows) c.wide = std::move(wide);
+    if (width(wide) > kEvenRows && (!fits || fits(wide))) c.wide = std::move(wide);
     return c;
   }
   // A count of the whole step's rows that gives more tokens a millisecond in total, and its slowest slot no fewer
@@ -342,12 +329,28 @@ SharedChoice choose_shared_drafts(const std::vector<DraftOdds> &slots, uint32_t 
     double t = 0, low = 0;
     const double m = price(k, max_rows, t, low);
     if (low / m >= even_low / even_ms && t / m > best_rate) {
+      std::vector<uint32_t> d = split_drafts(slots, k, max_rows, draft_max, ms, first);
+      if (fits && !fits(d)) continue;
       best_rate = t / m, c.wide_tokens = t, c.wide_ms = m;
-      c.wide = split_drafts(slots, k, max_rows, draft_max, ms, first);
+      c.wide = std::move(d);
     }
   }
   if (!c.wide.empty()) c.even_tokens = even_tokens, c.even_ms = even_ms;
   return c;
+}
+
+std::vector<uint32_t> window_drafts(const std::vector<uint32_t> &want, uint32_t rows, uint32_t first) {
+  const uint32_t n = (uint32_t)want.size();
+  std::vector<uint32_t> d(n, 0);
+  uint32_t left = rows > n ? rows - n : 0;
+  for (bool more = true; more && left > 0;) {
+    more = false;
+    for (uint32_t t = 0; t < n && left > 0; t++) {
+      const uint32_t i = (first + t) % n;
+      if (d[i] < want[i]) d[i]++, left--, more = true;
+    }
+  }
+  return d;
 }
 
 bool RoundTrial::wide(const SharedChoice &c) {

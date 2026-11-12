@@ -35,9 +35,13 @@ class Lookup {
 };
 
 
-// How a window's time grows with its rows, from the rounds the core runs: each width's running mean, and for a width
-// not seen yet a line through the nearest widths seen (past the widest, through the two widest). A width's second
-// time replaces its first, which may hold the first run of the width's lists.
+// A width not seen yet, in WindowTimes and RoundTimes alike: between two seen, on the line through them; past the
+// widest seen, on the line through the two widest and no less than the widest (in proportion to the rows while one
+// width is seen); below the narrowest seen, on the line through the two narrowest, no dearer than the narrowest and
+// no less than in proportion to the rows (the narrowest's time while one width is seen).
+
+// How a window's time grows with its rows, from the rounds the core runs: each width's running mean, and a width not
+// seen yet as above. A width's second time replaces its first, which may hold the first run of the width's lists.
 class WindowTimes {
  public:
   void add(uint32_t rows, double ms);
@@ -55,9 +59,8 @@ class WindowTimes {
 // slots' text, so each width keeps its times and misses (decayed by 1/16 a round of the width), one cost a miss is
 // fitted across the widths (each width's times against its misses), and a width's net time is its time less that
 // cost of its misses. A width's second round replaces its first, which may hold the first run of the width's lists,
-// and only a width timed twice is seen. For a width not seen, the line through the nearest seen ones (past the widest,
-// through the two widest, no less than the widest; below the narrowest, through the two narrowest, no less than in
-// proportion to the rows). A width is never dearer than a wider one seen.
+// and only a width timed twice is seen. A width seen is never dearer than a wider one seen, and a width not seen is
+// priced as WindowTimes prices it.
 class RoundTimes {
  public:
   void add(uint32_t rows, double ms, uint32_t misses);
@@ -174,14 +177,22 @@ std::vector<uint32_t> split_drafts(const std::vector<DraftOdds> &slots, uint32_t
 // - wide: a k whose rows are more than kEvenRows, of a step of max_rows, that gives more tokens a millisecond in all
 //   and its slowest slot at least the tokens a millisecond of the even split's slowest; the one with the most. Empty
 //   when none does, or with max_rows at most kEvenRows. While fewer than two widths are timed: kSharedDrafts + 1 each
-//   of max_rows rows, so that a wider width is timed.
+//   of max_rows rows, so that a wider width is timed. Where fits is given, only a split it holds is taken: the core
+//   asks whether the cards' memory takes the round (Model::step_fits).
 // With a wide count, both carry their estimates for the trial: the slots' expected tokens and the round's time.
 struct SharedChoice {
   std::vector<uint32_t> even, wide;
   double even_tokens = 0, even_ms = 0, wide_tokens = 0, wide_ms = 0;
 };
 SharedChoice choose_shared_drafts(const std::vector<DraftOdds> &slots, uint32_t draft_max, uint32_t max_rows,
-                                  const RoundTimes &window, const WindowTimes &drafter, uint32_t first = 0);
+                                  const RoundTimes &window, const WindowTimes &drafter, uint32_t first = 0,
+                                  const std::function<bool(const std::vector<uint32_t> &)> &fits = nullptr);
+
+// The drafts each of several slots puts in a window of rows rows, of those it wants: all of them where they fit; else
+// the spare rows one at a time to each slot that wants more, from slot first on, round after round, so that no slot
+// that wants more is more than one short of another. The core uses it where the cards' memory cannot take the round
+// chosen for 16 rows, to share 8 out.
+std::vector<uint32_t> window_drafts(const std::vector<uint32_t> &want, uint32_t rows, uint32_t first = 0);
 
 // Whether rounds of several slots take choose_shared_drafts' wide count or its even split. Each arm keeps what its
 // rounds gave against what choose_shared_drafts estimated for them: the tokens they wrote over the time of their

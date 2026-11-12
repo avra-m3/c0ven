@@ -47,7 +47,7 @@ give no more tokens a second in total, or the same-tokens check differs.
 8. With the streamed pool (`kv_resident`), the ring's fixed part holds the claims of a step of 8 rows, as before,
    and `kv_resident`'s least value is the same. A step of more than 8 rows runs only where the ring holds every page
    its claim can take (`Model::step_fits`): each slot's rows take at most `kvs_row_claims` pages a row, and no page
-   past its last row's and the 32 after it. Where it does not, the round takes 8 rows.
+   past its last row's and the 32 after it. Where it does not, the round takes 8 rows, shared out evenly.
 9. The dense products (`matvec`, `matvec_ks`) compute only the step's rows: they read the count from the step plan,
    as the other step kernels do, and the list's width only picks their module.
 10. The indexer's scores, the attention's parts and the head's logits share one buffer, since a step uses each in

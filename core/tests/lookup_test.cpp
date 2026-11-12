@@ -134,6 +134,19 @@ int main() {
     EXPECT(w.ms(8) == 48.0, "second: %g", w.ms(8));
     w.add(8, 64.0);
     EXPECT(w.ms(8) == 49.0, "mean: %g", w.ms(8));
+    // With one width seen: below it, its time; past it, in proportion to the rows.
+    WindowTimes one;
+    one.add(4, 26.0);
+    EXPECT(one.ms(2) == 26.0 && one.ms(8) == 52.0, "one width: %g %g", one.ms(2), one.ms(8));
+    // Below the narrowest seen: on the line through the two narrowest, no dearer than the narrowest and no less than
+    // in proportion to the rows.
+    WindowTimes line = one, dearer = one, steep = one;
+    line.add(6, 30.0);
+    EXPECT(line.ms(2) == 22.0 && line.ms(1) == 20.0, "below, on the line: %g %g", line.ms(2), line.ms(1));
+    dearer.add(6, 20.0);
+    EXPECT(dearer.ms(2) == 26.0, "below, a narrower width dearer: %g", dearer.ms(2));
+    steep.add(8, 64.0);
+    EXPECT(steep.ms(2) == 13.0, "below, in proportion: %g", steep.ms(2));
   }
 
   // A round of several slots' time: each width's time less its misses at one cost a miss.
@@ -145,6 +158,8 @@ int main() {
     EXPECT(r.seen() == 0, "one round: %u", r.seen());
     r.add(4, 24.0, 0);
     EXPECT(r.seen() == 1 && std::fabs(r.net(4) - 24.0) < 1e-9, "second: %g", r.net(4));
+    // One width seen: priced as WindowTimes prices it, its time below it and in proportion past it.
+    EXPECT(std::fabs(r.net(2) - 24) < 1e-9 && std::fabs(r.net(8) - 48) < 1e-9, "one width: %g %g", r.net(2), r.net(8));
     // Below the narrowest seen, the line through 4 and 8 rows falls under the time in proportion to the rows.
     r.add(8, 80.0, 0), r.add(8, 80.0, 0);
     EXPECT(std::fabs(r.net(3) - 18) < 1e-9 && std::fabs(r.net(2) - 12) < 1e-9, "proportion: %g %g", r.net(3),
@@ -417,6 +432,42 @@ int main() {
     // A step of 8 rows at most: the even split only.
     EXPECT(even(slots(2, 3, 3), 7, 8, w) == v({3, 3}) && wide(slots(2, 3, 3), 7, 8, w).empty(), "8 rows");
     EXPECT(even({}, 7, 16, w).empty() && wide({}, 7, 16, w).empty(), "no slots");
+    // Where the cards take 12 rows at most: of the wide counts, the best that fits, 5 each (12 tokens in 50.5 ms);
+    // where they take 8, none, before two widths are timed as after.
+    auto up_to = [](uint32_t rows) {
+      return [rows](const std::vector<uint32_t> &d) {
+        uint32_t r = (uint32_t)d.size();
+        for (uint32_t x : d) r += x;
+        return r <= rows;
+      };
+    };
+    const SharedChoice twelve = choose_shared_drafts(slots(2, 3, 3), 7, 16, w, dr, 0, up_to(12));
+    EXPECT(twelve.even == v({3, 3}) && twelve.wide == v({5, 5}) && std::fabs(twelve.wide_tokens - 12) < 1e-6 &&
+               std::fabs(twelve.wide_ms - 50.5) < 1e-6,
+           "12 rows fit: %zu %g %g", twelve.wide.size(), twelve.wide_tokens, twelve.wide_ms);
+    EXPECT(choose_shared_drafts(slots(2, 3, 3), 7, 16, w, dr, 0, up_to(16)).wide == v({7, 7}), "16 rows fit");
+    EXPECT(choose_shared_drafts(slots(2, 3, 3), 7, 16, w, dr, 0, up_to(8)).wide.empty(), "8 rows fit");
+    EXPECT(choose_shared_drafts(slots(3, 3, 3), 7, 16, first, dr, 0, up_to(12)).wide == v({3, 3, 3}),
+           "no times, 12 rows fit");
+    EXPECT(choose_shared_drafts(slots(3, 3, 3), 7, 16, first, dr, 0, up_to(8)).wide.empty(), "no times, 8 rows fit");
+  }
+
+  // The drafts of several slots a window holds: all where they fit; else the spare rows one at a time to each slot
+  // that wants more, from slot first on, round after round.
+  {
+    using engine::window_drafts;
+    EXPECT(window_drafts(v({2, 2, 1}), 8) == v({2, 2, 1}), "8 in 8");
+    EXPECT(window_drafts(v({5, 5, 3}), 16) == v({5, 5, 3}), "16 in 16");
+    // A round chosen for 16 rows in a window of 8: 2, 2 and 1 from the first, not 5 to the first and none to the
+    // others.
+    EXPECT(window_drafts(v({5, 5, 3}), 8) == v({2, 2, 1}), "16 in 8");
+    EXPECT(window_drafts(v({5, 5, 3}), 8, 1) == v({1, 2, 2}), "16 in 8 from the second");
+    EXPECT(window_drafts(v({5, 5, 3}), 8, 5) == v({2, 1, 2}), "first past the slots");
+    // A slot that wants fewer leaves its rows to the others.
+    EXPECT(window_drafts(v({0, 7, 7}), 8) == v({0, 3, 2}), "one wants none");
+    EXPECT(window_drafts(v({1, 7, 7}), 8) == v({1, 2, 2}), "one wants 1");
+    EXPECT(window_drafts(std::vector<uint32_t>(8, 3), 8) == std::vector<uint32_t>(8, 0), "8 slots of 8 rows");
+    EXPECT(window_drafts({}, 8).empty(), "no slots");
   }
 
   // The trial of the wide count against the even split: the arm whose estimate times its correction (what its rounds

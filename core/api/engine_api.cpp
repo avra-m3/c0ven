@@ -153,12 +153,16 @@ struct engine_ctx {
   // layer's drafts by the window's rows. What shared_drafts weighs drafts against. Under mu.
   engine::RoundTimes several_times;
   engine::WindowTimes drafter_times;
-  // The wide count against the even split, by the number of slots; the choice behind the drafts made last (-1: no
-  // trial, 0: the even split, 1: the wide count), its slots, and choose_shared_drafts' estimates for it. Under mu.
+  // The wide count against the even split, by the number of slots, and the choice behind the drafts made last: its
+  // arm (-1: no trial, 0: the even split, 1: the wide count), its slots, and choose_shared_drafts' estimates for the
+  // arm. Under mu.
+  struct TrialPick {
+    int arm = -1;
+    uint32_t slots = 0;
+    double tokens = 0, ms = 0;
+  };
   engine::RoundTrial trials[ENGINE_MAX_STEP_SLOTS + 1];
-  int trial_wide = -1;
-  uint32_t trial_n = 0;
-  double trial_tokens = 0, trial_ms = 0;
+  TrialPick trial_pick;
   engine::SwapCadence swap_cadence;  // when the next swap round is due; under mu
   engine_stats stats{};  // the counters (include/engine_api.h); the model's are copied in at each plan's end
   uint64_t t_open = 0;
@@ -432,30 +436,29 @@ struct engine_ctx {
 
   // The drafts each row's slot of a step or round of several slots may make for the next: kSharedDrafts each of
   // kEvenRows rows every kSharedCheck-th time; else choose_shared_drafts' even split, or its wide count where the
-  // slots' trial takes it. Over STEP_MAX_ROWS rows where the model would take the next round's rows with the most
-  // drafts each, past this round's rows and the next's (STEP_MAX_RUN each); else over kEvenRows. Where a split leaves
-  // some slots one draft more, slots close in tokens take it in turns, a choice at a time. Under mu.
+  // slots' trial takes it. A wide count of STEP_MAX_ROWS rows at most, where the model would take the next round's
+  // rows with its drafts, past this round's rows and the next's (STEP_MAX_RUN each). Where a split leaves some slots
+  // one draft more, slots close in tokens take it in turns, a choice at a time. Under mu.
   std::vector<uint32_t> shared_drafts(const std::vector<StepIn> &rows) {
     const uint32_t n = (uint32_t)rows.size();
     const uint32_t first = shared_choices % n;
-    trial_wide = -1;
+    trial_pick = {};
     if (++shared_choices % engine::kSharedCheck == 0)
       return engine::even_drafts(n, engine::kSharedDrafts, engine::kEvenRows, draft_max, first);
     std::vector<engine::DraftOdds> odds;
     for (const StepIn &r : rows) odds.push_back(slots[r.slot].odds);
-    const std::vector<uint32_t> most = engine::even_drafts(n, draft_max, STEP_MAX_ROWS, draft_max);
-    std::vector<StepIn> next;
-    for (uint32_t i = 0; i < n; i++)
-      for (uint32_t j = 0; j <= most[i]; j++) next.push_back({rows[i].slot, rows[i].pos + 2 * STEP_MAX_RUN - j});
-    const uint32_t max_rows = model->step_fits(next.data(), (uint32_t)next.size()) ? STEP_MAX_ROWS : engine::kEvenRows;
-    engine::SharedChoice c =
-        engine::choose_shared_drafts(odds, draft_max, max_rows, several_times, drafter_times, shared_turns++);
+    auto fits = [&](const std::vector<uint32_t> &d) {
+      std::vector<StepIn> next;
+      for (uint32_t i = 0; i < n; i++)
+        for (uint32_t j = 0; j <= d[i]; j++) next.push_back({rows[i].slot, rows[i].pos + 2 * STEP_MAX_RUN - j});
+      return model->step_fits(next.data(), (uint32_t)next.size());
+    };
+    engine::SharedChoice c = engine::choose_shared_drafts(odds, draft_max, STEP_MAX_ROWS, several_times,
+                                                          drafter_times, shared_turns++, fits);
     if (c.wide.empty() || n > ENGINE_MAX_STEP_SLOTS) return c.even;
-    trial_wide = trials[n].wide(c) ? 1 : 0;
-    trial_n = n;
-    trial_tokens = trial_wide ? c.wide_tokens : c.even_tokens;
-    trial_ms = trial_wide ? c.wide_ms : c.even_ms;
-    return trial_wide ? c.wide : c.even;
+    const bool wide = trials[n].wide(c);
+    trial_pick = {wide ? 1 : 0, n, wide ? c.wide_tokens : c.even_tokens, wide ? c.wide_ms : c.even_ms};
+    return wide ? c.wide : c.even;
   }
 
   // A step or round of several slots: its window of rows from t0 to t1, when its rows' tokens are sampled (a round's
@@ -1024,27 +1027,34 @@ struct engine_ctx {
     int arm;  // the trial behind these drafts, of these slots, and its estimates
     double est_tokens, est_ms;
     {
-      // STEP_MAX_ROWS rows at most, or STEP_MAX_RUN where the model cannot take more now (Model::step_fits).
       std::lock_guard<std::mutex> lk(mu);
-      arm = trial_n == ns ? trial_wide : -1;
-      est_tokens = trial_tokens, est_ms = trial_ms;
-      trial_wide = -1;
+      arm = trial_pick.slots == ns ? trial_pick.arm : -1;
+      est_tokens = trial_pick.tokens, est_ms = trial_pick.ms;
+      trial_pick = {};
+      // Each slot's drafts that its context, its mapped pages and a run have room for: those it made, and those it
+      // was asked for (DraftOdds' places keep the share the draft layer makes).
+      std::vector<uint32_t> made(ns), want(ns);
+      for (uint32_t i = 0; i < ns; i++) {
+        const uint32_t s = row0[i].slot, p = row0[i].pos;
+        const uint32_t room =
+            std::min<uint32_t>({info.max_ctx - 1 - p, mapped_cells(s) - 1 - p, STEP_MAX_RUN - 1});
+        made[i] = std::min<uint32_t>((uint32_t)drafts[i].size(), room);
+        want[i] = std::max(made[i], std::min(slots[s].asked, room));
+      }
+      // STEP_MAX_ROWS rows at most, shared out by window_drafts; where the model cannot take them now
+      // (Model::step_fits), STEP_MAX_RUN, and the round is no trial's, whose estimates were for the wider round.
       for (const uint32_t cap : {(uint32_t)STEP_MAX_ROWS, (uint32_t)STEP_MAX_RUN}) {
+        const std::vector<uint32_t> room = engine::window_drafts(want, cap, shared_choices % ns);
         rows.clear();
         for (uint32_t i = 0; i < ns; i++) {
-          const uint32_t s = row0[i].slot, p = row0[i].pos;
-          // The drafts the window has room for; of them, those the slot made, and those it was asked for (DraftOdds'
-          // places keep the share the draft layer makes).
-          const uint32_t room = std::min<uint32_t>({info.max_ctx - 1 - p, mapped_cells(s) - 1 - p, STEP_MAX_RUN - 1,
-                                                    cap - (uint32_t)rows.size() - (ns - i)});
-          const uint32_t ki = std::min<uint32_t>((uint32_t)drafts[i].size(), room);
           start[i] = (uint32_t)rows.size();
-          k[i] = ki;
-          asked[i] = std::min(slots[s].asked, room);
+          k[i] = std::min(made[i], room[i]);
+          asked[i] = std::min(slots[row0[i].slot].asked, room[i]);
           rows.push_back(row0[i]);
-          for (uint32_t j = 0; j < ki; j++) rows.push_back(row_after(rows.back(), drafts[i][j]));
+          for (uint32_t j = 0; j < k[i]; j++) rows.push_back(row_after(rows.back(), drafts[i][j]));
         }
         if (model->step_fits(rows.data(), (uint32_t)rows.size())) break;
+        arm = -1;
       }
     }
     const uint32_t n = (uint32_t)rows.size();

@@ -43,6 +43,12 @@ using engine::StepIn;
 using engine::StepStats;
 using engine::TraceRow;
 
+// Whether a step of n rows fits the KV pool (Model::step_fits): 1 to STEP_MAX_RUN rows always, as the ring's fixed
+// part holds their claims, and up to STEP_MAX_ROWS with every page resident (streamed false). Streamed, a wider step
+// fits where its claims come to less than the ring of ring pages a layer (layer.cl's kvs_claim): each slot's rows
+// claim row_claims pages each at most (kvs_row_claims), and none past its last row's page and the kKvsAhead after it.
+bool step_fits_ring(const StepIn *rows, uint32_t n, bool streamed, uint32_t row_claims, uint32_t ring);
+
 // The image and video tokens, the file's `<|image_pad|>` and `<|video_pad|>` (kNoToken for one it lacks), and the
 // patches the encoder is built for: 16 pixels a side, 768 bytes, merged 2 x 2 (docs/spec/MODEL_VISION.md, sections 2,
 // 4.1 and 6; vision_sizes.h). meta: the model file's metadata.
@@ -97,7 +103,7 @@ class Model final : public engine::Model {
   // With window, the recurrent state is what waits for commit; the KV is written in place.
   std::vector<std::vector<Candidate>> step(const StepIn *rows, uint32_t n, bool window = false,
                                            bool prompt = false) override;
-  // Streamed, a step of more than STEP_MAX_RUN rows fits where the ring holds every page its claim can take.
+  // step_fits_ring at the ring's size now.
   bool step_fits(const StepIn *rows, uint32_t n) const override;
   // Draft-layer passes run beside a commit's work on the cards.
   void commit(uint32_t slot, uint32_t pos0, uint32_t n) override;

@@ -1526,10 +1526,12 @@ std::vector<Candidate> Model::step(uint32_t slot, uint32_t pos, int32_t token, i
 }
 
 bool Model::step_fits(const StepIn *rows, uint32_t n) const {
+  return step_fits_ring(rows, n, kv_res_ != 0, kvs_row_claims(shape_), ring_level_);
+}
+
+bool step_fits_ring(const StepIn *rows, uint32_t n, bool streamed, uint32_t row_claims, uint32_t ring) {
   if (n == 0 || n > STEP_MAX_ROWS) return false;
-  if (!kv_res_ || n <= STEP_MAX_RUN) return true;  // the ring's fixed part holds these claims
-  // Each slot's rows claim at most kvs_row_claims pages each, and none past its last row's page and the kKvsAhead
-  // after it.
+  if (!streamed || n <= STEP_MAX_RUN) return true;
   uint64_t claims = 0;
   for (uint32_t r = 0; r < n; r++) {
     bool first = true;
@@ -1538,9 +1540,9 @@ bool Model::step_fits(const StepIn *rows, uint32_t n) const {
     uint32_t k = 0, last = 0;
     for (uint32_t q = r; q < n; q++)
       if (rows[q].slot == rows[r].slot) k++, last = std::max(last, rows[q].pos);
-    claims += std::min<uint64_t>((uint64_t)k * kvs_row_claims(shape_), last / KV_PAGE_CELLS + 1 + kKvsAhead);
+    claims += std::min<uint64_t>((uint64_t)k * row_claims, last / KV_PAGE_CELLS + 1 + kKvsAhead);
   }
-  return claims < ring_level_;
+  return claims < ring;
 }
 
 std::vector<std::vector<Candidate>> Model::step(const StepIn *rows, uint32_t n, bool window, bool prompt) {
