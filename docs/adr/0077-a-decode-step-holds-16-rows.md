@@ -60,8 +60,8 @@ give no more tokens a second in total, or the same-tokens check differs.
 A step of more than 8 rows pays where the slots accept most of their drafts. In alternating runs on two cards, with
 the drafts chosen as ADR-0078 says, three requests copying text wrote 2.4% to 5.8% more tokens a second than with
 steps of 8 rows and four editing code 11.2% more. One, two and four requests wrote -2.4% to +0.2%, each within its
-spread, and three on prose, on prose sampled and of mixed text +0.2% to +1.8%. On one card, in three rounds, three
-copying text wrote 11.7% more and four editing code 9.8% more, the other cases -2.2% to +6.2%, each within its
+spread, and three on prose, on prose sampled and of mixed text +0.2% to +1.8%. On one card, in three rounds, four
+editing code wrote 9.8% more and three copying text 15.8% more, the other cases -1.4% to +6.2%, each within its
 spread ([the record](../measurements/MEASUREMENTS.md#2026-11-12-spare-drafts-to-the-slowest)). A window's ninth row
 still costs more than its eighth (Context), and on prose later drafts are accepted less often and often not made, so
 there a step of more than 8 rows is chosen less often.

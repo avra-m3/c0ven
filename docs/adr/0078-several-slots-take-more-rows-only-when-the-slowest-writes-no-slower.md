@@ -221,11 +221,17 @@ rare to be timed twice.
   those of three requests. With item 7, in three rounds, the mixed text sent in three orders: three on prose +0.6%,
   sampled +1.8%, copying text +2.4% (+5.8% in the eight rounds before), mixed text +0.7% and sampled +0.2%. The
   slowest request: three on prose sampled 49.8 → 51.3 tokens a second, copying 63.1 → 66.8, three on prose level;
-  mixed text 35.3 → 35.9, ahead in all three rounds, and sampled 42.3 → 40.6, behind in all three. There the core
-  takes 2, 2 and 1 drafts where its estimates, which a trace found within 3% of the rounds, put them level with or
-  above 1 each in total: the round takes 8 rows, and the slow request gains little from its second draft. On one
-  card, with the spare drafts taking turns, in three rounds, copying text wrote 11.7% more and editing code 9.8% more,
-  the other cases -2.2% to +6.2%, each within its spread; item 7 as it is was not run on one card
+  mixed text 35.3 → 35.9, ahead in all three rounds, and sampled 42.3 → 40.6, behind in all three. Sampled, the slow
+  request's answer ends on its own and its rate rises about 1.8 tokens a second for each 100 tokens it writes; its
+  answers ran shorter in the PR's runs (median 149 tokens against 200, 153 in both arms in the series before), and at
+  the same length it wrote level with main (+0.2 ± 0.8 tokens a second).
+- On one card, with the spare drafts taking turns, in three rounds, editing code wrote 9.8% more and the other cases
+  -2.2% to +6.2%, each within its spread. With item 7, in three rounds with the three requests sent together, over the
+  time all three write at once: copying text 16.7% more in total, its slowest 15.9 → 20.3 tokens a second; mixed text
+  +1.2%, its slowest 15.6 → 16.2, both ahead in all three rounds; mixed text sampled -0.3%, its slowest 19.1 → 19.4;
+  three on prose +3.7% and sampled +1.6%, each within its spread. Over whole answers mixed text is 0.1% lower in
+  total, behind in all three rounds
   ([the record](../measurements/MEASUREMENTS.md#2026-11-12-spare-drafts-to-the-slowest)).
 - `lookup_test` checks items 1 to 5 and 7 without a card. The change is not accepted until the alternating runs in
-  "Revisit when" show the slowest request no slower; in three requests of mixed text sampled it is slower.
+  "Revisit when" show the slowest request no slower; on two cards, in three requests of mixed text sampled it is
+  slower, and level at the same length; on one card it is no slower in any case.
