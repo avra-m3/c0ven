@@ -1,15 +1,17 @@
 """What the host gives the engine, read once before the memory plan (ADR-0057). It reads and never writes.
 
 Each value comes from the kernel's own files: `/proc/meminfo`, the process's cgroup (v2) under `/sys/fs/cgroup`,
-`/proc/cpuinfo`, the CPU topology in `/sys/devices/system/cpu`, `sched_getaffinity` and `getrlimit`. A file that
-cannot be read gives None, and the plan then takes no limit from it. Inside a container only the container's own
-cgroup is visible, so a limit set on a parent cgroup is not read.
+`/proc/cpuinfo`, the CPU topology in `/sys/devices/system/cpu`, the PCI devices in `/sys/bus/pci`, `sched_getaffinity`
+and `getrlimit`. A file that cannot be read gives None, and the plan then takes no limit from it. Inside a container
+only the container's own cgroup is visible, so a limit set on a parent cgroup is not read.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import math
 import os
+import re
 import resource
 from dataclasses import dataclass
 from pathlib import Path
@@ -69,7 +71,7 @@ class Host:
 
 @dataclass(frozen=True, slots=True)
 class Card:
-    """One card the engine can use, from the core's `engine_cards` (Level Zero)."""
+    """One card the engine can use, from the core's `engine_cards` (Level Zero), with its link from `slot_link`."""
 
     name: str
     pci: str
@@ -80,9 +82,11 @@ class Card:
     """Level Zero's packed IP version; 0 when not reported."""
     xe_cores: int
     pcie_gen: int
-    """The link's most, as the driver reports it; -1: unknown."""
+    """The PCIe generation of the slowest link between the card and the CPU (`slot_link`); -1: unknown."""
     pcie_width: int
+    """Lanes of the narrowest link between the card and the CPU; -1: unknown."""
     pcie_bytes_per_s: int
+    """What `pcie_gen` and `pcie_width` carry after line encoding, bytes/s; -1: unknown."""
 
     @property
     def ip(self) -> str:
@@ -177,6 +181,63 @@ def cpuinfo(path: Path) -> tuple[frozenset[str], str]:
         if flags and model:
             break
     return flags, model
+
+
+_BDF = re.compile(r"^[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-7]$")
+_GEN_BY_GT_S = {2.5: 1, 5.0: 2, 8.0: 3, 16.0: 4, 32.0: 5, 64.0: 6}
+_LANE_BYTES_PER_S = {
+    1: 250e6,
+    2: 500e6,
+    3: 8e9 / 8 * 128 / 130,
+    4: 16e9 / 8 * 128 / 130,
+    5: 32e9 / 8 * 128 / 130,
+    6: 64e9 / 8 * 242 / 256,
+}
+"""One lane's rate after line encoding: 8b/10b to PCIe 2.0, 128b/130b to 5.0, flits from 6.0."""
+
+
+def _link_gen(text: str | None) -> int | None:
+    """sysfs's link speed ("16.0 GT/s PCIe") as a PCIe generation."""
+    try:
+        return _GEN_BY_GT_S.get(float((text or "").split()[0]))
+    except ValueError, IndexError:
+        return None
+
+
+def _link_width(text: str | None) -> int | None:
+    try:
+        width = int((text or "").strip())
+    except ValueError:
+        return None
+    return width if width > 0 else None
+
+
+def slot_link(card: Card, root: Path = Path("/")) -> Card:
+    """The card with its PCIe link taken as the slowest on the path to the CPU's root port, from sysfs. Level Zero
+    gives the card's own link, which on a card with a PCIe switch on board is the link to that switch. A field sysfs
+    does not give keeps Level Zero's value. root: where `/sys` is, for tests."""
+    try:
+        dev = (root / "sys/bus/pci/devices" / card.pci).resolve(strict=True)
+    except OSError, RuntimeError:
+        return card
+    gens: list[int] = []
+    widths: list[int] = []
+    # Each port's link files describe one link on the path: an endpoint's or a switch's upstream port the link above
+    # it, a root port's or a switch's downstream port the link below it. So the path's slowest is the least over them.
+    while _BDF.match(dev.name):
+        # Speed from the most both ends support: a link idles at a lower speed to save power, so the trained speed read
+        # at load can be below what copies get. Width is the trained one; links keep their width when idle.
+        if (gen := _link_gen(_read(dev / "max_link_speed"))) is not None:
+            gens.append(gen)
+        if (width := _link_width(_read(dev / "current_link_width"))) is not None:
+            widths.append(width)
+        dev = dev.parent
+    if not gens and not widths:
+        return card
+    gen = min(gens) if gens else card.pcie_gen
+    width = min(widths) if widths else card.pcie_width
+    rate = round(_LANE_BYTES_PER_S[gen] * width) if gen in _LANE_BYTES_PER_S and width > 0 else -1
+    return dataclasses.replace(card, pcie_gen=gen, pcie_width=width, pcie_bytes_per_s=rate)
 
 
 def read(root: Path = Path("/"), affinity: set[int] | None = None) -> Host:
