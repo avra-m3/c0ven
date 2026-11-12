@@ -66,22 +66,16 @@ class SeqState:
         return len(self._free_slots)
 
     def plan_admission(self, prompt: tuple[int, ...], max_new: int, ahead: int = 0) -> Admission | None:
-        """Whether a request fits now, evicting checkpoints for room if it must. None if it does not fit. It reserves
-        the prompt and the first `ahead` cells after it, at most `max_new`."""
+        """Whether a request fits now, evicting checkpoints for room if it must (`_make_room`), never the one it
+        resumes from. None if it does not fit. It reserves the prompt and the first `ahead` cells after it, at most
+        `max_new`."""
         if not self._free_slots:
             return None
         ck = self.checkpoints.longest_prefix(prompt)
         shared = len(ck.tokens) // PAGE_CELLS if ck is not None else 0
         need = self.pool.split(shared, pages_for(len(prompt) + min(ahead, max_new)))
-        while not self.pool.can_reserve(need):
-            victim = self.checkpoints.victim()
-            if victim is None or victim is ck:
-                others = [c for c in self.checkpoints if c is not ck and not c.users and c.ready]
-                if not others:
-                    return None
-                victim = min(others, key=lambda c: (c.kept, c.used))
-            self.checkpoints.remove(victim.id)
-            self.drops.append(victim.id)
+        if not self._make_room(list(need), keep=ck):
+            return None
         return Admission(self._free_slots[-1], ck, sum(need), need)
 
     def admit(self, admission: Admission, prompt: tuple[int, ...], max_new: int) -> Sequence:
@@ -134,24 +128,38 @@ class SeqState:
             seq.pages.append(physical)
         return True
 
-    def _make_room(self, counts: list[int]) -> bool:
-        """Evict checkpoints until `counts` pages per class can be reserved. Only a checkpoint that holds the last
-        reference to a page of a class still short is evicted, least recently used first and kept ones last, never
+    def _make_room(self, counts: list[int], keep: Checkpoint | None = None) -> bool:
+        """Evict checkpoints until `counts` pages per class can be reserved. Only a checkpoint whose eviction frees a
+        page of a class still short goes (`_victims`), least recently used first and kept ones last, never `keep` or
         one a slot is restoring from. False if that is not enough."""
         while not self.pool.can_reserve(counts):
-            k = self.pool.classes
             lacking = {c for c, (n, spare) in enumerate(zip(counts, self.pool.spare(), strict=True)) if n > spare}
-            candidates = [
-                ck
-                for ck in self.checkpoints
-                if ck.ready and not ck.users and any(self.pool.refs(p) == 1 and p % k in lacking for p in ck.pages)
-            ]
+            candidates = self._victims(lacking, keep)
             if not candidates:
                 return False
             victim = min(candidates, key=lambda c: (c.kept, c.used))
             self.checkpoints.remove(victim.id)
             self.drops.append(victim.id)
         return True
+
+    def _victims(self, lacking: set[int], keep: Checkpoint | None) -> list[Checkpoint]:
+        """The checkpoints whose eviction frees a page of a class in `lacking`: those that hold the last reference to
+        one. A checkpoint's pages are a prefix, and whatever holds one of them holds those before it, so only its last
+        page of each class can be its alone. When none holds a last reference, those whose last page is held by
+        other such checkpoints and by no sequence: checkpoints that end on the same page free it only together."""
+        k = self.pool.classes
+        free = [ck for ck in self.checkpoints if ck is not keep and ck.ready and not ck.users]
+        ends = {ck.id: [(len(ck.pages) - 1 - i, p) for i, p in enumerate(ck.pages[: -k - 1 : -1])] for ck in free}
+        last = [ck for ck in free if any(self.pool.refs(p) == 1 and p % k in lacking for _, p in ends[ck.id])]
+        if last:
+            return last
+
+        def holders(index: int, page: int) -> int:
+            return sum(len(c.pages) > index and c.pages[index] == page for c in free)
+
+        return [
+            ck for ck in free if any(p % k in lacking and self.pool.refs(p) == holders(i, p) for i, p in ends[ck.id])
+        ]
 
     def take_changes(self, limit: int) -> list[PageChange]:
         """Page changes for the next plan, in order, at most `limit`; the rest wait for the plan after."""
