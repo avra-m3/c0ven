@@ -127,6 +127,17 @@ given the spare row, while the third, the slowest, gained most. In a probe on tw
 three requests copying text (acceptance 0.95) had a wide count in 15 of the 80 choices that could take 16 rows,
 and the trial took it each time (*estimate*, from one run).
 
+Item 7 keeps a slot's place in the round from choosing which request writes slower. With the spare drafts always at
+the first slots, as with steps of 8 rows, three requests of one kind wrote at the slowest 0.890 of the fastest's
+rate copying text and 0.904 on prose sampled; with item 7, 0.991 and 0.955, in alternating runs on two cards
+([the record](../measurements/MEASUREMENTS.md#2026-11-12-spare-drafts-take-turns)). Where the requests differ, the
+one that accepts the fewest drafts has the spare drafts one round in three, wherever it sits. In a log of every round
+before item 7, three requests of mixed text had it at the first place, asked for 2 drafts every round, and a request
+copying text, which accepts every draft, at the third, asked for 1 (*estimate*, from two logged loads). With item 7
+that slow request writes slower (Consequences). Item 3's number is also the one with the largest sum of the slots'
+log rates, which a gain for one slot bought by a larger loss for another lowers, in all but 1 to 4 of 44 to 137
+logged choices a case (*estimate*, from the same loads).
+
 With a floor for each slot instead of the slowest, a host simulation ran item 4 alone and the 8-row choice on
 made-up requests: acceptances that fall 0.05 a place, each request's rows missing at its own rate, and the costs in
 Context with 1.5 ms between rounds. In nine cases of 2 to 6 requests, 3,000 rounds each, eight are within 0.2% of
@@ -155,8 +166,18 @@ rare to be timed twice.
 - A number of drafts for each slot, the most tokens a millisecond with the floor of item 4. Each slot's acceptance
   rests on its own few rounds; in the simulation four requests with few misses were 4.7% slower than the 8-row
   choice.
-- No slot with fewer tokens a millisecond than in the even split. Its spare rows go to the first slots, so the wide
-  count had to beat them, not the slowest slot (Why).
+- No slot with fewer tokens a millisecond than in the even split. Its spare drafts go to some slots and not others,
+  so the wide count had to beat those slots, not the slowest (Why).
+- The spare drafts always at the first slots, as before item 7 and with steps of 8 rows. The order the requests
+  came in then picks which of them writes slower (Why).
+- The spare drafts to the slots most likely to accept them. Over the logged choices of two loads, rebuilt with the
+  core's estimates: 0.2% to 2.8% more in total and the slowest slot 2.2 to 14.5 tokens a second less; with three
+  requests copying text, which accept nearly every draft, the same slot is always short (*estimate*).
+- The spare drafts to the slots expected to write the fewest tokens. The same estimates: in mixed text the slowest
+  slot 1.8 to 2.4 tokens a second more and the total 3.5% to 5.0% less; with three requests copying text one slot is
+  always short (*estimate*).
+- The number of drafts that gives the slowest slot the most. The same estimates: 4.1% to 10.4% less in total with
+  two requests and in mixed text, for the slowest slot 1.8% to 6.7% more (*estimate*).
 - Every width timed at load. A step at load has no request's routing, so its misses are not a request's.
 
 ## Consequences
@@ -173,11 +194,15 @@ rare to be timed twice.
   made, and the wide count is rarely offered.
 - With three requests that accept most drafts, a round can run 4 drafts each of 16 rows where the even split ran
   2, 2 and 1 of 8; the first two slots may write slightly fewer tokens a millisecond than in the even split.
-- In six rounds of alternating runs on two cards against steps of 8 rows, one, three and four requests on prose or
-  mixed text wrote 0.5% to 2.2% more tokens a second in total, three copying text 7.6% more and four editing code
-  13.7% more, their slowest request 63.2 → 68.0 and 35.3 → 40.0 tokens a second. Two requests wrote 1.4% less, their
-  slowest 54.9 → 54.1, within that case's spread: at the same rows the windows are within 0.2 ms of steps of 8 rows'.
-  On one card, in three rounds, every case wrote as many tokens a second or more, and its slowest request as fast or
-  faster ([the record](../measurements/MEASUREMENTS.md#2026-11-11-products-read-the-steps-rows)).
-- `lookup_test` checks items 1 to 5 without a card. The change is not accepted until the alternating runs in
-  "Revisit when" show the slowest request no slower.
+- In eight rounds of alternating runs on two cards against steps of 8 rows, three requests copying text wrote 5.8%
+  more tokens a second in total, four editing code 11.2% more and three on prose sampled 2.6% more; one, two, three
+  and four requests and three of mixed text sampled -2.4% to +0.2%, each within its spread; three of mixed text 1.3%
+  less. The slowest request: copying 63.5 → 67.2 tokens a second, editing 34.8 → 39.7, three on prose sampled
+  50.4 → 51.6, the other cases of one kind within 0.5; three of mixed text 36.8 → 32.6, and sampled 41.5 → 39.8. One
+  and two requests differ in the swap rounds alone, which wait for the swap thread's reads of the model file longer
+  in one arm or the other from run to run. On one card, in three rounds, copying text wrote 11.7% more and editing
+  code 9.8% more, the other cases -2.2% to +6.2%, each within its spread; the slowest request was level in mixed text
+  and faster copying and editing, and with two, three, four and three mixed requests the faster ones gained
+  ([the record](../measurements/MEASUREMENTS.md#2026-11-12-spare-drafts-take-turns)).
+- `lookup_test` checks items 1 to 5 and 7 without a card. The change is not accepted until the alternating runs in
+  "Revisit when" show the slowest request no slower; in three requests of mixed text it is slower.
