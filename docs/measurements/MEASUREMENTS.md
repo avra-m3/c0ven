@@ -450,6 +450,34 @@ One card's value is given first.
 | A short chunk's uncached experts of 3 rows or fewer computed by the CPU, against the mapped staging buffer alone, one card, one slot at 262,144, 137 experts cached a layer | first token long-gen 0.65 (0.64-0.65) → 0.48 (0.47-0.49) s, gpqa-1 1.04 (1.04-1.05) → 0.81 (0.78-0.83) s; prompt reading by the client's clock 133 (133-134) → 179 (175-183) tokens/s, 209 (207-209) → 267 (262-277). doc-4k-qa and doc-32k, whose long chunks do not take this path, level. Decode moves with the drafts the rounding changes: gpqa-1 52.9 → 54.1 tokens/s, long-gen 48.7 → 48.3, doc-4k-qa 53.7 → 53.5, doc-32k at 110 tokens 41.6 → 40.2. `kl_test` at 500 prompt tokens, one card: mean KL 0.1799 → 0.1798 (95%: -0.0070 to +0.0068), top-1 84.12 → 83.68%. Two cards level: short first token 0.35 → 0.34 s, decode 104.4 → 105.0 tokens/s, four 31.6 → 34.8, mixed 38.1 → 38.8 | <a id="2026-11-05-rare-experts-on-the-cpu"></a>[2026-11-05](#2026-11-05-rare-experts-on-the-cpu) |
 | The same with a limit of 0, 1, 2, 3, 4 and 6 rows, 2 runs each | first token long-gen 0.68, 0.56, 0.50-0.51, 0.51-0.53, 0.54-0.58, 0.60-0.64 s; gpqa-1 1.04-1.05, 0.92, 0.85-0.86, 0.82-0.83, 0.80-0.81, 0.88-0.90 s. Reading 127, 154-155, 172-173, 166-171, 150-162, 137-146 tokens/s; 207-210, 238, 253-256, 263-267, 269-271, 244-248. The CPU's part of a chunk: 41-47 experts a layer and about 132 ms at 1 row, 59-73 and 180-218 ms at 2, 77-104 and 266-354 ms at 4 | [2026-11-05](#2026-11-05-rare-experts-on-the-cpu) |
 
+### One Arc Pro B65
+
+The tests of [issue #5](https://github.com/avra-m3/c0ven/issues/5) on another machine, with one card. The card is an
+ASRock Intel Arc Pro B65 (32 GB, PCI ID 8086:e222, 20 Xe cores), one of two in the machine; the other ran other work
+and was not used. The test container saw only this card (`ZE_AFFINITY_MASK=1`). The card's switch reports PCIe 5.0
+x16, but its slot link to the CPU runs at PCIe 3.0 x8. The CPU is an Intel Core i7-7800X: 6 Skylake-X cores with
+AVX-512 F, CD, BW, DQ and VL, and without VNNI, VBMI or BF16, so the engine loads its `skylakex` level. The host has
+123 GiB of RAM visible to Linux, Linux 7.0.0-42 with the in-tree `xe` driver, GuC 70.58.0, HuC 8.2.10 and DMC 2.6.
+The engine is c0ven `e0ac293`: the tests built in the engine image with `-DENGINE_CPU_LEVELS=skylakex`, since the
+tests take the first level, and the server is `ghcr.io/avra-m3/c0ven/serve:main` built from the same commit. The
+model is the IQ3_S file with the DFlash 2 drafter and the image encoder beside it. Each speed is the median of six
+fresh server processes, with the lowest and highest in brackets.
+
+| Test | Value | Measured |
+| --- | --- | --- |
+| `ze_smoke_test` | `card 0: Intel(R) Arc(TM) Pro B65 Graphics at 0000:19:00.0, 31.89 GiB, shared system USM 0x0`, then `PASS: 1 card(s)` | <a id="2026-11-12-arc-pro-b65"></a>[2026-11-12](#2026-11-12-arc-pro-b65) |
+| GPU tests, `ENGINE_EXPECT_GPUS=1 ctest -L gpu` | 14 pass: `ze_smoke_test`, `matvec_test`, `moe_test`, `topk_test`, `gemm_test`, `qgemm_test`, `swiglu_limit_test`, `attn_test`, `yarn_kernel_test`, `vision_test`, `batch_test`, `pack_test`, `dflash_test`, `api_test` (315 s). 2 skip: `encoder_test` (no reference embeddings in `/scratch/probes/vision`) and `kl_test` (no `kl-base-bf16.bin`). None fail | [2026-11-12](#2026-11-12-arc-pro-b65) |
+| Server settings | the IQ3_S file, `--slots 1`, `--context` left at the file's length, no `--engine-arg` | [2026-11-12](#2026-11-12-arc-pro-b65) |
+| Load | 229 experts per layer (the plan's 220); `core open` 36.7-37.8 s; 54.77 GB of weights read in 29.65 s; the server ready 55-56 s after `docker run` | [2026-11-12](#2026-11-12-arc-pro-b65) |
+| Fit report | card 0 31.89 GiB, IP 20.2.0, 20 Xe cores, PCIe 5.0 x16 by the card's switch; working memory 4.27 GiB; host memory available 106.66 GiB, planned 33.79, after the load 26.67; arena 26.69 GiB planned, 26.80 after the load; pinned host memory 30.79 GiB planned; swap 40.00 GiB; `RLIMIT_MEMLOCK` unlimited; 6 CPU workers, by cores; the workers read the arena at 44.9 GB/s; the model file reads at 3.12 GB/s with 4 threads; the n-gram table 124 µs a 4 KiB read; the card copies from host memory at 6.9 GB/s | [2026-11-12](#2026-11-12-arc-pro-b65) |
+| Prompt reading, doc-4k-qa | 916.8 (913.3-918.9) tokens/s. The server counts 4,197 prompt tokens against the reference's 4,159 in every run | [2026-11-12](#2026-11-12-arc-pro-b65) |
+| Prompt reading, doc-32k (32,010 tokens) | 918.6 (917.1-919.1) tokens/s | [2026-11-12](#2026-11-12-arc-pro-b65) |
+| Decode after doc-4k-qa | 33.67 (33.41-34.16) tokens/s | [2026-11-12](#2026-11-12-arc-pro-b65) |
+| Decode after doc-32k | 32.77 (31.86-33.94) tokens/s | [2026-11-12](#2026-11-12-arc-pro-b65) |
+| Time to the first token, doc-4k-qa | 4.579 (4.567-4.595) s | [2026-11-12](#2026-11-12-arc-pro-b65) |
+| Time to the first token, doc-32k | 34.849 (34.826-34.902) s | [2026-11-12](#2026-11-12-arc-pro-b65) |
+| Greedy texts in six processes | one for each prompt: `text_hash` `0c12341c48f2` for doc-4k-qa and `bd7b09d205dc` for doc-32k in all six runs, 512 tokens each | [2026-11-12](#2026-11-12-arc-pro-b65) |
+
 ### Past the trained context
 
 The IQ3_S file with `--context 524288`, one slot, and the rotation scaled by YaRN. One request with `max_tokens` 64 on a
