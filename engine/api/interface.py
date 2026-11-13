@@ -406,10 +406,6 @@ class EngineStats:
     """Of the undrafted steps, those run while another slot read its prompt."""
     reading_rounds: int = 0
     """Of the rounds, those run while another slot read its prompt (ADR-0071)."""
-    step_miss_ns: int = 0
-    """The engine thread's time from a layer's records being published, with a miss among them, to its answer flag
-    being raised, summed over the steps' `step_layers_missed`; `round_miss_ns` the same in the rounds (ADR-0075)."""
-    round_miss_ns: int = 0
     draft_passes: int = 0
     """What a plan's decode did after its step or round, the draft layer's pass and the sampling: how many and their
     time, `draft_ns`."""

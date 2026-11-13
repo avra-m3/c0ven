@@ -34,9 +34,6 @@ def derive(report: Mapping[str, str]) -> dict[str, float]:
     `busy`: the engine thread's time in plans over the time since open; `swap_share` the swap rounds' part of it.
     `prompt_rows_per_s` and `window_rows_per_s`: prompt rows through the prompt path and as decode windows.
     `ngram_hit_rate`: the n-gram table's rows served from its cache.
-    `miss_wait_ms_per_step` and `miss_wait_ms_per_round`: the engine thread's time from a layer's records with a miss
-    being published to its answer, per plain step and per round; `miss_wait_step_share` and `miss_wait_round_share`
-    their part of the steps' and the rounds' time; `miss_wait_ms_per_layer` per layer with a miss, both together.
     `draft_pass_ms`: what a plan's decode did after its step or round, the draft layer's pass with the sampling, on
     average; `draft_pass_share` its part of the engine thread's time in plans.
     `layer_accepted_at_<n>`, n from 1 to 7: of the slot-runs that verified n or more of the draft layer's drafts, those
@@ -76,16 +73,6 @@ def derive(report: Mapping[str, str]) -> dict[str, float]:
     ratio("prompt_rows_per_s", count("prompt_rows"), count("prompt_ns"), 1e9)
     ratio("window_rows_per_s", count("window_rows"), count("window_ns"), 1e9)
     ratio("ngram_hit_rate", count("ngram_hits"), count("ngram_rows"))
-    ratio("miss_wait_ms_per_step", count("step_miss_ns"), count("steps"), 1e-6)
-    ratio("miss_wait_ms_per_round", count("round_miss_ns"), count("rounds"), 1e-6)
-    ratio("miss_wait_step_share", count("step_miss_ns"), count("step_ns"))
-    ratio("miss_wait_round_share", count("round_miss_ns"), count("round_ns"))
-    ratio(
-        "miss_wait_ms_per_layer",
-        count("step_miss_ns") + count("round_miss_ns"),
-        count("step_layers_missed") + count("round_layers_missed"),
-        1e-6,
-    )
     ratio("draft_pass_ms", count("draft_ns"), count("draft_passes"), 1e-6)
     ratio("draft_pass_share", count("draft_ns"), count("busy_ns"))
     for depth in range(1, 8):

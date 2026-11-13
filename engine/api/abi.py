@@ -263,8 +263,6 @@ STATS_FIELDS = (
     "idle_rounds",
     "reading_steps",
     "reading_rounds",
-    "step_miss_ns",
-    "round_miss_ns",
     "draft_passes",
     "draft_ns",
     *(f"layer_drafts_{n}" for n in range(1, 8)),

@@ -538,7 +538,6 @@ def test_the_new_counters_reach_metrics_as_numbers_and_ratios(client: TestClient
     report = protocol.parse_event(line)
     assert isinstance(report, protocol.StatsReport)
     for key in (
-        "round_miss_ns",
         "draft_ns",
         "layer_drafts_7",
         "layer_stop_p",
@@ -551,7 +550,8 @@ def test_the_new_counters_reach_metrics_as_numbers_and_ratios(client: TestClient
     engine.counts = {
         "rounds": "10",
         "round_ns": "400000000",
-        "round_miss_ns": "80000000",
+        "draft_passes": "10",
+        "draft_ns": "50000000",
         "layer_runs": "10",
         "layer_drafts_1": "10",
         "layer_accepted_1": "9",
@@ -561,7 +561,7 @@ def test_the_new_counters_reach_metrics_as_numbers_and_ratios(client: TestClient
     metrics = client.get("/metrics").json()
     assert metrics["core"]["checkpoints_evicted_pages"] == 2
     derived = metrics["derived"]
-    assert (derived["miss_wait_ms_per_round"], derived["miss_wait_round_share"]) == (8.0, 0.2)
+    assert derived["draft_pass_ms"] == 5.0
     assert (derived["layer_accepted_at_1"], derived["layer_stopped_at_share"]) == (0.9, 0.4)
 
 
@@ -602,8 +602,6 @@ def test_metrics_carry_the_engines_counters_and_each_requests(client: TestClient
         "step_tokens_per_s": 0.0,
         "layers_missed_per_step": 0.0,
         "undrafted_share": 0.0,
-        "miss_wait_ms_per_step": 0.0,
-        "miss_wait_step_share": 0.0,
     }
     engine.counts = {}
     assert client.get("/metrics").json()["core"] == {}, "an engine not running has no counters"

@@ -1589,14 +1589,10 @@ std::vector<std::vector<Candidate>> Model::step(const StepIn *rows, uint32_t n, 
       for (uint32_t k = 0; k < nm; k++) jobs.push_back({hl.weights[J.ids[k]], r, J.w[k]});
     }
     if (jobs.empty()) continue;
-    // Card 0 waits on the answer from here: every row's record is published (engine_stats.step_miss_ns).
-    const auto t_seen = std::chrono::steady_clock::now();
     stats_.misses += (uint32_t)jobs.size();
     stats_.layers_missed++;
     cpu_->compute_many(hl.shape, jobs, n, xs.data(), E, cpu_y_ + (size_t)l * STEP_MAX_ROWS * E, E);
     std::atomic_ref<uint32_t>(ans_seq_[16 * l]).store(step, std::memory_order_release);
-    stats_.miss_ns += (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
-                          std::chrono::steady_clock::now() - t_seen).count();
   }
   for (auto &card : cards_) card->lists.at(key)->synchronize();
   if (*stuck_) throw std::runtime_error("card 0 gave up waiting for the CPU's experts");

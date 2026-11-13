@@ -551,10 +551,10 @@ def test_the_engines_stats_are_the_cores():
 
 def test_the_new_core_counters_reach_the_engines_stats():
     run = make()
-    c = abi.CStats(round_miss_ns=7, draft_ns=11, layer_drafts_7=3, layer_accepted_1=2, layer_stop_share=5)
+    c = abi.CStats(draft_passes=7, draft_ns=11, layer_drafts_7=3, layer_accepted_1=2, layer_stop_share=5)
     run.core.read_stats = lambda: c
     stats = run.engine.stats()
-    assert (stats.round_miss_ns, stats.draft_ns, stats.layer_drafts_7) == (7, 11, 3)
+    assert (stats.draft_passes, stats.draft_ns, stats.layer_drafts_7) == (7, 11, 3)
     assert (stats.layer_accepted_1, stats.layer_stop_share) == (2, 5)
 
 

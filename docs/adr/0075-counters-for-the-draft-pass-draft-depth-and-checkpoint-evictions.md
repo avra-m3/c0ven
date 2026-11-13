@@ -1,8 +1,8 @@
-# ADR-0075: counters for the miss wait, the draft pass, draft depth and checkpoint evictions
+# ADR-0075: counters for the draft pass, draft depth and checkpoint evictions
 
 **Status:** draft, 2026-11-10; not accepted.
-**Revisit when:** an ABBA run finds the miss wait's clock reads cost a measurable share of a round, or a question
-about decode time needs a counter these do not give.
+**Revisit when:** a question about decode time needs a counter these do not give, or a way to time the wait for the
+CPU's misses that costs nothing measurable.
 
 ## Context
 
@@ -23,9 +23,6 @@ about decode time needs a counter these do not give.
 ## Decision
 
 1. `engine_stats` gains, ABI version 23:
-   - `step_miss_ns` and `round_miss_ns`: the engine thread's time, in plain steps and in rounds, from the moment it has
-     seen every row's record of a layer with a miss to the moment it raises that layer's answer flag. The count is
-     the existing `step_layers_missed` and `round_layers_missed`.
    - `draft_passes` and `draft_ns`: the `ENGINE_TIMING_DRAFT` records, summed where each is written.
    - `layer_drafts_1` to `layer_drafts_7` and `layer_accepted_1` to `layer_accepted_7`: of the draft layer's drafts,
      those verified and those accepted at each position of the slot's run.
@@ -42,19 +39,22 @@ about decode time needs a counter these do not give.
    `kv_pages_slots` and `kv_pages_checkpoints` (the KV pool's pages in use, held by an admitted slot, held only by
    checkpoints). Each eviction writes an `INFO` line on the `engine.seqstate` logger with the checkpoint's id, its
    length in tokens and the cause.
-3. `/metrics` derives the miss wait per step, per round and per layer with a miss, its share of the steps' and the
-   rounds' time, the draft pass's mean and its share of busy time, `layer_accepted_at_1` to `_7`, and the shares of
+3. `/metrics` derives the draft pass's mean and its share of busy time, `layer_accepted_at_1` to `_7`, and the shares of
    the draft layer's runs by where drafting stopped.
 
 ## Why
 
-- The miss wait needs two clock reads for each layer with a miss, about 33 a round, where every row of every layer
-  already reads the clock once before its spin. At tens of nanoseconds a read against a 36.7 ms round, that is
-  far below a run's spread (*estimate*, from the clock's usual cost on x86-64; not timed on the cards).
-- Every other counter is one addition where a timestamp or a count already exists, as ADR-0049 requires.
+- Every counter is one addition where a timestamp or a count already exists, as ADR-0049 requires.
 - The page split counts the slots' pages in a set when `STATS` is asked for, so the scheduler's plans pay nothing.
 
 ## Options not chosen
+
+- The wait for the CPU's misses, `step_miss_ns` and `round_miss_ns`: two clock reads for each layer with a miss,
+  summed as card 0 waits. With them and the draft counters, one request alone on one card took 74.0 ms a round against
+  main's 71.2, on the same text and the same rows, misses and accepted drafts (two B60 cards, one used; IQ3_S;
+  `--slots 1 --hugepages`; 512 tokens; 10-12 fresh loads an arm). Without the clock reads it took 72.9 ms. Main with
+  the counter's field and no reads, and main with its code moved as far as this change moves it, both ran at main's
+  speed. So the reads are dropped.
 
 - A separate count of the layers with a miss for the miss wait: it would equal `step_layers_missed` and
   `round_layers_missed`.
@@ -64,7 +64,7 @@ about decode time needs a counter these do not give.
 
 ## Consequences
 
-- `engine/api/abi.py` mirrors the new fields; `test_abi.py` checks the struct's size of 63 counters. The mock leaves
+- `engine/api/abi.py` mirrors the new fields; `test_abi.py` checks the struct's size of 62 counters. The mock leaves
   the new core counters zero, since it has no misses and no draft layer.
-- A reader of two snapshots can say how much of a round the cards wait for the CPU, what the draft pass costs, how
+- A reader of two snapshots can say what the draft pass costs, how
   acceptance falls with depth and what limits drafting, and whether a long prompt read again followed an eviction.

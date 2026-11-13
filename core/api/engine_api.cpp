@@ -500,7 +500,6 @@ struct engine_ctx {
     stats.round_ns += ns;
     stats.round_misses += ss.misses;
     stats.round_layers_missed += ss.layers_missed;
-    stats.round_miss_ns += ss.miss_ns;
     round_ns = ns;
   }
   // drafted: the slot's drafts before the window took k of them; short: the window's rows, not the context or the
@@ -891,7 +890,6 @@ struct engine_ctx {
       stats.step_ns += t1 - t0;
       stats.step_misses += ss.misses;
       stats.step_layers_missed += ss.layers_missed;
-      stats.step_miss_ns += ss.miss_ns;
       stats.undrafted_steps += choice.undrafted;
       stats.reading_steps += choice.undrafted && choice.beside_reader;
       for (size_t i = 0; i < rows.size(); i++) {
@@ -1801,8 +1799,8 @@ uint32_t engine_abi_layout(engine_abi_row *table, uint32_t cap) {
       ROW(engine_stats, checkpoints_taken), ROW(engine_stats, restores), ROW(engine_stats, ngram_rows),
       ROW(engine_stats, ngram_hits), ROW(engine_stats, ngram_reads), ROW(engine_stats, experts_cached),
       ROW(engine_stats, experts_floor), ROW(engine_stats, idle_rounds), ROW(engine_stats, reading_steps),
-      ROW(engine_stats, reading_rounds), ROW(engine_stats, step_miss_ns), ROW(engine_stats, round_miss_ns),
-      ROW(engine_stats, draft_passes), ROW(engine_stats, draft_ns), ROW(engine_stats, layer_drafts_1),
+      ROW(engine_stats, reading_rounds), ROW(engine_stats, draft_passes), ROW(engine_stats, draft_ns),
+      ROW(engine_stats, layer_drafts_1),
       ROW(engine_stats, layer_drafts_2), ROW(engine_stats, layer_drafts_3), ROW(engine_stats, layer_drafts_4),
       ROW(engine_stats, layer_drafts_5), ROW(engine_stats, layer_drafts_6), ROW(engine_stats, layer_drafts_7),
       ROW(engine_stats, layer_accepted_1), ROW(engine_stats, layer_accepted_2), ROW(engine_stats, layer_accepted_3),

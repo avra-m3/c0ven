@@ -427,12 +427,7 @@ checkpoints and restores; the n-gram table's rows, cache hits and SSD reads; and
 last plan's end, beside the fewest the load keeps room for (ADR-0045). Each counter is one addition where the timing record is already written, so the step pays nothing
 that a measurement could see.
 
-Further counters say where the decode time goes ([ADR-0075](adr/0075-counters-for-the-miss-wait-the-draft-pass-and-draft-depth.md)).
-`step_miss_ns` and `round_miss_ns` sum the engine thread's time, in plain steps and in rounds, from the moment it has
-seen every row's record of a layer with a miss to the moment it raises that layer's answer flag: the time card 0 waits
-for the CPU's experts. Their count is `step_layers_missed` and `round_layers_missed`. This is the one counter that
-reads the clock where no timing record is written, twice for each layer with a miss: about 33 layers of a round's 48,
-at tens of nanoseconds a read, against a round of about 36 ms (*estimate*, from the clock's usual cost on x86-64).
+Further counters say where the decode time goes ([ADR-0075](adr/0075-counters-for-the-draft-pass-draft-depth-and-checkpoint-evictions.md)).
 `draft_passes` and `draft_ns` sum the `ENGINE_TIMING_DRAFT` records: the sampling and the draft layer's pass after a
 step or round. For the draft layer's drafts, `layer_drafts_1` to `_7` count the drafts verified at each position of a
 slot's run and `layer_accepted_1` to `_7` those accepted there, so `layer_accepted_n / layer_drafts_n` is the share of

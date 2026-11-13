@@ -261,9 +261,6 @@ typedef struct {
   uint64_t idle_rounds;        /* of the swap rounds, those run while no plan came */
   uint64_t reading_steps;      /* of the undrafted steps, those run while another slot read its prompt */
   uint64_t reading_rounds;     /* of the rounds, those run while another slot read its prompt */
-  uint64_t step_miss_ns;       /* the engine thread's time from a layer's records being published, with a miss among
-                                  them, to its answer flag being raised, summed over the steps' step_layers_missed */
-  uint64_t round_miss_ns;      /* the same in the rounds, over round_layers_missed */
   uint64_t draft_passes;       /* ENGINE_TIMING_DRAFT records: what a plan's decode did after its step or round */
   uint64_t draft_ns;           /* their time */
   uint64_t layer_drafts_1;     /* of layer_drafts, those verified at position 1 of the slot's run, ... 7 */
