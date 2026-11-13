@@ -288,7 +288,6 @@ class Model final : public engine::Model {
     uint8_t *eng_a8[kEngramTables];
     float *X, *X1, *ss, *m;
     D41HcMix *amix, *fmix;
-    uint32_t *hc_count;  // ds_hc_mix's work-groups done, a row block each; zero between launches
     uint8_t *xa;
     uint16_t *xb;
     float *qr, *kv, *q, *ckv, *csc, *iq, *iw, *score, *part, *y;
@@ -396,8 +395,7 @@ class Model final : public engine::Model {
   void chunk_gemm(ze::List &L, Card &card, bool bf16, const uint16_t *w, uint32_t N, uint32_t K, const void *x,
                   uint32_t ldx, const uint32_t *ntok, uint32_t rows, void *y, uint32_t ldy, bool yhalf, const char *name);
   void chunk_to_f16(ze::List &L, Card &card, const float *in, uint16_t *out, uint64_t n);
-  void chunk_hc_mix(ze::List &L, Card &card, const float *X, const float *fn, const float *scale, const float *base,
-                    D41HcMix *mix, const ChunkRun &run);
+  void chunk_hc_mix(ze::List &L, Card &card, const float *fn, const ChunkRun &run);
   void chunk_engram(ze::List &L, Card &card, uint32_t l, const ChunkRun &run);
   void chunk_attention(ze::List &L, Card &card, uint32_t l, const ChunkRun &run);
   void chunk_router(ze::List &L, Card &card, uint32_t l, const ChunkRun &run);

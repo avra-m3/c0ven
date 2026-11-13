@@ -119,52 +119,18 @@ __kernel void ds_dsp_bias_add(__global const float *logits, uint n, __global con
   if (v < n) out[v] = logits[(ulong)*row * n + v] + bias[v];
 }
 
-// A sublayer's mixes of one row from its raw mixes: pre, post and the Sinkhorn-normalised comb (ref_ops.h, hc_split).
-// mr: the row's 24 raw mixes; scale: 3 values; base: D41_MIX values. One sub-group, lane src * 4 + dst holding that
-// entry of comb, so a row's sum is two swaps of lanes and a column's two others.
-static inline void hc_sinkhorn_row(__global const float *mr, __global const float *scale, __global const float *base,
-                                   __global D41HcMix *mix, uint lane) {
-#define SUM_ROWS(v) ({ const float t_ = (v) + sg_xor((v), 1); t_ + sg_xor(t_, 2); })
-#define SUM_COLS(v) ({ const float t_ = (v) + sg_xor((v), 4); t_ + sg_xor(t_, 8); })
-  const float l = rd1(mr + 2 * D41_HC) * scale[2] + rd1(base + 2 * D41_HC);
-  float mx = fmax(l, sg_xor(l, 1));
-  mx = fmax(mx, sg_xor(mx, 2));
-  const float e = exp(l - mx);
-  float c = e / SUM_ROWS(e) + D41_HC_EPS;
-  c /= SUM_COLS(c) + D41_HC_EPS;
-  for (uint it = 1; it < D41_SINKHORN; it++) {
-    c /= SUM_ROWS(c) + D41_HC_EPS;
-    c /= SUM_COLS(c) + D41_HC_EPS;
-  }
-#undef SUM_ROWS
-#undef SUM_COLS
-  wr1((__global float *)mix->comb, c);
-  const float p = sigmoid(rd1(mr) * scale[lane < D41_HC ? 0 : 1] + rd1(base));
-  if (lane < D41_HC)
-    mix->pre[lane] = p + D41_HC_EPS;
-  else if (lane < 2 * D41_HC)
-    mix->post[lane - D41_HC] = 2.0f * p;
-}
-
-// The 24 raw mixes of W rows, m[r][j] = (fn_j . X_r) / sqrt(ss[r] / D41_HC_DIM + D41_EPS), then the rows' mixes from
-// them (hc_sinkhorn_row). fn: D41_MIX rows of D41_HC_DIM (hc_attn_fn or hc_ffn_fn); scale and base: the sublayer's.
-// A work-group is a row of fn; its sub-groups split K, and all W rows share each weight read, sums through local
-// memory. The last work-group of a row block to finish its raw mixes, counted in count[block] (zero between launches,
-// which it leaves zero), reads the others' behind the fence they released theirs with and makes the block's mixes, its
-// sub-groups taking the rows in turn: one launch a sublayer in place of two. Groups (D41_MIX, ceil(W / STEP_MAX_ROWS)),
-// 16 ksplit with ksplit dividing 320 and at most 32: the second group index takes eight rows a time, for a prompt chunk's
-// more than eight.
+// The 24 raw mixes of W rows: m[r][j] = (fn_j . X_r) / sqrt(ss[r] / D41_HC_DIM + D41_EPS), fn D41_MIX rows of
+// D41_HC_DIM (hc_attn_fn or hc_ffn_fn). A work-group is a row of fn; its sub-groups split K, and all W rows share each
+// weight read, sums through local memory. Groups (D41_MIX, ceil(W / STEP_MAX_ROWS)), 16 ksplit with ksplit dividing 320
+// and at most 32: the second group index takes eight rows a time, for a prompt chunk's more than eight.
 REQD_SG __kernel void ds_hc_mix(__global const float *fn, __global const float *X, __global const float *ss, uint W,
-                                __global float *m, __global const float *scale, __global const float *base,
-                                __global D41HcMix *mix, __global uint *count) {
+                                __global float *m) {
   __local float red[STEP_MAX_ROWS][32];
-  __local uint done;
   const uint j = get_group_id(0), s = sg_id(), lane = sg_lane();
-  const uint block = get_group_id(1), t0 = block * STEP_MAX_ROWS;
+  const uint t0 = get_group_id(1) * STEP_MAX_ROWS;
   X += (ulong)t0 * D41_HC_DIM;
   ss += t0;
   m += (ulong)t0 * D41_MIX;
-  mix += t0;
   W = min(W - t0, (uint)STEP_MAX_ROWS);
   const uint nsg = get_local_size(0) / SG_SIZE, kc = D41_HC_DIM / nsg;
   __global const float *f = fn + (ulong)j * D41_HC_DIM + s * kc;
@@ -202,53 +168,90 @@ REQD_SG __kernel void ds_hc_mix(__global const float *fn, __global const float *
     if (lane == 0) red[t][s] = v;
   }
   barrier(CLK_LOCAL_MEM_FENCE);
-  if (s == 0) {
-    for (uint t = 0; t < W; t++) {
-      const float v = posted_sum(red[t], nsg);
-      if (lane == 0) m[(ulong)t * D41_MIX + j] = v * rsqrt(ss[t] / (float)D41_HC_DIM + D41_EPS);
-    }
-    if (lane == 0) {
-      atomic_work_item_fence(CLK_GLOBAL_MEM_FENCE, memory_order_release, memory_scope_device);
-      done = atomic_inc(count + block) == D41_MIX - 1;
-    }
+  if (s != 0) return;
+  for (uint t = 0; t < W; t++) {
+    const float v = posted_sum(red[t], nsg);
+    if (lane == 0) m[(ulong)t * D41_MIX + j] = v * rsqrt(ss[t] / (float)D41_HC_DIM + D41_EPS);
   }
-  barrier(CLK_LOCAL_MEM_FENCE | CLK_GLOBAL_MEM_FENCE);
-  if (!done) return;
-  atomic_work_item_fence(CLK_GLOBAL_MEM_FENCE, memory_order_acquire, memory_scope_device);
-  for (uint t = s; t < W; t += nsg) hc_sinkhorn_row(m + (ulong)t * D41_MIX, scale, base, mix + t, lane);
-  if (s == 0 && lane == 0) count[block] = 0;
 }
 
-// A sublayer's end: X'_dst = post[dst] y + sum_src comb[src][dst] X_src, y = y0 + y1, the cards' partial sums (y1 null
-// with one card; a swap keeps the bits); y_host is nonzero when either lies in host memory. ss[r] gets X''s sum of
-// squares. With norm set, the next input x = RMSNorm_norm(sum pre[c] X'_c) goes into any of xa (a8), xb (bf16), xf
-// (f32) and job's x; norm null writes X' only. X and Xo must not overlap. Groups W, D41_HC_SGS * 16.
+// A sublayer's mixes of one row from its raw mixes, a lane each (ref_ops.h, hc_split): comb gets the Sinkhorn-normalised
+// entry src * 4 + dst, and p pre[lane] for the lanes under D41_HC, post[lane - D41_HC] for the next D41_HC. mr: the
+// row's 24 raw mixes; scale: 3 values; base: D41_MIX values. One sub-group, so a row's sum is two swaps of lanes and a
+// column's two others.
+static inline void hc_sinkhorn_lane(__global const float *mr, __global const float *scale, __global const float *base,
+                                    uint lane, float *comb, float *p) {
+#define SUM_ROWS(v) ({ const float t_ = (v) + sg_xor((v), 1); t_ + sg_xor(t_, 2); })
+#define SUM_COLS(v) ({ const float t_ = (v) + sg_xor((v), 4); t_ + sg_xor(t_, 8); })
+  const float l = rd1(mr + 2 * D41_HC) * scale[2] + rd1(base + 2 * D41_HC);
+  float mx = fmax(l, sg_xor(l, 1));
+  mx = fmax(mx, sg_xor(mx, 2));
+  const float e = exp(l - mx);
+  float c = e / SUM_ROWS(e) + D41_HC_EPS;
+  c /= SUM_COLS(c) + D41_HC_EPS;
+  for (uint it = 1; it < D41_SINKHORN; it++) {
+    c /= SUM_ROWS(c) + D41_HC_EPS;
+    c /= SUM_COLS(c) + D41_HC_EPS;
+  }
+#undef SUM_ROWS
+#undef SUM_COLS
+  *comb = c;
+  const float v = sigmoid(rd1(mr) * scale[lane < D41_HC ? 0 : 1] + rd1(base));
+  *p = lane < D41_HC ? v + D41_HC_EPS : 2.0f * v;
+}
+
+// A sublayer's end: the row's mixes from its raw mixes m, with scale and base (hc_sinkhorn_lane; mix gets them, for the
+// Engram layers and the drafter), then X'_dst = post[dst] y + sum_src comb[src][dst] X_src, y = y0 + y1, the cards'
+// partial sums (y1 null with one card; a swap keeps the bits); y_host is nonzero when either lies in host memory. ss[r]
+// gets X''s sum of squares. With norm set, the next input x = RMSNorm_norm(sum pre[c] X'_c) goes into any of xa (a8),
+// xb (bf16), xf (f32) and job's x; norm null writes X' only. X and Xo must not overlap. The first sub-group makes the
+// mixes while every sub-group's loads are in flight. Groups W, D41_HC_SGS * 16.
 REQD_SG __kernel void ds_hc_post_norm(__global const float *X, __global const float *y0, __global const float *y1,
-                                      uint y_host, __global const D41HcMix *mix, __global const float *norm,
+                                      uint y_host, __global const float *m, __global const float *scale,
+                                      __global const float *base, __global D41HcMix *mix, __global const float *norm,
                                       __global float *Xo, __global float *ss, __global uchar *xa, __global ushort *xb,
                                       __global float *xf, __global D41MissJob *job) {
   HC_LOCALS
+  __local float lmix[2 * D41_HC + D41_HC * D41_HC];
   __global const float *Xr = X + (ulong)r * D41_HC_DIM;
   __global const float *y0r = y0 + (ulong)r * D41_EMBD;
   __global const float *y1r = y1 ? y1 + (ulong)r * D41_EMBD : 0;
   __global float *Or = Xo + (ulong)r * D41_HC_DIM;
   if (y_host) host_read_fence();
-  const float4 post = vload4(0, (__global const float *)mix[r].post);
-  const float4 pre = vload4(0, (__global const float *)mix[r].pre);
-  const float16 c = vload16(0, (__global const float *)mix[r].comb);
+  // The loads first, in flight together while the mixes are made, and when y lies in host memory.
+  float4 x0[HC_CHUNKS], x1[HC_CHUNKS], x2[HC_CHUNKS], x3[HC_CHUNKS], yv[HC_CHUNKS];
+  for (uint b = 0; b < HC_CHUNKS; b++) {
+    const uint i = i0 + 64 * b;
+    x0[b] = rd4(Xr + i);
+    x1[b] = rd4(Xr + D41_EMBD + i);
+    x2[b] = rd4(Xr + 2 * D41_EMBD + i);
+    x3[b] = rd4(Xr + 3 * D41_EMBD + i);
+    yv[b] = rd4(y0r + i);
+    if (y1) yv[b] += rd4(y1r + i);
+  }
+  if (s == 0) {
+    float cl, p;
+    hc_sinkhorn_lane(m + (ulong)r * D41_MIX, scale, base, lane, &cl, &p);
+    lmix[2 * D41_HC + lane] = cl;
+    wr1((__global float *)mix[r].comb, cl);
+    if (lane < 2 * D41_HC) lmix[lane] = p;
+    if (lane < D41_HC)
+      mix[r].pre[lane] = p;
+    else if (lane < 2 * D41_HC)
+      mix[r].post[lane - D41_HC] = p;
+  }
+  barrier(CLK_LOCAL_MEM_FENCE);
+  const float4 pre = vload4(0, lmix), post = vload4(1, lmix);
+  const float16 c = vload16(0, lmix + 2 * D41_HC);
   float4 xs[HC_CHUNKS];
   float4 sq = (float4)0.0f, xx = (float4)0.0f;
   for (uint b = 0; b < HC_CHUNKS; b++) {
     const uint i = i0 + 64 * b;
-    // Loads come first, so that they are in flight together when y lies in host memory.
-    const float4 x0 = rd4(Xr + i), x1 = rd4(Xr + D41_EMBD + i), x2 = rd4(Xr + 2 * D41_EMBD + i),
-                 x3 = rd4(Xr + 3 * D41_EMBD + i);
-    float4 y = rd4(y0r + i);
-    if (y1) y += rd4(y1r + i);
-    const float4 o0 = post.s0 * y + c.s0 * x0 + c.s4 * x1 + c.s8 * x2 + c.sc * x3;
-    const float4 o1 = post.s1 * y + c.s1 * x0 + c.s5 * x1 + c.s9 * x2 + c.sd * x3;
-    const float4 o2 = post.s2 * y + c.s2 * x0 + c.s6 * x1 + c.sa * x2 + c.se * x3;
-    const float4 o3 = post.s3 * y + c.s3 * x0 + c.s7 * x1 + c.sb * x2 + c.sf * x3;
+    const float4 y = yv[b];
+    const float4 o0 = post.s0 * y + c.s0 * x0[b] + c.s4 * x1[b] + c.s8 * x2[b] + c.sc * x3[b];
+    const float4 o1 = post.s1 * y + c.s1 * x0[b] + c.s5 * x1[b] + c.s9 * x2[b] + c.sd * x3[b];
+    const float4 o2 = post.s2 * y + c.s2 * x0[b] + c.s6 * x1[b] + c.sa * x2[b] + c.se * x3[b];
+    const float4 o3 = post.s3 * y + c.s3 * x0[b] + c.s7 * x1[b] + c.sb * x2[b] + c.sf * x3[b];
     wr4(Or + i, o0);
     wr4(Or + D41_EMBD + i, o1);
     wr4(Or + 2 * D41_EMBD + i, o2);
