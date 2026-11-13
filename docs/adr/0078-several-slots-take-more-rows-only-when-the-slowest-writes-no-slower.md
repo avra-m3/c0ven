@@ -185,8 +185,8 @@ and later one 135 ms round of 7 rows set it at 0.25. Every window was then price
 drafts were chosen, and the requests ran 211 steps without drafts against 47 rounds and wrote 108.5 tokens a second
 against about 122 in other loads. Steps at one width cannot correct the fit. With the fit less its standard error, the
 same rounds in order give 0 after the second 7-row round, 3 rows at 29.4 ms and 8 at 46.4, and 0.12 to 0.14 for the
-five rounds from the slow one (8 rows at 84 to 94 ms); the last figures of the eight traced loads (2,150 rounds and steps)
-move by 0.002 to 0.006 ms a miss and 0 to 2.3 ms for 8 rows
+five rounds from the slow one (8 rows at 84 to 94 ms); the last figures of the eight traced loads (2,150 rounds and
+steps) move by 0.002 to 0.006 ms a miss and 0 to 2.3 ms for 8 rows
 ([the record](../measurements/MEASUREMENTS.md#2026-11-13-miss-cost-standard-error)).
 
 ## Options not chosen
