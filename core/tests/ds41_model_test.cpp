@@ -5,7 +5,8 @@
 // tiers by use; DS41_TRACE: the last step's kernels; DS41_NO_STREAMS: no streams, RefModel first, then the steps back
 // to back; DS41_LAYERS: the host's waits by layer; DS41_CPU_THREADS: the CPU's expert workers; DS41_ROUTES: a file
 // that gets each position's routed experts; DS41_NO_REF: no RefModel, the step's own first choice goes on, nothing is
-// compared and the test skips; DS41_DRAFTER: the drafter's file, loaded so that each step stores its keys.
+// compared and the test skips; DS41_DRAFTER: the drafter's file, loaded so that each step stores its keys;
+// DS41_PROMPT_CHUNK: Options::prompt_chunk, whose buffers take card memory from the expert cache (0: none).
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -121,6 +122,7 @@ int run() {
   opt.adapt_swaps = std::getenv("DS41_SWAPS") != nullptr;
   if (const char *drafter = std::getenv("DS41_DRAFTER")) opt.mtp_dir = drafter;
   opt.cpu_threads = env_u32("DS41_CPU_THREADS", opt.cpu_threads);
+  opt.prompt_chunk = env_u32("DS41_PROMPT_CHUNK", opt.prompt_chunk);
   FILE *routes = std::getenv("DS41_ROUTES") ? std::fopen(std::getenv("DS41_ROUTES"), "w") : nullptr;
   const auto t_load = std::chrono::steady_clock::now();
   deepseek41::Model model(path, opt, Debug{probes});
