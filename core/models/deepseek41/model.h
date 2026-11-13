@@ -204,7 +204,7 @@ class Model final : public engine::Model {
   void kv_ahead() override {}
   void kvs_drop(uint32_t, uint32_t) override {}
 
-  void note_prompt_routing() override {}
+  void note_prompt_routing(bool) override {}
   uint32_t swap_round(uint32_t, bool) override { return 0; }
   bool swaps_ready() const override { return true; }
   bool swaps_settled() const override { return true; }
