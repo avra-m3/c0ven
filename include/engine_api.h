@@ -3,6 +3,9 @@
  *   - C++ never calls Python: no callbacks.
  *   - Only the plain structs below and buffers cross; every call returns an engine_status; no exception crosses.
  *   - C++ owns all memory and threads; Python owns every decision.
+ *   - The core's engine thread runs the plans. A call on the caller's thread never uses a command list, fence or event
+ *     while the engine thread may: it waits for the queued plans (checkpoint, restore, sleep) or leaves the work to
+ *     the engine thread, before its next plan (admit, admit_images) (docs/adr/0077-one-thread-uses-the-cards.md).
  * engine/api/abi.py mirrors this file by hand; engine_abi_layout() lets a test check every size and offset.
  * Symbols carry the prefix engine_ (ADR-0024, item 2). */
 #ifndef ENGINE_API_H
@@ -302,9 +305,10 @@ typedef struct {
 /* Loads the model and allocates everything. Blocks until ready. */
 ENGINE_API engine_status engine_open(const engine_config *config, engine_info *info, engine_ctx **out);
 
-/* Copies a request into a free slot: its settings and prompt ids. The slot's state is reset and its pages unmapped;
- * no queued plan may name the slot, in its decode slots, pieces or page changes. ENGINE_BAD_ARGUMENT for min_p outside
- * [0, 1], or a penalty with penalty_repeat <= 0. */
+/* Copies a request into a free slot: its settings and prompt ids. Its pages are unmapped, and the engine thread
+ * resets the slot's state before the next plan it runs, or checkpoint or restore does first; a failure there ends that
+ * plan with ENGINE_EVENT_ERROR. Does not wait. No queued plan may name the slot, in its decode slots, pieces or page
+ * changes. ENGINE_BAD_ARGUMENT for min_p outside [0, 1], or a penalty with penalty_repeat <= 0. */
 ENGINE_API engine_status engine_admit(engine_ctx *e, uint32_t slot, const engine_settings *settings, const int32_t *prompt,
                            uint32_t n_prompt);
 
@@ -321,7 +325,8 @@ typedef struct {
 
 /* Gives an admitted slot the images and frame pairs of its prompt, in order, their blocks apart: they set the positions of every
  * prompt token from the first image on, and the encoder turns each into its block's rows when the prompt reaches
- * it. Copies the pixels. Before the slot's first plan, and before restore; at most image_tokens_max tokens an image. */
+ * it. Copies the pixels, which the engine thread gives the model with admit's reset. Before the slot's first plan, and
+ * before restore; at most image_tokens_max tokens an image. */
 ENGINE_API engine_status engine_admit_images(engine_ctx *e, uint32_t slot, const engine_image *images, uint32_t n);
 
 /* Frees a slot. A slot named in a plan still queued is skipped. */

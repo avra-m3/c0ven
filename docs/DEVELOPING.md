@@ -36,7 +36,8 @@ ggml's CPU backend is built from `/opt/llama.cpp` once for each CPU level in `EN
 reference build's CPU flags), `icelake`, `cascadelake`, `skylakex`, `alderlake`, `haswell`, `sandybridge`, `sse42` and
 `x64` by default, with ggml's own flags for each ([cmake/ggml.cmake](../cmake/ggml.cmake)). The tests and tools link
 the first level's. `-DENGINE_CPU_LEVELS=zen4` builds one level, for a faster build. `-DENGINE_GGML_DIR=` points at
-another tree at the same commit.
+another tree at the same commit. `-DENGINE_CHECK_LISTS=ON` makes a release build throw when two threads call one
+command list at once, as a build without `NDEBUG` always does ([ADR-0077](adr/0077-one-thread-uses-the-cards.md)).
 
 ## Tests
 
