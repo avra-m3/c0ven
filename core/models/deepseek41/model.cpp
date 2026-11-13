@@ -384,11 +384,6 @@ void Model::alloc_buffers(Card &card) {
   card.m = dev<float>(card, R * D41_MIX);
   card.amix = dev<D41HcMix>(card, R);
   card.fmix = dev<D41HcMix>(card, R);
-  {
-    // One count a row block of eight, for a prompt chunk's D41_CHUNK_MAX rows as well as a step's.
-    const std::vector<uint32_t> zero(D41_CHUNK_MAX / STEP_MAX_ROWS, 0);
-    card.hc_count = upload<uint32_t>(card, zero.data(), zero.size());
-  }
   card.xa = dev<uint8_t>(card, R * D41_A8_ROW);
   card.xb = dev<uint16_t>(card, R * E);
   card.qr = dev<float>(card, R * D41_QLR);
@@ -1054,9 +1049,9 @@ void Model::record_attention(ze::List &L, Card &card, uint32_t l, uint32_t W) {
   D41Row *rows = card.plan->rows;
   const auto attn = [&](const char *name) { return kernel(card, "deepseek41_attn", name); };
 
-  L.launch(kernel(card, "deepseek41", "ds_hc_mix"),
-           {ly.attn_fn, card.X, card.ss, W, card.m, ly.attn_scale, ly.attn_base, card.amix, card.hc_count}, D41_MIX, 1, 1,
+  L.launch(kernel(card, "deepseek41", "ds_hc_mix"), {ly.attn_fn, card.X, card.ss, W, card.m}, D41_MIX, 1, 1,
            16 * D41_HC_KSPLIT);
+  L.launch(kernel(card, "deepseek41", "ds_hc_sinkhorn"), {card.m, ly.attn_scale, ly.attn_base, card.amix}, W, 1, 1, 16);
 
   matvec(L, card, "attn_q_a", ly.q_a, card.xa, card.qr, W, 4, 4);
   matvec(L, card, "attn_kv", ly.kv, card.xa, card.kv, W, 8, 4);
@@ -1108,9 +1103,9 @@ void Model::record_ffn(ze::List &L, Card &card, uint32_t l, uint32_t W) {
   const bool posts = !drafter_layer(l) && l % 2 == card.c;
   const uint32_t ff = ly.sh_ff, two_ff = 2 * ff, in_card = 0;
 
-  L.launch(kernel(card, "deepseek41", "ds_hc_mix"),
-           {ly.ffn_fn, card.X1, card.ss, W, card.m, ly.ffn_scale, ly.ffn_base, card.fmix, card.hc_count}, D41_MIX, 1, 1,
+  L.launch(kernel(card, "deepseek41", "ds_hc_mix"), {ly.ffn_fn, card.X1, card.ss, W, card.m}, D41_MIX, 1, 1,
            16 * D41_HC_KSPLIT);
+  L.launch(kernel(card, "deepseek41", "ds_hc_sinkhorn"), {card.m, ly.ffn_scale, ly.ffn_base, card.fmix}, W, 1, 1, 16);
 
   product_bf16(L, card, "router product", ly.gate_inp, experts_of(l), E, card.xb, card.rlogits);
   const void *jobs = posts ? jobs_ + (size_t)l * STEP_MAX_ROWS : nullptr;

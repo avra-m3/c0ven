@@ -85,7 +85,6 @@ struct Bench {
   // Card memory for 8 rows.
   float *X, *Xo, *ss, *ss2, *fn, *m, *scale, *base, *norm, *e, *y0, *y1, *xf;
   D41HcMix *mix;
-  uint32_t *count;
   uint8_t *xa;
   uint16_t *xb;
   // Host memory: the MissJobs and a partial sum, as at one row.
@@ -108,8 +107,6 @@ struct Bench {
     y1 = io.dev<float>(WMAX * E);
     xf = io.dev<float>(WMAX * E);
     mix = io.dev<D41HcMix>(WMAX);
-    count = io.dev<uint32_t>(1);
-    io.put(count, std::vector<uint32_t>(1, 0));
     xa = io.dev<uint8_t>((size_t)WMAX * D41_A8_ROW);
     xb = io.dev<uint16_t>(WMAX * E);
     jobs = static_cast<D41MissJob *>(rt.alloc_host(WMAX * sizeof(D41MissJob)));
@@ -133,8 +130,9 @@ struct Bench {
     L.launch(k("ds_hc_init"), {e, norm, Xo, ss2, pxa, pxb, pxf}, W, 1, 1, HC_LOCAL);
   }
   void launch_mix(ze::List &L, uint32_t W, uint32_t ks) {
-    L.launch(k("ds_hc_mix"), {fn, X, ss, W, m, scale, base, mix, count}, D41_MIX, 1, 1, 16 * ks);
+    L.launch(k("ds_hc_mix"), {fn, X, ss, W, m}, D41_MIX, 1, 1, 16 * ks);
   }
+  void launch_sinkhorn(ze::List &L, uint32_t W) { L.launch(k("ds_hc_sinkhorn"), {m, scale, base, mix}, W, 1, 1, 16); }
   void launch_post(ze::List &L, uint32_t W, const void *py1, const void *pnorm, const void *pxa, const void *pxb,
                    const void *pxf, const void *pjob) {
     const uint32_t y_host = py1 == y1h;
@@ -179,38 +177,44 @@ struct Bench {
     }
   }
 
-  // One launch gives the raw mixes and, from them, the mixes: both against ref_ops, the comb against ggml too.
   void test_mix() {
-    struct Case {
-      float s0, s1, s2, bspread;
-    };
     std::vector<float> ws(WMAX);
     for (uint32_t r = 0; r < WMAX; r++) ws[r] = (float)sum_squares(&hX[r * D], D);
     io.put(ss, ws);
     std::vector<float> wm(WMAX * D41_MIX);
     for (uint32_t r = 0; r < WMAX; r++) ref::hc_project(&hX[r * D], hfn.data(), &wm[(size_t)r * D41_MIX]);
-    for (const Case &c : {Case{1, 1, 1, 0}, Case{0.7f, 1.3f, 1.5f, 5}, Case{2, 2, 20, 0.1f}})
-      for (uint32_t ks : {4u, 8u, 16u, 32u})
-        for (uint32_t W : WIDTHS) {
-          std::uniform_real_distribution<float> ub(-c.bspread, c.bspread);
-          std::vector<float> hb(D41_MIX), hs = {c.s0, c.s1, c.s2};
-          for (float &v : hb) v = c.bspread > 0 ? ub(rng) : 0.0f;
-          io.put(base, hb);
-          io.put(scale, hs);
-          run([&](ze::List &L) { launch_mix(L, W, ks); });
-          auto g = io.get(m, (size_t)W * D41_MIX);
-          ck.rel("ds_hc_mix m", g.data(), wm.data(), g.size(), 1e-5);
-          auto gm = io.get(mix, W);
-          auto gg = ggml_comb(wm.data(), W, hs.data(), hb.data());
-          for (uint32_t r = 0; r < W; r++) {
-            const ref::HcMix w = ref::hc_split(&wm[(size_t)r * D41_MIX], hs.data(), hb.data());
-            ck.abs("ds_hc_mix comb against ref_ops", gm[r].comb, w.comb, 16, 1e-6);
-            ck.abs("ds_hc_mix comb against ggml", gm[r].comb, &gg[(size_t)r * 16], 16, 1e-6);
-            ck.rel("ds_hc_mix pre", gm[r].pre, w.pre, 4, 1e-5);
-            ck.rel("ds_hc_mix post", gm[r].post, w.post, 4, 1e-5);
-          }
-          EXPECT(io.get(count, 1)[0] == 0, "ds_hc_mix left its count at %u", io.get(count, 1)[0]);
+    for (uint32_t ks : {4u, 8u, 16u, 32u})
+      for (uint32_t W : WIDTHS) {
+        run([&](ze::List &L) { launch_mix(L, W, ks); });
+        auto g = io.get(m, (size_t)W * D41_MIX);
+        ck.rel("ds_hc_mix m", g.data(), wm.data(), g.size(), 1e-5);
+      }
+  }
+
+  void test_sinkhorn() {
+    struct Case {
+      float spread, s0, s1, s2, bspread;
+    };
+    for (const Case &c : {Case{20, 1, 1, 1, 0}, Case{10, 0.7f, 1.3f, 1.5f, 5}, Case{0.5f, 1, 1, 1, 0.1f}, Case{1, 2, 2, 20, 0}})
+      for (uint32_t W : WIDTHS) {
+        std::uniform_real_distribution<float> um(-c.spread, c.spread), ub(-c.bspread, c.bspread);
+        std::vector<float> hm((size_t)W * D41_MIX), hb(D41_MIX), hs = {c.s0, c.s1, c.s2};
+        for (float &v : hm) v = um(rng);
+        for (float &v : hb) v = c.bspread > 0 ? ub(rng) : 0.0f;
+        io.put(m, hm);
+        io.put(base, hb);
+        io.put(scale, hs);
+        run([&](ze::List &L) { launch_sinkhorn(L, W); });
+        auto g = io.get(mix, W);
+        auto gg = ggml_comb(hm.data(), W, hs.data(), hb.data());
+        for (uint32_t r = 0; r < W; r++) {
+          const ref::HcMix w = ref::hc_split(&hm[(size_t)r * D41_MIX], hs.data(), hb.data());
+          ck.abs("ds_hc_sinkhorn comb against ref_ops", g[r].comb, w.comb, 16, 1e-6);
+          ck.abs("ds_hc_sinkhorn comb against ggml", g[r].comb, &gg[(size_t)r * 16], 16, 1e-6);
+          ck.rel("ds_hc_sinkhorn pre", g[r].pre, w.pre, 4, 1e-5);
+          ck.rel("ds_hc_sinkhorn post", g[r].post, w.post, 4, 1e-5);
         }
+      }
   }
 
   void test_post_norm() {
@@ -299,6 +303,8 @@ struct Bench {
       L.barrier();
       launch_mix(L, W, KSPLIT);
       L.barrier();
+      launch_sinkhorn(L, W);
+      L.barrier();
       launch_post(L, W, none, norm, xa, xb, xf, none);
     });
     std::vector<float> wX(W * D), wx(W * E), r0(W * D);
@@ -329,7 +335,11 @@ struct Bench {
     auto py = randn(rng, WMAX * E, 0.7f);
     io.put(y0, py);
     io.put(y1, py);
-    run([&](ze::List &L) { launch_mix(L, WMAX, KSPLIT); });
+    run([&](ze::List &L) {
+      launch_mix(L, WMAX, KSPLIT);
+      L.barrier();
+      launch_sinkhorn(L, WMAX);
+    });
     // A first timing warms the card, so that the clock logged next is the one the timings run at.
     time_launch(rt, 0, [&](ze::List &L) { launch_init(L, 1, xa, xb, none); });
     log_clocks("before timing");
@@ -350,11 +360,12 @@ struct Bench {
         uint32_t next = 0;
         const double us = time_launch(rt, 0, [&](ze::List &L) {
           float *f = fns + (size_t)(next++ % NFN) * D41_MIX * D;
-          L.launch(k("ds_hc_mix"), {f, X, ss, W, m, scale, base, mix, count}, D41_MIX, 1, 1, 16 * ks);
+          L.launch(k("ds_hc_mix"), {f, X, ss, W, m}, D41_MIX, 1, 1, 16 * ks);
         });
         std::printf("time ds_hc_mix 80 matrices in turn ksplit=%u W=%u: %.2f us, weights at %.0f GB/s\n", ks, W, us, fn_gb / (us * 1e-6));
       }
     rt.free(fns);
+    for (uint32_t W : TIMED_WIDTHS) std::printf("time ds_hc_sinkhorn W=%u: %.2f us\n", W, time_launch(rt, 0, [&](ze::List &L) { launch_sinkhorn(L, W); }));
     for (uint32_t W : TIMED_WIDTHS) {
       std::printf("time ds_hc_post_norm attention's end W=%u: %.2f us\n", W, time_launch(rt, 0, [&](ze::List &L) { launch_post(L, W, y1, norm, xa, none, xf, jobs); }));
       std::printf("time ds_hc_post_norm FFN's end W=%u: %.2f us\n", W, time_launch(rt, 0, [&](ze::List &L) { launch_post(L, W, y1, norm, xa, xb, none, none); }));
@@ -375,6 +386,7 @@ int main() {
   ze::Library lib(rt);
   Io io(rt, 0);
   Bench b(rt, lib, io);
+  b.test_sinkhorn();
   b.test_mix();
   b.test_post_norm();
   b.test_init();

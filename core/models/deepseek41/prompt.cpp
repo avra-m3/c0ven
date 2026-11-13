@@ -328,12 +328,11 @@ void Model::chunk_to_f16(ze::List &L, Card &card, const float *in, uint16_t *out
   L.launch(kernel(card, "deepseek41_prompt", "dp_to_f16"), {in, out, n}, (uint32_t)((n / 4 + 255) / 256), 1, 1, 256);
 }
 
-// The sublayer's mixes of every row from its streams X, eight rows to a launch.
-void Model::chunk_hc_mix(ze::List &L, Card &card, const float *X, const float *fn, const float *scale, const float *base,
-                         D41HcMix *mix, const ChunkRun &run) {
+// The sublayer's raw mixes of every row, eight rows to a launch, then its mixes.
+void Model::chunk_hc_mix(ze::List &L, Card &card, const float *fn, const ChunkRun &run) {
   ChunkCard &k = *card.ck;
-  L.launch(kernel(card, "deepseek41", "ds_hc_mix"), {fn, X, k.ss, run.n, k.m, scale, base, mix, card.hc_count}, D41_MIX,
-           (run.n + STEP_MAX_ROWS - 1) / STEP_MAX_ROWS, 1, 16 * D41_HC_KSPLIT);
+  L.launch(kernel(card, "deepseek41", "ds_hc_mix"), {fn, k.X, k.ss, run.n, k.m}, D41_MIX, (run.n + STEP_MAX_ROWS - 1) / STEP_MAX_ROWS, 1,
+           16 * D41_HC_KSPLIT);
 }
 
 // Engram's injection before layer l's attention, as record_engram does it for a step.
@@ -369,7 +368,8 @@ void Model::chunk_attention(ze::List &L, Card &card, uint32_t l, const ChunkRun 
   const uint32_t window = D41_WIN - 1;
 
   chunk_to_f16(L, card, k.xf, k.xh, (uint64_t)n * E);
-  chunk_hc_mix(L, card, k.X, ly.attn_fn, ly.attn_scale, ly.attn_base, k.amix, run);
+  chunk_hc_mix(L, card, ly.attn_fn, run);
+  L.launch(kernel(card, "deepseek41", "ds_hc_sinkhorn"), {k.m, ly.attn_scale, ly.attn_base, k.amix}, n, 1, 1, 16);
 
   // The 127 positions before the chunk, into the chunk's cells.
   const uint32_t nin = std::min(run.pos0, window);
@@ -448,7 +448,9 @@ void Model::chunk_router(ze::List &L, Card &card, uint32_t l, const ChunkRun &ru
   const uint32_t n = run.n;
   const bool posts = l % 2 == card.c;
   chunk_to_f16(L, card, k.xf, k.xh, (uint64_t)n * E);
-  chunk_hc_mix(L, card, k.X1, ly.ffn_fn, ly.ffn_scale, ly.ffn_base, k.fmix, run);
+  L.launch(kernel(card, "deepseek41", "ds_hc_mix"), {ly.ffn_fn, k.X1, k.ss, n, k.m}, D41_MIX, (n + STEP_MAX_ROWS - 1) / STEP_MAX_ROWS, 1,
+           16 * D41_HC_KSPLIT);
+  L.launch(kernel(card, "deepseek41", "ds_hc_sinkhorn"), {k.m, ly.ffn_scale, ly.ffn_base, k.fmix}, n, 1, 1, 16);
   chunk_gemm(L, card, true, ly.gate_inp, D41_EXPERTS, E, k.xb, E, k.words, n, k.rlogits, D41_EXPERTS, false, "gemm router");
   const uint32_t eight = STEP_MAX_ROWS;
   for (uint32_t g0 = 0; g0 < n; g0 += STEP_MAX_ROWS) {

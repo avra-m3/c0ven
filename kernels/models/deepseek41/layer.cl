@@ -119,52 +119,18 @@ __kernel void ds_dsp_bias_add(__global const float *logits, uint n, __global con
   if (v < n) out[v] = logits[(ulong)*row * n + v] + bias[v];
 }
 
-// A sublayer's mixes of one row from its raw mixes: pre, post and the Sinkhorn-normalised comb (ref_ops.h, hc_split).
-// mr: the row's 24 raw mixes; scale: 3 values; base: D41_MIX values. One sub-group, lane src * 4 + dst holding that
-// entry of comb, so a row's sum is two swaps of lanes and a column's two others.
-static inline void hc_sinkhorn_row(__global const float *mr, __global const float *scale, __global const float *base,
-                                   __global D41HcMix *mix, uint lane) {
-#define SUM_ROWS(v) ({ const float t_ = (v) + sg_xor((v), 1); t_ + sg_xor(t_, 2); })
-#define SUM_COLS(v) ({ const float t_ = (v) + sg_xor((v), 4); t_ + sg_xor(t_, 8); })
-  const float l = rd1(mr + 2 * D41_HC) * scale[2] + rd1(base + 2 * D41_HC);
-  float mx = fmax(l, sg_xor(l, 1));
-  mx = fmax(mx, sg_xor(mx, 2));
-  const float e = exp(l - mx);
-  float c = e / SUM_ROWS(e) + D41_HC_EPS;
-  c /= SUM_COLS(c) + D41_HC_EPS;
-  for (uint it = 1; it < D41_SINKHORN; it++) {
-    c /= SUM_ROWS(c) + D41_HC_EPS;
-    c /= SUM_COLS(c) + D41_HC_EPS;
-  }
-#undef SUM_ROWS
-#undef SUM_COLS
-  wr1((__global float *)mix->comb, c);
-  const float p = sigmoid(rd1(mr) * scale[lane < D41_HC ? 0 : 1] + rd1(base));
-  if (lane < D41_HC)
-    mix->pre[lane] = p + D41_HC_EPS;
-  else if (lane < 2 * D41_HC)
-    mix->post[lane - D41_HC] = 2.0f * p;
-}
-
-// The 24 raw mixes of W rows, m[r][j] = (fn_j . X_r) / sqrt(ss[r] / D41_HC_DIM + D41_EPS), then the rows' mixes from
-// them (hc_sinkhorn_row). fn: D41_MIX rows of D41_HC_DIM (hc_attn_fn or hc_ffn_fn); scale and base: the sublayer's.
-// A work-group is a row of fn; its sub-groups split K, and all W rows share each weight read, sums through local
-// memory. The last work-group of a row block to finish its raw mixes, counted in count[block] (zero between launches,
-// which it leaves zero), reads the others' behind the fence they released theirs with and makes the block's mixes, its
-// sub-groups taking the rows in turn: one launch a sublayer in place of two. Groups (D41_MIX, ceil(W / STEP_MAX_ROWS)),
-// 16 ksplit with ksplit dividing 320 and at most 32: the second group index takes eight rows a time, for a prompt chunk's
-// more than eight.
+// The 24 raw mixes of W rows: m[r][j] = (fn_j . X_r) / sqrt(ss[r] / D41_HC_DIM + D41_EPS), fn D41_MIX rows of
+// D41_HC_DIM (hc_attn_fn or hc_ffn_fn). A work-group is a row of fn; its sub-groups split K, and all W rows share each
+// weight read, sums through local memory. Groups (D41_MIX, ceil(W / STEP_MAX_ROWS)), 16 ksplit with ksplit dividing 320
+// and at most 32: the second group index takes eight rows a time, for a prompt chunk's more than eight.
 REQD_SG __kernel void ds_hc_mix(__global const float *fn, __global const float *X, __global const float *ss, uint W,
-                                __global float *m, __global const float *scale, __global const float *base,
-                                __global D41HcMix *mix, __global uint *count) {
+                                __global float *m) {
   __local float red[STEP_MAX_ROWS][32];
-  __local uint done;
   const uint j = get_group_id(0), s = sg_id(), lane = sg_lane();
-  const uint block = get_group_id(1), t0 = block * STEP_MAX_ROWS;
+  const uint t0 = get_group_id(1) * STEP_MAX_ROWS;
   X += (ulong)t0 * D41_HC_DIM;
   ss += t0;
   m += (ulong)t0 * D41_MIX;
-  mix += t0;
   W = min(W - t0, (uint)STEP_MAX_ROWS);
   const uint nsg = get_local_size(0) / SG_SIZE, kc = D41_HC_DIM / nsg;
   __global const float *f = fn + (ulong)j * D41_HC_DIM + s * kc;
@@ -202,21 +168,40 @@ REQD_SG __kernel void ds_hc_mix(__global const float *fn, __global const float *
     if (lane == 0) red[t][s] = v;
   }
   barrier(CLK_LOCAL_MEM_FENCE);
-  if (s == 0) {
-    for (uint t = 0; t < W; t++) {
-      const float v = posted_sum(red[t], nsg);
-      if (lane == 0) m[(ulong)t * D41_MIX + j] = v * rsqrt(ss[t] / (float)D41_HC_DIM + D41_EPS);
-    }
-    if (lane == 0) {
-      atomic_work_item_fence(CLK_GLOBAL_MEM_FENCE, memory_order_release, memory_scope_device);
-      done = atomic_inc(count + block) == D41_MIX - 1;
-    }
+  if (s != 0) return;
+  for (uint t = 0; t < W; t++) {
+    const float v = posted_sum(red[t], nsg);
+    if (lane == 0) m[(ulong)t * D41_MIX + j] = v * rsqrt(ss[t] / (float)D41_HC_DIM + D41_EPS);
   }
-  barrier(CLK_LOCAL_MEM_FENCE | CLK_GLOBAL_MEM_FENCE);
-  if (!done) return;
-  atomic_work_item_fence(CLK_GLOBAL_MEM_FENCE, memory_order_acquire, memory_scope_device);
-  for (uint t = s; t < W; t += nsg) hc_sinkhorn_row(m + (ulong)t * D41_MIX, scale, base, mix + t, lane);
-  if (s == 0 && lane == 0) count[block] = 0;
+}
+
+// A sublayer's mixes from its raw mixes: pre, post and the Sinkhorn-normalised comb (ref_ops.h, hc_split). m: [W][24];
+// scale: 3 values; base: D41_MIX values. One sub-group a row, lane src * 4 + dst holding that entry of comb, so a
+// row's sum is two swaps of lanes and a column's two others. Groups W, 16.
+REQD_SG __kernel void ds_hc_sinkhorn(__global const float *m, __global const float *scale, __global const float *base,
+                                     __global D41HcMix *mix) {
+  const uint r = get_group_id(0), lane = sg_lane();
+  __global const float *mr = m + (ulong)r * D41_MIX;
+#define SUM_ROWS(v) ({ const float t_ = (v) + sg_xor((v), 1); t_ + sg_xor(t_, 2); })
+#define SUM_COLS(v) ({ const float t_ = (v) + sg_xor((v), 4); t_ + sg_xor(t_, 8); })
+  const float l = rd1(mr + 2 * D41_HC) * scale[2] + rd1(base + 2 * D41_HC);
+  float mx = fmax(l, sg_xor(l, 1));
+  mx = fmax(mx, sg_xor(mx, 2));
+  const float e = exp(l - mx);
+  float c = e / SUM_ROWS(e) + D41_HC_EPS;
+  c /= SUM_COLS(c) + D41_HC_EPS;
+  for (uint it = 1; it < D41_SINKHORN; it++) {
+    c /= SUM_ROWS(c) + D41_HC_EPS;
+    c /= SUM_COLS(c) + D41_HC_EPS;
+  }
+#undef SUM_ROWS
+#undef SUM_COLS
+  wr1((__global float *)mix[r].comb, c);
+  const float p = sigmoid(rd1(mr) * scale[lane < D41_HC ? 0 : 1] + rd1(base));
+  if (lane < D41_HC)
+    mix[r].pre[lane] = p + D41_HC_EPS;
+  else if (lane < 2 * D41_HC)
+    mix[r].post[lane - D41_HC] = 2.0f * p;
 }
 
 // A sublayer's end: X'_dst = post[dst] y + sum_src comb[src][dst] X_src, y = y0 + y1, the cards' partial sums (y1 null
