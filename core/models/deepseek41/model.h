@@ -235,6 +235,12 @@ class Model final : public engine::Model {
   SwapStats swap_stats() const;
   // The experts the last step's row routed to at layer, D41_USED ids.
   const int32_t *routed(uint32_t layer, uint32_t row) const { return jobs_[(size_t)layer * STEP_MAX_ROWS + row].all; }
+  // Of those, the ones the cards lacked: the count, and their ids first in *ids.
+  uint32_t missed(uint32_t layer, uint32_t row, const int32_t **ids) const {
+    const D41MissJob &j = jobs_[(size_t)layer * STEP_MAX_ROWS + row];
+    *ids = j.ids;
+    return j.nmiss;
+  }
   // A card's kernels in the last step, with Options::trace: each name's launches and time, in the list's order.
   std::vector<TraceRow> trace(uint32_t card) const;
 

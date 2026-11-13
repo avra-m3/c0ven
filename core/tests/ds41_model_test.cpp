@@ -4,7 +4,7 @@
 // DS41_ARENA_GIB, DS41_CARD_EXPERTS, DS41_PROFILE: the tiers' sizes and a routing profile; DS41_SWAPS: experts change
 // tiers by use; DS41_TRACE: the last step's kernels; DS41_NO_STREAMS: no streams, RefModel first, then the steps back
 // to back; DS41_LAYERS: the host's waits by layer; DS41_CPU_THREADS: the CPU's expert workers; DS41_ROUTES: a file
-// that gets each position's routed experts; DS41_NO_REF: no RefModel, the step's own first choice goes on, nothing is
+// that gets each position's routed experts a layer, then how many of them the cards lacked and their ids; DS41_NO_REF: no RefModel, the step's own first choice goes on, nothing is
 // compared and the test skips; DS41_DRAFTER: the drafter's file, loaded so that each step stores its keys;
 // DS41_PROMPT_CHUNK: Options::prompt_chunk, whose buffers take card memory from the expert cache (0: none).
 #include <algorithm>
@@ -179,8 +179,11 @@ int run() {
     if (!compare && tokens.size() == t + n) tokens.push_back(cands[n - 1].at(0).token);
     for (uint32_t i = 0; i < n && routes; i++)
       for (uint32_t l = 0; l < D41_LAYERS; l++) {
-        const int32_t *e = model.routed(l, i);
-        std::fprintf(routes, "%u %u %d %d %d %d %d %d\n", t + i, l, e[0], e[1], e[2], e[3], e[4], e[5]);
+        const int32_t *e = model.routed(l, i), *m;
+        const uint32_t nm = model.missed(l, i, &m);
+        std::fprintf(routes, "%u %u %d %d %d %d %d %d %u", t + i, l, e[0], e[1], e[2], e[3], e[4], e[5], nm);
+        for (uint32_t k = 0; k < nm; k++) std::fprintf(routes, " %d", m[k]);
+        std::fputc('\n', routes);
       }
     for (uint32_t i = 0; i < n && !compare; i++)
       std::printf("position %u token %d: %.1f ms (before %.2f, Engram %.2f, records %.1f, CPU %.1f, end %.2f); CPU %llu of %llu "
