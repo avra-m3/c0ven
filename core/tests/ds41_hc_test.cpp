@@ -200,10 +200,11 @@ struct Bench {
           run([&](ze::List &L) { launch_mix(L, W, ks); });
           auto g = io.get(m, (size_t)W * D41_MIX);
           ck.rel("ds_hc_mix m", g.data(), wm.data(), g.size(), 1e-5);
+          // The mixes from the raw mixes the card made: a scale of 20 turns the raw mixes' last bits into 1e-6 of comb.
           auto gm = io.get(mix, W);
-          auto gg = ggml_comb(wm.data(), W, hs.data(), hb.data());
+          auto gg = ggml_comb(g.data(), W, hs.data(), hb.data());
           for (uint32_t r = 0; r < W; r++) {
-            const ref::HcMix w = ref::hc_split(&wm[(size_t)r * D41_MIX], hs.data(), hb.data());
+            const ref::HcMix w = ref::hc_split(&g[(size_t)r * D41_MIX], hs.data(), hb.data());
             ck.abs("ds_hc_mix comb against ref_ops", gm[r].comb, w.comb, 16, 1e-6);
             ck.abs("ds_hc_mix comb against ggml", gm[r].comb, &gg[(size_t)r * 16], 16, 1e-6);
             ck.rel("ds_hc_mix pre", gm[r].pre, w.pre, 4, 1e-5);
