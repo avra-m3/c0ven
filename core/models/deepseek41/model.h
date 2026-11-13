@@ -241,6 +241,8 @@ class Model final : public engine::Model {
     *ids = j.ids;
     return j.nmiss;
   }
+  // Whether the arena holds layer's expert id now (else a miss on it reads the file).
+  bool in_arena(uint32_t layer, uint32_t id) const { return arena_->weights(layer, id).gate != nullptr; }
   // A card's kernels in the last step, with Options::trace: each name's launches and time, in the list's order.
   std::vector<TraceRow> trace(uint32_t card) const;
 
