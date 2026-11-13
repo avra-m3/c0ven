@@ -14,7 +14,10 @@ namespace engine {
 
 class Pool {
  public:
-  explicit Pool(unsigned workers);
+  // own_cores pins each worker to a core of its own (the core's hardware threads, from /sys), so that two workers never
+  // share one while other cores sit idle: 16 workers on 16 cores ran an expert's dot products in 0.17 ms against 0.22
+  // loose (docs/measurements/MEASUREMENTS.md#2026-11-13-ds41-cpu-pinned). The caller stays where it is.
+  explicit Pool(unsigned workers, bool own_cores = false);
   ~Pool();
   Pool(const Pool &) = delete;
   Pool &operator=(const Pool &) = delete;
