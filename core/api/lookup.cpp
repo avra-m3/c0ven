@@ -394,4 +394,11 @@ double RoundTrial::correction(bool wide) const {
   return (tokens_[wide] / ms_[wide]) / (est_tokens_[wide] / est_ms_[wide]);
 }
 
+int trial_arm(const TrialPick &pick, const std::vector<uint64_t> &choices) {
+  if (pick.arm < 0 || pick.choice == 0 || choices.size() != pick.slots) return -1;
+  for (const uint64_t c : choices)
+    if (c != pick.choice) return -1;
+  return pick.arm;
+}
+
 }  // namespace engine

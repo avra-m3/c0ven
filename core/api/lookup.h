@@ -233,4 +233,19 @@ class RoundTrial {
   uint32_t rounds_[2] = {}, picks_ = 0;
 };
 
+// A RoundTrial's choice for the drafts of several slots: its arm (-1: none, 0: the even split, 1: the wide count), its
+// slots, choose_shared_drafts' estimates for the arm, and its number (0: none), which each slot it shared drafts out
+// to keeps with them.
+struct TrialPick {
+  int arm = -1;
+  uint32_t slots = 0;
+  double tokens = 0, ms = 0;
+  uint64_t choice = 0;
+};
+
+// The arm a round of several slots counts for, choices being the number each of its slots keeps with its drafts: the
+// pick's where the round holds the pick's slots, every one with drafts it shared out. Else -1: a slot's drafts were
+// made otherwise (by a lone round or the prompt's end, or cleared) or by a later choice, or a slot left or joined.
+int trial_arm(const TrialPick &pick, const std::vector<uint64_t> &choices);
+
 }  // namespace engine
