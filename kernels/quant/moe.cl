@@ -488,7 +488,7 @@ REQD_SG __kernel void moe_down_g(__global const uchar *cache, ulong slot_bytes, 
 #endif
 
 // ---------------------------------------------------------------------------------------------------------------
-// deepseek41's routed experts (ADR-0074 item 2): a launch mixes slot classes. A group's record names its class in the
+// deepseek41's routed experts (ADR-0080 item 2): a launch mixes slot classes. A group's record names its class in the
 // layer's table (D41Class), which gives where its slot lies, its rows and its down K, so part A, part B and a whole
 // expert share one launch. GU_LANES and DOWN_LANES are the lanes a row; a sub-group keeps moe_gate_up_g's and
 // moe_down_g's rows. Rows and K are multiples of MOE_WG_ROWS and of the 256 values of a block.

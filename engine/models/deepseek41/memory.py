@@ -1,4 +1,4 @@
-"""deepseek41's numbers for the memory plan, from its tensor table and split rules (ADR-0074). The pinned step buffers
+"""deepseek41's numbers for the memory plan, from its tensor table and split rules (ADR-0080). The pinned step buffers
 and answers are in PlanOptions.host_working: the plan has no figure of their own."""
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ def staging_ring_bytes(table: TensorTable) -> int:
 
 def model_memory(table: TensorTable, cards: int = 2) -> ModelMemory:
     """The sizes on each of two cards. table: the file's tensors. cards: the cards in use. Raises PlanError for another
-    count: one card cannot hold the dense weights and enough experts within the host's memory (ADR-0074)."""
+    count: one card cannot hold the dense weights and enough experts within the host's memory (ADR-0080)."""
     if cards != 2:
         raise PlanError(f"deepseek41 runs on two cards, not {cards}")
     weights = tuple(sum(bytes_on_card(t, card) for t in table.tensors) for card in range(cards))
@@ -58,7 +58,7 @@ def slot_pair_plan(m: ModelMemory, options: PlanOptions) -> MemoryPlan:
     """The plan with every layer's experts counted in slot pairs, so each tier's count is even. m: the model's sizes.
     options: the plan's options. Raises PlanError as `plan` does.
 
-    A layer's cache has as many part-A slots as part-B slots (ADR-0074, item 2), and a pair of them takes exactly one
+    A layer's cache has as many part-A slots as part-B slots (ADR-0080, item 2), and a pair of them takes exactly one
     expert's bytes on each card, as the parts are 5/9 and 4/9 of it. The plan's fill carries what a layer leaves over
     to the next, so counting the arena in pairs too loses no bytes there."""
 

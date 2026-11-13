@@ -96,6 +96,9 @@ RUN cmake -S /opt/c0ven -B /opt/c0ven/build -G Ninja \
  && ninja -C /opt/c0ven/build \
  && UV_NO_CACHE=1 uv sync --locked --no-dev
 
+# A new named volume mounted at /cache takes this owner, so the user can write the cache (ENGINE_CACHE_DIR).
+RUN mkdir /cache && chown ubuntu:ubuntu /cache
+
 ENV ENGINE_LIBRARY=/opt/c0ven/build/core/libengine.so \
     PATH=/opt/c0ven/.venv/bin:$PATH \
     PYTHONDONTWRITEBYTECODE=1

@@ -604,7 +604,7 @@ void compare_with_walk(const Model &m, uint32_t T, const std::vector<int32_t> &t
 }
 
 constexpr double kDumpBound = 1e-3;  // relative RMS at which a value differs
-constexpr double kDumpKl = 0.04;     // ADR-0074's bound on the logits against upstream's, mean nats a position
+constexpr double kDumpKl = 0.04;     // ADR-0080's bound on the logits against upstream's, mean nats a position
 
 // strict: every value within kDumpBound and the same choices, as a dump of RefModel's own gives. upstream: a product
 // rounds its input to 8 bits, so a last-bit difference moves a rounding and every value after it; the values before

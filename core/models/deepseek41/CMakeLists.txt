@@ -1,4 +1,4 @@
-# deepseek41's part of the core (ADR-0024 item 3, ADR-0074).
+# deepseek41's part of the core (ADR-0024 item 3, ADR-0080).
 
 target_sources(engine_core PRIVATE
   drafter.cpp

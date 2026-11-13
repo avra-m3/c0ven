@@ -1,4 +1,4 @@
-// deepseek41's decode step on two cards (ADR-0074): each card runs one recorded list a step, the two exchange their
+// deepseek41's decode step on two cards (ADR-0080): each card runs one recorded list a step, the two exchange their
 // partial sums through each other's memory, and the CPU answers the routed experts the cards do not hold. A prompt of
 // more than a few rows goes through all the layers in chunks (prompt.cpp); the last rows and short prompts are decode
 // steps. The model reads no images. With Options::mtp_dir, the path of the file's drafter (a second
@@ -35,7 +35,7 @@ namespace engine::deepseek41 {
 struct StepWords {
   uint32_t real;  // rows that hold a token; the list's other rows are padded
   uint32_t step;
-  uint32_t stuck;  // a wait gave up (ADR-0074 item 5)
+  uint32_t stuck;  // a wait gave up (ADR-0080 item 5)
   uint32_t pad;
   uint64_t start;  // ds_wait's clock at the list's first polling wait
   uint64_t pad2;

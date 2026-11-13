@@ -1,5 +1,5 @@
 // The router's top 6 of a row's 384 scores by one sub-group of RT_SG lanes, lane holding experts lane + RT_SG j. Copied
-// from kernels/models/qwen4exp/route.h until the helpers copied for this model are lifted (ADR-0074). The includer
+// from kernels/models/qwen4exp/route.h until the helpers copied for this model are lifted (ADR-0080). The includer
 // defines RT_SG.
 #ifndef KERNELS_DEEPSEEK41_ROUTE_H
 #define KERNELS_DEEPSEEK41_ROUTE_H

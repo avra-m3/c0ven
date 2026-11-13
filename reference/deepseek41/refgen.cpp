@@ -1,4 +1,4 @@
-// What upstream llama.cpp computes for deepseek41 (ADR-0074 item 6), one token at a time on its CPU backend with f16
+// What upstream llama.cpp computes for deepseek41 (ADR-0080 item 6), one token at a time on its CPU backend with f16
 // caches, as RefModel and the engine's decode windows read a prompt. Links libllama at that commit.
 #include <algorithm>
 #include <cstdint>

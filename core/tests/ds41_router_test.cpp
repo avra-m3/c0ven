@@ -330,7 +330,7 @@ struct Bench {
       ck.exact("the router leaves MissJob x alone", &x[0], &mark, 4);
     }
 
-    // Card 1 routes the same and holds the other class of each slot pair (ADR-0074 item 2).
+    // Card 1 routes the same and holds the other class of each slot pair (ADR-0080 item 2).
     if (rm.size() > 1) {
       RouteOut q = route(*rm[1], d, map, W, W, split, 1, step, false);
       ck.exact("ds_router both cards' ids", q.ids.data(), o.ids.data(), q.ids.size() * 4);

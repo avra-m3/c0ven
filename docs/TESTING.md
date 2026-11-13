@@ -8,7 +8,8 @@ backend at `3cf0325` and ggml ([ADR-0012](adr/0012-correctness-reference.md)). B
 [reference outputs](measurements/REFERENCE_OUTPUTS.md). Tests use `pytest`, `numpy` to compare tensors, and plain
 executables under `ctest` for the core's unit tests ([ADR-0004](adr/0004-write-or-reuse.md)).
 
-Level Zero has no CPU device, so every kernel test needs a B60 ([ADR-0001](adr/0001-level-zero-from-scratch.md)).
+Level Zero has no CPU device, so every kernel test needs a Battlemage card, a B60 or a
+[B65](measurements/MEASUREMENTS.md#2026-11-12-arc-pro-b65) ([ADR-0001](adr/0001-level-zero-from-scratch.md)).
 "The machine" means [the test machine](measurements/MEASUREMENTS.md#the-test-machine).
 
 ## The levels
@@ -34,7 +35,7 @@ The tests that exist ([DEVELOPING.md](DEVELOPING.md#tests) describes each):
 
 | Level | Tests | Missing |
 | --- | --- | --- |
-| 1 | `tests/host/`, `gguf_test`, `direct_test`, `mrope_test`, `experts_test`, `quant_test`, `cpu_experts_test`, `ds41_tiers_test`, `ds41_multirow_test` | ring buffers, the free list |
+| 1 | `tests/host/`, `gguf_test`, `direct_test`, `mrope_test`, `yarn_test`, `experts_test`, `quant_test`, `cpu_experts_test`, `row_cache_test`, `ds41_tiers_test`, `ds41_multirow_test` | ring buffers, the free list |
 | 2 | `ze_smoke_test`, `topk_test`, `gemm_test`'s DPAS layout check | some builtins |
 | 3 | `matvec_test`, `moe_test`, `gemm_test`, `qgemm_test`, `swiglu_limit_test`, `attn_test`, `vision_test` | |
 | 4 | `encoder_test` | a text layer |

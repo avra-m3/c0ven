@@ -312,7 +312,8 @@ int main(int argc, char **argv) {
         (unsigned long long)cs.experts_floor, info.experts_per_layer);
   engine_slot_stats sst;
   CHECK(engine_read_slot_stats(e, info.slots, &sst) == ENGINE_BAD_ARGUMENT, "slot stats of a slot out of range");
-  for (uint32_t i = 0; i < nt; i++) CHECK(tr[i].end_ns >= tr[i].start_ns && tr[i].rows > 0, "timing record %u", i);
+  for (uint32_t i = 0; i < nt; i++)  /* a draft pass has no rows of its own */
+    CHECK(tr[i].end_ns >= tr[i].start_ns && (tr[i].rows > 0 || tr[i].kind == ENGINE_TIMING_DRAFT), "timing record %u", i);
   printf("%u timing records\n", nt);
 
   /* A sleep and a wake (ADR-0032). Asleep, nothing is admitted or run; awake, the cards cache the experts they
@@ -360,6 +361,7 @@ int main(int argc, char **argv) {
   engine_abi_row rows[256];
   uint32_t nr = engine_abi_layout(rows, 256);
   CHECK(nr > 0 && nr <= 256, "layout rows");
+  CHECK(engine_queue_stuck() == 0, "no queue stuck");
   engine_close(e);
 
   /* With drafting, exactly the tokens of plain decoding: drafts change how many tokens a step gives, never which.
@@ -370,7 +372,7 @@ int main(int argc, char **argv) {
       getenv("FLASH_MTP_DIR") ? getenv("FLASH_MTP_DIR")
       : access("/models/mtp/mtp-manifest.json", R_OK) == 0 ? "/models/mtp" : NULL,
       getenv("FLASH_DFLASH_DIR") ? getenv("FLASH_DFLASH_DIR")
-      : access("/models/dflash/dflash-manifest.json", R_OK) == 0 ? "/models/dflash" : NULL};
+      : access("/models/dflash/config.json", R_OK) == 0 ? "/models/dflash" : NULL};
   for (int dk = 0; dk < 2; dk++) {
     if (!drafters[dk]) continue;
     printf("drafter: %s\n", drafters[dk]);

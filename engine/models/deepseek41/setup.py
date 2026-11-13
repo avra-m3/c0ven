@@ -1,5 +1,5 @@
 """What the engine process needs from deepseek41 (engine.models.ModelSetup): its open config and its checkpoint rule.
-It has no drafter and no image encoder (ADR-0074).
+It has no drafter and no image encoder (ADR-0080).
 
 The engine process finds this module by the GGUF's `general.architecture`, so code outside models/ never names the
 model (ADR-0024, item 3).
@@ -34,7 +34,7 @@ and the plan from the committed table still work."""
 
 def memory_plan(table: TensorTable, options: PlanOptions) -> MemoryPlan:
     """The plan at the model's own limits: no draft layer, at most its context, and the Engram table on the SSD whatever
-    `ngram_in_ram` says (ADR-0074, item 7). table: the file's tensors. options: the plan's options. Raises PlanError
+    `ngram_in_ram` says (ADR-0080, item 7). table: the file's tensors. options: the plan's options. Raises PlanError
     when the options do not fit."""
     limited = replace(options, draft=False, ngram_in_ram=False, context=min(options.context, numbers.CONTEXT))
     return slot_pair_plan(model_memory(table, options.cards), limited)

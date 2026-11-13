@@ -141,7 +141,7 @@ const GgufTensor &Model::tensor(const std::string &name, std::initializer_list<u
   return t;
 }
 
-// Read past the page cache, as every dense tensor is (ADR-0074 item 3), and kept until its layer is on both cards.
+// Read past the page cache, as every dense tensor is (ADR-0080 item 3), and kept until its layer is on both cards.
 const uint8_t *Model::held(const GgufTensor &t) {
   auto [it, fresh] = held_.try_emplace({t.shard, t.offset});
   if (fresh) {
@@ -466,7 +466,7 @@ void Model::load_layer(uint32_t l) {
                     kGroups * D41_OLR);
     L.gate_inp = upload_bf16(card, name("ffn_gate_inp.weight"), {E, n_experts});
     {
-      // The larger part of the shared expert on the card that does not post the layer's misses (ADR-0074 item 2).
+      // The larger part of the shared expert on the card that does not post the layer's misses (ADR-0080 item 2).
       const bool posts = l % 2 == card.c;
       const uint64_t r0 = posts ? D41_PART_A : 0;
       L.sh_ff = posts ? D41_PART_B : D41_PART_A;
@@ -1404,7 +1404,7 @@ std::vector<std::vector<Candidate>> Model::step(const StepIn *rows, uint32_t n, 
   } catch (...) {
     failed = std::current_exception();
   }
-  // The lists end by themselves: a wait the CPU never answers gives up (ADR-0074 item 5).
+  // The lists end by themselves: a wait the CPU never answers gives up (ADR-0080 item 5).
   try {
     for (auto &card : cards_) card->lists.at(W)->synchronize();
     times_.after = ms(t_mark, Clock::now());

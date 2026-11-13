@@ -18,7 +18,11 @@ APIs.
 Use C0ven if you have:
 
 - one (or more) Intel Battlemage cards with at least 10 GB of VRAM between them, in one Linux machine, with the `xe` kernel
-  driver. The engine is tested on Arc Pro B60 cards (24 GB each); other Battlemage cards likely work but are untested
+  driver. The engine is tested on Arc Pro B60 cards (24 GB each) and runs on one Arc Pro B65 (32 GB), where it reads
+  [prompts at about 917 tokens/s and decodes about 33
+  tokens/s](docs/measurements/MEASUREMENTS.md#2026-11-12-arc-pro-b65). That machine runs the card on a PCIe 3.0 x8
+  link with a 6-core CPU from 2017, so a newer CPU or a full x16 link may be faster. Other Battlemage cards likely work
+  but are untested
   ([help test them](https://github.com/avra-m3/c0ven/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22)),
 - an x86-64 CPU, which computes the experts the cards do not hold; the engine loads the build of its CPU code that
   uses the most of the CPU's features (AVX-512 down to plain x86-64),
@@ -47,7 +51,7 @@ if you have one, try Strata.
 - Splits the work between both cards. The experts used most stay in VRAM, and the rest wait in RAM.
 - Drafts up to 7 tokens a step with DFlash 2 (or 3 with the model's own MTP layer) and checks them in one step.
 - Moves cached experts between RAM and VRAM as the routing of your requests changes.
-- Contexts up to 262,144 tokens.
+- Contexts up to 1,048,576 tokens. Past the 262,144 the model was trained on, positions are scaled by YaRN.
 - Gives the cards back on request and takes them again in about 15 s, so llama-swap can run other models on them
   ([Sharing the cards](#sharing-the-cards-with-other-models)).
 - OpenAI and Anthropic APIs, with streaming.

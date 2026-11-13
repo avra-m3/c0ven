@@ -164,8 +164,11 @@ Model::Model(const std::string &path, const Options &opt) : opt_(opt), gguf_(pat
   pool_ = std::make_unique<Pool>(opt_.cpu_threads > 1 ? opt_.cpu_threads - 1 : 0);
   cpu_ = std::make_unique<CpuExperts>(*pool_);
   info_.loader_threads = loader_threads();
-  ngram_ = std::make_unique<Ngram>(gguf_, 1u << 20, 128, opt_.ngram_in_ram, info_.loader_threads);
+  ngram_ = std::make_unique<Ngram>(gguf_, 1u << 20, 128, opt_.ngram_in_ram, info_.loader_threads,
+                                   opt_.ngram_huge_bytes);
   info_.ngram_in_ram = ngram_->in_ram();
+  info_.ngram_cache_rows = ngram_->cache_rows();
+  info_.ngram_huge_bytes = ngram_->huge_bytes();
   if (!info_.ngram_in_ram) info_.ngram_read_us = ngram_->read_latency_us();
   for (uint32_t c = 0; c < ncards_; c++) info_.copy_bytes_per_s[c] = measure_copy(c);
   events_ = std::make_unique<ze::EventPool>(*rt_, shape_.layers * (2 * ncards_ + 2) + 1 + shape_.attn_layers() * ncards_);
@@ -193,6 +196,8 @@ Model::Model(const std::string &path, const Options &opt) : opt_(opt), gguf_(pat
   head_plan_->nrows = 1;
   cplan_ = static_cast<CommitPlan *>(rt_->alloc_host(sizeof(CommitPlan)));
   std::memset(cplan_, 0, sizeof(CommitPlan));
+  yarn_fs_ = opt_.max_ctx > shape_.context ? (float)shape_.context / (float)opt_.max_ctx : 1.0f;
+  q_yarn_range(shape_.context, shape_.rot, shape_.rope_base, &yarn_low_, &yarn_high_);
   rope_ = static_cast<SlotRope *>(rt_->alloc_host(opt_.slots * sizeof(SlotRope)));
   std::memset(rope_, 0, opt_.slots * sizeof(SlotRope));
   images_.resize(opt_.slots);
@@ -204,7 +209,7 @@ Model::Model(const std::string &path, const Options &opt) : opt_(opt), gguf_(pat
   kv_margin_ = std::max<uint32_t>(2048, 2 * tmax_ / KV_PAGE_CELLS);  // two prompt chunks, or 8,192 positions
   if (tmax_) {
     if (opt_.prompt_chunk % 64) throw std::runtime_error("prompt_chunk must be a multiple of 64");
-    pevents_ = std::make_unique<ze::EventPool>(*rt_, 7 * shape_.layers * ncards_ + 1 + shape_.attn_layers() * ncards_ + ncards_);
+    pevents_ = std::make_unique<ze::EventPool>(*rt_, 9 * shape_.layers * ncards_ + 1 + shape_.attn_layers() * ncards_ + ncards_);
     pplan_ = static_cast<PromptPlan *>(rt_->alloc_host((1 + PROMPT_MAX_RUNS) * sizeof(PromptPlan)));
     std::memset(pplan_, 0, (1 + PROMPT_MAX_RUNS) * sizeof(PromptPlan));
     prows_ = static_cast<uint32_t *>(rt_->alloc_host(2 * 4));
@@ -1296,13 +1301,16 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
       L.together(false);
       L.together(true);
       L.launch(q4("attn_prep"), {card.Q, card.Kt, card.Vt, Ly.qn, Ly.kn, card.nq, card.nkv, Ly.kc, Ly.vc, card.ptab,
-                                 npp_, plan, rope_, Ly.khost, Ly.vhost, Ly.where}, card.nq + card.nkv, W, 1,
-               shape_.att_key);
+                                 npp_, plan, rope_, Ly.khost, Ly.vhost, Ly.where, yarn_fs_, yarn_low_, yarn_high_},
+               card.nq + card.nkv, W, 1, shape_.att_key);
       // The indexer, split by position: each card scores its own blocks and sends its best; both merge the same.
-      L.launch(q4("idx_prep"), {card.idxq, Ly.iqn, Ly.raw, card.ptab, npp_, plan, rope_, c, C}, shape_.idx_h + 1, W, 1,
-               shape_.idx_d);
+      L.launch(q4("idx_prep"),
+               {card.idxq, Ly.iqn, Ly.raw, card.ptab, npp_, plan, rope_, c, C, yarn_fs_, yarn_low_, yarn_high_},
+               shape_.idx_h + 1, W, 1, shape_.idx_d);
       L.together(false);
-      L.launch(q4("idx_pool"), {Ly.raw, card.ptab, npp_, Ly.ikn, Ly.pooled, plan, rope_, c, C}, W, 1, 1, shape_.idx_d);
+      L.launch(q4("idx_pool"),
+               {Ly.raw, card.ptab, npp_, Ly.ikn, Ly.pooled, plan, rope_, c, C, yarn_fs_, yarn_low_, yarn_high_}, W, 1, 1,
+               shape_.idx_d);
       uint32_t nbl = (opt_.max_ctx / shape_.idx_block + C - 1) / C;
       L.launch(q4("idx_score"), {card.idxq, Ly.pooled, card.ptab, npp_, nbl, plan, card.scores, c, C},
                (nbl + 63) / 64, W, 1, 64);

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from engine.host import GIB, Card, read
+from engine.host import GIB, Card, read, slot_link
 
 
 def make_root(tmp_path: Path, cpu_max: str = "max 100000", memory_max: str = "max", smt: bool = True) -> Path:
@@ -102,3 +102,54 @@ def test_the_free_reserved_huge_pages(tmp_path: Path):
 
 def test_no_huge_pages_reported_gives_none(tmp_path: Path):
     assert read(make_root(tmp_path), affinity={0}).huge_pages_free is None
+
+
+def b65(pcie_gen: int = 5, pcie_width: int = 16) -> Card:
+    return Card("Intel(R) Arc(TM) Pro B65 Graphics", "0000:19:00.0", 32 * GIB, 0xE212, 0, 20, pcie_gen, pcie_width, -1)
+
+
+def make_pci(root: Path, chain: list[tuple[str, str | None, str | None]]) -> None:
+    """A device path under /sys/devices from the root port down, each (address, max_link_speed, current_link_width),
+    with /sys/bus/pci/devices linking the last."""
+    d = root / "sys/devices/pci0000:00"
+    for bdf, speed, width in chain:
+        d = d / bdf
+        d.mkdir(parents=True)
+        if speed is not None:
+            (d / "max_link_speed").write_text(f"{speed} PCIe\n")
+        if width is not None:
+            (d / "current_link_width").write_text(f"{width}\n")
+    (root / "sys/bus/pci/devices").mkdir(parents=True)
+    (root / "sys/bus/pci/devices" / chain[-1][0]).symlink_to(d)
+
+
+def test_a_card_on_a_root_port_keeps_its_link(tmp_path: Path):
+    make_pci(tmp_path, [("0000:00:01.1", "32.0 GT/s", "16"), ("0000:19:00.0", "32.0 GT/s", "16")])
+    card = slot_link(b65(), tmp_path)
+    assert card.link == "PCIe 5.0 x16"
+    assert card.pcie_bytes_per_s == round(32e9 / 8 * 128 / 130 * 16)
+
+
+def test_a_card_behind_its_switch_gives_the_slots_link(tmp_path: Path):
+    # The slot trained at 3.0 x8; the switch's link to the card runs at 5.0 x16.
+    make_pci(
+        tmp_path,
+        [
+            ("0000:00:01.1", "8.0 GT/s", "8"),
+            ("0000:17:00.0", "32.0 GT/s", "8"),
+            ("0000:18:01.0", "32.0 GT/s", "16"),
+            ("0000:19:00.0", "32.0 GT/s", "16"),
+        ],
+    )
+    assert slot_link(b65(), tmp_path).link == "PCIe 3.0 x8"
+
+
+def test_no_sysfs_keeps_level_zeros_link(tmp_path: Path):
+    assert slot_link(b65(), tmp_path) == b65()
+
+
+def test_missing_link_files_keep_level_zeros_value(tmp_path: Path):
+    make_pci(tmp_path, [("0000:00:01.1", None, "8"), ("0000:19:00.0", "Unknown", None)])
+    assert slot_link(b65(), tmp_path).link == "PCIe 5.0 x8"
+    make_pci(tmp_path / "none", [("0000:00:01.1", None, None), ("0000:19:00.0", None, None)])
+    assert slot_link(b65(), tmp_path / "none") == b65()

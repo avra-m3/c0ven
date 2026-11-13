@@ -1,6 +1,6 @@
 // deepseek41's Engram rows (spec section 2; DeepSeek's inference/engram.py, NgramHashState): the hash of a token and
 // the three before it, which names 24 rows of per_layer_token_embd for each of the two Engram layers, and the rows
-// dequantised from IQ4_NL. The table stays in the file, read with O_DIRECT past the page cache (ADR-0015, ADR-0074
+// dequantised from IQ4_NL. The table stays in the file, read with O_DIRECT past the page cache (ADR-0015, ADR-0080
 // item 7).
 #pragma once
 

@@ -1,5 +1,5 @@
 // deepseek41's rotary embedding (DeepSeek's model.py, precompute_freqs_cis and apply_rotary_emb; spec section 3d,
-// "RoPE definition"), with its angles computed as ggml's rope computes them for upstream llama.cpp (ADR-0074 item 11).
+// "RoPE definition"), with its angles computed as ggml's rope computes them for upstream llama.cpp (ADR-0080 item 11).
 // The kernels, ref_ops and ggml then agree at every position to the rounding of cos and sin. C++20 and OpenCL C.
 #ifndef DEEPSEEK41_ROPE_H
 #define DEEPSEEK41_ROPE_H

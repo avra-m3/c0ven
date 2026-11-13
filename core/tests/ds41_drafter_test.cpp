@@ -25,8 +25,8 @@ namespace {
 
 constexpr double kTight = 1e-3;   // relative RMS at which a value differs
 constexpr double kWrong = 0.1;    // past this a value is another formula's, not a moved rounding
-constexpr double kKl = 0.04;      // the logits against upstream's, mean nats a row (ADR-0074's bound)
-// Fed by RefModel the drafts also carry the two models' own difference in the layers' inputs, which ADR-0074 bounds
+constexpr double kKl = 0.04;      // the logits against upstream's, mean nats a row (ADR-0080's bound)
+// Fed by RefModel the drafts also carry the two models' own difference in the layers' inputs, which ADR-0080 bounds
 // only at the model's logits. This is the bound a feed from other layers or other positions exceeds.
 constexpr double kFedKl = 0.15;
 constexpr double kKeep = 0.02;    // the keep chances against upstream's, mean difference

@@ -24,7 +24,7 @@ struct RefMat {
   size_t row_bytes = 0;
 };
 
-// The value a f16 cache holds for x (ADR-0074 item 11): nearest, as ggml's cast.
+// The value a f16 cache holds for x (ADR-0080 item 11): nearest, as ggml's cast.
 float round_f16(float x);
 
 class RefFile {

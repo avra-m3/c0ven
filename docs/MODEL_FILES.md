@@ -8,11 +8,12 @@ check them, how to lay them out, and how to point the engine at them.
 | Part | Files | Size | Needed for |
 | --- | --- | ---: | --- |
 | The model | the IQ3_S GGUF, 2 shards | 83.6 GB | everything |
-| The DFlash 2 drafter | 78 tensors from incoai's BF16 checkpoint, in `dflash/` | 0.9 GB | drafting; the engine prefers it to the MTP layer |
+| The DFlash 2 drafter | incoai's `model.safetensors` and `config.json`, in `dflash/` | 1.2 GB | drafting; the engine prefers it to the MTP layer |
 | The draft (MTP) layer | 31 tensors from Qwen's BF16 checkpoint, in `mtp/` | 5.2 GB | drafting without `dflash/`; with neither, the engine decodes one token a step |
 | The image encoder | `mmproj-Qwen3.8-Flash-Next-BF16.gguf` | 0.9 GB | images and video in requests |
 
-At load the engine reads the model's sizes from the file ([ADR-0062](adr/0062-a-models-shape-comes-from-its-file.md)).
+At load the engine reads the model's sizes and trained context from the file
+([ADR-0062](adr/0062-a-models-shape-comes-from-its-file.md)).
 It stops, naming each problem, if a size that is still fixed at build time differs, if the sizes do not fit together, or
 if they do not divide equally between the cards. The kernels are built for 512 and 256 experts a layer, so a file of
 another count stops the same way ([ADR-0063](adr/0063-a-kernel-module-for-each-expert-count.md)).
@@ -26,6 +27,9 @@ Put every file in one directory:
   Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf
   Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf
   mmproj-Qwen3.8-Flash-Next-BF16.gguf
+  dflash/
+    model.safetensors
+    config.json
   mtp/
     mtp-manifest.json
     mtp.fc_embedding.weight
@@ -45,7 +49,7 @@ it can be mounted read-only.
 | Part | Where the engine looks | To change it |
 | --- | --- | --- |
 | The other shards | beside it, by name | - |
-| The drafter | `dflash/` beside the model when it holds `dflash-manifest.json`, else `mtp/` when it holds `mtp-manifest.json` | `--engine-arg=--draft-dir=<dir>`; `--engine-arg=--no-draft` decodes without it |
+| The drafter | `dflash/` beside the model when it holds `model.safetensors` and `config.json`, else `mtp/` when it holds `mtp-manifest.json`; a `dflash/` with only `dflash-manifest.json` is refused | `--engine-arg=--draft-dir=<dir>`; `--engine-arg=--no-draft` decodes without it |
 | The image encoder | the one `mmproj-*.gguf` beside the model; with two or more, none | `--engine-arg=--vision=<file>`; `--engine-arg=--no-vision` reads no images |
 | The tokenizer and chat template | the GGUF's metadata | `--tokenizer <tokenizer.json>`, `--chat-template <chat_template.jinja>` |
 
@@ -54,7 +58,9 @@ the pre-tokenizer that `tokenizer.ggml.pre` names: `qwen35` (Flash-Next's) or `j
 no normalizer). It refuses a file with any other value or none; give that model's `tokenizer.json` instead.
 
 A missing drafter or encoder is not an error: the engine runs without it. The core takes a directory that holds
-`dflash-manifest.json` as DFlash 2's and any other as the MTP layer's.
+`model.safetensors` and `config.json` as DFlash 2's and any other as the MTP layer's. It refuses a directory that
+holds `dflash-manifest.json` without them (so does the server's choice of `dflash/` beside the model, which does not fall back to `mtp/`), the older layout of DFlash 2 split into one file a tensor
+([ADR-0067](adr/0067-dflash-2-loads-from-its-published-files.md)).
 
 At each load the engine quantises the draft layer's experts from BF16, which takes tens of seconds. Set
 `ENGINE_CACHE_DIR` to a writable directory to keep the result between loads. The cache is keyed by the bytes of
@@ -188,30 +194,35 @@ fetch only those 5.2 GB:
    revision. The Hub's sha256 covers whole shards, so it cannot check a byte range.
 6. Write `mtp/mtp-manifest.json`, listing for each tensor its dtype, shape, source shard, byte range and sha256.
    The engine needs the file to find the directory, and keys its quantised cache by the file's bytes. The memory
-   plan sizes the draft layer from its shapes; [model/mtp-manifest.json](model/mtp-manifest.json) is a copy, which the plan
-   uses when it has no directory.
+   plan sizes the draft layer from its shapes; [model/mtp-manifest.json](model/mtp-manifest.json) is a copy, which only
+   the mock and the reference read.
 
 ### The DFlash 2 drafter
 
 DFlash 2 is a separate small model trained to draft for Qwen3.8-Flash-Next: five dense layers that read the main
 model's hidden states and propose up to 7 tokens in one pass. It comes from
 [`incoai/Qwen3.8-Flash-Next-DFlash2`](https://huggingface.co/incoai/Qwen3.8-Flash-Next-DFlash2) at revision
-`a22a1744e85c17364dcc54a6a420af7135d4c7f6`, one file, `model.safetensors`, of 1,206,140,008 B with sha256
-`d6723f2a359eaf33ec0c95f22ae8edda896774020c552296a85e1913b4d3186f`. From a c0ven checkout:
+`a22a1744e85c17364dcc54a6a420af7135d4c7f6`. Put two of its files in `dflash/` as they are:
+
+| File | Size | sha256 |
+| --- | ---: | --- |
+| `model.safetensors` | 1,206,140,008 B | `d6723f2a359eaf33ec0c95f22ae8edda896774020c552296a85e1913b4d3186f` |
+| `config.json` | 1,236 B | `2409575986f9ea24d455343eb469c0e6940def5edab1d1be503bb8eb4cc3b1b9` |
+
+`tools.model_fetch` downloads both, `config.json` last. By hand:
 
 ```bash
-python -m tools.dflash_fetch --out <model dir>/dflash
+mkdir -p <model dir>/dflash && cd <model dir>/dflash
+for f in model.safetensors config.json; do
+  curl -fLO https://huggingface.co/incoai/Qwen3.8-Flash-Next-DFlash2/resolve/a22a1744e85c17364dcc54a6a420af7135d4c7f6/$f
+done
+sha256sum model.safetensors config.json
 ```
 
-The tool downloads the file and its `config.json`, checks their sha256 (and the file's size), writes each tensor's
-bytes, as they are, to `dflash/<tensor name>` (raw little-endian BF16, no header), writes the config's values the
-engine reads to `dflash/dflash-config.txt` (a line each: the key, then its values), and writes
-`dflash/dflash-manifest.json` last, with the same values and each tensor's dtype, shape, byte range and sha256. It
-leaves out the tensors whose names start with `candidate_selector.`: the engine does not use the checkpoint's candidate
-selector. The temporary download is deleted. A `dflash/` fetched before `dflash-config.txt` existed has to be fetched
-again.
+The core reads each tensor's byte range from the file's header and does not load the tensors whose names start with
+`candidate_selector.`: the engine does not use the checkpoint's candidate selector.
 
 The engine takes the mask token (248,077) and the main model's layers it reads (5, 15, 25, 35 and 45) from
-`dflash-config.txt`. Its kernels are built for the drafter's sizes (`core/models/qwen4exp/layout.h`): hidden size
+`config.json`. Its kernels are built for the drafter's sizes (`core/models/qwen4exp/layout.h`): hidden size
 2,560, 32 query and 8 KV heads of 128, MLP 7,680, RMS norms with eps 1e-6 and no +1, RoPE base 10,000, a window of
-2,048, a block of 8 rows. The load checks each against `dflash-config.txt` and stops when one differs.
+2,048, a block of 8 rows. The load checks each against `config.json` and stops when one differs.
