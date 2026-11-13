@@ -173,10 +173,6 @@ class SsdReader {
   uint64_t pool_runs() const { return pool_runs_; }  // the pool's runs, after wait: one a round
   // Reads past 1 s, counted and logged as errors (ADR-0080 item 5's bound is near); the round still lands.
   uint64_t slow_reads() const { return slow_reads_; }
-  // Whether a round's reads are in flight. Other readers of the file hold off while they are, since a miss waits for
-  // the round and an expert takes the SSD about 1.7 ms alone and 2.5 beside two threads' refills
-  // (docs/measurements/MEASUREMENTS.md#2026-11-13-deepseek41-refills-beside-miss-reads).
-  bool busy() const { return busy_.load(std::memory_order_acquire); }
   // Called on the reading thread before each piece's read. For tests.
   void set_read_hook(std::function<void()> hook) { read_hook_ = std::move(hook); }
 
@@ -203,7 +199,6 @@ class SsdReader {
   std::string error_;
   uint64_t rounds_ = 0;
   std::atomic<uint64_t> pool_runs_{0}, slow_reads_{0}, pieces_left_{0};
-  std::atomic<bool> busy_{false};
 };
 
 // One layer's misses for one step. jobs: the layer's records, one a row, read in place. rows: the step's recorded width

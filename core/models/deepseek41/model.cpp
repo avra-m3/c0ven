@@ -940,18 +940,8 @@ void Model::swap_load(uint32_t c) {
   }
 }
 
-// A refill thread: reads an expert from the file and writes it into its arena place. It reads in pieces, and holds off
-// while the SSD tier's round is in flight: a miss waits for that round, and the refills' reads beside it made an expert
-// take 2.5 ms instead of 1.7 (docs/measurements/MEASUREMENTS.md#2026-11-13-deepseek41-refills-beside-miss-reads).
+// A refill thread: reads an expert from the file and writes it into its arena place.
 void Model::swap_refill() {
-  const auto read_pieces = [this](const DirectReader &reader, uint32_t file, uint64_t offset, uint64_t bytes, uint8_t *buf) {
-    const uint64_t a = offset / DirectReader::kAlign * DirectReader::kAlign, end = offset + bytes;
-    for (uint64_t at = 0; a + at < end; at += DirectReader::kPiece) {
-      while (ssd_->busy()) std::this_thread::sleep_for(std::chrono::microseconds(50));
-      reader.read_one(file, a + at, std::min(DirectReader::kPiece, end - (a + at)), buf + at);
-    }
-    return buf + (offset - a);
-  };
   uint64_t gate_bytes = 0, down_bytes = 0;
   for (const LayerExperts &le : experts_) gate_bytes = std::max(gate_bytes, le.gate_bytes), down_bytes = std::max(down_bytes, le.down_bytes);
   AlignedBuffer bufs[3] = {aligned_buffer(gate_bytes + 2 * DirectReader::kAlign), aligned_buffer(gate_bytes + 2 * DirectReader::kAlign),
@@ -971,9 +961,9 @@ void Model::swap_refill() {
       const LayerExperts &le = experts_[r.l];
       const double t0 = now_ms();
       const uint8_t *m[3];
-      m[0] = read_pieces(reader, le.gate.file, le.gate.offset + r.out * le.gate_bytes, le.gate_bytes, bufs[0].get());
-      m[1] = read_pieces(reader, le.up.file, le.up.offset + r.out * le.gate_bytes, le.gate_bytes, bufs[1].get());
-      m[2] = read_pieces(reader, le.down.file, le.down.offset + r.out * le.down_bytes, le.down_bytes, bufs[2].get());
+      m[0] = reader.read_one(le.gate.file, le.gate.offset + r.out * le.gate_bytes, le.gate_bytes, bufs[0].get());
+      m[1] = reader.read_one(le.up.file, le.up.offset + r.out * le.gate_bytes, le.gate_bytes, bufs[1].get());
+      m[2] = reader.read_one(le.down.file, le.down.offset + r.out * le.down_bytes, le.down_bytes, bufs[2].get());
       const double t1 = now_ms();
       ExpertArena::write(le, m[0], m[1], m[2], r.place);
       read = t1 - t0, write = now_ms() - t1;
