@@ -5,7 +5,7 @@
  *   - C++ owns all memory and threads; Python owns every decision.
  *   - The core's engine thread runs the plans. A call on the caller's thread never uses a command list, fence or event
  *     while the engine thread may: it waits for the queued plans (checkpoint, restore, sleep) or leaves the work to
- *     the engine thread, before its next plan (admit, admit_images) (docs/adr/0075-one-thread-uses-the-cards.md).
+ *     the engine thread, before its next plan (admit, admit_images) (docs/adr/0077-one-thread-uses-the-cards.md).
  * engine/api/abi.py mirrors this file by hand; engine_abi_layout() lets a test check every size and offset.
  * Symbols carry the prefix engine_ (ADR-0024, item 2). */
 #ifndef ENGINE_API_H
@@ -23,7 +23,7 @@ extern "C" {
 #define ENGINE_API
 #endif
 
-#define ENGINE_API_VERSION 22
+#define ENGINE_API_VERSION 23
 
 typedef enum {
   ENGINE_OK = 0,
@@ -264,6 +264,31 @@ typedef struct {
   uint64_t idle_rounds;        /* of the swap rounds, those run while no plan came */
   uint64_t reading_steps;      /* of the undrafted steps, those run while another slot read its prompt */
   uint64_t reading_rounds;     /* of the rounds, those run while another slot read its prompt */
+  uint64_t draft_passes;       /* ENGINE_TIMING_DRAFT records: what a plan's decode did after its step or round */
+  uint64_t draft_ns;           /* their time */
+  uint64_t layer_drafts_1;     /* of layer_drafts, those verified at position 1 of the slot's run, ... 7 */
+  uint64_t layer_drafts_2;
+  uint64_t layer_drafts_3;
+  uint64_t layer_drafts_4;
+  uint64_t layer_drafts_5;
+  uint64_t layer_drafts_6;
+  uint64_t layer_drafts_7;
+  uint64_t layer_accepted_1;   /* of layer_accepted, those at position 1, ... 7: accepted_n / drafts_n is the share
+                                  of runs that verified n drafts whose first n were all accepted */
+  uint64_t layer_accepted_2;
+  uint64_t layer_accepted_3;
+  uint64_t layer_accepted_4;
+  uint64_t layer_accepted_5;
+  uint64_t layer_accepted_6;
+  uint64_t layer_accepted_7;
+  uint64_t layer_stop_max;     /* of layer_runs, those whose drafting reached the most a slot drafts (draft_max, at
+                                  most 7) */
+  uint64_t layer_stop_share;   /* those that reached the fewer rows the round's share gave the slot, or whose window
+                                  held fewer rows than its drafts */
+  uint64_t layer_stop_p;       /* those that stopped at a draft below draft_min_p; the rest stopped at the context's
+                                  end or the slot's pages */
+  uint64_t layer_stop_choice;  /* those that reached the fewer drafts the core chose for a round of several writing
+                                  slots, below the slot's share of the rows and draft_max */
 } engine_stats;
 
 /* One slot's counters since admit: its own decode, not its prompt. */

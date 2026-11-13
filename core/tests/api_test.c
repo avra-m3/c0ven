@@ -236,7 +236,7 @@ int main(int argc, char **argv) {
   printf("two requests decoding in one step: both give the 32 tokens\n");
 
   /* Slot 1 admitted and released between slot 0's plans, two of them queued ahead, so each admit lands while the
-   * engine thread runs one: the reset goes to the engine thread (ADR-0075), and slot 0 still gives the 32 tokens. */
+   * engine thread runs one: the reset goes to the engine thread (ADR-0077), and slot 0 still gives the 32 tokens. */
   CHECK(engine_release(e, 0) == ENGINE_OK && engine_release(e, 1) == ENGINE_OK, "release both");
   CHECK(admit(e, 0, &s, prompt, np) == ENGINE_OK, "admit slot 0");
   {

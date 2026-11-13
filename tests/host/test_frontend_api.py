@@ -520,6 +520,51 @@ def test_the_engines_swap_counter_reaches_metrics(client: TestClient, engine: Fa
     assert client.get("/metrics").json()["core"]["swapped_out_pages"] == 5
 
 
+def test_the_new_counters_reach_metrics_as_numbers_and_ratios(client: TestClient, engine: FakeEngine, tmp_path: Path):
+    """The STATS line a real engine loop writes carries the engine's miss wait, draft pass and draft depth fields and
+    the scheduler's checkpoint and page fields; /metrics reads its ratios from them."""
+    out = io.StringIO()
+    stdin = iter([protocol.Stats().encode() + "\n", protocol.Quit().encode() + "\n"])
+    serve(
+        MockEngine(),
+        open_config(),
+        rule=every_16k,
+        options=SchedulerOptions(),
+        stdin=cast("TextIO", stdin),
+        stdout=out,
+        swap_watch=SwapWatch(tmp_path / "none"),
+    )
+    line = next(line for line in out.getvalue().splitlines() if line.startswith("STATS"))
+    report = protocol.parse_event(line)
+    assert isinstance(report, protocol.StatsReport)
+    for key in (
+        "draft_ns",
+        "layer_drafts_7",
+        "layer_stop_p",
+        "layer_stop_choice",
+        "checkpoints_evicted_pages",
+        "cold_admits",
+        "kv_pages_checkpoints",
+    ):
+        assert report.counts[key] == "0", key
+    engine.counts = {
+        "rounds": "10",
+        "round_ns": "400000000",
+        "draft_passes": "10",
+        "draft_ns": "50000000",
+        "layer_runs": "10",
+        "layer_drafts_1": "10",
+        "layer_accepted_1": "9",
+        "layer_stop_share": "4",
+        "checkpoints_evicted_pages": "2",
+    }
+    metrics = client.get("/metrics").json()
+    assert metrics["core"]["checkpoints_evicted_pages"] == 2
+    derived = metrics["derived"]
+    assert derived["draft_pass_ms"] == 5.0
+    assert (derived["layer_accepted_at_1"], derived["layer_stopped_at_share"]) == (0.9, 0.4)
+
+
 def test_anthropic_needs_max_tokens(client: TestClient):
     assert client.post("/v1/messages", json={"messages": [{"role": "user", "content": "x"}]}).status_code == 400
 
