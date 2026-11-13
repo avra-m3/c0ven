@@ -14,9 +14,12 @@ are all unanswered or being restored has no room: `add` needs `has_room` first.
 from __future__ import annotations
 
 import itertools
+import logging
 from dataclasses import dataclass, field
 
 from engine.seqstate.pages import PagePool
+
+log = logging.getLogger("engine.seqstate")
 
 
 @dataclass(slots=True)
@@ -93,6 +96,7 @@ class CheckpointPool:
             if victim is None:
                 raise RuntimeError("every checkpoint is in use: call has_room first")
             evicted.append(victim.id)
+            log.info("checkpoint %d of %d tokens evicted: the checkpoint pool is full", victim.id, len(victim.tokens))
             self.remove(victim.id)
         ck = Checkpoint(self._free.pop(), tokens, pages, kept)
         for page in pages:
