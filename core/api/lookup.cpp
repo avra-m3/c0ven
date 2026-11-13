@@ -1,6 +1,7 @@
 #include "api/lookup.h"
 
 #include <algorithm>
+#include <cmath>
 
 namespace engine {
 
@@ -82,17 +83,17 @@ double WindowTimes::ms(uint32_t rows) const { return width_ms(ms_, kWidths, rows
 void RoundTimes::add(uint32_t rows, double ms, uint32_t misses) {
   if (rows == 0 || rows >= kWidths) return;
   Sums &s = w_[rows];
-  if (s.rounds++ == 1) s = Sums{0, 0, 0, 0, 0, 2};
+  if (s.rounds++ == 1) s = Sums{0, 0, 0, 0, 0, 0, 2};
   const double keep = 1.0 - 1.0 / 16, m = misses;
   s.n = s.n * keep + 1, s.m = s.m * keep + m, s.t = s.t * keep + ms;
-  s.mm = s.mm * keep + m * m, s.mt = s.mt * keep + m * ms;
+  s.mm = s.mm * keep + m * m, s.mt = s.mt * keep + m * ms, s.tt = s.tt * keep + ms * ms;
   const double r = m / rows;
   misses_row_ = misses_row_ < 0 ? r : misses_row_ + (r - misses_row_) / 8;
   refresh();
 }
 
 void RoundTimes::refresh() {
-  double num = 0, den = 0;
+  double num = 0, den = 0, tt = 0, dof = -1;
   seen_ = 0;
   for (uint32_t w = 1; w < kWidths; w++) {
     const Sums &s = w_[w];
@@ -100,8 +101,14 @@ void RoundTimes::refresh() {
     seen_++;
     num += s.mt - s.m * s.t / s.n;
     den += s.mm - s.m * s.m / s.n;
+    tt += s.tt - s.t * s.t / s.n;
+    dof += s.n - 1;
   }
-  miss_ms_ = den > 0 ? std::max(0.0, num / den) : 0.0;
+  miss_ms_ = 0;
+  if (den > 0 && dof > 0) {
+    const double c = num / den, se = std::sqrt(std::max(0.0, tt - c * num) / dof / den);
+    miss_ms_ = std::max(0.0, c - se);
+  }
   double at[kWidths] = {};
   for (uint32_t w = 1; w < kWidths; w++)
     if (w_[w].rounds >= 2) at[w] = std::max(1e-3, (w_[w].t - miss_ms_ * w_[w].m) / w_[w].n);
