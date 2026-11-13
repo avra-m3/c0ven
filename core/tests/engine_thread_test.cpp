@@ -1,6 +1,7 @@
 // Level 1 (docs/TESTING.md): the C ABI's engine thread on a model of the test's own. No card. The model notes which
 // thread makes each call and whether two calls overlap, which the model's lists do not allow
-// (docs/adr/0077-one-thread-uses-the-cards.md).
+// (docs/adr/0077-one-thread-uses-the-cards.md). It skips on a CPU that lacks a feature of the tests' ggml build, as
+// open_engine refuses one (cpu_features_test).
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -15,6 +16,7 @@
 
 #include "api/model.h"
 #include "api/open_engine.h"
+#include "cpu/features.h"
 #include "engine_api.h"
 
 #define EXPECT(cond, ...)                                       \
@@ -317,6 +319,10 @@ void test_restore_sets_up_first() {
 }  // namespace
 
 int main() {
+  if (const std::string missing = engine::missing_cpu_features(ENGINE_CPU_FEATURES); !missing.empty()) {
+    std::printf("SKIP: this CPU lacks %s, which the tests' ggml build uses\n", missing.c_str());
+    return 77;
+  }
   test_reset_before_first_plan();
   test_reset_error_is_an_event();
   test_admits_beside_plans();
