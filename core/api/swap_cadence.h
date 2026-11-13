@@ -4,6 +4,8 @@
 
 #include <cstdint>
 
+#include "step.h"
+
 namespace engine {
 
 // How much time a missed layer adds to a step of a given width, from the steps the core runs: per width, a line
@@ -16,7 +18,7 @@ class MissCost {
   double ms(uint32_t rows, uint32_t layers_missed) const;
 
  private:
-  static constexpr uint32_t kWidths = 9;  // 0 to STEP_MAX_ROWS
+  static constexpr uint32_t kWidths = STEP_MAX_ROWS + 1;  // 0 to STEP_MAX_ROWS
   struct Sums {
     double n = 0, x = 0, y = 0, xx = 0, xy = 0;
   };

@@ -11,6 +11,10 @@ foreach(experts 512 256)
   engine_add_kernel_module(qwen4exp${suffix} SOURCE kernels/models/qwen4exp/layer.cl
                            OPTIONS -DQ_EXPERTS=${experts} -I${CMAKE_SOURCE_DIR}/core/models/qwen4exp
                                    -I${CMAKE_SOURCE_DIR}/kernels/models/qwen4exp)
+  # The same for the decode steps of up to 8 rows (STEP_NARROW_ROWS, shared/step.h).
+  engine_add_kernel_module(qwen4exp${suffix}_r8 SOURCE kernels/models/qwen4exp/layer.cl
+                           OPTIONS -DQ_EXPERTS=${experts} -DSTEP_ROWS=8 -I${CMAKE_SOURCE_DIR}/core/models/qwen4exp
+                                   -I${CMAKE_SOURCE_DIR}/kernels/models/qwen4exp)
   engine_add_kernel_module(qwen4exp_prompt${suffix} SOURCE kernels/models/qwen4exp/prompt.cl
                            OPTIONS -DQ_EXPERTS=${experts} -I${CMAKE_SOURCE_DIR}/core/models/qwen4exp
                                    -I${CMAKE_SOURCE_DIR}/kernels/models/qwen4exp)

@@ -153,10 +153,10 @@ Model::Model(const std::string &path, const Options &opt) : opt_(opt), gguf_(pat
   if (opt_.kv_resident) {
     const uint64_t r = (uint64_t)opt_.slots * ((opt_.kv_resident + KV_PAGE_CELLS - 1) / KV_PAGE_CELLS);
     kv_res_ = r < kv_pages_ ? (uint32_t)r : 0;  // a pool no larger than the resident pages is not streamed
-    if (kv_res_ && kv_res_ <= kvs_max_miss(shape_))
+    const uint32_t run_claims = STEP_MAX_RUN * kvs_row_claims(shape_);
+    if (kv_res_ && kv_res_ <= run_claims)
       throw std::runtime_error("kv_resident must leave more than " +
-                               std::to_string(kvs_max_miss(shape_) * KV_PAGE_CELLS / opt_.slots) +
-                               " cells a slot resident");
+                               std::to_string(run_claims * KV_PAGE_CELLS / opt_.slots) + " cells a slot resident");
   }
   // Sharing moves experts in and out of the cache, so it needs the swaps, and a cache the engine sizes.
   share_ = opt_.share_kv && opt_.adapt_swaps && opt_.experts_per_layer < 0;
@@ -774,13 +774,14 @@ void Model::load_card(Card &card) {
       const uint64_t page_bytes = (uint64_t)KV_PAGE_CELLS * card.nkv * shape_.kv_head_bytes();
       if (kv_res_) {
         // Streamed (ADR-0008 item 3): kc and vc hold a ring of up to kv_res_ pages, backed as the ring grows where the
-        // pool shares the cards' memory (kv_share.cpp), from a part that holds a step's claims at least; the host
-        // copies, allocated once, hold every page.
+        // pool shares the cards' memory (kv_share.cpp), from a part that holds the claims of a step of STEP_MAX_RUN
+        // rows at least (a wider step runs where the ring holds its claims: step_fits); the host copies, allocated
+        // once, hold every page.
         uint32_t R0 = kv_res_;
         if (share_) {
-          const uint32_t x = 4 * L.idx;
-          L.kc = kv_region(card, x, page_bytes, 1, kv_res_, kvs_max_miss(shape_) + 1);
-          L.vc = kv_region(card, x + 1, page_bytes, 1, kv_res_, kvs_max_miss(shape_) + 1);
+          const uint32_t x = 4 * L.idx, floor = STEP_MAX_RUN * kvs_row_claims(shape_) + 1;
+          L.kc = kv_region(card, x, page_bytes, 1, kv_res_, floor);
+          L.vc = kv_region(card, x + 1, page_bytes, 1, kv_res_, floor);
           R0 = kv_pages_of(x, 0);
         } else {
           L.kc = upload<uint8_t>(card, nullptr, kv_res_ * page_bytes);
@@ -856,7 +857,13 @@ void Model::load_card(Card &card) {
   // The decode step's buffers, for STEP_MAX_ROWS rows.
   constexpr size_t W = STEP_MAX_ROWS;
   auto fbuf = [&](size_t n) { return upload<float>(card, nullptr, W * n * 4); };
-  const uint32_t nb_max = opt_.max_ctx / shape_.idx_block;
+  // The indexer's scores of this card's blocks (idx_score's row stride), the attention's parts and the head's
+  // logits are used in turn: the scores until a layer's candidates are taken, the parts in that layer's attention
+  // after them, the logits after the last layer, in the draft layer's pass and the MTP pass alike. They share one
+  // buffer, so the step's rows past 8 take less of the room the expert cache has.
+  const size_t nbl = (opt_.max_ctx / shape_.idx_block + ncards_ - 1) / ncards_;
+  const size_t att_row = (size_t)card.nq * shape_.att_splits() * (shape_.att_key + 2);  // attn_split's parts
+  float *turns = fbuf(std::max({nbl, att_row, (size_t)card.vocab_n}));
   card.R = fbuf(shape_.hc_dim());
   card.n = fbuf(shape_.hc_dim());
   card.plan = upload<StepPlan>(card, nullptr, sizeof(StepPlan));
@@ -881,9 +888,9 @@ void Model::load_card(Card &card) {
   card.Kt = fbuf(card.nkv * shape_.att_key);
   card.Vt = fbuf(card.nkv * shape_.att_key);
   card.idxq = fbuf(shape_.idx_h * shape_.idx_d + shape_.idx_d);
-  card.scores = fbuf(nb_max);
+  card.scores = turns;
   card.bscores = fbuf(shape_.idx_blocks() + 1);
-  card.att = fbuf((size_t)STEP_MAX_ROWS * card.nq * shape_.att_splits() * (shape_.att_key + 2));
+  card.att = turns;
   card.blocks = upload<uint32_t>(card, nullptr, W * (shape_.idx_blocks() + 1) * 4);
   card.cells = upload<uint32_t>(card, nullptr, W * shape_.idx_cells() * 4);
   card.ncells = upload<uint32_t>(card, nullptr, W * 4);
@@ -906,7 +913,7 @@ void Model::load_card(Card &card) {
   card.pv = fbuf(shape_.embd);
   card.gates = fbuf(shape_.hc);
   card.N = fbuf(shape_.hc_dim());
-  card.logits = fbuf(card.vocab_n);
+  card.logits = turns;
   card.xa8 = upload<uint8_t>(card, nullptr, W * a8_bytes(shape_.embd));
   card.oa8 = upload<uint8_t>(card, nullptr, W * a8_bytes(std::max(card.nvh * shape_.gdn_d, card.nq * shape_.att_key)));
   card.ha8 = upload<uint8_t>(card, nullptr, W * shape_.used * a8_bytes(card.ff));
@@ -1150,9 +1157,9 @@ std::unique_ptr<Model::HostLayer> Model::host_layer(uint32_t l, uint64_t n, cons
   return hl;
 }
 
-// y[t] = m x[t] for ntok tokens of a8 activations, rows of m.rows apart.
-void Model::matvec(ze::List &list, Card &card, const Mat &m, const uint8_t *act, float *y, uint32_t ntok,
-                   ze_event_handle_t signal) {
+// y[t] = m x[t] for the *ntok tokens of a8 activations (read when the list runs, at most W), rows of m.rows apart.
+void Model::matvec(ze::List &list, Card &card, const Mat &m, const uint8_t *act, float *y, uint32_t W,
+                   const uint32_t *ntok, ze_event_handle_t signal) {
   uint32_t lanes = lanes_for(m.type, m.K);
   uint32_t stride = (uint32_t)a8_bytes(m.K);
   if (opt_.trace)
@@ -1160,21 +1167,21 @@ void Model::matvec(ze::List &list, Card &card, const Mat &m, const uint8_t *act,
   if (m.rows <= kMvKsRows && lanes == 8) {
     // Few rows: K split over 4 sub-groups of 8 lanes per row (matvec_ks), so that the card has enough of them.
     const uint32_t ks = 4;
-    list.launch(kernel(card.c, mv_module(m.type, 8), "matvec_ks"),
+    list.launch(kernel(card.c, mv_module(m.type, 8, W), "matvec_ks"),
                 {m.p, m.rows, m.bpr, act, m.K, stride, ntok, y, m.rows, card.grids, ks}, (m.rows + 1) / 2, 1, 1,
                 16 * ks, 1, 1, signal);
     return;
   }
-  auto k = kernel(card.c, mv_module(m.type, lanes), "matvec");
+  auto k = kernel(card.c, mv_module(m.type, lanes, W), "matvec");
   uint32_t rows_per_wg = 4 * (16 / lanes);
   list.launch(k, {m.p, m.rows, m.bpr, act, m.K, stride, ntok, y, m.rows, card.grids},
               (m.rows + rows_per_wg - 1) / rows_per_wg, 1, 1, 64, 1, 1, signal);
 }
 
 // The decode step for up to W rows, recorded once per card and width (kStepWidths): the kernels read the step plan
-// in host memory, so a list serves any step of up to W rows. Products run for all W rows (their weights are read
-// once whatever the count); row-wise kernels skip the rows past the plan's. Streamed, a second list a width leaves
-// out the claim (kvs: false, key W + kKvsSkipList), for the steps whose pages are claimed already (step).
+// in host memory, so a list serves any step of up to W rows, and the kernels skip the rows past the plan's. Streamed,
+// a second list a width leaves out the claim (kvs: false, key W + kKvsSkipList), for the steps whose pages are claimed
+// already (step).
 void Model::record(Card &card, uint32_t W, bool kvs) {
   const uint32_t key = kvs ? W : W + kKvsSkipList;
   // Not in order: the launches between L.together(true) and L.together(false) read the same inputs and write their
@@ -1182,8 +1189,8 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
   auto list = std::make_unique<ze::List>(*rt_, card.c, ze::List::regular, false, false);
   ze::List &L = *list;
   const uint32_t c = card.c, C = ncards_;
-  auto common = [&](const char *name) { return kernel(c, "common", name); };
-  auto q4 = [&](const char *name) { return kernel(c, layer_module_, name); };
+  auto common = [&](const char *name) { return kernel(c, rows_module("common", W), name); };
+  auto q4 = [&](const char *name) { return kernel(c, rows_module(layer_module_, W), name); };
   const float one = 1.0f, quarter = 1.0f / (float)shape_.hc;  // the hyper-connections' 1 / hc (4 streams: a quarter)
   const uint32_t zero = 0, mode_silu = 1;
   // The kernels read the plan from the card's copy: a word in host memory makes each launch slower
@@ -1196,9 +1203,9 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
     L.trace(card.trace[key], 8192);
   }
   L.copy(card.plan, plan_, sizeof(StepPlan));
-  // The BF16 products, on the XMX units with bf16 activations (xb: 8 rows of K), as the reference rounds a BF16
-  // product's activation (docs/spec/MODEL_LAYER.md, section 6) and the prompt path's gemm_bf16 takes it. K split in 4,
-  // or in 16 for a few rows.
+  // The BF16 products, on the XMX units with bf16 activations (xb: STEP_MAX_ROWS rows of K), as the reference rounds a
+  // BF16 product's activation (docs/spec/MODEL_LAYER.md, section 6) and the prompt path's gemm_bf16 takes it. K split
+  // in 4, or in 16 for a few rows.
   uint16_t *no_yb = nullptr;
   auto bf16mv = [&](const uint16_t *W_, uint32_t rows, uint32_t K, const uint16_t *xb, float *y) {
     const uint32_t ks = rows < 128 ? 16 : 4;
@@ -1250,15 +1257,15 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
   };
   auto out_product = [&](const Mat &m, float *p1, uint32_t layer) {
     if (W == 1) {
-      matvec(L, card, m, card.oa8, p1, W, (*events_)[ev(layer, c)]);
+      matvec(L, card, m, card.oa8, p1, W, nrows, (*events_)[ev(layer, c)]);
       return;
     }
     if (peer) {
-      matvec(L, card, m, card.oa8, xp_block(card, 0), W);
+      matvec(L, card, m, card.oa8, xp_block(card, 0), W, nrows);
       send_peer(0, layer, 0);
       return;
     }
-    matvec(L, card, m, card.oa8, card.yo, W);
+    matvec(L, card, m, card.oa8, card.yo, W, nrows);
     L.copy(p1, card.yo, (size_t)W * shape_.embd * 4, (*events_)[ev(layer, c)]);
   };
 
@@ -1281,8 +1288,8 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
     float *p1 = ex1_ + l * ex_layer + (size_t)c * STEP_MAX_ROWS * shape_.embd;
     if (!Ly.attn) {
       L.together(true);
-      matvec(L, card, Ly.qkv, card.xa8, card.m, W);
-      matvec(L, card, Ly.z, card.xa8, card.z, W);
+      matvec(L, card, Ly.qkv, card.xa8, card.m, W, nrows);
+      matvec(L, card, Ly.z, card.xa8, card.z, W, nrows);
       bf16mv(Ly.ab, 2 * card.nvh, shape_.embd, card.xbf16, card.ab);
       L.together(false);
       // u, the gates and m stay in the layer's own buffers, for a window's commit.
@@ -1294,9 +1301,9 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
       out_product(Ly.out, p1, l);
     } else {
       L.together(true);
-      matvec(L, card, Ly.q, card.xa8, card.Q, W);
-      matvec(L, card, Ly.k, card.xa8, card.Kt, W);
-      matvec(L, card, Ly.v, card.xa8, card.Vt, W);
+      matvec(L, card, Ly.q, card.xa8, card.Q, W, nrows);
+      matvec(L, card, Ly.k, card.xa8, card.Kt, W, nrows);
+      matvec(L, card, Ly.v, card.xa8, card.Vt, W, nrows);
       bf16mv(Ly.idx_w, shape_.idx_h * shape_.idx_d + shape_.idx_d, shape_.embd, card.xbf16, card.idxq);
       L.together(false);
       L.together(true);
@@ -1345,8 +1352,8 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
     uint32_t *nmiss = card.nmiss + l * STEP_MAX_ROWS;
     L.together(true);
     bf16mv(Ly.router, shape_.experts + 1, shape_.embd, card.xbf16, card.rl);
-    matvec(L, card, Ly.sh_gate, card.xa8, card.shg, W);
-    matvec(L, card, Ly.sh_up, card.xa8, card.shu, W);
+    matvec(L, card, Ly.sh_gate, card.xa8, card.shg, W, nrows);
+    matvec(L, card, Ly.sh_up, card.xa8, card.shu, W, nrows);
     L.together(false);
     // With cached experts, the router also groups them (router_group), so an expert several rows need is decoded
     // once for all of them.
@@ -1356,14 +1363,15 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
                kSgSize);
     else
       L.launch(q4("router_group"), {card.rl, Ly.slot_map, card.x, card.ids, card.w, card.slots, nmiss, jobs, plan,
-                                    card.groups, card.ngroups}, 1, 1, 1, 128);
+                                    card.groups, card.ngroups}, 1, 1, 1, group_wg(W));
     L.launch(q4("swiglu_a8"), {card.shg, card.shu, card.ff, plan, card.sha8}, (card.ff / 32 + 3) / 4, W, 1, 64);
     L.together(false);
     if (nslots_cached_ > 0) {
       // moe.cl's kernels where they take the type: the same results, faster
       // (docs/measurements/MEASUREMENTS.md#2026-10-14-decode-expert-kernels).
-      std::string gm = moe_module(Ly.gu_type, W, false), dm = moe_module(Ly.down_type, W, true);
-      uint32_t rpw = gm.empty() ? 4 : MOE_WG_ROWS, lx = gm.empty() ? 64 : kSgSize * MOE_WG_ROWS / MOE_GU_ROWS(W);
+      const uint32_t A = moe_group_rows(W);
+      std::string gm = moe_module(Ly.gu_type, A, false), dm = moe_module(Ly.down_type, A, true);
+      uint32_t rpw = gm.empty() ? 4 : MOE_WG_ROWS, lx = gm.empty() ? 64 : kSgSize * MOE_WG_ROWS / MOE_GU_ROWS(A);
       uint32_t gbpr = shape_.embd / quant_block_values(Ly.gu_type);
       uint32_t K = shape_.embd, xs = (uint32_t)a8_bytes(shape_.embd), per = shape_.used;
       L.together(true);
@@ -1378,11 +1386,11 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
                  {Ly.cache, Ly.slot_bytes, card.groups, card.ngroups, card.ff, gbpr, Ly.up_off, card.xa8, K, xs, per,
                   card.h, card.grids, card.ha8},
                  (card.ff + rpw - 1) / rpw, W * shape_.used, 1, lx);
-      matvec(L, card, Ly.sh_down, card.sha8, card.s, W);
+      matvec(L, card, Ly.sh_down, card.sha8, card.s, W, nrows);
       L.together(false);
       if (gm.empty()) quant(card.h, card.ff, W * shape_.used, card.ha8);
       uint32_t drpw = dm.empty() ? 16 : MOE_WG_ROWS;
-      uint32_t dlx = dm.empty() ? 64 : kSgSize * MOE_WG_ROWS / MOE_DOWN_ROWS(Ly.down_type, W);
+      uint32_t dlx = dm.empty() ? 64 : kSgSize * MOE_WG_ROWS / MOE_DOWN_ROWS(Ly.down_type, A);
       uint32_t dbpr = card.ff / quant_block_values(Ly.down_type);
       uint32_t stride = (uint32_t)a8_bytes(card.ff);
       L.launch(kernel(c, dm.empty() ? mv_module(Ly.down_type, 4) : dm, "moe_down_g"),
@@ -1390,7 +1398,7 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
                 stride, card.y, card.grids},
                (shape_.embd + drpw - 1) / drpw, W * shape_.used, 1, dlx);
     } else {
-      matvec(L, card, Ly.sh_down, card.sha8, card.s, W);
+      matvec(L, card, Ly.sh_down, card.sha8, card.s, W, nrows);
     }
     if (c == 0) L.launch(q4("cpu_wait"), {nmiss, ans_seq_ + 16 * l, plan, stuck_}, 1, 1, 1, 1);
     float *p2 = ex2_ + l * ex_layer + (size_t)c * STEP_MAX_ROWS * shape_.embd;
@@ -1461,8 +1469,8 @@ void Model::wait_commit() {
 // row's 64 largest logits into the host's candidate buffers. plan gives the rows.
 void Model::record_head(ze::List &L, Card &card, const StepPlan *plan, uint32_t W) {
   const uint32_t c = card.c;
-  auto common = [&](const char *name) { return kernel(c, "common", name); };
-  auto q4 = [&](const char *name) { return kernel(c, layer_module_, name); };
+  auto common = [&](const char *name) { return kernel(c, rows_module("common", W), name); };
+  auto q4 = [&](const char *name) { return kernel(c, rows_module(layer_module_, W), name); };
   const float one = 1.0f, quarter = 1.0f / (float)shape_.hc;  // the hyper-connections' 1 / hc (4 streams: a quarter)
   const uint32_t zero = 0, mode_silu = 1, gs = shape_.embd;
   uint16_t *no_bf16 = nullptr;
@@ -1479,7 +1487,7 @@ void Model::record_head(ze::List &L, Card &card, const StepPlan *plan, uint32_t 
   L.launch(q4("hc_mix"), {card.n, card.a, plan, card.x}, shape_.embd / 64, W, 1, 64);
   uint32_t units = shape_.embd / 32 * W;
   L.launch(common("quantize_a8"), {card.x, gs, gs, W, card.xa8}, (units + 3) / 4, 1, 1, 64);
-  matvec(L, card, card.head, card.xa8, card.logits, W);
+  matvec(L, card, card.head, card.xa8, card.logits, W, &plan->nrows);
   uint32_t *ti = top_idx_ + (size_t)c * STEP_MAX_ROWS * opt_.candidates;
   float *tv = top_val_ + (size_t)c * STEP_MAX_ROWS * opt_.candidates;
   L.launch(common("topk_rows"), {card.logits, card.vocab_n, card.vocab_n, opt_.candidates, card.vocab0, &plan->nrows, ti, tv,
@@ -1517,8 +1525,28 @@ std::vector<Candidate> Model::step(uint32_t slot, uint32_t pos, int32_t token, i
   return std::move(step(&r, 1)[0]);
 }
 
+bool Model::step_fits(const StepIn *rows, uint32_t n) const {
+  return step_fits_ring(rows, n, kv_res_ != 0, kvs_row_claims(shape_), ring_level_);
+}
+
+bool step_fits_ring(const StepIn *rows, uint32_t n, bool streamed, uint32_t row_claims, uint32_t ring) {
+  if (n == 0 || n > STEP_MAX_ROWS) return false;
+  if (!streamed || n <= STEP_MAX_RUN) return true;
+  uint64_t claims = 0;
+  for (uint32_t r = 0; r < n; r++) {
+    bool first = true;
+    for (uint32_t q = 0; q < r && first; q++) first = rows[q].slot != rows[r].slot;
+    if (!first) continue;
+    uint32_t k = 0, last = 0;
+    for (uint32_t q = r; q < n; q++)
+      if (rows[q].slot == rows[r].slot) k++, last = std::max(last, rows[q].pos);
+    claims += std::min<uint64_t>((uint64_t)k * row_claims, last / KV_PAGE_CELLS + 1 + kKvsAhead);
+  }
+  return claims < ring;
+}
+
 std::vector<std::vector<Candidate>> Model::step(const StepIn *rows, uint32_t n, bool window, bool prompt) {
-  if (n == 0 || n > STEP_MAX_ROWS) throw std::runtime_error("a step takes 1 to 8 rows");
+  if (n == 0 || n > STEP_MAX_ROWS) throw std::runtime_error("a step takes 1 to STEP_MAX_ROWS rows");
   if (window)
     for (uint32_t r = 1; r < n; r++) {
       bool same = rows[r].slot == rows[r - 1].slot;
@@ -1531,6 +1559,7 @@ std::vector<std::vector<Candidate>> Model::step(const StepIn *rows, uint32_t n, 
     if (rows[r].slot >= opt_.slots) throw std::runtime_error("slot out of range");
     if (rows[r].pos >= opt_.max_ctx) throw std::runtime_error("position past the context");
   }
+  if (!step_fits(rows, n)) throw std::logic_error("the ring cannot hold the step's claims");
   wait_commit();
   const uint32_t W = step_width(n);
   // Streamed: the claim runs unless every row's pages are claimed already (kvs_to_), which only the rows that read

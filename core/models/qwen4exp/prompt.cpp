@@ -659,11 +659,11 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
       if (l != dfc_.targets[k]) continue;
       const uint32_t f0 = split || c == 0 ? r0 : 0, f1 = split || c == 0 ? r1 : 0;
       L.launch(kernel(c, "qwen4exp_dflash", "p_df_feat"), {P.R, runs_p, k, f0, f1, pfeat_}, shape_.embd / 64,
-               STEP_MAX_ROWS, runs, 64);
+               STEP_MAX_RUN, runs, 64);
     }
   }
   if (split) {  // each run's rows the head and the draft layer read, on both cards
-    L.launch(q4("p_hc_share"), {P.R, runs_p, r0, r1, peer->R}, shape_.hc_dim() / 64, STEP_MAX_ROWS, runs, 64, 1, 1,
+    L.launch(q4("p_hc_share"), {P.R, runs_p, r0, r1, peer->R}, shape_.hc_dim() / 64, STEP_MAX_RUN, runs, 64, 1, 1,
              (*pevents_)[pev(kLast, 0, c)]);
     L.wait({(*pevents_)[pev(kLast, 0, 1 - c)]});
   }

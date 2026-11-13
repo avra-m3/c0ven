@@ -121,7 +121,7 @@ DfConfig read_df_config(const std::string &dir) {
       {"hidden_size", DF_EMBD},       {"num_hidden_layers", DF_LAYERS},  {"num_attention_heads", DF_H},
       {"num_key_value_heads", DF_KV}, {"head_dim", DF_D},                {"intermediate_size", DF_FF},
       {"conv_group_size", DF_GROUP},  {"sliding_window", DF_WINDOW},     {"rope_theta", DF_ROPE_BASE},
-      {"block_size", STEP_MAX_ROWS},  {"conv_kernel_size", DF_KP / 2 / (DF_EMBD / DF_GROUP)},
+      {"block_size", STEP_MAX_RUN},   {"conv_kernel_size", DF_KP / 2 / (DF_EMBD / DF_GROUP)},
   };
   for (const auto &s : sizes)
     if (one(s.key) != s.built)
@@ -168,7 +168,7 @@ bool Model::init_dflash() {
   dtop_n_ = static_cast<uint32_t *>(rt_->alloc_host(ncards_ * STEP_MAX_ROWS * 4));
   // The exchanges' events, then one a card: its context pass is done (each list runs on a queue of its own).
   devents_ = std::make_unique<ze::EventPool>(*rt_, (2 * DF_LAYERS + 1) * ncards_);
-  const size_t pf = (size_t)PROMPT_MAX_RUNS * STEP_MAX_ROWS * DF_FEAT * 2;
+  const size_t pf = (size_t)PROMPT_MAX_RUNS * STEP_MAX_RUN * DF_FEAT * 2;
   pfeat_ = static_cast<uint16_t *>(rt_->alloc_host(pf));
   std::memset(pfeat_, 0, pf);
   dffirst_.assign(opt_.slots, 0);
@@ -228,7 +228,7 @@ void Model::load_dflash(Card &card) {
   }
   constexpr size_t W = STEP_MAX_ROWS;
   auto fbuf = [&](size_t n) { return upload<float>(card, nullptr, W * n * 4); };
-  // The bf16 rows mv_xmx_bf16 reads are zeroed once: it reads all 8, also past a pass's rows.
+  // The bf16 rows mv_xmx_bf16 reads are zeroed once: it reads whole tiles of 8, also past a pass's rows.
   auto bbuf = [&](size_t n) {
     std::vector<uint16_t> z(W * n, 0);
     return upload<uint16_t>(card, z.data(), z.size() * 2);
@@ -246,7 +246,7 @@ void Model::load_dflash(Card &card) {
   D.k = fbuf(kd);
   D.v = fbuf(kd);
   // df_attn's splits: [row][query head][DF_SPLITS][DF_D + 2] (kernels/models/qwen4exp/dflash.cl).
-  constexpr size_t splits = (DF_WINDOW + STEP_MAX_ROWS + 63) / 64;
+  constexpr size_t splits = (DF_WINDOW + STEP_MAX_RUN + 63) / 64;
   D.part = fbuf(qd / DF_D * splits * (DF_D + 2));
   D.o = fbuf(qd);
   D.ob = bbuf(qd);
@@ -265,16 +265,18 @@ void Model::record_df(Card &card, uint32_t W, bool block) {
   ze::List &L = *list;
   const uint32_t c = card.c, C = ncards_, E = DF_EMBD;
   auto df = [&](const char *name) { return kernel(c, "qwen4exp_dflash", name); };
+  auto common = [&](const char *name) { return kernel(c, rows_module("common", W), name); };
   const uint32_t zero = 0, nq = D.nq, nkv = D.nkv, qd = nq * DF_D, kd = nkv * DF_D;
   const float one = 1.0f;
   DraftPlan *pl = block ? D.bplan : D.cplan;
   const uint32_t *nrows = &pl->nrows;
   uint16_t *no_yb = nullptr;
-  // The BF16 products on the XMX units with bf16 activations (xb: 8 rows of K), K split in 4, as the draft layer's.
+  // The BF16 products on the XMX units with bf16 activations (xb: STEP_MAX_ROWS rows of K), K split in 4, as the draft
+  // layer's.
   auto bf16mv = [&](const uint16_t *Wt, uint32_t rows, uint32_t K, const uint16_t *xb, float *y,
                     ze_event_handle_t signal = nullptr) {
     if (opt_.trace) L.label("mv_xmx_bf16 " + std::to_string(rows) + "x" + std::to_string(K));
-    L.launch(kernel(c, "common", "mv_xmx_bf16"), {Wt, rows, K, K, xb, nrows, y, rows, zero, one, rows, 4u, no_yb},
+    L.launch(common("mv_xmx_bf16"), {Wt, rows, K, K, xb, nrows, y, rows, zero, one, rows, 4u, no_yb},
              (rows + 15) / 16, 1, 1, 16 * 4, 1, 1, signal);
   };
   L.copy(pl, block ? dfbplan_ : dfcplan_, sizeof(DraftPlan));
@@ -311,7 +313,7 @@ void Model::record_df(Card &card, uint32_t W, bool block) {
     L.launch(df("df_finish"), {partial(x, 0), C, D.dyn, base, pl, D.h}, E / 64, W, 1, 64);
     x++;
   };
-  constexpr uint32_t splits = (DF_WINDOW + STEP_MAX_ROWS + 63) / 64;
+  constexpr uint32_t splits = (DF_WINDOW + STEP_MAX_RUN + 63) / 64;
   for (uint32_t l = 0; l < DF_LAYERS; l++) {
     DfCard::Layer &Ly = D.layers[l];
     // Attention: the norm, the convolution before it, q k v, the queries and keys normed and turned, the block's
@@ -341,12 +343,12 @@ void Model::record_df(Card &card, uint32_t W, bool block) {
   uint16_t *no_b = nullptr;
   L.launch(df("df_norm"), {D.h, D.norm, pl, D.hn, no_b}, W, 1, 1, 256);
   const uint32_t units = E / 32 * W, gs = E;
-  L.launch(kernel(c, "common", "quantize_a8"), {D.hn, gs, gs, W, card.xa8}, (units + 3) / 4, 1, 1, 64);
-  matvec(L, card, card.head, card.xa8, card.logits, W);
+  L.launch(common("quantize_a8"), {D.hn, gs, gs, W, card.xa8}, (units + 3) / 4, 1, 1, 64);
+  matvec(L, card, card.head, card.xa8, card.logits, W, nrows);
   uint32_t *ti = dtop_idx_ + (size_t)c * STEP_MAX_ROWS * opt_.candidates;
   float *tv = dtop_val_ + (size_t)c * STEP_MAX_ROWS * opt_.candidates;
-  L.launch(kernel(c, "common", "topk_rows"), {card.logits, card.vocab_n, card.vocab_n, opt_.candidates, card.vocab0,
-                                              nrows, ti, tv, dtop_n_ + (size_t)c * STEP_MAX_ROWS},
+  L.launch(common("topk_rows"), {card.logits, card.vocab_n, card.vocab_n, opt_.candidates, card.vocab0, nrows, ti, tv,
+                                 dtop_n_ + (size_t)c * STEP_MAX_ROWS},
            W, 1, 1, 1024);
   L.close();
   D.block_lists[W] = std::move(list);
@@ -355,15 +357,16 @@ void Model::record_df(Card &card, uint32_t W, bool block) {
 std::vector<std::vector<std::vector<Candidate>>> Model::df_pass(const StepIn *ctx, uint32_t nctx,
                                                                 const DraftBlock *blocks, uint32_t nblocks) {
   if (!df_on_) throw std::runtime_error("DFlash 2 is not loaded");
-  if (nctx > STEP_MAX_ROWS) throw std::runtime_error("a context pass takes at most 8 rows");
+  if (nctx > STEP_MAX_ROWS) throw std::runtime_error("a context pass takes at most STEP_MAX_ROWS rows");
   uint32_t nb = 0;
   for (uint32_t b = 0; b < nblocks; b++) {
     if (blocks[b].n == 0 || blocks[b].slot >= opt_.slots) throw std::runtime_error("a block is empty or past the slots");
+    if (blocks[b].n > STEP_MAX_RUN) throw std::runtime_error("a block takes at most STEP_MAX_RUN rows");
     for (uint32_t q = 0; q < b; q++)
       if (blocks[q].slot == blocks[b].slot) throw std::runtime_error("a pass takes one block a sequence");
     nb += blocks[b].n;
   }
-  if (nb > STEP_MAX_ROWS) throw std::runtime_error("a pass's blocks take at most 8 rows");
+  if (nb > STEP_MAX_ROWS) throw std::runtime_error("a pass's blocks take at most STEP_MAX_ROWS rows");
   auto width = [](uint32_t n) {
     uint32_t W = 1;
     while (W < n) W *= 2;
@@ -431,18 +434,18 @@ std::vector<std::vector<std::vector<Candidate>>> Model::df_pass(const StepIn *ct
 
 void Model::df_context_prompt(const StepIn *rows, uint32_t n, uint32_t end) {
   if (!df_on_) throw std::runtime_error("DFlash 2 is not loaded");
-  if (n == 0 || n > STEP_MAX_ROWS) throw std::runtime_error("a prompt context takes 1 to 8 rows");
+  if (n == 0 || n > STEP_MAX_RUN) throw std::runtime_error("a prompt context takes 1 to STEP_MAX_RUN rows");
   // The run that ends at row end: p_df_feat kept its last rows' features.
   for (uint32_t r = 0; r < PROMPT_MAX_RUNS; r++) {
     const PromptPlan &pp = pplan_[1 + r];
     if (pp.n == 0 || pp.row0 + pp.n != end) continue;
     // Only the run's rows in its last chunk have features: a shorter run gives fewer context rows.
-    const uint32_t m = std::min<uint32_t>(pp.n, STEP_MAX_ROWS);
+    const uint32_t m = std::min<uint32_t>(pp.n, STEP_MAX_RUN);
     if (n > m) {
       rows += n - m;
       n = m;
     }
-    const uint16_t *src = pfeat_ + ((size_t)r * STEP_MAX_ROWS + m - n) * DF_FEAT;
+    const uint16_t *src = pfeat_ + ((size_t)r * STEP_MAX_RUN + m - n) * DF_FEAT;
     for (auto &card : cards_) card->up->copy(card->df->feat, src, (size_t)n * DF_FEAT * 2);
     for (auto &card : cards_) card->up->synchronize();
     df_pass(rows, n, nullptr, 0);

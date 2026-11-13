@@ -31,20 +31,28 @@ inline constexpr uint32_t kCpuRows = 3;
 // p_idx_score_xmx's work-group (prompt_attn.cl): IDX_XMX_ROWS rows by kIdxXmxSg sub-groups of 16 IDX_XMX_TB blocks.
 inline constexpr uint32_t kIdxXmxRows = 16, kIdxXmxSg = 4, kIdxXmxBlocks = 16 * 2 * kIdxXmxSg;
 // The streamed pool (kvs_claim): the logical pages a claim takes past each row's, so the steps that open them need
-// no claim; the pages a step's rows can claim at most, its miss list; and what a width's list without the claim adds
-// to its key (Model::record).
+// no claim; the pages a row's claim takes at most; the pages a step's rows can claim at most, its miss list; and what
+// a width's list without the claim adds to its key (Model::record).
 inline constexpr uint32_t kKvsAhead = 32;
-inline uint32_t kvs_max_miss(const Shape &s) { return STEP_MAX_ROWS * (s.idx_blocks() + 2 + kKvsAhead); }
+inline uint32_t kvs_row_claims(const Shape &s) { return s.idx_blocks() + 2 + kKvsAhead; }
+inline uint32_t kvs_max_miss(const Shape &s) { return STEP_MAX_ROWS * kvs_row_claims(s); }
 inline constexpr uint32_t kKvsSkipList = 16;
 inline constexpr uint32_t kMvKsRows = 512;  // dense products of up to this many rows split K (matvec_ks)
 // The decode step's widths, each with its own lists: a step runs the smallest of at least its rows, and its products
 // and expert kernels compute that many.
-inline constexpr uint32_t kStepWidths[] = {1, 2, 3, 4, 6, 8};
+inline constexpr uint32_t kStepWidths[] = {1, 2, 3, 4, 6, 8, 12, 16};
 inline uint32_t step_width(uint32_t n) {
   for (uint32_t W : kStepWidths)
     if (W >= n) return W;
   return STEP_MAX_ROWS;
 }
+// The module a list of W decode rows takes its step kernels from: base's build for the steps of up to
+// STEP_NARROW_ROWS rows (base_r8) up to that many, base past it; and its grouping work-group (moe_group,
+// router_group).
+inline std::string rows_module(const std::string &base, uint32_t W) {
+  return W <= STEP_NARROW_ROWS ? base + "_r8" : base;
+}
+inline uint32_t group_wg(uint32_t W) { return MOE_GROUP_WG(W <= STEP_NARROW_ROWS ? STEP_NARROW_ROWS : STEP_MAX_ROWS); }
 // A prompt token's weight in the swap counts against a written token's 1: there are many, and decode is what the
 // cache serves.
 inline constexpr float kPromptRouting = 0.05f;
@@ -73,14 +81,20 @@ inline uint16_t bf16_bits(float f) {
 // Lanes per row for matvec_bf16 (common.cl): 8 values per lane per read, so short rows share a sub-group.
 inline uint32_t bf16_lanes(uint32_t K) { return K >= 1024 ? 16 : K >= 256 ? 4 : 2; }
 
-inline std::string mv_module(uint32_t type, uint32_t lanes) {
+// kernels/quant/matvec.cl's module for a weight type and lanes per row, for up to ntok tokens a weight read: 8, or 16
+// (the _t16 modules) past 8.
+inline std::string mv_module(uint32_t type, uint32_t lanes, uint32_t ntok = 1) {
   std::string s = std::string("matvec_") + ggml_type_label(type) + "_l" + std::to_string(lanes);
+  if (ntok > 8) s += "_t16";
   for (auto &c : s) c = (char)std::tolower(c);
   return s;
 }
 
-// kernels/quant/moe.cl's module for an expert type and groups of up to W assignments (W: kStepWidths), or "" when it
-// has no kernel for the type (matvec.cl's then).
+// The most assignments a group of a step of W rows holds (layer.cl's group_slots): W, at most MOE_GROUP_MAX.
+inline uint32_t moe_group_rows(uint32_t W) { return W < MOE_GROUP_MAX ? W : MOE_GROUP_MAX; }
+
+// kernels/quant/moe.cl's module for an expert type and groups of up to W assignments (W: kStepWidths up to
+// MOE_GROUP_MAX, moe_group_rows), or "" when it has no kernel for the type (matvec.cl's then).
 inline std::string moe_module(uint32_t type, uint32_t W, bool down) {
   bool has = down ? type == QT_IQ4_NL || type == QT_Q2_0 || type == QT_Q8_0 || type == QT_Q2_K || type == QT_Q5_1
                   : type == QT_IQ2_S || type == QT_IQ3_XXS || type == QT_IQ3_S || type == QT_IQ4_XS ||
@@ -192,7 +206,7 @@ struct Model::DfCard {
   Layer layers[DF_LAYERS];
   // The decode step's features of its rows, bf16 [STEP_MAX_ROWS][DF_FEAT] (Model::record writes them).
   uint16_t *feat = nullptr;
-  // Buffers, STEP_MAX_ROWS rows; the bf16 ones are read whole by mv_xmx_bf16.
+  // Buffers, STEP_MAX_ROWS rows; the bf16 ones are read by mv_xmx_bf16 in whole tiles of 8 rows.
   float *ctx = nullptr, *h = nullptr, *x = nullptr, *xc = nullptr, *dyn = nullptr, *q = nullptr, *k = nullptr,
         *v = nullptr, *part = nullptr, *o = nullptr, *g = nullptr, *u = nullptr, *hn = nullptr;
   uint16_t *ctxb = nullptr, *xb = nullptr, *xcb = nullptr, *ob = nullptr, *gub = nullptr;
@@ -217,9 +231,9 @@ struct Model::Card {
   uint8_t *grids = nullptr;
   // Scratch.
   float *R, *n, *lr, *a, *inj[2], *x, *m, *z, *ab, *gb, *u, *o, *Q, *Kt, *Vt, *idxq, *scores, *bscores, *att;
-  uint16_t *xb16 = nullptr;  // up to 8 rows of Shape::hc_dim() bf16 activations, for mv_xmx_bf16
-  uint16_t *lrb16 = nullptr;  // up to 8 rows of Shape::hc_lr bf16, for hc_up_mix_xmx
-  uint16_t *xbf16 = nullptr;  // up to 8 rows of x as bf16 (hc_up_mix_xmx writes them), for the BF16 products
+  uint16_t *xb16 = nullptr;  // STEP_MAX_ROWS rows of Shape::hc_dim() bf16 activations, for mv_xmx_bf16
+  uint16_t *lrb16 = nullptr;  // STEP_MAX_ROWS rows of Shape::hc_lr bf16, for hc_up_mix_xmx
+  uint16_t *xbf16 = nullptr;  // STEP_MAX_ROWS rows of x as bf16 (hc_up_mix_xmx writes them), for the BF16 products
   uint16_t *ngb16 = nullptr;  // up to 8 n-gram rows as bf16, for the PLE module's products
   uint32_t *blocks, *cells, *ncells;
   float *rl, *w, *h, *y, *shg, *shu, *shh, *s, *pk, *pv, *gates, *N, *logits;

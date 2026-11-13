@@ -232,13 +232,13 @@ __kernel void p_hc_combine_norm(__global const half *p0, __global const half *p1
   }
 }
 
-// Rows r0 .. r1 - 1 among the run's last STEP_MAX_ROWS of R into the other card's R (Rp), so that both cards hold
-// the rows the head and the draft layer read. Groups (Q_HC_DIM / 64, STEP_MAX_ROWS), 64.
+// Rows r0 .. r1 - 1 among the run's last STEP_MAX_RUN of R into the other card's R (Rp), so that both cards hold
+// the rows the head and the draft layer read. Groups (Q_HC_DIM / 64, STEP_MAX_RUN), 64.
 __kernel void p_hc_share(__global const float *R, __global const PromptPlan *runs, uint r0, uint r1,
                          __global float *Rp) {
   RUN_OF_GROUP()
   const uint n = pp->n, end = pp->row0 + n, i = get_global_id(0);
-  const uint t = end - min(n, (uint)STEP_MAX_ROWS) + get_group_id(1);
+  const uint t = end - min(n, (uint)STEP_MAX_RUN) + get_group_id(1);
   if (t < r0 || t >= min(r1, end)) return;
   Rp[(ulong)t * Q_HC_DIM + i] = R[(ulong)t * Q_HC_DIM + i];
 }

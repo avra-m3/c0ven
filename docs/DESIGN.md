@@ -547,7 +547,7 @@ Read at vLLM [`656d0d4`][v], SGLang [`e0c957e`][sg] and llama.cpp [`9d7d504`][l]
 ## 9. One decode step, and the CPU side
 
 A decode step runs one row for each writing slot, or a window of one slot's rows. Each card runs a command list
-recorded at load for the step's width: the smallest of 1, 2, 3, 4, 6 and 8 rows that holds the step's rows. The
+recorded at load for the step's width: the smallest of 1, 2, 3, 4, 6, 8, 12 and 16 rows that holds the step's rows. The
 list's first command copies the step plan from host memory to the card, and the kernels read that copy: a word read
 from host memory at each launch's start makes every launch slower
 ([the record](measurements/MEASUREMENTS.md#2026-10-16-bf16-products-occupancy)).
@@ -615,9 +615,13 @@ the next step starts ([ADR-0027](adr/0027-the-c-abi-as-the-core-was-optimised.md
 
 When the decoding slots all write, a step is a draft round
 ([ADR-0029](adr/0029-the-engine-process-drafts-and-swaps.md)). For each slot, the token sampled last and its drafts run
-as one window, and the windows of all slots run in one step. The slots share the step's 8 rows: a lone slot takes up to
-7 drafts with DFlash 2 and 3 with the MTP layer, and each of several as many as give the most tokens a millisecond, from the slots' acceptance and the times of
-windows of each width (2 until a window is timed), fewer as there are more of them. Each slot's window is accepted and committed on
+as one window, and the windows of all slots run in one step. The slots share the step's 16 rows, and one slot's window holds at most 8
+([ADR-0078](adr/0078-a-decode-step-holds-16-rows.md)): a lone slot takes up to
+7 drafts with DFlash 2 and 3 with the MTP layer. Several slots make the same number each: the one that gives the
+most tokens a millisecond in a step of 8 rows, or in one of 16 when that gives more in total and the slowest slot no fewer, from
+each slot's acceptance and share of drafts made at each place of its drafts and the measured times of rounds of several slots
+([ADR-0079](adr/0079-several-slots-take-more-rows-only-when-the-slowest-writes-no-slower.md), `core/api/lookup.h`). Each
+slot's window is accepted and committed on
 its own. A step of several slots runs no drafts when it gives one of them its second token, which already waits for
 the prompt steps after its first. Writing slots draft while another slot reads its prompt: the scheduler owes them a
 share of the prompt steps' time, so a round gives them more tokens in the same time

@@ -43,6 +43,12 @@ using engine::StepIn;
 using engine::StepStats;
 using engine::TraceRow;
 
+// Whether a step of n rows fits the KV pool (Model::step_fits): 1 to STEP_MAX_RUN rows always, as the ring's fixed
+// part holds their claims, and up to STEP_MAX_ROWS with every page resident (streamed false). Streamed, a wider step
+// fits where its claims come to less than the ring of ring pages a layer (layer.cl's kvs_claim): each slot's rows
+// claim row_claims pages each at most (kvs_row_claims), and none past its last row's page and the kKvsAhead after it.
+bool step_fits_ring(const StepIn *rows, uint32_t n, bool streamed, uint32_t row_claims, uint32_t ring);
+
 // The image and video tokens, the file's `<|image_pad|>` and `<|video_pad|>` (kNoToken for one it lacks), and the
 // patches the encoder is built for: 16 pixels a side, 768 bytes, merged 2 x 2 (docs/spec/MODEL_VISION.md, sections 2,
 // 4.1 and 6; vision_sizes.h). meta: the model file's metadata.
@@ -66,7 +72,7 @@ std::vector<uint16_t> read_df_tensor(const std::string &dir, const std::string &
 // whole number of rows of embd values, or the count has no kernels.
 uint32_t mtp_expert_count(const std::string &dir, uint32_t embd);
 // The drafts a round makes by default: the draft layer's; DFlash 2 drafts a whole window in one pass.
-constexpr uint32_t kDraftMaxLayer = 3, kDraftMaxCap = STEP_MAX_ROWS - 1;
+constexpr uint32_t kDraftMaxLayer = 3, kDraftMaxCap = STEP_MAX_RUN - 1;
 
 class Model final : public engine::Model {
  public:
@@ -97,6 +103,8 @@ class Model final : public engine::Model {
   // With window, the recurrent state is what waits for commit; the KV is written in place.
   std::vector<std::vector<Candidate>> step(const StepIn *rows, uint32_t n, bool window = false,
                                            bool prompt = false) override;
+  // step_fits_ring at the ring's size now.
+  bool step_fits(const StepIn *rows, uint32_t n) const override;
   // Draft-layer passes run beside a commit's work on the cards.
   void commit(uint32_t slot, uint32_t pos0, uint32_t n) override;
   void commit_runs(const CommitRun *runs, uint32_t n) override;
@@ -263,7 +271,7 @@ class Model final : public engine::Model {
           const std::vector<std::pair<uint64_t, uint64_t>> &cols = {});
   template <class T>
   T *upload(Card &card, const void *src, size_t bytes);
-  void matvec(ze::List &list, Card &card, const Mat &m, const uint8_t *act, float *y, uint32_t ntok,
+  void matvec(ze::List &list, Card &card, const Mat &m, const uint8_t *act, float *y, uint32_t W, const uint32_t *ntok,
               ze_event_handle_t signal = nullptr);
   ze_kernel_handle_t kernel(uint32_t card, const std::string &module, const std::string &name);
   uint32_t ev(uint32_t layer, uint32_t which) const;
@@ -402,7 +410,7 @@ class Model final : public engine::Model {
   uint32_t *dtop_idx_ = nullptr, *dtop_n_ = nullptr;
   float *dtop_val_ = nullptr;
   std::unique_ptr<ze::EventPool> devents_;
-  uint16_t *pfeat_ = nullptr;      // [run][STEP_MAX_ROWS][DF_FEAT]: each prompt run's last rows' features
+  uint16_t *pfeat_ = nullptr;      // [run][STEP_MAX_RUN][DF_FEAT]: each prompt run's last rows' features
   std::vector<uint32_t> dffirst_;  // [slot] the first position its ring holds
   float *embed_ = nullptr;   // the token's embedding row
   float *ngram_u_ = nullptr; // its n-gram rows

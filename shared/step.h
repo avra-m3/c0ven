@@ -6,7 +6,24 @@
 
 #include "types.h"
 
-#define STEP_MAX_ROWS 8
+// The rows of a decode step, of all its sequences together.
+#define STEP_MAX_ROWS 16
+// The rows of one sequence in a step: its token and up to 7 drafts. DFlash 2's block, and a writer's run in a prompt
+// chunk (PROMPT_SHORT_RUN), hold this many.
+#define STEP_MAX_RUN 8
+#if STEP_MAX_RUN > STEP_MAX_ROWS
+#error "a sequence's rows are some of a step's"
+#endif
+// The rows a module's step kernels take at most (STEP_ROWS): STEP_MAX_ROWS, or STEP_NARROW_ROWS in the modules built
+// for the steps of that many rows or fewer (names ending in _r8, built with -DSTEP_ROWS=8), so that those steps run
+// with the registers and tiles of a step of 8 rows.
+#define STEP_NARROW_ROWS 8
+#ifndef STEP_ROWS
+#define STEP_ROWS STEP_MAX_ROWS
+#endif
+#if STEP_ROWS % 8 != 0 || STEP_ROWS > STEP_MAX_ROWS
+#error "the step kernels take tiles of 8 rows, up to a step's"
+#endif
 
 // One row: one token of one sequence.
 typedef struct {
@@ -75,6 +92,9 @@ SHARED_ASSERT(sizeof(CommitPlan) == 16 + 16 * STEP_MAX_ROWS, "CommitPlan layout"
 // A run of at most this many rows (a decode row and its drafts) attends from the 8-bit cache, as the decode step
 // does, over the cells the indexer chose; longer runs convert their sequence to fp16 and attend on the XMX units.
 #define PROMPT_SHORT_RUN 8
+#if STEP_MAX_RUN > PROMPT_SHORT_RUN
+#error "a writer's run in a prompt chunk attends as the decode step does"
+#endif
 
 typedef struct {
   u32 n;
