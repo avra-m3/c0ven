@@ -238,7 +238,10 @@ The rules ([ADR-0033](adr/0033-paged-kv-kept-by-python.md)):
   ahead, 256 cells at a time, so that few plans carry page changes.
 - An admitted request reserves pages for its prompt and the 320 cells after it (64 + 256). A writing slot reserves
   each later block when it maps it ([ADR-0068](adr/0068-kv-pages-are-reserved-as-a-sequence-grows.md)). When
-  the pool cannot give a block, the checkpoints that hold the last reference to a page are evicted. If that is not
+  the pool cannot give an admission its pages or a slot a block, the checkpoints that hold the last reference to a
+  page are evicted, least recently used first. A checkpoint whose pages a slot or a longer checkpoint also holds
+  frees nothing and stays, so a conversation that waits loses its end first and a conversation in a slot loses
+  nothing ([ADR-0076](adr/0076-an-admission-evicts-only-checkpoints-that-free-pages.md)). If that is not
   enough and a slot stalls, the newest slot of the lowest priority is stopped. Its request waits again with the
   tokens it wrote added to its prompt, and the front end gets no token twice. While a slot waits for a page, no
   request is admitted.
@@ -365,8 +368,10 @@ before load that the options fit the host, and gives the core its page count. Th
 `engine/host.py`: the plan's pinned total and a working-set estimate must fit under the smaller of `MemAvailable`, the
 cgroup's `memory.max` and `--ram-max`, or the engine refuses to load and prints options that fit
 ([ADR-0057](adr/0057-the-engine-reads-the-host-it-runs-on.md)). Each load prints a fit report, the values read beside
-the plan's figures and the core's, and sends it in INFO as `fit_*` facts. The core fits as many experts per
-layer on each card as its physical memory allows, after setting aside `reserve_bytes` (1 GiB) for the driver's own use
+the plan's figures and the core's, and sends it in INFO as `fit_*` facts. A card's PCIe link there is the slowest
+between the card and the CPU, read from sysfs, so a card with a PCIe switch on board shows its slot's link.
+The core fits as many experts per layer on each card as its physical memory allows, after setting aside `reserve_bytes`
+(1 GiB) for the driver's own use
 and some free ([ADR-0027](adr/0027-the-c-abi-as-the-core-was-optimised.md), item 3). It reports the memory it had left for them
 (`engine_info.expert_budget`). The plan's working memory per card, everything outside the weights, the draft layer,
 the sequences' reserve and the experts, is an estimate from the slots, the context, the KV pool and the drafter until a load shows the core's: with `ENGINE_CACHE_DIR` set, the core's

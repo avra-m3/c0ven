@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import random
+
 import pytest
 
 from engine.api.interface import PageOp
@@ -312,3 +314,98 @@ def test_page_holders_split_the_pages_in_use():
     assert s.page_holders() == (6, 6, 0), "the checkpoint's pages are a's too"
     s.release(a.slot)
     assert s.page_holders() == (6, 2, 4)
+
+
+def _turn(s: SeqState, prompt: tuple[int, ...], at: int) -> int:
+    """Admit `prompt`, read it and checkpoint it after `at` tokens. Returns the slot, still admitted."""
+    a = s.plan_admission(prompt, 0)
+    assert a is not None
+    seq = s.admit(a, prompt, 0)
+    assert s.grow(seq.slot, len(prompt))
+    s.take_changes(len(prompt))
+    s.submitted()
+    ck = s.checkpoint(seq.slot, at, kept=False)
+    assert ck is not None
+    ck.ready = True
+    return seq.slot
+
+
+def test_admission_keeps_the_checkpoints_of_a_conversation_in_a_slot():
+    s = SeqState(slots=3, pages=12, checkpoints=4)
+    writing = tuple(range(16))
+    slot = _turn(s, writing, 12)  # the least recently used checkpoint; the slot holds its pages
+    waiting = tuple(range(100, 116))
+    s.release(_turn(s, waiting, 12))
+    assert s.pool.available == 5
+    a = s.plan_admission(tuple(range(200, 224)), 0)
+    assert a is not None
+    assert [len(c.tokens) for c in s.checkpoints] == [12]
+    assert s.checkpoints.longest_prefix(writing) is not None, "evicting it would have freed no page"
+    s.admit(a, tuple(range(200, 224)), 0)
+    s.release(slot)
+    again = s.plan_admission((*writing, 16, 17), 0)
+    assert again is not None
+    assert again.checkpoint is not None
+
+
+def test_admission_takes_a_waiting_conversation_from_its_end():
+    s = SeqState(slots=2, pages=12, checkpoints=4)
+    history = tuple(range(32))
+    for at in (8, 16, 24):
+        s.release(_turn(s, history[: at + 8], at))
+    assert [len(c.tokens) for c in s.checkpoints] == [8, 16, 24]
+    assert s.pool.available == 6
+    a = s.plan_admission(tuple(range(100, 132)), 0)
+    assert a is not None
+    assert [len(c.tokens) for c in s.checkpoints] == [8, 16], "the older ones hold no page of their own"
+    best = s.checkpoints.longest_prefix(history)
+    assert best is not None
+    assert len(best.tokens) == 16
+
+
+def test_checkpoints_that_end_on_the_same_page_are_evicted_together():
+    s = SeqState(slots=2, pages=4, checkpoints=4)
+    prompt = tuple(range(16))
+    slot = _turn(s, prompt, 13)
+    twin = s.checkpoint(slot, 15, kept=False)  # the same four pages
+    assert twin is not None
+    twin.ready = True
+    s.release(slot)
+    assert s.pool.available == 0
+    assert s.plan_admission(tuple(range(100, 108)), 0) is not None
+    assert len(s.checkpoints) == 0
+
+
+@pytest.mark.parametrize("seed", range(20))
+def test_only_a_checkpoints_last_pages_can_be_its_alone(seed: int):
+    rng = random.Random(seed)
+    k = 2
+    s = SeqState(slots=3, pages=64, checkpoints=6, classes=k)
+    prompts: list[tuple[int, ...]] = []
+    slots: list[int] = []
+    for step in range(200):
+        if slots and (len(slots) == 3 or rng.random() < 0.4):
+            s.release(slots.pop(rng.randrange(len(slots))))
+            continue
+        base = rng.choice(prompts)[: rng.randrange(1, 40)] if prompts and rng.random() < 0.7 else ()
+        prompt = base + tuple(range(1000 * step, 1000 * step + rng.randrange(1, 24)))
+        a = s.plan_admission(prompt, 0)
+        s.drops.clear()
+        if a is None:
+            continue
+        seq = s.admit(a, prompt, 0)
+        if not s.grow(seq.slot, len(prompt)):
+            s.release(seq.slot)
+            continue
+        s.take_changes(1000)
+        s.submitted()
+        slots.append(seq.slot)
+        prompts.append(prompt)
+        for at in sorted(rng.sample(range(1, len(prompt) + 1), min(2, len(prompt)))):
+            if at > seq.start and (ck := s.checkpoint(seq.slot, at, kept=False)) is not None:
+                ck.ready = True
+        for ck in s.checkpoints:
+            for c in range(k):
+                alone = any(s.pool.refs(p) == 1 and p % k == c for p in ck.pages)
+                at_end = any(s.pool.refs(p) == 1 and p % k == c for p in ck.pages[-k:])
+                assert alone == at_end
