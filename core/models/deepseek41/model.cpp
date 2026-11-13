@@ -198,7 +198,7 @@ Model::Model(const std::string &path, const Options &opt, const Debug &debug) : 
   if (opt_.max_cards < 2) throw std::runtime_error("deepseek41 runs on two cards");
   rt_ = std::make_unique<ze::Runtime>(2);
   lib_ = std::make_unique<ze::Library>(*rt_);
-  pool_ = std::make_unique<Pool>(opt_.cpu_threads > 1 ? opt_.cpu_threads - 1 : 0, true);
+  pool_ = std::make_unique<Pool>(opt_.cpu_threads, true);
   npp_ = opt_.max_ctx / KV_PAGE_CELLS;
   kv_pages_ = opt_.kv_pages ? opt_.kv_pages : opt_.slots * npp_;
 

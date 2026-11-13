@@ -47,13 +47,11 @@ std::vector<cpu_set_t> cores_allowed() {
 
 }  // namespace
 
-Pool::Pool(unsigned workers, bool own_cores) {
+Pool::Pool(unsigned workers, bool own_cores) : caller_works_(!own_cores) {
   const std::vector<cpu_set_t> cores = own_cores ? cores_allowed() : std::vector<cpu_set_t>{};
   for (unsigned i = 0; i < workers; i++) {
     threads_.emplace_back([this] { work(); });
-    // Worker i takes core i + 1: the first core is left to the caller and the process's other threads.
-    if (!cores.empty())
-      pthread_setaffinity_np(threads_.back().native_handle(), sizeof(cpu_set_t), &cores[(i + 1) % cores.size()]);
+    if (!cores.empty()) pthread_setaffinity_np(threads_.back().native_handle(), sizeof(cpu_set_t), &cores[i % cores.size()]);
   }
 }
 
@@ -97,7 +95,7 @@ void Pool::run(uint64_t n, const std::function<void(uint64_t)> &f) {
     generation_++;
   }
   cv_.notify_all();
-  drain(*job);
+  if (caller_works_) drain(*job);
   // Spin until every index has finished: the jobs are short and their workers are already running.
   while (job->done.load(std::memory_order_acquire) < n) _mm_pause();
 }
