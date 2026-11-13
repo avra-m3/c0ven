@@ -283,6 +283,39 @@ def test_admission_evicts_checkpoints_for_room():
     assert s.pool.available == 8
 
 
+def test_evictions_are_counted_and_logged_by_cause(caplog: pytest.LogCaptureFixture):
+    caplog.set_level("INFO", logger="engine.seqstate")
+    s = SeqState(slots=2, pages=8, checkpoints=1)
+    seq = admit(s, tuple(range(16)), 0)
+    s.grow(seq.slot, 16)
+    first = s.checkpoint(seq.slot, 8, kept=False)
+    assert first is not None
+    first.ready = True
+    assert s.checkpoint(seq.slot, 16, kept=False) is not None, "the pool of one is full: the first goes"
+    assert (s.evicted_for_room, s.evicted_for_pages) == (1, 0)
+    (ck,) = s.checkpoints
+    ck.ready = True
+    s.release(seq.slot)
+    assert s.plan_admission((50, 51, 52, 53) * 8, 0) is not None
+    assert (s.evicted_for_room, s.evicted_for_pages) == (1, 1)
+    assert [r.getMessage() for r in caplog.records] == [
+        f"checkpoint {first.id} of 8 tokens evicted: the checkpoint pool is full",
+        f"checkpoint {ck.id} of 16 tokens evicted: the KV pool is short of pages",
+    ]
+
+
+def test_page_holders_split_the_pages_in_use():
+    s = SeqState(slots=2, pages=12, checkpoints=2)
+    a = admit(s, tuple(range(16)), 8)
+    s.grow(a.slot, 16)
+    assert s.checkpoint(a.slot, 16, kept=False) is not None
+    b = admit(s, tuple(range(100, 108)), 8)
+    s.grow(b.slot, 8)
+    assert s.page_holders() == (6, 6, 0), "the checkpoint's pages are a's too"
+    s.release(a.slot)
+    assert s.page_holders() == (6, 2, 4)
+
+
 def _turn(s: SeqState, prompt: tuple[int, ...], at: int) -> int:
     """Admit `prompt`, read it and checkpoint it after `at` tokens. Returns the slot, still admitted."""
     a = s.plan_admission(prompt, 0)

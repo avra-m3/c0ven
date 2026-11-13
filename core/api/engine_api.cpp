@@ -57,6 +57,26 @@ std::vector<SlotImage> images_before(const std::vector<SlotImage> &ims, uint32_t
   return v;
 }
 
+// Why a slot's drafting from the draft layer stopped where it did (engine_stats.layer_stop_*).
+enum DraftStop : uint8_t {
+  kStopNone,   // no drafts made since the last round, or stopped at the context's end
+  kStopMax,    // reached draft_max
+  kStopShare,  // reached the fewer drafts the round's share of the window's rows gave it
+  kStopP,      // a draft fell below draft_min_p
+  kStopChoice, // reached the fewer drafts the round's choice (shared_drafts) gave it, below its share of the rows
+};
+
+// engine_stats' counters by a draft's position in its slot's run, 1 to kDepths (a run holds STEP_MAX_RUN rows).
+constexpr uint32_t kDepths = STEP_MAX_RUN - 1;
+constexpr uint64_t engine_stats::*kDraftsAt[kDepths] = {
+    &engine_stats::layer_drafts_1, &engine_stats::layer_drafts_2, &engine_stats::layer_drafts_3,
+    &engine_stats::layer_drafts_4, &engine_stats::layer_drafts_5, &engine_stats::layer_drafts_6,
+    &engine_stats::layer_drafts_7};
+constexpr uint64_t engine_stats::*kAcceptedAt[kDepths] = {
+    &engine_stats::layer_accepted_1, &engine_stats::layer_accepted_2, &engine_stats::layer_accepted_3,
+    &engine_stats::layer_accepted_4, &engine_stats::layer_accepted_5, &engine_stats::layer_accepted_6,
+    &engine_stats::layer_accepted_7};
+
 struct Slot {
   bool used = false;
   engine_settings settings{};
@@ -67,6 +87,7 @@ struct Slot {
   uint32_t generated = 0;
   bool done = false;
   std::vector<int32_t> drafts;  // the draft layer's proposals for the positions after next
+  DraftStop draft_stop = kStopNone;  // why the draft layer's drafts in drafts end where they do
   std::vector<SlotImage> images;
   bool stalled = false;         // STALLED was sent, and no page has been mapped since
   uint32_t windows_end = UINT32_MAX;  // where the last prompt piece read as decode windows ended
@@ -327,9 +348,10 @@ struct engine_ctx {
   // its position's uniform, so the main model accepts it when it samples the same; drafting stops below draft_min_p.
   // The draft after position q reads the draft layer's cell q - 1 (mtp.cpp). Runs on the engine thread.
   std::vector<int32_t> make_drafts(uint32_t s, const engine_settings &st, uint32_t pos, const std::vector<Candidate> &first,
-                                   uint32_t src, std::vector<int32_t> hist) {
+                                   uint32_t src, std::vector<int32_t> hist, DraftStop &stop) {
     std::vector<int32_t> d;
     std::pair<int32_t, double> pick = sample_p(first, st, pos, hist);
+    stop = first.empty() ? kStopNone : kStopP;
     if (first.empty() || pick.second < draft_min_p) return d;
     d.push_back(pick.first);
     while (d.size() < draft_max && pos + d.size() + 1 < info.max_ctx) {
@@ -337,10 +359,18 @@ struct engine_ctx {
       src = 0;
       if (penalised(st)) hist.push_back(d.back());
       pick = sample_p(c, st, pos + (uint32_t)d.size(), hist);
-      if (pick.second < draft_min_p) break;
+      if (pick.second < draft_min_p) return d;
       d.push_back(pick.first);
     }
+    stop = reached(d.size(), draft_max);
     return d;
+  }
+
+  // Why drafting that ended with got drafts, of most at most, stopped: at draft_max, at most for the reason limit
+  // (share_limit), or at the context's end.
+  DraftStop reached(size_t got, uint32_t most, DraftStop limit = kStopShare) const {
+    if (got >= draft_max) return kStopMax;
+    return got >= most ? limit : kStopNone;
   }
 
   // One slot's drafting from a pass's row: its sampler, the first draft's position, the row's candidates, the row,
@@ -353,6 +383,8 @@ struct engine_ctx {
     uint32_t src;
     uint32_t most;
     std::vector<int32_t> hist;
+    DraftStop limit = kStopShare;  // why most is what it is (share_limit)
+    DraftStop stop = kStopNone;    // set by the drafting
   };
 
   // make_drafts for several slots at once, each further draft of every slot still drafting in one pass of the draft
@@ -363,11 +395,14 @@ struct engine_ctx {
     std::vector<uint32_t> src(n), live;
     for (size_t i = 0; i < n; i++) {
       DraftSeed &sd = seeds[i];
+      sd.stop = sd.most == 0 ? sd.limit : kStopNone;
       if (sd.most == 0 || sd.first.empty()) continue;
       std::pair<int32_t, double> pick = sample_p(sd.first, sd.settings, sd.pos, sd.hist);
+      sd.stop = kStopP;
       if (pick.second < draft_min_p) continue;
       d[i].push_back(pick.first);
       src[i] = sd.src;
+      sd.stop = reached(d[i].size(), sd.most, sd.limit);
       if (d[i].size() < sd.most && sd.pos + 2 < info.max_ctx) live.push_back((uint32_t)i);
     }
     while (!live.empty()) {
@@ -385,8 +420,10 @@ struct engine_ctx {
         src[i] = (uint32_t)k;
         if (penalised(sd.settings)) sd.hist.push_back(d[i].back());
         std::pair<int32_t, double> pick = sample_p(c[k], sd.settings, sd.pos + (uint32_t)d[i].size(), sd.hist);
+        sd.stop = kStopP;
         if (pick.second < draft_min_p) continue;
         d[i].push_back(pick.first);
+        sd.stop = reached(d[i].size(), sd.most, sd.limit);
         if (d[i].size() < sd.most && sd.pos + d[i].size() + 1 < info.max_ctx) still.push_back(i);
       }
       live = std::move(still);
@@ -403,6 +440,8 @@ struct engine_ctx {
     int32_t anchor;
     uint32_t most;
     std::vector<int32_t> hist;
+    DraftStop limit = kStopShare;  // why most is what it is (share_limit)
+    DraftStop stop = kStopNone;    // set by the drafting
   };
 
   // DFlash 2 (dflash.cpp): the context pass over ctx, rows of the last step whose features the cards hold, then one
@@ -413,8 +452,9 @@ struct engine_ctx {
     std::vector<engine::Model::DraftBlock> blocks;
     std::vector<size_t> of;
     for (size_t i = 0; i < seeds.size(); i++) {
-      const DfSeed &sd = seeds[i];
+      DfSeed &sd = seeds[i];
       const uint32_t most = std::min<uint32_t>(sd.most, STEP_MAX_RUN - 1);
+      sd.stop = most == 0 ? sd.limit : kStopNone;
       if (most == 0 || sd.pos == 0 || sd.pos >= info.max_ctx) continue;
       blocks.push_back({sd.slot, sd.pos - 1, sd.anchor, 1 + most});
       of.push_back(i);
@@ -423,15 +463,31 @@ struct engine_ctx {
     auto c = model->df_pass(ctx, nctx, blocks.data(), (uint32_t)blocks.size());
     for (size_t b = 0; b < blocks.size(); b++) {
       DfSeed &sd = seeds[of[b]];
+      sd.stop = reached(c[b].size(), blocks[b].n - 1, sd.limit);
       for (uint32_t k = 0; k < c[b].size(); k++) {
-        if (k > 0 && sd.pos + k + 1 >= info.max_ctx) break;
+        if (k > 0 && sd.pos + k + 1 >= info.max_ctx) {
+          sd.stop = kStopNone;
+          break;
+        }
         std::pair<int32_t, double> pick = sample_p(c[b][k], sd.settings, sd.pos + k, sd.hist);
-        if (c[b][k].empty() || pick.second < draft_min_p) break;
+        if (c[b][k].empty() || pick.second < draft_min_p) {
+          sd.stop = c[b][k].empty() ? kStopNone : kStopP;
+          break;
+        }
         d[of[b]].push_back(pick.first);
         if (penalised(sd.settings)) sd.hist.push_back(pick.first);
       }
     }
     return d;
+  }
+
+  // Why a slot of n in a round of several may make share drafts, for engine_stats.layer_stop_*: kStopChoice when
+  // the round's choice (shared_drafts) gave it fewer than draft_max and fewer than its even part of the step's
+  // rows (at most a slot's run), kStopShare otherwise (reached counts draft_max first).
+  DraftStop share_limit(uint32_t n, uint32_t share) const {
+    if (n >= STEP_MAX_ROWS) return kStopShare;
+    const uint32_t rows = std::min<uint32_t>((STEP_MAX_ROWS - n) / n, STEP_MAX_RUN - 1);
+    return share < rows && share < draft_max ? kStopChoice : kStopShare;
   }
 
   // The drafts each row's slot of a step or round of several slots may make for the next: kSharedDrafts each of
@@ -481,7 +537,9 @@ struct engine_ctx {
     stats.round_layers_missed += ss.layers_missed;
     round_ns = ns;
   }
-  void count_run(Slot &sl, bool lookup, uint32_t k, uint32_t a) {
+  // drafted: the slot's drafts before the window took k of them; short: the window's rows, not the context or the
+  // slot's pages, took fewer.
+  void count_run(Slot &sl, bool lookup, uint32_t k, uint32_t a, size_t drafted = 0, bool short_window = false) {
     sl.stats.steps++;
     sl.stats.rounds++;
     sl.stats.drafts += k;
@@ -499,6 +557,13 @@ struct engine_ctx {
       stats.layer_drafts += k;
       stats.layer_accepted += a;
       stats.layer_ns += round_ns;
+      for (uint32_t j = 0; j < k && j < kDepths; j++) stats.*kDraftsAt[j] += 1;
+      for (uint32_t j = 0; j < a && j < kDepths; j++) stats.*kAcceptedAt[j] += 1;
+      const DraftStop why = k < drafted ? (short_window ? kStopShare : kStopNone) : sl.draft_stop;
+      stats.layer_stop_max += why == kStopMax;
+      stats.layer_stop_share += why == kStopShare;
+      stats.layer_stop_p += why == kStopP;
+      stats.layer_stop_choice += why == kStopChoice;
     }
     round_ns = 0;  // a round of several slots counts its time once, to the layer
   }
@@ -601,6 +666,7 @@ struct engine_ctx {
       sl.stats.steps++;
       produce(pi.slot, cand);
       sl.drafts.clear();
+      sl.draft_stop = kStopNone;
       if (!model->drafting()) return;
       row = {pi.slot, pi.pos0, sl.next, kNoToken, kNoToken};
     }
@@ -673,10 +739,12 @@ struct engine_ctx {
       model->df_context_prompt(mr.data(), k, end);
       std::vector<DfSeed> seeds{{pi.slot, sl.settings, fed + 1, sl.next, draft_max, draft_history(sl)}};
       sl.drafts = std::move(df_drafts(nullptr, 0, seeds)[0]), sl.asked = draft_max;  // under mu, as below
+      sl.draft_stop = seeds[0].stop;
       return;
     }
     auto dc = model->mtp_catchup_prompt(mr.data(), k, end, {k - 1});
-    sl.drafts = make_drafts(pi.slot, sl.settings, fed + 1, dc[0], 0, draft_history(sl));  // under mu: admit and release wait for it
+    // Under mu: admit and release wait for it.
+    sl.drafts = make_drafts(pi.slot, sl.settings, fed + 1, dc[0], 0, draft_history(sl), sl.draft_stop);
     sl.asked = draft_max;
   }
 
@@ -772,11 +840,12 @@ struct engine_ctx {
     if (model->dflash()) {
       std::vector<DfSeed> seeds{{s, sl.settings, sl.fed + 1, sl.next, draft_max, draft_history(sl)}};
       sl.drafts = std::move(df_drafts(nullptr, 0, seeds)[0]), sl.asked = draft_max;  // under mu, as below
+      sl.draft_stop = seeds[0].stop;
       return;
     }
     mr.back().token = sl.next;
     auto dc = model->mtp_catchup(mr.data(), (uint32_t)mr.size(), {(uint32_t)mr.size() - 1});
-    sl.drafts = make_drafts(s, sl.settings, sl.fed + 1, dc[0], 0, draft_history(sl));  // under mu, as above
+    sl.drafts = make_drafts(s, sl.settings, sl.fed + 1, dc[0], 0, draft_history(sl), sl.draft_stop);  // under mu
     sl.asked = draft_max;
   }
 
@@ -878,6 +947,7 @@ struct engine_ctx {
         if (sl.fed > sl.prompt.size()) sl.stats.steps++;  // the row was one of its own tokens
         produce(s, out[i]);
         sl.drafts.clear();
+        sl.draft_stop = kStopNone;
         mr.push_back({s, rows[i].pos, sl.next, kNoToken, kNoToken});
       }
       sampled = now_ns();
@@ -893,14 +963,15 @@ struct engine_ctx {
         for (uint32_t i = 0; i < n; i++) {
           const Slot &sl = slots[mr[i].slot];
           if (sl.used && !sl.done && sl.fed >= sl.prompt.size())
-            seeds.push_back({mr[i].slot, sl.settings, sl.fed + 1, sl.next, share[i], draft_history(sl)});
+            seeds.push_back({mr[i].slot, sl.settings, sl.fed + 1, sl.next, share[i], draft_history(sl),
+                             share_limit((uint32_t)share.size(), share[i])});
         }
       }
       auto d = df_drafts(mr.data(), (uint32_t)mr.size(), seeds);
       std::lock_guard<std::mutex> lk(mu);
       for (size_t i = 0; i < seeds.size(); i++) {
         Slot &sl = slots[seeds[i].slot];
-        if (sl.used && !sl.done) sl.drafts = d[i], sl.asked = seeds[i].most;
+        if (sl.used && !sl.done) sl.drafts = d[i], sl.asked = seeds[i].most, sl.draft_stop = seeds[i].stop;
       }
       if (rows.size() > 1) time_several((uint32_t)rows.size(), t0, sampled, misses);
       return;
@@ -923,14 +994,15 @@ struct engine_ctx {
           const uint32_t i = keep[j];
           const Slot &sl = slots[mr[i].slot];
           if (sl.used && !sl.done)
-            seeds.push_back({mr[i].slot, sl.settings, sl.fed + 1, dc[j], j, share[i], draft_history(sl)});
+            seeds.push_back({mr[i].slot, sl.settings, sl.fed + 1, dc[j], j, share[i], draft_history(sl),
+                             share_limit((uint32_t)share.size(), share[i])});
         }
       }
       auto d = make_drafts_many(seeds);
       std::lock_guard<std::mutex> lk(mu);
       for (size_t i = 0; i < seeds.size(); i++) {
         Slot &sl = slots[seeds[i].slot];
-        if (sl.used && !sl.done) sl.drafts = d[i], sl.asked = seeds[i].most;
+        if (sl.used && !sl.done) sl.drafts = d[i], sl.asked = seeds[i].most, sl.draft_stop = seeds[i].stop;
       }
       if (rows.size() > 1) time_several((uint32_t)rows.size(), t0, sampled, misses);
       return;
@@ -942,9 +1014,10 @@ struct engine_ctx {
     const engine_settings st = sl.settings;
     std::vector<int32_t> h = draft_history(sl);
     lk.unlock();
-    auto d = make_drafts(s, st, pos, dc[0], 0, std::move(h));
+    DraftStop stop;
+    auto d = make_drafts(s, st, pos, dc[0], 0, std::move(h), stop);
     lk.lock();
-    if (slots[s].used && !slots[s].done) slots[s].drafts = d, slots[s].asked = draft_max;
+    if (slots[s].used && !slots[s].done) slots[s].drafts = d, slots[s].asked = draft_max, slots[s].draft_stop = stop;
   }
 
   // A draft round for one slot (docs/spec/STRATA_DECODE.md, sections 1-3): row 0 (the token sampled last) and the
@@ -989,7 +1062,7 @@ struct engine_ctx {
       Slot &sl = slots[s];
       if (!sl.used) return;
       count_round(rows.size(), t1 - t0, ss);
-      count_run(sl, sl.lookup_round, k, a);
+      count_run(sl, sl.lookup_round, k, a, drafts.size());
       if (sl.lookup_round)
         sl.odds.lookup_round(a, k);
       else if (k)
@@ -1000,21 +1073,24 @@ struct engine_ctx {
       done = false;
       for (uint32_t j = 0; j <= a && !done; j++) done = emit_token(s, picks[j], p + j + 1);
       sl.drafts.clear();
+      sl.draft_stop = kStopNone;
     }
     if (done) return;
     std::vector<StepIn> mr;
     for (uint32_t j = 0; j <= a; j++) mr.push_back({s, p + j, picks[j], kNoToken, kNoToken});
     if (pen) hist.push_back(picks[a]);
     std::vector<int32_t> d;
+    DraftStop stop;
     if (model->dflash()) {
       std::vector<DfSeed> seeds{{s, settings, p + a + 2, picks[a], draft_max, std::move(hist)}};
       d = std::move(df_drafts(mr.data(), (uint32_t)mr.size(), seeds)[0]);
+      stop = seeds[0].stop;
     } else {
       auto dc = model->mtp_catchup(mr.data(), (uint32_t)mr.size(), {a});
-      d = make_drafts(s, settings, p + a + 2, dc[0], 0, std::move(hist));
+      d = make_drafts(s, settings, p + a + 2, dc[0], 0, std::move(hist), stop);
     }
     std::lock_guard<std::mutex> lk(mu);
-    if (slots[s].used && !slots[s].done) slots[s].drafts = d, slots[s].asked = draft_max;
+    if (slots[s].used && !slots[s].done) slots[s].drafts = d, slots[s].asked = draft_max, slots[s].draft_stop = stop;
   }
 
   // A draft round for several slots in one window (round, slot by slot): each slot's run of rows, its token sampled
@@ -1023,6 +1099,7 @@ struct engine_ctx {
   void rounds(uint32_t plan, const std::vector<StepIn> &row0, const std::vector<std::vector<int32_t>> &drafts) {
     const uint32_t ns = (uint32_t)row0.size();
     std::vector<uint32_t> start(ns), k(ns), asked(ns);  // each slot's run, its drafts, and the drafts asked of it
+    std::vector<bool> short_window(ns);  // the round's rows, not the context or the slot's pages, took fewer
     std::vector<StepIn> rows;
     int arm;  // the trial behind these drafts, of these slots, and its estimates
     double est_tokens, est_ms;
@@ -1049,6 +1126,7 @@ struct engine_ctx {
         for (uint32_t i = 0; i < ns; i++) {
           start[i] = (uint32_t)rows.size();
           asked[i] = k[i] < made[i] ? k[i] : std::min(slots[row0[i].slot].asked, place[i]);
+          short_window[i] = k[i] < made[i];
           rows.push_back(row0[i]);
           for (uint32_t j = 0; j < k[i]; j++) rows.push_back(row_after(rows.back(), drafts[i][j]));
         }
@@ -1106,13 +1184,14 @@ struct engine_ctx {
         const uint32_t s = row0[i].slot, p = row0[i].pos, a = acc[i];
         Slot &sl = slots[s];
         if (!sl.used) continue;
-        count_run(sl, false, k[i], a);
+        count_run(sl, false, k[i], a, drafts[i].size(), short_window[i]);
         if (k[i] || asked[i]) sl.odds.layer_round(a, k[i], asked[i]);
         for (uint32_t j = 0; j <= a; j++) sl.tokens.push_back(rows[start[i] + j].token);
         sl.fed = p + a + 1;
         bool done = false;
         for (uint32_t j = 0; j <= a && !done; j++) done = emit_token(s, picks[i][j], p + j + 1);
         sl.drafts.clear();
+        sl.draft_stop = kStopNone;
         live[i] = !done;
       }
       share = shared_drafts(row0);
@@ -1129,13 +1208,13 @@ struct engine_ctx {
         if (live[i]) {
           if (penalised(settings[i])) hist[i].push_back(picks[i][acc[i]]);
           seeds.push_back({row0[i].slot, settings[i], row0[i].pos + acc[i] + 2, picks[i][acc[i]], share[i],
-                           std::move(hist[i])});
+                           std::move(hist[i]), share_limit((uint32_t)share.size(), share[i])});
         }
       auto d = df_drafts(mr.data(), n, seeds);
       std::lock_guard<std::mutex> lk(mu);
       for (size_t i = 0; i < seeds.size(); i++) {
         Slot &sl = slots[seeds[i].slot];
-        if (sl.used && !sl.done) sl.drafts = d[i], sl.asked = seeds[i].most;
+        if (sl.used && !sl.done) sl.drafts = d[i], sl.asked = seeds[i].most, sl.draft_stop = seeds[i].stop;
       }
       time_several(n, t0, t1, misses, arm, ns);
       return;
@@ -1157,14 +1236,14 @@ struct engine_ctx {
       if (live[i]) {
         if (penalised(settings[i])) hist[i].push_back(picks[i][acc[i]]);
         seeds.push_back({row0[i].slot, settings[i], row0[i].pos + acc[i] + 2, dc[j], j, share[i],
-                         std::move(hist[i])});
+                         std::move(hist[i]), share_limit((uint32_t)share.size(), share[i])});
         j++;
       }
     auto d = make_drafts_many(seeds);
     std::lock_guard<std::mutex> lk(mu);
     for (size_t i = 0; i < seeds.size(); i++) {
       Slot &sl = slots[seeds[i].slot];
-      if (sl.used && !sl.done) sl.drafts = d[i], sl.asked = seeds[i].most;
+      if (sl.used && !sl.done) sl.drafts = d[i], sl.asked = seeds[i].most, sl.draft_stop = seeds[i].stop;
     }
     time_several(n, t0, t1, misses, arm, ns);
   }
@@ -1201,7 +1280,12 @@ struct engine_ctx {
           // What the plan's decode did after its step or round: the sampling and the draft layer's pass. It is part
           // of the plan's time, which the owed time counts (docs/adr/0071-writers-draft-while-a-slot-reads-its-prompt.md).
           std::lock_guard<std::mutex> lk(mu);
-          if (step_end_ns) record({ENGINE_TIMING_DRAFT, seq, 0, 0, step_end_ns, now_ns()});
+          if (step_end_ns) {
+            const uint64_t t = now_ns();
+            record({ENGINE_TIMING_DRAFT, seq, 0, 0, step_end_ns, t});
+            stats.draft_passes++;
+            stats.draft_ns += t - step_end_ns;
+          }
         }
         idle_due = swaps;
         // A swap round after a plan that ended a prompt, and otherwise once the time the CPU's misses have cost since
@@ -1786,7 +1870,14 @@ uint32_t engine_abi_layout(engine_abi_row *table, uint32_t cap) {
       ROW(engine_stats, checkpoints_taken), ROW(engine_stats, restores), ROW(engine_stats, ngram_rows),
       ROW(engine_stats, ngram_hits), ROW(engine_stats, ngram_reads), ROW(engine_stats, experts_cached),
       ROW(engine_stats, experts_floor), ROW(engine_stats, idle_rounds), ROW(engine_stats, reading_steps),
-      ROW(engine_stats, reading_rounds), SIZE(engine_stats),
+      ROW(engine_stats, reading_rounds), ROW(engine_stats, draft_passes), ROW(engine_stats, draft_ns),
+      ROW(engine_stats, layer_drafts_1),
+      ROW(engine_stats, layer_drafts_2), ROW(engine_stats, layer_drafts_3), ROW(engine_stats, layer_drafts_4),
+      ROW(engine_stats, layer_drafts_5), ROW(engine_stats, layer_drafts_6), ROW(engine_stats, layer_drafts_7),
+      ROW(engine_stats, layer_accepted_1), ROW(engine_stats, layer_accepted_2), ROW(engine_stats, layer_accepted_3),
+      ROW(engine_stats, layer_accepted_4), ROW(engine_stats, layer_accepted_5), ROW(engine_stats, layer_accepted_6),
+      ROW(engine_stats, layer_accepted_7), ROW(engine_stats, layer_stop_max), ROW(engine_stats, layer_stop_share),
+      ROW(engine_stats, layer_stop_p), ROW(engine_stats, layer_stop_choice), SIZE(engine_stats),
       ROW(engine_slot_stats, steps), ROW(engine_slot_stats, rounds), ROW(engine_slot_stats, drafts),
       ROW(engine_slot_stats, accepted), ROW(engine_slot_stats, lookup_rounds), ROW(engine_slot_stats, lookup_drafts),
       ROW(engine_slot_stats, lookup_accepted), SIZE(engine_slot_stats),

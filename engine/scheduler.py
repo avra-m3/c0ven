@@ -181,6 +181,8 @@ class Scheduler:
         """A plan with prompt spans is submitted and its STEP_DONE, which says what decode it owes, has not come."""
         self._serial = 0
         self._admissions = 0
+        self.cold_admits = 0
+        """Requests admitted with no checkpoint to restore whose prompt is longer than one chunk (`chunk_rows`)."""
 
     @property
     def idle(self) -> bool:
@@ -188,7 +190,9 @@ class Scheduler:
 
     def report(self) -> dict[str, str]:
         """The STATS line: the engine's counters, field for field, then the scheduler's: the requests waiting for a
-        slot, reading their prompts and writing, and the cost model's parts in milliseconds."""
+        slot, reading their prompts and writing, and the cost model's parts in milliseconds; the checkpoints evicted
+        for KV pages and for the checkpoint pool's room, `cold_admits`, and the KV pool's pages in use, held by an
+        admitted slot, and held only by checkpoints."""
         out = {k: str(v) for k, v in dataclasses.asdict(self.engine.stats()).items()}
         phases = [r.phase for r in self.by_slot.values()]
         out["waiting"] = str(len(self.waiting))
@@ -200,6 +204,13 @@ class Scheduler:
         out["long_chunk_ms"] = f"{self.cost.long_chunk_ms:.3f}"
         out["long_row_ms"] = f"{self.cost.long_row_ms:.4f}"
         out["owed_ms"] = f"{self.owed_ms:.3f}"
+        out["checkpoints_evicted_pages"] = str(self.state.evicted_for_pages)
+        out["checkpoints_evicted_room"] = str(self.state.evicted_for_room)
+        out["cold_admits"] = str(self.cold_admits)
+        in_use, slots, only = self.state.page_holders()
+        out["kv_pages_used"] = str(in_use)
+        out["kv_pages_slots"] = str(slots)
+        out["kv_pages_checkpoints"] = str(only)
         return out
 
     # Commands.
@@ -341,6 +352,8 @@ class Scheduler:
             r.next_pos = r.done_pos = seq.start
             self._admissions += 1
             r.admitted = self._admissions
+            if admission.checkpoint is None and len(r.prompt) > o.chunk_rows:
+                self.cold_admits += 1
             if not again:  # a preempted request keeps its first admission's counts
                 r.reused = seq.start
                 r.t_admit = self.clock()
