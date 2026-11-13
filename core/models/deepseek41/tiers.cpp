@@ -305,6 +305,7 @@ void SsdReader::start(uint32_t side, const LayerExperts &l, const std::vector<ui
     }
     if (pieces_.empty()) return;
     pending_ = true;
+    busy_.store(true, std::memory_order_release);
     pieces_left_ = pieces_.size();
     rounds_++;
   }
@@ -350,6 +351,7 @@ void SsdReader::round_thread() {
       pieces_left_.fetch_sub(1, std::memory_order_relaxed);
     });
     pool_runs_.fetch_add(reader_.pool().runs_started() - runs0, std::memory_order_relaxed);
+    busy_.store(false, std::memory_order_release);
     lk.lock();
     error_ = std::move(err);
     pending_ = false;
