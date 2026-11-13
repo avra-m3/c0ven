@@ -83,7 +83,10 @@ alternating order, give the slowest request fewer tokens a second, or fewer in t
    correction is the first rate over the second, starting from 0.85 for the wide count and 1 for the even split, as
    4 rounds at the arm's first estimates. A round takes the arm whose estimate, times its correction, is the higher
    (the even split where the wide count does not qualify), and every 32nd choice the other (every 16th while the
-   other has fewer than 8 rounds), so that its correction and its widths' times stay current.
+   other has fewer than 8 rounds), so that its correction and its widths' times stay current. A choice shares
+   drafts out among the slots that will draft, not those that finished or still read their prompt. A round counts in
+   an arm only where each of its slots holds the drafts that arm's last choice gave it: not where a slot's drafts
+   came from elsewhere since (a lone slot's round, a prompt's end) or a slot joined or left.
 6. A round verifies every draft made. A lone slot's round is unchanged.
 7. Where a number leaves some slots one draft more than others (2, 2 and 1 of 8 rows for three slots), those drafts
    go first to the slots one more draft makes faster (its tokens over the round's time with its row, by items 1 and

@@ -554,6 +554,22 @@ int main() {
     EXPECT(all_wide && t4.rounds(true) == 0, "no estimates");
   }
 
+  // A round counts for the trial's choice only where every one of its slots holds drafts that choice shared out
+  // (trial_arm). Choice 7 shared drafts out to three slots by the wide count.
+  {
+    const engine::TrialPick pick{1, 3, 12, 40, 7};
+    EXPECT(engine::trial_arm(pick, {7, 7, 7}) == 1, "fresh pick");
+    // The pick gone stale with the slot count unchanged: a slot's drafts since made by a lone round, or a slot that
+    // finished replaced by one at its prompt's end (0 for both), or the drafts of a later choice.
+    EXPECT(engine::trial_arm(pick, {7, 0, 7}) == -1, "drafts made otherwise");
+    EXPECT(engine::trial_arm(pick, {7, 7, 8}) == -1 && engine::trial_arm(pick, {8, 8, 8}) == -1, "later choice");
+    // A slot left, or joined.
+    EXPECT(engine::trial_arm(pick, {7, 7}) == -1 && engine::trial_arm(pick, {7, 7, 7, 0}) == -1, "slots changed");
+    // No trial, and the even split's arm.
+    EXPECT(engine::trial_arm(engine::TrialPick{}, {0, 0}) == -1, "no trial");
+    EXPECT(engine::trial_arm(engine::TrialPick{0, 2, 8, 30, 9}, {9, 9}) == 0, "even split");
+  }
+
   std::printf("lookup_test: ok\n");
   return 0;
 }
