@@ -1,6 +1,7 @@
 // deepseek41's decode step on two cards (ADR-0074): each card runs one recorded list a step, the two exchange their
-// partial sums through each other's memory, and the CPU answers the routed experts the cards do not hold. Prompts are
-// read as decode steps; the model reads no images. With Options::mtp_dir, the path of the file's drafter (a second
+// partial sums through each other's memory, and the CPU answers the routed experts the cards do not hold. A prompt of
+// more than a few rows goes through all the layers in chunks (prompt.cpp); the last rows and short prompts are decode
+// steps. The model reads no images. With Options::mtp_dir, the path of the file's drafter (a second
 // GGUF), the cards also hold the drafter: its layers follow the model's in every card's list of layers, and all of
 // its experts are on the cards.
 #pragma once
@@ -25,6 +26,7 @@
 #include "models/deepseek41/engram.h"
 #include "models/deepseek41/layout.h"
 #include "models/deepseek41/tiers.h"
+#include "moe_tile.h"
 #include "ze/library.h"
 
 namespace engine::deepseek41 {
@@ -63,6 +65,42 @@ struct SwapStats {
 // What the tests ask for beyond Options.
 struct Debug {
   bool probes = false;  // card 0 copies the streams out after every sublayer, and what a step stores for the drafter
+};
+
+// Where the last prompt chunk's time went, ms, and what it did.
+struct ChunkTimes {
+  double total = 0;
+  double prepare = 0;   // the embeddings and the Engram rows, on the host
+  double attention = 0; // the cards' lists up to the routers
+  double plan = 0;      // the host's tile lists
+  double cpu = 0;       // the CPU's experts
+  double experts = 0;   // the cards' lists from the tiles on
+  double stage = 0;     // the copies' lists and the SSD reads of the experts staged on the cards
+  double ssd_wait = 0;  // of that, waiting for the SSD
+  double record = 0;    // of that, recording the copy lists and the second list
+  double copy_wait = 0; // of that, the fence and read-back that send each batch to the card
+  double fill = 0;      // of that, the CPU putting the experts into host memory
+  double launch = 0;    // of that, starting the copies to the cards
+  uint32_t cpu_routings = 0, cached_routings = 0;  // routings the CPU answered, and the cards' tiles
+  uint32_t staged_routings = 0;                     // routings answered by experts copied to the cards
+  uint32_t staged_arena = 0, staged_ssd = 0;        // experts copied from the arena, and read from the SSD and copied
+  uint32_t tiles = 0;
+};
+
+// How a chunk treats the experts the cards do not hold. Set before chunk_forward.
+struct ChunkTuning {
+  // An expert that this many rows or more of a chunk route to is copied to the cards; fewer rows go to the CPU. 0: the
+  // CPU answers them all. kStageAuto: 4 for a chunk of under 128 rows, where a copy costs more than the CPU's answer
+  // saves, and 1 for a larger one, where the copies are shared by many rows.
+  static constexpr uint32_t kStageAuto = ~0u;
+  uint32_t stage_rows = kStageAuto;
+  // Where staged experts come from: the arena where it holds them and the file otherwise; only the arena (the others
+  // go to the CPU); or only the file.
+  enum Source { both, arena_only, file_only } source = both;
+  // Time every launch of the cards' lists (chunk_trace); costs a timestamp a launch.
+  bool trace = false;
+  // For tests: flips one byte of the first staging slot of card 0 in the last layer, after it is written.
+  bool corrupt_stage = false;
 };
 
 // One draft of a block: the token chosen, the drafter's own chance, 0 to 1, that the model keeps it, and the candidates
@@ -116,9 +154,38 @@ class Model final : public engine::Model {
   void draft_start(uint32_t, uint32_t) override {}
 
   std::vector<std::vector<Candidate>> prompt_runs(const PromptRun *, uint32_t, const int32_t *, uint32_t) override;
-  uint32_t prompt_chunk() const override { return 0; }
+  uint32_t prompt_chunk() const override { return chunk_cap_; }
   uint32_t fetch_rows() const override { return 0; }
   uint32_t decode_weight() const override { return 1; }
+
+  // The prompt chunk path (prompt.cpp): rows pos .. pos + n - 1 of slot's sequence, n at most Options::prompt_chunk,
+  // through all the layers at once. seq holds the sequence's tokens from position 0 to pos + n - 1. Stores the rows'
+  // keys and returns the last row's candidates when logits is set, else none. The sequence's pages must be set.
+  std::vector<Candidate> chunk_forward(uint32_t slot, const int32_t *seq, uint32_t pos, uint32_t n, bool logits);
+  // The same from the rows' tokens alone: tokens[r] is position pos + r's, and prev the three before pos, the nearest
+  // first (kNoToken before the start).
+  std::vector<Candidate> chunk_forward(uint32_t slot, const int32_t *tokens, const int32_t *prev, uint32_t pos, uint32_t n,
+                                       bool logits);
+  const ChunkTimes &chunk_times() const { return ctimes_; }
+  ChunkTuning chunk_tuning;
+  // With chunk_tuning.trace, card c's time by kernel over the last chunk's lists, in launch order of first use.
+  std::vector<TraceRow> chunk_trace(uint32_t card) const { return ctrace_[card]; }
+  // For tests, with Debug::probes: the rows of the last chunk whose streams are kept (up to kChunkProbeRows, spread
+  // over the chunk, first and last among them), and a probed row's streams as probe gives a step's.
+  static constexpr uint32_t kChunkProbeRows = 16;
+  std::vector<uint32_t> chunk_probe_rows(uint32_t n) const;
+  const float *chunk_probe(uint32_t layer, bool ffn, uint32_t i) const;
+  // For tests: the experts the last chunk staged in its last layer, and the slot of each on both cards.
+  struct StagedExpert {
+    uint32_t expert, slot;
+    bool arena;  // from the arena; otherwise from the file
+  };
+  const std::vector<StagedExpert> &chunk_staged() const { return cstaged_; }
+  // A card's bytes of such a slot (gate rows, up rows, down part) as the card holds them, and as the file gives them.
+  std::vector<uint8_t> chunk_stage_card(uint32_t card, uint32_t slot);
+  std::vector<uint8_t> chunk_stage_file(uint32_t card, uint32_t expert) const;
+  // Card 0's compressed rows of one page of a layer's pool, D41_COMP_ROW_BYTES each.
+  std::vector<uint8_t> pool_page(uint32_t layer, uint32_t page);
 
   uint64_t slot_state_bytes() override;
   void save_slot(uint32_t slot, uint8_t *dst) override;
@@ -197,8 +264,11 @@ class Model final : public engine::Model {
     int32_t *slot_map = nullptr;   // expert to its pair, -1 when the cards do not hold it
     uint32_t split = 0x7fffffffu, flip = 0;
   };
+  struct ChunkCard;
   struct Card {
+    ~Card();
     uint32_t c = 0;
+    std::unique_ptr<ChunkCard> ck;  // the prompt chunk path's buffers and lists
     std::unique_ptr<ze::List> up;
     std::mutex up_mu;  // for the load's threads
     std::unique_ptr<ze::List> swap_up;  // the loader's copies
@@ -309,6 +379,23 @@ class Model final : public engine::Model {
                     const uint16_t *xb, float *y);
   void wait(ze::List &L, Card &card, const char *name, uint32_t *raise, const uint32_t *flag,
             const uint32_t *nmiss = nullptr, uint32_t W = 0);
+  // The prompt chunk path (prompt.cpp).
+  struct ChunkRun;
+  void alloc_chunk(Card &card);
+  void chunk_engram_rows(uint32_t table, const int32_t *tokens, const int32_t *prev, uint32_t n, uint8_t *dst);
+  void chunk_dequant(ze::List &L, Card &card, const Mat &m, uint16_t *out);
+  void chunk_gemm(ze::List &L, Card &card, bool bf16, const uint16_t *w, uint32_t N, uint32_t K, const void *x,
+                  uint32_t ldx, const uint32_t *ntok, uint32_t rows, void *y, uint32_t ldy, bool yhalf, const char *name);
+  void chunk_to_f16(ze::List &L, Card &card, const float *in, uint16_t *out, uint64_t n);
+  void chunk_hc_mix(ze::List &L, Card &card, const float *fn, const ChunkRun &run);
+  void chunk_engram(ze::List &L, Card &card, uint32_t l, const ChunkRun &run);
+  void chunk_attention(ze::List &L, Card &card, uint32_t l, const ChunkRun &run);
+  void chunk_router(ze::List &L, Card &card, uint32_t l, const ChunkRun &run);
+  void chunk_experts_a(ze::List &L, Card &card, uint32_t l, const ChunkRun &run);
+  void chunk_staged_tiles(ze::List &L, Card &card, uint32_t l, const ChunkRun &run);
+  void chunk_experts_b(ze::List &L, Card &card, uint32_t l, const ChunkRun &run);
+  void chunk_stage_fill(Card &card, uint32_t l, uint32_t slot, const ExpertWeights &w, bool whole_down);
+  void chunk_probe_copy(ze::List &L, Card &card, bool ffn, uint32_t l, const float *from, const ChunkRun &run);
   void record(Card &card, uint32_t W);
   void record_engram(ze::List &L, Card &card, uint32_t l, uint32_t W);
   void record_attention(ze::List &L, Card &card, uint32_t l, uint32_t W);
@@ -343,6 +430,7 @@ class Model final : public engine::Model {
   D41MissJob *jobs_ = nullptr;   // [layer][row]
   float *cpu_y_ = nullptr;       // [layer][row][D41_EMBD]
   uint32_t *ans_flag_ = nullptr;  // a 64-byte line a layer
+  uint32_t *stage_flag_ = nullptr;  // a chunk's a 64-byte line for each batch of staging slots: the copies have landed
   uint32_t *eng_flag_ = nullptr;  // a line an Engram table: its rows of this step are in eng_a8_
   // The Engram rows' thread: it gathers a step's rows from the file while the lists run their first layers.
   std::thread engram_thread_;
@@ -367,6 +455,25 @@ class Model final : public engine::Model {
   StepStats stats_;
   MissCounts counts_;
   StepTimes times_;
+  // The prompt chunk path's host side: pinned buffers sized for Options::prompt_chunk rows.
+  uint32_t chunk_cap_ = 0;
+  float *cembed_ = nullptr;          // [row][D41_EMBD]
+  D41Row *crows_ = nullptr;          // [row]
+  D41Row *crowsc_ = nullptr;         // [row]: the same, without the early even rows a ratio-2 compressor's ring need not see
+  uint32_t *cwords_ = nullptr;       // the lists' counts: n, a full group's rows, the last group's, the two classes' tiles
+  uint32_t *creal_ = nullptr;        // [group of 8 rows]: its real rows
+  D41MissJob *cjobs_ = nullptr;      // [row]: the posting card's records of the layer in hand
+  float *cpu_cy_ = nullptr;          // [row][D41_EMBD]: the CPU's answers
+  uint8_t *ceng_a8_ = nullptr;       // [row][a token's gathered Engram rows as a8]
+  float *cprobe_ = nullptr;          // [sublayer][layer][kChunkProbeRows][D41_HC_DIM]
+  uint32_t *crowidx_ = nullptr;      // the layer's cached assignments in expert order: their rows
+  int32_t *cyidx_ = nullptr;         // [row][rank]: the assignment's place in that order, or -1
+  uint32_t *cnmiss_ = nullptr;       // [row]: the experts left to the CPU
+  MoeTile *ctiles_s_[2] = {};        // [card]: tiles of the staged experts
+  MoeTile *ctiles_[2][2] = {};       // [card][class]
+  ChunkTimes ctimes_;
+  std::vector<StagedExpert> cstaged_;  // the last layer's staged experts
+  std::vector<TraceRow> ctrace_[2];
 
   // The cards' pairs by layer: the expert each holds (kNoExpert while it changes), the split, the slot classes by card.
   static constexpr uint32_t kNoExpert = 0xffffffffu;

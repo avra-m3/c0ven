@@ -24,7 +24,11 @@
 #define D41_OG 8                       // output groups of 8 heads
 #define D41_OLR 1024                   // each group's low rank
 #define D41_WIN 128                    // a query sees positions p - 127 .. p of the window
+#ifndef D41_RING
 #define D41_RING (D41_WIN + STEP_MAX_ROWS)  // window cells a slot and layer: a step's rows write past the window
+#endif
+#define D41_CHUNK_MAX 4352             // rows of a prompt chunk at most
+#define D41_RING_WIDE (D41_WIN + D41_CHUNK_MAX)  // a chunk's window cells: the chunk's rows and the 127 before them
 #define D41_CRING 16                   // a ratio-2 compressor's entries a slot, at position % 16
 
 #define D41_IDX_H 32                   // indexer heads

@@ -1,4 +1,5 @@
 #include "models/deepseek41/model.h"
+#include "models/deepseek41/prompt.h"
 
 #include <immintrin.h>
 
@@ -276,6 +277,7 @@ Model::Model(const std::string &path, const Options &opt, const Debug &debug) : 
     card.grids = upload<uint8_t>(card, codebooks().data(), QGRID_BYTES);
     card.layers.resize(dsp_ ? kAllLayers : D41_LAYERS);
     alloc_buffers(card);
+    if (opt_.prompt_chunk) alloc_chunk(card);
   }
   for (uint32_t l = 0; l < D41_LAYERS; l++) load_layer(l);
   {
@@ -1603,13 +1605,9 @@ const float *Model::draft_out(uint32_t row) const {
   return dsp_->out.data() + (size_t)row * E;
 }
 
-// Prompts are read as decode steps, which store the drafter's keys.
-void Model::df_context_prompt(const StepIn *, uint32_t, uint32_t) {
-  throw std::runtime_error("deepseek41 has no prompt path: its prompts are read as decode steps");
-}
-std::vector<std::vector<Candidate>> Model::prompt_runs(const PromptRun *, uint32_t, const int32_t *, uint32_t) {
-  throw std::runtime_error("deepseek41 has no prompt path: its prompts are read as decode steps");
-}
+// The drafter is fed by the decode steps (they store each row's keys): a chunk's last rows run as steps (prompt.cpp), so the
+// context rows have nothing left to do.
+void Model::df_context_prompt(const StepIn *, uint32_t, uint32_t) {}
 
 // A slot's state outside the pages: every layer's window, then each ratio-2 source's compressor ring. Both cards hold
 // the same bits, so card 0's are saved.
