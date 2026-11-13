@@ -179,7 +179,6 @@ struct Plan {
 struct CardMem {
   Io io;
   float *X, *y, *in[2], *Xo, *ss, *gold;
-  float *raw, *scale, *base;  // the raw mixes, the scales and bases the kernel makes the mixes from
   D41HcMix *mix;
   Plan *plan;
   uint64_t *stamp;
@@ -190,9 +189,6 @@ struct CardMem {
     Xo = io.dev<float>(KS * WMAX * D);
     ss = io.dev<float>(KS * WMAX);
     gold = io.dev<float>(KS * WMAX * D);
-    raw = io.dev<float>(WMAX * D41_MIX);
-    scale = io.dev<float>(3);
-    base = io.dev<float>(D41_MIX);
     mix = io.dev<D41HcMix>(WMAX);
     plan = io.dev<Plan>(1);
     stamp = io.dev<uint64_t>(2 * (NX + 2));
@@ -255,9 +251,8 @@ struct Bench {
   void launch_post_norm(ze::List &L, uint32_t c, uint32_t W, uint32_t s, const float *y1, uint32_t y_host) {
     CardMem &m = *cards[c];
     L.launch(lib.get(c, "deepseek41", "ds_hc_post_norm"),
-             {m.X, y_at(c, s), y1, y_host, m.raw, m.scale, m.base, m.mix, none, Xo_at(c, s), ss_at(c, s), none, none, none,
-              none},
-             W, 1, 1, D41_HC_SGS * 16);
+             {m.X, y_at(c, s), y1, y_host, m.mix, none, Xo_at(c, s), ss_at(c, s), none, none, none, none}, W, 1, 1,
+             D41_HC_SGS * 16);
   }
   void launch_send(ze::List &L, uint32_t c, uint32_t W, const float *y, const float *dst, uint32_t sgs = D41_EX_SGS) {
     L.launch(lib.get(c, "deepseek41", "ds_exch_send"), {y, dst}, W, 1, 1, sgs * 16);
@@ -270,12 +265,14 @@ struct Bench {
   // The inputs, and what each pattern must give on each card.
   void prepare() {
     const auto X = randn(rng, WMAX * D);
-    const auto raw = randn(rng, WMAX * D41_MIX, 0.5f);
+    std::vector<D41HcMix> mix(WMAX);
+    for (auto &m : mix) {
+      auto v = randn(rng, D41_MIX, 0.5f);
+      std::memcpy(&m, v.data(), sizeof m);
+    }
     for (uint32_t c = 0; c < 2; c++) {
       cards[c]->io.put(cards[c]->X, X);
-      cards[c]->io.put(cards[c]->raw, raw);
-      cards[c]->io.put(cards[c]->scale, std::vector<float>{1, 1, 1});
-      cards[c]->io.put(cards[c]->base, std::vector<float>(D41_MIX, 0.0f));
+      cards[c]->io.put(cards[c]->mix, mix);
       ys[c] = randn(rng, KS * WMAX * E);
       cards[c]->io.put(cards[c]->y, ys[c]);
     }

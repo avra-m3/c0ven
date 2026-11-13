@@ -70,6 +70,12 @@ void ggml_post_pre(const float *X, const float *y, const std::vector<ref::HcMix>
   ggml_free(ctx);
 }
 
+D41HcMix to_mix(const ref::HcMix &m) {
+  D41HcMix o;
+  std::memcpy(&o, &m, sizeof o);
+  return o;
+}
+
 struct Bench {
   ze::Runtime &rt;
   ze::Library &lib;
@@ -79,6 +85,7 @@ struct Bench {
   // Card memory for 8 rows.
   float *X, *Xo, *ss, *ss2, *fn, *m, *scale, *base, *norm, *e, *y0, *y1, *xf;
   D41HcMix *mix;
+  uint32_t *count;
   uint8_t *xa;
   uint16_t *xb;
   // Host memory: the MissJobs and a partial sum, as at one row.
@@ -101,6 +108,8 @@ struct Bench {
     y1 = io.dev<float>(WMAX * E);
     xf = io.dev<float>(WMAX * E);
     mix = io.dev<D41HcMix>(WMAX);
+    count = io.dev<uint32_t>(1);
+    io.put(count, std::vector<uint32_t>(1, 0));
     xa = io.dev<uint8_t>((size_t)WMAX * D41_A8_ROW);
     xb = io.dev<uint16_t>(WMAX * E);
     jobs = static_cast<D41MissJob *>(rt.alloc_host(WMAX * sizeof(D41MissJob)));
@@ -124,13 +133,12 @@ struct Bench {
     L.launch(k("ds_hc_init"), {e, norm, Xo, ss2, pxa, pxb, pxf}, W, 1, 1, HC_LOCAL);
   }
   void launch_mix(ze::List &L, uint32_t W, uint32_t ks) {
-    L.launch(k("ds_hc_mix"), {fn, X, ss, W, m}, D41_MIX, 1, 1, 16 * ks);
+    L.launch(k("ds_hc_mix"), {fn, X, ss, W, m, scale, base, mix, count}, D41_MIX, 1, 1, 16 * ks);
   }
   void launch_post(ze::List &L, uint32_t W, const void *py1, const void *pnorm, const void *pxa, const void *pxb,
                    const void *pxf, const void *pjob) {
     const uint32_t y_host = py1 == y1h;
-    L.launch(k("ds_hc_post_norm"), {X, y0, py1, y_host, m, scale, base, mix, pnorm, Xo, ss2, pxa, pxb, pxf, pjob}, W, 1, 1,
-             HC_LOCAL);
+    L.launch(k("ds_hc_post_norm"), {X, y0, py1, y_host, mix, pnorm, Xo, ss2, pxa, pxb, pxf, pjob}, W, 1, 1, HC_LOCAL);
   }
 
   // Check x (f32 from the kernel) against ref_ops, and its a8 and bf16 forms exactly against it.
@@ -171,45 +179,39 @@ struct Bench {
     }
   }
 
+  // One launch gives the raw mixes and, from them, the mixes: both against ref_ops, the comb against ggml too.
   void test_mix() {
+    struct Case {
+      float s0, s1, s2, bspread;
+    };
     std::vector<float> ws(WMAX);
     for (uint32_t r = 0; r < WMAX; r++) ws[r] = (float)sum_squares(&hX[r * D], D);
     io.put(ss, ws);
     std::vector<float> wm(WMAX * D41_MIX);
     for (uint32_t r = 0; r < WMAX; r++) ref::hc_project(&hX[r * D], hfn.data(), &wm[(size_t)r * D41_MIX]);
-    for (uint32_t ks : {4u, 8u, 16u, 32u})
-      for (uint32_t W : WIDTHS) {
-        run([&](ze::List &L) { launch_mix(L, W, ks); });
-        auto g = io.get(m, (size_t)W * D41_MIX);
-        ck.rel("ds_hc_mix m", g.data(), wm.data(), g.size(), 1e-5);
-      }
-  }
-
-  // The mixes ds_hc_post_norm makes from raw mixes, against ref_ops, the comb against ggml too.
-  void test_mixes() {
-    struct Case {
-      float spread, s0, s1, s2, bspread;
-    };
-    for (const Case &c : {Case{20, 1, 1, 1, 0}, Case{10, 0.7f, 1.3f, 1.5f, 5}, Case{0.5f, 1, 1, 1, 0.1f}, Case{1, 2, 2, 20, 0}})
-      for (uint32_t W : WIDTHS) {
-        std::uniform_real_distribution<float> um(-c.spread, c.spread), ub(-c.bspread, c.bspread);
-        std::vector<float> hm((size_t)W * D41_MIX), hb(D41_MIX), hs = {c.s0, c.s1, c.s2};
-        for (float &v : hm) v = um(rng);
-        for (float &v : hb) v = c.bspread > 0 ? ub(rng) : 0.0f;
-        io.put(m, hm);
-        io.put(base, hb);
-        io.put(scale, hs);
-        run([&](ze::List &L) { launch_post(L, W, none, none, none, none, none, none); });
-        auto g = io.get(mix, W);
-        auto gg = ggml_comb(hm.data(), W, hs.data(), hb.data());
-        for (uint32_t r = 0; r < W; r++) {
-          const ref::HcMix w = ref::hc_split(&hm[(size_t)r * D41_MIX], hs.data(), hb.data());
-          ck.abs("ds_hc_post_norm comb against ref_ops", g[r].comb, w.comb, 16, 1e-6);
-          ck.abs("ds_hc_post_norm comb against ggml", g[r].comb, &gg[(size_t)r * 16], 16, 1e-6);
-          ck.rel("ds_hc_post_norm pre", g[r].pre, w.pre, 4, 1e-5);
-          ck.rel("ds_hc_post_norm post", g[r].post, w.post, 4, 1e-5);
+    for (const Case &c : {Case{1, 1, 1, 0}, Case{0.7f, 1.3f, 1.5f, 5}, Case{2, 2, 20, 0.1f}})
+      for (uint32_t ks : {4u, 8u, 16u, 32u})
+        for (uint32_t W : WIDTHS) {
+          std::uniform_real_distribution<float> ub(-c.bspread, c.bspread);
+          std::vector<float> hb(D41_MIX), hs = {c.s0, c.s1, c.s2};
+          for (float &v : hb) v = c.bspread > 0 ? ub(rng) : 0.0f;
+          io.put(base, hb);
+          io.put(scale, hs);
+          run([&](ze::List &L) { launch_mix(L, W, ks); });
+          auto g = io.get(m, (size_t)W * D41_MIX);
+          ck.rel("ds_hc_mix m", g.data(), wm.data(), g.size(), 1e-5);
+          // The mixes from the raw mixes the card made: a scale of 20 turns the raw mixes' last bits into 1e-6 of comb.
+          auto gm = io.get(mix, W);
+          auto gg = ggml_comb(g.data(), W, hs.data(), hb.data());
+          for (uint32_t r = 0; r < W; r++) {
+            const ref::HcMix w = ref::hc_split(&g[(size_t)r * D41_MIX], hs.data(), hb.data());
+            ck.abs("ds_hc_mix comb against ref_ops", gm[r].comb, w.comb, 16, 1e-6);
+            ck.abs("ds_hc_mix comb against ggml", gm[r].comb, &gg[(size_t)r * 16], 16, 1e-6);
+            ck.rel("ds_hc_mix pre", gm[r].pre, w.pre, 4, 1e-5);
+            ck.rel("ds_hc_mix post", gm[r].post, w.post, 4, 1e-5);
+          }
+          EXPECT(io.get(count, 1)[0] == 0, "ds_hc_mix left its count at %u", io.get(count, 1)[0]);
         }
-      }
   }
 
   void test_post_norm() {
@@ -218,17 +220,16 @@ struct Bench {
       std::vector<float> y(W * E);
       for (size_t i = 0; i < y.size(); i++) y[i] = py0[i] + py1[i];
       std::vector<ref::HcMix> rm(W);
-      std::vector<float> hm((size_t)W * D41_MIX), hs = {1, 1, 1}, hb(D41_MIX, 0.0f);
+      std::vector<D41HcMix> mm(W);
+      float hs[3] = {1, 1, 1}, hb[D41_MIX] = {};
       for (uint32_t r = 0; r < W; r++) {
         auto rmx = randn(rng, D41_MIX, 2.0f);
-        std::copy(rmx.begin(), rmx.end(), hm.begin() + (size_t)r * D41_MIX);
-        rm[r] = ref::hc_split(rmx.data(), hs.data(), hb.data());
+        rm[r] = ref::hc_split(rmx.data(), hs, hb);
+        mm[r] = to_mix(rm[r]);
       }
       io.put(y0, py0);
       io.put(y1, py1);
-      io.put(m, hm);
-      io.put(scale, hs);
-      io.put(base, hb);
+      io.put(mix, mm);
       std::memcpy(y1h, py1.data(), py1.size() * 4);
       std::vector<float> wX(W * D), wx(W * E), ws(W), raw(W * E);
       for (uint32_t r = 0; r < W; r++) {
@@ -350,7 +351,7 @@ struct Bench {
         uint32_t next = 0;
         const double us = time_launch(rt, 0, [&](ze::List &L) {
           float *f = fns + (size_t)(next++ % NFN) * D41_MIX * D;
-          L.launch(k("ds_hc_mix"), {f, X, ss, W, m}, D41_MIX, 1, 1, 16 * ks);
+          L.launch(k("ds_hc_mix"), {f, X, ss, W, m, scale, base, mix, count}, D41_MIX, 1, 1, 16 * ks);
         });
         std::printf("time ds_hc_mix 80 matrices in turn ksplit=%u W=%u: %.2f us, weights at %.0f GB/s\n", ks, W, us, fn_gb / (us * 1e-6));
       }
@@ -375,7 +376,6 @@ int main() {
   ze::Library lib(rt);
   Io io(rt, 0);
   Bench b(rt, lib, io);
-  b.test_mixes();
   b.test_mix();
   b.test_post_norm();
   b.test_init();

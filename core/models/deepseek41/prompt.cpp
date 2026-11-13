@@ -328,11 +328,12 @@ void Model::chunk_to_f16(ze::List &L, Card &card, const float *in, uint16_t *out
   L.launch(kernel(card, "deepseek41_prompt", "dp_to_f16"), {in, out, n}, (uint32_t)((n / 4 + 255) / 256), 1, 1, 256);
 }
 
-// The sublayer's raw mixes of every row, eight rows to a launch, then its mixes.
-void Model::chunk_hc_mix(ze::List &L, Card &card, const float *fn, const ChunkRun &run) {
+// The sublayer's mixes of every row from its streams X, eight rows to a launch.
+void Model::chunk_hc_mix(ze::List &L, Card &card, const float *X, const float *fn, const float *scale, const float *base,
+                         D41HcMix *mix, const ChunkRun &run) {
   ChunkCard &k = *card.ck;
-  L.launch(kernel(card, "deepseek41", "ds_hc_mix"), {fn, k.X, k.ss, run.n, k.m}, D41_MIX, (run.n + STEP_MAX_ROWS - 1) / STEP_MAX_ROWS, 1,
-           16 * D41_HC_KSPLIT);
+  L.launch(kernel(card, "deepseek41", "ds_hc_mix"), {fn, X, k.ss, run.n, k.m, scale, base, mix, card.hc_count}, D41_MIX,
+           (run.n + STEP_MAX_ROWS - 1) / STEP_MAX_ROWS, 1, 16 * D41_HC_KSPLIT);
 }
 
 // Engram's injection before layer l's attention, as record_engram does it for a step.
@@ -368,7 +369,7 @@ void Model::chunk_attention(ze::List &L, Card &card, uint32_t l, const ChunkRun 
   const uint32_t window = D41_WIN - 1;
 
   chunk_to_f16(L, card, k.xf, k.xh, (uint64_t)n * E);
-  chunk_hc_mix(L, card, ly.attn_fn, run);
+  chunk_hc_mix(L, card, k.X, ly.attn_fn, ly.attn_scale, ly.attn_base, k.amix, run);
 
   // The 127 positions before the chunk, into the chunk's cells.
   const uint32_t nin = std::min(run.pos0, window);
@@ -435,9 +436,7 @@ void Model::chunk_attention(ze::List &L, Card &card, uint32_t l, const ChunkRun 
   const void *job = l % 2 == card.c ? cjobs_ : nullptr;
   const uint32_t in_card = 0;
   L.launch(kernel(card, "deepseek41", "ds_hc_post_norm"),
-           {k.X, k.y, k.in[0], in_card, k.m, ly.attn_scale, ly.attn_base, k.amix, ly.ffn_norm, k.X1, k.ss, none, k.xb, k.xf,
-            job},
-           n, 1, 1, D41_HC_SGS * 16);
+           {k.X, k.y, k.in[0], in_card, k.amix, ly.ffn_norm, k.X1, k.ss, none, k.xb, k.xf, job}, n, 1, 1, D41_HC_SGS * 16);
   chunk_probe_copy(L, card, false, l, k.X1, run);
 }
 
@@ -449,8 +448,7 @@ void Model::chunk_router(ze::List &L, Card &card, uint32_t l, const ChunkRun &ru
   const uint32_t n = run.n;
   const bool posts = l % 2 == card.c;
   chunk_to_f16(L, card, k.xf, k.xh, (uint64_t)n * E);
-  L.launch(kernel(card, "deepseek41", "ds_hc_mix"), {ly.ffn_fn, k.X1, k.ss, n, k.m}, D41_MIX, (n + STEP_MAX_ROWS - 1) / STEP_MAX_ROWS, 1,
-           16 * D41_HC_KSPLIT);
+  chunk_hc_mix(L, card, k.X1, ly.ffn_fn, ly.ffn_scale, ly.ffn_base, k.fmix, run);
   chunk_gemm(L, card, true, ly.gate_inp, D41_EXPERTS, E, k.xb, E, k.words, n, k.rlogits, D41_EXPERTS, false, "gemm router");
   const uint32_t eight = STEP_MAX_ROWS;
   for (uint32_t g0 = 0; g0 < n; g0 += STEP_MAX_ROWS) {
@@ -538,7 +536,6 @@ void Model::chunk_staged_tiles(ze::List &L, Card &card, uint32_t l, const ChunkR
 // The card's partial sum, the exchange and the next layer's input, once the CPU's answers are in.
 void Model::chunk_experts_b(ze::List &L, Card &card, uint32_t l, const ChunkRun &run) {
   ChunkCard &k = *card.ck;
-  Layer &ly = card.layers[l];
   Card &other = *cards_[1 - card.c];
   const uint32_t n = run.n;
   const bool posts = l % 2 == card.c;
@@ -553,20 +550,18 @@ void Model::chunk_experts_b(ze::List &L, Card &card, uint32_t l, const ChunkRun 
     const void *norm = engram ? nullptr : card.layers[l + 1].attn_norm;
     const void *xb = engram ? nullptr : k.xb, *xf = engram ? nullptr : k.xf;
     L.launch(kernel(card, "deepseek41", "ds_hc_post_norm"),
-             {k.X1, k.out, k.in[1], in_card, k.m, ly.ffn_scale, ly.ffn_base, k.fmix, norm, k.X, k.ss, none, xb, xf, none}, n,
-             1, 1, D41_HC_SGS * 16);
+             {k.X1, k.out, k.in[1], in_card, k.fmix, norm, k.X, k.ss, none, xb, xf, none}, n, 1, 1, D41_HC_SGS * 16);
   } else {
     // Only the last row's output is read, and only when the caller wants its candidates.
     if (n > 1)
       L.launch(kernel(card, "deepseek41", "ds_hc_post_norm"),
-               {k.X1, k.out, k.in[1], in_card, k.m, ly.ffn_scale, ly.ffn_base, k.fmix, none, k.X, k.ss, none, none, none,
-                none},
-               n - 1, 1, 1, D41_HC_SGS * 16);
+               {k.X1, k.out, k.in[1], in_card, k.fmix, none, k.X, k.ss, none, none, none, none}, n - 1, 1, 1,
+               D41_HC_SGS * 16);
     const size_t at = n - 1;
     const void *norm = run.logits ? card.out_norm : nullptr, *xa = run.logits ? k.xa : nullptr;
     L.launch(kernel(card, "deepseek41", "ds_hc_post_norm"),
-             {k.X1 + at * D, k.out + at * E, k.in[1] + at * E, in_card, k.m + at * D41_MIX, ly.ffn_scale, ly.ffn_base,
-              k.fmix + at, norm, k.X + at * D, k.ss + at, xa, none, none, none},
+             {k.X1 + at * D, k.out + at * E, k.in[1] + at * E, in_card, k.fmix + at, norm, k.X + at * D, k.ss + at, xa, none,
+              none, none},
              1, 1, 1, D41_HC_SGS * 16);
     if (run.logits) {
       matvec(L, card, "output", card.head, k.xa, card.logits, 1, 4);
