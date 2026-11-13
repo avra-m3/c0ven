@@ -50,8 +50,9 @@ alternating order, give the slowest request fewer tokens a second, or fewer in t
 
 1. The core times each step and round of several slots in two parts: its window, by its rows and the experts the
    CPU computed in it (`RoundTimes`), and what follows up to the draft layer's drafts, by the window's rows
-   (`drafter_times`). `RoundTimes` fits one cost a miss across the widths and keeps each width's time less that
-   cost of its misses, and the misses a row of the rounds lately. A width's time is that net time and its rows'
+   (`drafter_times`). `RoundTimes` fits one cost a miss across the widths, uses the fit less its standard error (0
+   while the rounds, less each width's first, are no more than the widths and one), and keeps each width's time less
+   that cost of its misses, and the misses a row of the rounds lately. A width's time is that net time and its rows'
    misses at the cost. A width not timed twice, there and in `drafter_times` alike, is on the line through the
    nearest timed ones; past the widest, from the widest at the gentler slope of the line through the two widest and
    the line through the narrowest and the widest, and no less than the widest; below the narrowest, on the line
@@ -176,6 +177,17 @@ second, the slowest 41.1, where three other loads of the same build or the one b
 and item 4, two loads ran wider than 8 rows in 50 of 86 and 39 of 77 rounds of copying text
 ([the record](../measurements/MEASUREMENTS.md#2026-11-12-wide-widths-timed-again)). A width priced too low is run
 and timed; the checks cost a wide count that does not qualify one round in 32 once it has 8.
+
+Item 1's cost a miss: the fit alone is wrong when few rounds of a width have nearly the same misses. In a trace of
+three requests on prose on two cards, two 7-row rounds with 503 and 505 CPU experts, 7 ms apart, put the cost at 3.50
+ms, against 0.026 measured; the widths' net times fell to nothing, 3 rows were priced at 893 ms and 8 rows at 2,381,
+and later one 135 ms round of 7 rows set it at 0.25. Every window was then priced in proportion to its rows, no
+drafts were chosen, and the requests ran 211 steps without drafts against 47 rounds and wrote 108.5 tokens a second
+against about 122 in other loads. Steps at one width cannot correct the fit. With the fit less its standard error, the
+same rounds in order give 0 after the second 7-row round, 3 rows at 29.4 ms and 8 at 46.4, and 0.12 to 0.14 for the
+five rounds from the slow one (8 rows at 84 to 94 ms); the last figures of the eight traced loads (2,150 rounds and steps)
+move by 0.002 to 0.006 ms a miss and 0 to 2.3 ms for 8 rows
+([the record](../measurements/MEASUREMENTS.md#2026-11-13-miss-cost-standard-error)).
 
 ## Options not chosen
 
