@@ -1,4 +1,4 @@
-# ADR-0077: a decode step holds 16 rows, and one slot's window 8
+# ADR-0078: a decode step holds 16 rows, and one slot's window 8
 
 **Status:** draft, 2026-11-10; not accepted. Supersedes the window size in
 [ADR-0050](0050-dflash-2-drafts.md) ("a step's window holds up to 8 rows") for steps of several slots.
@@ -39,7 +39,7 @@ give no more tokens a second in total, or the same-tokens check differs.
    reads stop at the step's last row. Rows 0 to 7 have the same bits as with one tile.
 5. `engine_info.max_step_rows` reports 16. `ENGINE_MAX_STEP_SLOTS` stays 8, and the ABI version does not change.
 6. How many drafts several slots make is chosen as
-   [ADR-0078](0078-several-slots-take-more-rows-only-when-the-slowest-writes-no-slower.md) says. The step's rows let two
+   [ADR-0079](0079-several-slots-take-more-rows-only-when-the-slowest-writes-no-slower.md) says. The step's rows let two
    slots make up to 7 each, three up to 5, 4 and 4, four up to 3 each, and eight 1 each.
 7. A step of up to 8 rows runs step kernels built for 8 rows (`STEP_NARROW_ROWS`; the modules `common_r8`,
    `qwen4exp_r8` and `qwen4exp_e256_r8`, built with `-DSTEP_ROWS=8`): the registers, tiles and grouping work-group
@@ -58,7 +58,7 @@ give no more tokens a second in total, or the same-tokens check differs.
 ## Why
 
 A step of more than 8 rows pays where the slots accept most of their drafts. In alternating runs on two cards, with
-the drafts chosen as ADR-0078 says, three requests copying text wrote 2.4% to 5.8% more tokens a second than with
+the drafts chosen as ADR-0079 says, three requests copying text wrote 2.4% to 5.8% more tokens a second than with
 steps of 8 rows and four editing code 11.2% more. One, two and four requests wrote -2.4% to +0.2%, each within its
 spread, and three on prose, on prose sampled and of mixed text +0.2% to +1.8%. On one card, in three rounds, four
 editing code wrote 9.8% more and three copying text 15.8% more, the other cases -1.4% to +6.2%, each within its

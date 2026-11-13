@@ -1,4 +1,4 @@
-# ADR-0078: several slots take more rows only when the slowest writes no slower
+# ADR-0079: several slots take more rows only when the slowest writes no slower
 
 **Status:** draft, 2026-11-11; not accepted.
 **Revisit when:** two, three or four requests writing at once, this change against the commit before it in
@@ -6,7 +6,7 @@ alternating order, give the slowest request fewer tokens a second, or fewer in t
 
 ## Context
 
-- Before [ADR-0077](0077-a-decode-step-holds-16-rows.md) a round of several slots shared a step of 8 rows. Every
+- Before [ADR-0078](0078-a-decode-step-holds-16-rows.md) a round of several slots shared a step of 8 rows. Every
   slot made the same number of drafts, at most its part of the spare rows: the number with the most tokens a
   millisecond, by each slot's acceptance and the time of windows of each width (`choose_shared_drafts`,
   [the record](../measurements/MEASUREMENTS.md#2026-10-19-draft-rounds-several-writers)).
@@ -73,7 +73,7 @@ alternating order, give the slowest request fewer tokens a second, or fewer in t
 4. The wide count is a number of the whole step's 16 rows, shared out the same way, that gives more tokens a
    millisecond in total, and its slowest slot at least the tokens a millisecond of the even split's slowest, both
    by items 1 and 2; of those, the one with the most. Until two widths are timed by `RoundTimes`, 3 each of 16 rows,
-   so that a wider one is timed. Only a number whose next round the step could hold counts (ADR-0077). Where none
+   so that a wider one is timed. Only a number whose next round the step could hold counts (ADR-0078). Where none
    qualifies, the one of those with the most tokens a millisecond is the wide count for item 5's checks alone, so
    that a wide width priced too high is timed again. Where the step cannot hold a round's rows when it runs, as the
    ring shrinks between the choice and the round, the round takes 8 rows, shared out one draft at a time to each
@@ -196,7 +196,7 @@ steps) move by 0.002 to 0.006 ms a miss and 0 to 2.3 ms for 8 rows
   choice on the cards (Context).
 - Item 4's estimate alone, without the trial, with one acceptance a slot for all places. It was 2 to 6% under the
   8-row choice with three and four requests (*estimate*, from alternating runs on two cards).
-- The even split priced as before ADR-0077, by the mean window of each width since load. It mixes numbers of
+- The even split priced as before ADR-0078, by the mean window of each width since load. It mixes numbers of
   slots and texts, and a request it gives no drafts stays without them (Context).
 - Counting a draft asked for and not made as rejected, and pricing a round at the rows asked for. It leans to fewer
   rows, and three requests wrote 1.5 to 6% slower than with the 8-row choice (Context).
@@ -238,7 +238,7 @@ steps) move by 0.002 to 0.006 ms a miss and 0 to 2.3 ms for 8 rows
 - `choose_shared_drafts` gives the even split and the wide count; the core keeps one `RoundTrial` for each number
   of slots, for as long as the engine runs. A trial's rates come from earlier requests too; the decay and the
   sixteenth choice let new ones replace them.
-- Several slots' choices differ from the 8-row choice before ADR-0077 even within 8 rows: they follow the misses of
+- Several slots' choices differ from the 8-row choice before ADR-0078 even within 8 rows: they follow the misses of
   the rounds lately and each place's acceptance and share made.
 - Four requests no longer run tens of steps without drafts at the start of their text.
 - A number of slots whose wide count item 4 estimates at least 18% faster runs it from its first round.
