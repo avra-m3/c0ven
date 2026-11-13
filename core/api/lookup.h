@@ -148,7 +148,7 @@ constexpr uint32_t kSharedDrafts = 2;
 constexpr uint32_t kSharedCheck = 8;
 
 // The rows several slots shared their drafts out of before a step held 16
-// (docs/adr/0077-a-decode-step-holds-16-rows.md).
+// (docs/adr/0078-a-decode-step-holds-16-rows.md).
 constexpr uint32_t kEvenRows = 8;
 
 // The drafts of n slots with k at most each, of a step of rows rows: the rows past one a slot shared out, each slot
@@ -168,7 +168,7 @@ std::vector<uint32_t> split_drafts(const std::vector<DraftOdds> &slots, uint32_t
                                    uint32_t first = 0, uint32_t *turns = nullptr);
 
 // The drafts each of several writing slots may make for their next round
-// (docs/adr/0078-several-slots-take-more-rows-only-when-the-slowest-writes-no-slower.md): one count k for all of
+// (docs/adr/0079-several-slots-take-more-rows-only-when-the-slowest-writes-no-slower.md): one count k for all of
 // them, shared out as split_drafts shares it, worth the slots' expected tokens (each the row sampled last and its
 // drafts accepted, at each place's acceptance and share made: place_expected) over the round's time, the window's
 // (window.ms) and the draft layer's pass after it (drafter, by the window's rows), at the rows the draft layer is
