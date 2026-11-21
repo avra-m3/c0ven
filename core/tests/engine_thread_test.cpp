@@ -73,10 +73,10 @@ class FakeModel : public Model {
   void commit(uint32_t, uint32_t, uint32_t) override { In in(*this, "commit", 0); }
   void commit_runs(const CommitRun *, uint32_t) override { In in(*this, "commit", 0); }
 
-  bool drafting() const override { return false; }
-  bool dflash() const override { return false; }
-  uint32_t draft_max_default() const override { return 0; }
-  uint32_t draft_max_cap() const override { return 0; }
+  bool drafting() const override { return draft_on; }
+  bool dflash() const override { return draft_on; }
+  uint32_t draft_max_default() const override { return draft_on ? 3 : 0; }
+  uint32_t draft_max_cap() const override { return draft_on ? 3 : 0; }
   std::vector<std::vector<Candidate>> mtp_catchup(const StepIn *, uint32_t, const std::vector<uint32_t> &,
                                                   const uint32_t *) override {
     return {};
@@ -87,12 +87,44 @@ class FakeModel : public Model {
                                                          const std::vector<uint32_t> &) override {
     return {};
   }
-  std::vector<std::vector<std::vector<Candidate>>> df_pass(const StepIn *, uint32_t, const DraftBlock *,
-                                                           uint32_t) override {
-    return {};
+  std::vector<std::vector<std::vector<Candidate>>> df_pass(const StepIn *, uint32_t, const DraftBlock *blocks,
+                                                           uint32_t nblocks) override {
+    std::vector<std::vector<std::vector<Candidate>>> out(nblocks);
+    for (uint32_t b = 0; b < nblocks; b++) {
+      // Propose token 7 for slot 0's first draft (matches step's pick 7) and 99 for later drafts (rejected).
+      out[b].resize(blocks[b].n > 1 ? blocks[b].n - 1 : 0);
+      for (size_t j = 0; j < out[b].size(); j++) out[b][j] = {Candidate{j == 0 ? 7 : 99, 1.0f}};
+    }
+    return out;
   }
   void df_context_prompt(const StepIn *, uint32_t, uint32_t) override {}
   void draft_start(uint32_t, uint32_t) override {}
+
+  const ProbeSpec *probe_spec() const override { return probe_loaded ? &pspec : nullptr; }
+  void set_probe_active(bool on) override { probe_active_seen.push_back(on); }
+  void probe_start(uint32_t slot, uint32_t pos) override { probe_starts.push_back({slot, pos}); }
+  std::vector<float> probe_commit_step(const CommitRun *runs, uint32_t nruns) override {
+    std::vector<float> out;
+    for (uint32_t r = 0; r < nruns; r++) {
+      probe_commits.push_back(runs[r]);
+      for (uint32_t j = 0; j < runs[r].n; j++) {
+        const uint32_t pos = runs[r].pos0 + j;
+        // Label 0 (input risk): spikes at trigger_input_pos; Label 1 (output risk): spikes at trigger_output_pos.
+        out.push_back(pos == trigger_input_pos ? 8.0f : -8.0f);
+        out.push_back(pos == trigger_output_pos ? 8.0f : -8.0f);
+      }
+    }
+    return out;
+  }
+
+  bool draft_on = false;
+  bool probe_loaded = false;
+  ProbeSpec pspec;
+  uint32_t trigger_input_pos = UINT32_MAX;
+  uint32_t trigger_output_pos = UINT32_MAX;
+  std::vector<bool> probe_active_seen;
+  std::vector<CommitRun> probe_commits;
+  std::vector<std::pair<uint32_t, uint32_t>> probe_starts;
 
   std::vector<std::vector<Candidate>> prompt_runs(const PromptRun *, uint32_t, const int32_t *, uint32_t) override {
     throw std::logic_error("no prompt path");
@@ -316,6 +348,158 @@ void test_restore_sets_up_first() {
   engine_close(e);
 }
 
+// Streaming probes: opt-out leaves tapping off; BLOCK_INPUT/PROBE_ONLY stop with 0 tokens; draft rounds commit only
+// accepted rows and stop mid-round on BLOCK_OUTPUT; unprobed vs probed checkpoints set probe_start accurately.
+void test_streaming_probes() {
+  static bool next_draft = false;
+  auto opener = [](const std::string &, const Options &opt) -> std::unique_ptr<Model> {
+    auto m = std::make_unique<FakeModel>(opt);
+    m->draft_on = next_draft;
+    m->probe_loaded = true;
+    m->pspec.kind = ProbeKind::Linear;
+    m->pspec.model_name = "test-probe";
+    m->pspec.kind_name = "c0ven_probe_v1";
+    m->pspec.roll_window = 1;
+    m->pspec.labels = {
+        {"agent_safety", 0.5f, ENGINE_PROBE_SCOPE_INPUT, 0, 1.0f, 0.0f, true, 0, 0.0f},
+        {"unsafe_response", 0.5f, ENGINE_PROBE_SCOPE_OUTPUT, 0, 1.0f, 0.0f, true, 1, 0.0f},
+    };
+    fake = m.get();
+    return m;
+  };
+  auto open_with_probe = [&](bool draft) {
+    next_draft = draft;
+    engine_config c{};
+    c.model_path = "fake";
+    c.slots = 2;
+    c.max_ctx = 64;
+    c.checkpoints = 2;
+    carried_ended = carried_errors = 0;
+    engine_ctx *e = nullptr;
+    engine_info info{};
+    EXPECT(open_engine(&c, &info, &e, opener) == ENGINE_OK, "open probe: %s", engine_last_error(nullptr));
+    EXPECT(info.probe_labels == 2, "probe_labels %u", info.probe_labels);
+    engine_probe_info pi{};
+    EXPECT(engine_read_probe_info(e, &pi) == ENGINE_OK, "read_probe_info");
+    EXPECT(pi.n_labels == 2 && std::string(pi.model_name) == "test-probe", "probe_info mismatch");
+    return e;
+  };
+
+  // Drains n completed plans while collecting every non-step event emitted alongside them.
+  auto run_plans = [](engine_ctx *e, uint32_t n) {
+    std::vector<engine_event> all;
+    uint32_t ended = 0;
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (ended < n) {
+      EXPECT(std::chrono::steady_clock::now() < until, "no plan ended in 30 s");
+      engine_wait(e, 100);
+      engine_event ev[64];
+      uint32_t got = 0;
+      EXPECT(engine_poll(e, ev, 64, &got) == ENGINE_OK, "poll");
+      for (uint32_t i = 0; i < got; i++) {
+        all.push_back(ev[i]);
+        if (ev[i].kind == ENGINE_EVENT_STEP || ev[i].kind == ENGINE_EVENT_ERROR) {
+          EXPECT(ev[i].kind != ENGINE_EVENT_ERROR, "plan error: %s", engine_last_error(e));
+          ended++;
+        }
+      }
+    }
+    return all;
+  };
+
+  // 1. Unprobed request never activates probe tapping or commits probe rows.
+  {
+    engine_ctx *e = open_with_probe(false);
+    admit(e, 0, {1, 2}, 1);
+    submit(e, 0, 2);
+    submit(e, 0);
+    run_plans(e, 2);
+    for (bool on : fake->probe_active_seen) EXPECT(!on, "unprobed step activated probe");
+    EXPECT(fake->probe_commits.empty(), "unprobed step committed probe rows");
+    engine_slot_probe sp{};
+    EXPECT(engine_read_slot_probe(e, 0, &sp) == ENGINE_BAD_ARGUMENT, "unprobed slot_probe must fail");
+    engine_close(e);
+  }
+
+  // 2. BLOCK_INPUT stops with ENGINE_DONE_CONTENT_FILTER and 0 generated tokens.
+  {
+    engine_ctx *e = open_with_probe(false);
+    fake->trigger_input_pos = 1;
+    engine_settings s{};
+    s.max_tokens = 4;
+    s.probe_flags = ENGINE_PROBE_ENABLED | ENGINE_PROBE_BLOCK_INPUT;
+    const std::vector<int32_t> p = {1, 2, 3};
+    EXPECT(engine_admit(e, 0, &s, p.data(), (uint32_t)p.size()) == ENGINE_OK, "admit block_input");
+    submit(e, 0, 2);
+    submit(e, 0);
+    const auto evs = run_plans(e, 2);
+    bool got_filter = false, got_tok = false;
+    for (const auto &ev : evs) {
+      if (ev.kind == ENGINE_EVENT_TOKEN) got_tok = true;
+      if (ev.kind == ENGINE_EVENT_DONE && ev.value == ENGINE_DONE_CONTENT_FILTER) got_filter = true;
+    }
+    EXPECT(got_filter && !got_tok, "BLOCK_INPUT must emit CONTENT_FILTER with no token");
+    engine_slot_probe sp{};
+    EXPECT(engine_read_slot_probe(e, 0, &sp) == ENGINE_OK, "read_slot_probe");
+    EXPECT(sp.input_flagged == 1 && sp.input_scores[0] > 0.99f, "input_flagged expected");
+    engine_close(e);
+  }
+
+  // 3. Draft round: rejected draft rows never reach probe_commit_step; BLOCK_OUTPUT stops mid-round.
+  {
+    engine_ctx *e = open_with_probe(true);
+    fake->trigger_output_pos = 3;  // prompt len=2 (pos 0,1); generated pos 2 ok, pos 3 triggers block
+    engine_settings s{};
+    s.max_tokens = 10;
+    s.probe_flags = ENGINE_PROBE_ENABLED | ENGINE_PROBE_BLOCK_OUTPUT;
+    const std::vector<int32_t> p = {1, 2};
+    EXPECT(engine_admit(e, 0, &s, p.data(), (uint32_t)p.size()) == ENGINE_OK, "admit draft probe");
+    submit(e, 0, 4);  // pos 0
+    submit(e, 0);     // pos 1 -> prompt ends, emits token 0, drafts [7, 99, 99]
+    submit(e, 0);     // round verifies row0 (pos 2) + drafts [7 (pos 3), 99 (pos 4), 99 (pos 5)]: accepts a=1 (2 rows)
+    const auto evs = run_plans(e, 3);
+    bool got_filter = false;
+    uint32_t toks = 0;
+    for (const auto &ev : evs) {
+      if (ev.kind == ENGINE_EVENT_TOKEN) toks++;
+      if (ev.kind == ENGINE_EVENT_DONE && ev.value == ENGINE_DONE_CONTENT_FILTER) got_filter = true;
+    }
+    EXPECT(got_filter, "BLOCK_OUTPUT must fire inside draft round");
+    EXPECT(toks == 2, "expected 2 emitted tokens before pos 3 blocked, got %u", toks);
+    EXPECT(!fake->probe_commits.empty() && fake->probe_commits.back().n == 2, "commit must cover accepted rows only");
+    engine_close(e);
+  }
+
+  // 4. Checkpoint restore: unprobed checkpoint sets probe_start=fed; probed checkpoint sets probe_start=0 and keeps flag.
+  {
+    engine_ctx *e = open_with_probe(false);
+    admit(e, 0, {1, 2, 3}, 1);
+    submit(e, 0, 2);
+    submit(e, 0);
+    run_plans(e, 2);
+    EXPECT(engine_checkpoint(e, 0, 0) == ENGINE_OK, "ck 0");
+    engine_settings s{};
+    s.max_tokens = 1;
+    s.probe_flags = ENGINE_PROBE_ENABLED | ENGINE_PROBE_ONLY;
+    const std::vector<int32_t> p = {1, 2, 3};
+    EXPECT(engine_admit(e, 1, &s, p.data(), (uint32_t)p.size()) == ENGINE_OK, "admit probed 1");
+    EXPECT(engine_restore(e, 1, 0) == ENGINE_OK, "restore unprobed ck");
+    EXPECT(!fake->probe_starts.empty() && fake->probe_starts.back() == std::make_pair(1u, 2u), "probe_start != (1,2)");
+    fake->trigger_input_pos = 2;
+    EXPECT(engine_release(e, 0) == ENGINE_OK, "release 0");
+    submit(e, 1, 2);
+    run_plans(e, 1);
+    EXPECT(engine_checkpoint(e, 1, 1) == ENGINE_OK, "ck 1");
+    const std::vector<int32_t> p4 = {1, 2, 3, 4};
+    EXPECT(engine_admit(e, 0, &s, p4.data(), (uint32_t)p4.size()) == ENGINE_OK, "admit probed 0");
+    EXPECT(engine_restore(e, 0, 1) == ENGINE_OK, "restore probed ck");
+    EXPECT(fake->probe_starts.back() == std::make_pair(0u, 0u), "probed restore must set probe_start=0");
+    engine_slot_probe sp{};
+    EXPECT(engine_read_slot_probe(e, 0, &sp) == ENGINE_OK && sp.input_flagged == 1, "restored probe_snap lost flag");
+    engine_close(e);
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -327,6 +511,7 @@ int main() {
   test_reset_error_is_an_event();
   test_admits_beside_plans();
   test_restore_sets_up_first();
+  test_streaming_probes();
   std::printf("engine_thread_test: ok\n");
   return 0;
 }

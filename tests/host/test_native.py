@@ -287,6 +287,12 @@ class FakeCore:
             raise EngineError(ErrorCode.INVALID_ARGUMENT, "slot_stats: the slot is not admitted")
         return abi.CSlotStats(steps=s.steps)
 
+    def probe_info(self) -> abi.CProbeInfo:
+        return abi.CProbeInfo()
+
+    def slot_probe(self, slot: int) -> abi.CSlotProbe:
+        return abi.CSlotProbe()
+
     def sleep(self) -> None:
         assert not self.slots, "asleep with a slot admitted"
         assert not self.plans, "asleep with a plan queued"

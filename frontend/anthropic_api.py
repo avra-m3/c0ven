@@ -14,6 +14,7 @@ from collections.abc import AsyncIterator
 from typing import Any, cast
 
 import protocol
+from frontend import moderation
 from frontend.body import array, boolean, obj, settings
 from frontend.generate import BadRequest, End, Finish, Request, Result
 from frontend.images import ImageError, from_base64
@@ -29,6 +30,7 @@ _STOP_REASON = {
     Finish.LENGTH: "max_tokens",
     Finish.TOOL_CALLS: "tool_use",
     Finish.CANCEL: "end_turn",
+    Finish.CONTENT_FILTER: "refusal",
     Finish.ERROR: "end_turn",
 }
 
@@ -219,10 +221,10 @@ def _usage(end: End) -> JSONObject:
     }
 
 
-def response(result: Result, model: str) -> JSONObject:
+def response(result: Result, model: str, *, probe_meta: protocol.ProbeMeta | None = None) -> JSONObject:
     end = result.end
     assert end is not None
-    return {
+    out: JSONObject = {
         "id": f"msg_{uuid.uuid4().hex}",
         "type": "message",
         "role": "assistant",
@@ -232,6 +234,10 @@ def response(result: Result, model: str) -> JSONObject:
         "stop_sequence": end.stop_string,
         "usage": _usage(end),
     }
+    if probe_meta is not None and end.probe_report is not None:
+        include_output = end.completion_tokens > 0 or end.finish is not Finish.CONTENT_FILTER
+        out["moderation"] = moderation.format_chat(probe_meta, end.probe_report, include_output=include_output)
+    return out
 
 
 type SSE = tuple[str, JSONObject]
@@ -267,7 +273,13 @@ class _Blocks:
         return "content_block_delta", {"type": "content_block_delta", "index": self.index, "delta": delta}
 
 
-async def stream_events(pieces: AsyncIterator[Piece | End], model: str, prompt_tokens: int) -> AsyncIterator[SSE]:
+async def stream_events(
+    pieces: AsyncIterator[Piece | End],
+    model: str,
+    prompt_tokens: int,
+    *,
+    probe_meta: protocol.ProbeMeta | None = None,
+) -> AsyncIterator[SSE]:
     """(event name, data) pairs for server-sent events."""
     message: JSONObject = {
         "id": f"msg_{uuid.uuid4().hex}",
@@ -311,7 +323,13 @@ async def stream_events(pieces: AsyncIterator[Piece | End], model: str, prompt_t
                 else:
                     stop = {"stop_reason": _STOP_REASON[piece.finish], "stop_sequence": piece.stop_string}
                     usage = {"output_tokens": piece.completion_tokens, **piece.speeds()}
-                    out.append(("message_delta", {"type": "message_delta", "delta": stop, "usage": usage}))
+                    delta_evt: JSONObject = {"type": "message_delta", "delta": stop, "usage": usage}
+                    if probe_meta is not None and piece.probe_report is not None:
+                        include_output = piece.completion_tokens > 0 or piece.finish is not Finish.CONTENT_FILTER
+                        delta_evt["moderation"] = moderation.format_chat(
+                            probe_meta, piece.probe_report, include_output=include_output
+                        )
+                    out.append(("message_delta", delta_evt))
                     out.append(("message_stop", {"type": "message_stop"}))
         for event in out:
             yield event

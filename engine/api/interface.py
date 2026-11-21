@@ -83,6 +83,7 @@ class FinishReason(IntEnum):
     EOS = 1
     LENGTH = 2
     CANCELLED = 3
+    CONTENT_FILTER = 4
 
 
 class SplitKind(IntEnum):
@@ -157,7 +158,8 @@ class OpenConfig:
     """Bytes of the host's reserved huge pages for the n-gram table, a multiple of their size: with ngram_in_ram its
     first part, otherwise its row cache, as many rows as they hold. If the core cannot map them, the table is read from
     the file with the default cache. 0: none."""
-    """The image encoder's file (the mmproj GGUF, spec/MODEL_VISION.md); empty: no images."""
+    probe_dir: str = ""
+    """Streaming probe directory (config.json, model.safetensors, optional calibration.json); empty: none."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,6 +201,8 @@ class EngineFacts:
     decode_weight: int = 0
     """What a decode token is worth in prompt rows when the scheduler sizes a prompt piece beside writers. 0: decode
     does not count."""
+    probe_labels: int = 0
+    """Number of labels the loaded streaming probe reports; 0: no probe loaded."""
 
 
 IMAGE_PATCH_BYTES = 768
@@ -268,6 +272,8 @@ class SlotSettings:
     penalty_present: float
     seed: int
     max_new: int
+    probe_flags: int = 0
+    probe_spans: tuple[tuple[int, int], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -454,6 +460,37 @@ class SlotStats:
     lookup_accepted: int = 0
 
 
+@dataclass(frozen=True, slots=True)
+class ProbeLabel:
+    """One label reported by the loaded streaming hidden-state probe."""
+
+    name: str
+    scope: str
+    threshold: float
+    safe: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ProbeInfo:
+    """Metadata of the loaded streaming hidden-state probe."""
+
+    model: str
+    kind: str
+    window: int
+    roll_window: int
+    labels: tuple[ProbeLabel, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class SlotProbe:
+    """Accumulated streaming probe scores for an admitted probed slot."""
+
+    input_flagged: bool
+    output_flagged: bool
+    input_scores: tuple[float, ...]
+    output_scores: tuple[float, ...]
+
+
 class TimingStage(IntEnum):
     """What a timing record measures: its `stage` field."""
 
@@ -488,6 +525,14 @@ class Engine(Protocol):
 
     def slot_stats(self, slot: int) -> SlotStats:
         """An admitted slot's counters; zeros for one that is not."""
+        ...
+
+    def probe_info(self) -> ProbeInfo | None:
+        """Loaded streaming probe metadata, or None when no probe is loaded."""
+        ...
+
+    def slot_probe(self, slot: int) -> SlotProbe | None:
+        """An admitted probed slot's accumulated scores, or None when unprobed."""
         ...
 
     def sleep(self) -> None:

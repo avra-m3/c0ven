@@ -26,6 +26,9 @@ engine_add_kernel_module(qwen4exp_gdn SOURCE kernels/models/qwen4exp/prompt_gdn.
 # The DFlash 2 drafter's kernels between its products (core/models/qwen4exp/dflash.cpp).
 engine_add_kernel_module(qwen4exp_dflash SOURCE kernels/models/qwen4exp/dflash.cl
                          OPTIONS -I${CMAKE_SOURCE_DIR}/core/models/qwen4exp)
+# Streaming hidden-state probe kernels (core/models/qwen4exp/probe.cpp).
+engine_add_kernel_module(qwen4exp_probe SOURCE kernels/models/qwen4exp/probe.cl
+                         OPTIONS -I${CMAKE_SOURCE_DIR}/core/models/qwen4exp)
 # The image encoder's steps between its products (docs/spec/MODEL_VISION.md).
 engine_add_kernel_module(qwen4exp_vision SOURCE kernels/models/qwen4exp/vision.cl
                          OPTIONS -I${CMAKE_SOURCE_DIR}/core/models/qwen4exp)

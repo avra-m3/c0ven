@@ -6,6 +6,7 @@ target_sources(engine_core PRIVATE
   model.cpp
   mtp.cpp
   ngram.cpp
+  probe.cpp
   prompt.cpp
   shape.cpp
   state.cpp

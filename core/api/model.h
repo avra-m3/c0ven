@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "api/probe.h"
 #include "step.h"
 
 namespace engine {
@@ -56,6 +57,8 @@ struct Options {
   std::string mtp_dir;
   // The image encoder's file (docs/spec/MODEL_VISION.md, section 1); empty: no images. Needs prompt_chunk.
   std::string vision_path;
+  // Streaming hidden-state probe directory (config.json, model.safetensors, optional calibration.json); empty: none.
+  std::string probe_path;
 };
 
 // One kernel's share of a traced list's last run.
@@ -249,6 +252,28 @@ class Model {
   virtual uint32_t fetch_rows() const = 0;
   // What a decode token is worth in prompt rows when the scheduler sizes a prompt piece beside writers.
   virtual uint32_t decode_weight() const = 0;
+
+  // Streaming hidden-state probe (api/probe.h). Null when no probe is loaded.
+  virtual const ProbeSpec *probe_spec() const { return nullptr; }
+  // Enables hidden-state tapping for the next step() or prompt_runs() call. False runs untouched normal lists.
+  virtual void set_probe_active(bool on) { (void)on; }
+  // Sets the first valid position in slot's probe attention window (0 on reset, checkpoint_pos on unprobed restore).
+  virtual void probe_start(uint32_t slot, uint32_t pos) {
+    (void)slot;
+    (void)pos;
+  }
+  // Evaluates the probe head and updates each slot's probe state for accepted runs of the last step().
+  virtual std::vector<float> probe_commit_step(const CommitRun *runs, uint32_t nruns) {
+    (void)runs;
+    (void)nruns;
+    return {};
+  }
+  // Evaluates the probe head and updates each slot's probe state for probed runs of the last prompt_runs().
+  virtual std::vector<float> probe_commit_prompt(const CommitRun *runs, uint32_t nruns) {
+    (void)runs;
+    (void)nruns;
+    return {};
+  }
 
   // A slot's fixed state as one block: what the KV pages do not hold. Its size, and copies to and from host memory
   // (the block must be host memory every card reaches: alloc_pinned).

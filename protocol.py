@@ -27,6 +27,7 @@ Engine to front end:
     RESUME <rid> <reused>
     PP <rid> <reached> <prompt> <ms>
     T <rid> <id>[,<id>...]
+    PROBE <rid> <in_flagged> <out_flagged> <s1,...> <s1,...>
     DONE <rid> <generated> <prompt> <prompt_ms> <decode_ms> <finish> <reused> [key=value ...]
     STATS key=value ...
     ERR <rid|-> <message>
@@ -54,6 +55,11 @@ from typing import ClassVar
 
 TOP_K_MAX = 64
 """The largest top-k the cards sample from (Strata's limit, kept: the cards exchange top-k candidates)."""
+PROBE_ENABLED = 1
+PROBE_BLOCK_INPUT = 2
+PROBE_BLOCK_OUTPUT = 4
+PROBE_ONLY = 8
+MAX_PROBE_SPANS = 16
 
 
 class ProtocolError(ValueError):
@@ -64,6 +70,58 @@ class Finish(StrEnum):
     LENGTH = "length"
     STOP = "stop"
     CANCEL = "cancel"
+    CONTENT_FILTER = "content_filter"
+
+
+@dataclass(frozen=True, slots=True)
+class ProbeLabelMeta:
+    """One label reported by the loaded streaming hidden-state probe."""
+
+    name: str
+    scope: str  # "input", "output", "both", "drift"
+    threshold: float
+    safe: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ProbeMeta:
+    """Loaded streaming hidden-state probe metadata carried in INFO facts."""
+
+    model: str
+    kind: str
+    window: int
+    roll_window: int
+    labels: tuple[ProbeLabelMeta, ...]
+
+    def to_facts(self) -> dict[str, str]:
+        enc = ",".join(f"{lb.name}:{lb.scope}:{lb.threshold!r}:{1 if lb.safe else 0}" for lb in self.labels)
+        return {
+            "probe_model": self.model,
+            "probe_kind": self.kind,
+            "probe_window": str(self.window),
+            "probe_roll": str(self.roll_window),
+            "probe_labels": enc,
+        }
+
+    @classmethod
+    def from_facts(cls, facts: dict[str, str]) -> ProbeMeta | None:
+        model = facts.get("probe_model")
+        raw_labels = facts.get("probe_labels")
+        if not model or not raw_labels:
+            return None
+        labels: list[ProbeLabelMeta] = []
+        for item in raw_labels.split(","):
+            parts = item.split(":")
+            if len(parts) != 4:
+                raise ProtocolError(f"bad probe_labels entry: {item!r}")
+            labels.append(ProbeLabelMeta(parts[0], parts[1], _float(parts[2], "threshold"), parts[3] == "1"))
+        return cls(
+            model=model,
+            kind=facts.get("probe_kind", ""),
+            window=_int(facts.get("probe_window", "0"), "probe_window"),
+            roll_window=_int(facts.get("probe_roll", "10"), "probe_roll"),
+            labels=tuple(labels),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,10 +249,24 @@ class Gen:
     max_new: int
     prompt: tuple[int, ...]
     settings: Settings = field(default_factory=Settings)
+    probe_flags: int = 0
+    probe_spans: tuple[tuple[int, int], ...] = ()
 
     def encode(self) -> str:
+        extra: list[str] = []
+        if self.probe_flags:
+            extra.append(f"probe={self.probe_flags}")
+        if self.probe_spans:
+            extra.append("probe_spans=" + ",".join(f"{s}:{e}" for s, e in self.probe_spans))
         return " ".join(
-            ["GEN", str(self.rid), str(self.max_new), *self.settings.encode(), ",".join(map(str, self.prompt))]
+            [
+                "GEN",
+                str(self.rid),
+                str(self.max_new),
+                *self.settings.encode(),
+                *extra,
+                ",".join(map(str, self.prompt)),
+            ]
         )
 
 
@@ -256,13 +328,60 @@ class Quit:
 type Command = Img | Gen | Stop | Stats | Sleep | Wake | Quit
 
 
+def _parse_spans(text: str) -> tuple[tuple[int, int], ...]:
+    if not text:
+        return ()
+    out: list[tuple[int, int]] = []
+    for part in text.split(","):
+        a, sep, b = part.partition(":")
+        if not sep:
+            raise ProtocolError(f"bad probe span: {part!r}")
+        s, e = _int(a, "span_start"), _int(b, "span_end")
+        if s >= e:
+            raise ProtocolError(f"empty probe span: {part!r}")
+        out.append((s, e))
+    if len(out) > MAX_PROBE_SPANS:
+        raise ProtocolError(f"too many probe spans ({len(out)} > {MAX_PROBE_SPANS})")
+    return tuple(out)
+
+
+def _floats(text: str, name: str) -> tuple[float, ...]:
+    if not text:
+        raise ProtocolError(f"empty {name}")
+    vals = tuple(_float(part, name) for part in text.split(","))
+    if any(not math.isfinite(v) for v in vals):
+        raise ProtocolError(f"non-finite {name}")
+    return vals
+
+
 def parse_command(line: str) -> Command:
     parts = line.split()
     if not parts:
         raise ProtocolError("empty line")
     match parts:
         case ["GEN", rid, max_new, *rest] if rest:
-            return Gen(_int(rid, "rid"), _int(max_new, "max_new"), _ids(rest[-1]), Settings.decode(rest[:-1]))
+            pairs = rest[:-1]
+            setting_pairs: list[str] = []
+            probe_flags = 0
+            probe_spans: tuple[tuple[int, int], ...] = ()
+            for pair in pairs:
+                key, sep, val = pair.partition("=")
+                if not sep:
+                    raise ProtocolError(f"setting without '=': {pair!r}")
+                if key == "probe":
+                    probe_flags = _int(val, "probe")
+                elif key == "probe_spans":
+                    probe_spans = _parse_spans(val)
+                else:
+                    setting_pairs.append(pair)
+            return Gen(
+                _int(rid, "rid"),
+                _int(max_new, "max_new"),
+                _ids(rest[-1]),
+                Settings.decode(setting_pairs),
+                probe_flags,
+                probe_spans,
+            )
         case ["IMG", rid, first, grid_h, grid_w, frames, path]:
             return Img(
                 _int(rid, "rid"),
@@ -355,6 +474,22 @@ class Tokens:
 
 
 @dataclass(frozen=True, slots=True)
+class ProbeReport:
+    """Streaming probe scores for request rid, emitted before DONE when probing was enabled."""
+
+    rid: int
+    input_flagged: bool
+    output_flagged: bool
+    input_scores: tuple[float, ...]
+    output_scores: tuple[float, ...]
+
+    def encode(self) -> str:
+        ins = ",".join(map(repr, self.input_scores))
+        outs = ",".join(map(repr, self.output_scores))
+        return f"PROBE {self.rid} {1 if self.input_flagged else 0} {1 if self.output_flagged else 0} {ins} {outs}"
+
+
+@dataclass(frozen=True, slots=True)
 class Done:
     rid: int
     generated: int
@@ -427,7 +562,7 @@ class Error:
         return f"ERR {'-' if self.rid is None else self.rid} {_one_line(self.message)}"
 
 
-type Event = Info | Ready | Asleep | Resume | Progress | Tokens | Done | StatsReport | Error
+type Event = Info | Ready | Asleep | Resume | Progress | Tokens | ProbeReport | Done | StatsReport | Error
 
 
 def parse_event(line: str) -> Event:
@@ -449,6 +584,14 @@ def parse_event(line: str) -> Event:
             return Progress(_int(rid, "rid"), _int(reached, "reached"), _int(prompt, "prompt"), _float(ms, "ms"))
         case ["T", rid, ids]:
             return Tokens(_int(rid, "rid"), _ids(ids))
+        case ["PROBE", rid, in_flag, out_flag, ins, outs]:
+            return ProbeReport(
+                _int(rid, "rid"),
+                _int(in_flag, "input_flagged") != 0,
+                _int(out_flag, "output_flagged") != 0,
+                _floats(ins, "input_scores"),
+                _floats(outs, "output_scores"),
+            )
         case ["DONE", rid, generated, prompt, prompt_ms, decode_ms, finish, *rest]:
             try:
                 why = Finish(finish)

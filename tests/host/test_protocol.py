@@ -157,3 +157,50 @@ def test_token_counts(text: str, n: int):
 def test_bad_token_counts(text: str):
     with pytest.raises(ValueError, match=r"negative|invalid literal"):
         protocol.tokens(text)
+
+
+def test_probe_protocol_round_trip():
+    plain = Gen(1, 8, (10, 11))
+    assert "probe" not in plain.encode()
+    assert parse_command(plain.encode()) == plain
+
+    probed = Gen(
+        2,
+        16,
+        (1, 2, 3, 4),
+        Settings(temperature=0.0),
+        probe_flags=protocol.PROBE_ENABLED | protocol.PROBE_BLOCK_INPUT,
+        probe_spans=((1, 3),),
+    )
+    assert parse_command(probed.encode()) == probed
+
+    report = protocol.ProbeReport(2, True, False, (0.1, 0.9), (0.05, 0.2))
+    assert parse_event(report.encode()) == report
+
+    done_cf = Done(2, 0, 4, 1.0, 0.0, Finish.CONTENT_FILTER)
+    assert parse_event(done_cf.encode()) == done_cf
+
+    meta = protocol.ProbeMeta(
+        model="Qwen3.8-Flash-Next-singprobe",
+        kind="sing_probe_attn",
+        window=2048,
+        roll_window=10,
+        labels=(
+            protocol.ProbeLabelMeta("sexual", "input", 0.5),
+            protocol.ProbeLabelMeta("safe", "input", 0.5, safe=True),
+            protocol.ProbeLabelMeta("hallucination", "output", 0.6),
+        ),
+    )
+    info = Info({"backend": "mock", **meta.to_facts()})
+    parsed = parse_event(info.encode())
+    assert isinstance(parsed, Info)
+    assert protocol.ProbeMeta.from_facts(parsed.facts) == meta
+
+
+def test_probe_protocol_rejects_bad_spans():
+    with pytest.raises(ProtocolError):
+        parse_command("GEN 1 8 probe=1 probe_spans=5:5 1,2,3")
+    with pytest.raises(ProtocolError):
+        parse_command("GEN 1 8 probe=1 probe_spans=bad 1,2,3")
+    with pytest.raises(ProtocolError):
+        parse_event("PROBE 1 0 0 nan 0.1")

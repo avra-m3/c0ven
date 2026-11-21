@@ -52,6 +52,9 @@ from engine.api.interface import (
     OpenConfig,
     PageChange,
     PageOp,
+    ProbeInfo,
+    ProbeLabel,
+    SlotProbe,
     SlotSettings,
     SlotStats,
     StepPlan,
@@ -81,6 +84,14 @@ _FINISH = {
     abi.CDone.STOP: FinishReason.EOS,
     abi.CDone.LENGTH: FinishReason.LENGTH,
     abi.CDone.CONTEXT: FinishReason.LENGTH,
+    abi.CDone.CONTENT_FILTER: FinishReason.CONTENT_FILTER,
+}
+
+_PROBE_SCOPES = {
+    abi.ProbeScope.INPUT: "input",
+    abi.ProbeScope.OUTPUT: "output",
+    abi.ProbeScope.BOTH: "both",
+    abi.ProbeScope.DRIFT: "drift",
 }
 
 
@@ -146,6 +157,8 @@ def load_library(path: Path | None = None) -> ctypes.CDLL:
         "engine_read_timing": ([_ctx, ctypes.POINTER(abi.CTiming), _u32, _p_u32], ctypes.c_int),
         "engine_read_stats": ([_ctx, ctypes.POINTER(abi.CStats)], ctypes.c_int),
         "engine_read_slot_stats": ([_ctx, _u32, ctypes.POINTER(abi.CSlotStats)], ctypes.c_int),
+        "engine_read_probe_info": ([_ctx, ctypes.POINTER(abi.CProbeInfo)], ctypes.c_int),
+        "engine_read_slot_probe": ([_ctx, _u32, ctypes.POINTER(abi.CSlotProbe)], ctypes.c_int),
         "engine_sleep": ([_ctx], ctypes.c_int),
         "engine_wake": ([_ctx, ctypes.POINTER(abi.CInfo)], ctypes.c_int),
         "engine_last_error": ([_ctx], ctypes.c_char_p),
@@ -215,6 +228,14 @@ class Core(Protocol):
     def read_stats(self) -> abi.CStats: ...
     def slot_stats(self, slot: int) -> abi.CSlotStats:
         """Raises EngineError for a slot not admitted."""
+        ...
+
+    def probe_info(self) -> abi.CProbeInfo:
+        """Raises EngineError when no probe is loaded."""
+        ...
+
+    def slot_probe(self, slot: int) -> abi.CSlotProbe:
+        """Raises EngineError for a slot not admitted or without an active probe."""
         ...
 
     def sleep(self) -> None: ...
@@ -310,6 +331,16 @@ class CtypesCore:
         self._check(self._lib.engine_read_slot_stats(self._ctx, slot, ctypes.byref(out)), "slot_stats")
         return out
 
+    def probe_info(self) -> abi.CProbeInfo:
+        out = abi.CProbeInfo()
+        self._check(self._lib.engine_read_probe_info(self._ctx, ctypes.byref(out)), "probe_info")
+        return out
+
+    def slot_probe(self, slot: int) -> abi.CSlotProbe:
+        out = abi.CSlotProbe()
+        self._check(self._lib.engine_read_slot_probe(self._ctx, slot, ctypes.byref(out)), "slot_probe")
+        return out
+
     def sleep(self) -> None:
         self._check(self._lib.engine_sleep(self._ctx), "sleep")
 
@@ -335,6 +366,7 @@ class _Slot:
     """Each queued span's end position and row count, until the core reports it read."""
     decoding: bool = False
     finished: bool = False
+    probe_only: bool = False
 
 
 @dataclass(slots=True)
@@ -357,6 +389,7 @@ class NativeEngine:
         self._model_path = b""
         self._draft_dir = b""
         self._vision_path = b""
+        self._probe_path = b""
         self._stop_ids: tuple[int, ...] = ()
         self._slots: dict[int, _Slot] = {}
         self._checkpoint_len: dict[int, int] = {}
@@ -414,6 +447,9 @@ class NativeEngine:
         self._vision_path = config.vision_path.encode()
         if self._vision_path:
             c.vision_path = self._vision_path
+        self._probe_path = config.probe_dir.encode()
+        if self._probe_path:
+            c.probe_path = self._probe_path
         info = self._core.open(c)
         if info.api_version != abi.ABI_VERSION:
             self._core.close()
@@ -461,6 +497,7 @@ class NativeEngine:
             expert_budget=tuple(int(info.expert_budget[i]) for i in range(info.cards)),
             fetch_rows=int(info.fetch_rows),
             decode_weight=int(info.decode_weight),
+            probe_labels=int(info.probe_labels),
         )
 
     def sleep(self) -> None:
@@ -501,6 +538,13 @@ class NativeEngine:
         c.penalty_repeat = settings.penalty_repeat
         c.penalty_freq = settings.penalty_freq
         c.penalty_present = settings.penalty_present
+        c.probe_flags = settings.probe_flags
+        c.n_probe_spans = len(settings.probe_spans)
+        if len(settings.probe_spans) > abi.MAX_PROBE_SPANS:
+            raise EngineError(ErrorCode.INVALID_ARGUMENT, f"{len(settings.probe_spans)} spans > {abi.MAX_PROBE_SPANS}")
+        for i, (start, end) in enumerate(settings.probe_spans):
+            c.probe_spans[i].start = start
+            c.probe_spans[i].end = end
         c.n_stop = len(self._stop_ids)
         for i, token in enumerate(self._stop_ids):
             c.stop[i] = token
@@ -511,7 +555,7 @@ class NativeEngine:
             except EngineError:
                 self._core.release(slot)
                 raise
-        self._slots[slot] = _Slot(len(prompt))
+        self._slots[slot] = _Slot(len(prompt), probe_only=bool(settings.probe_flags & abi.ProbeFlag.ONLY))
 
     def release(self, slot: int) -> None:
         if self._slots.pop(slot, None) is None:
@@ -546,7 +590,7 @@ class NativeEngine:
                 pieces.append((span.slot, min(chunk, end - first)))
             s.fed = end
             s.spans.append((end, span.count))
-            if span.last:
+            if span.last and not s.probe_only:
                 joining.append(s)
         changes = _page_changes(plan.pages)
         for i in range(0, len(pieces), abi.MAX_PROMPT_PIECES):
@@ -608,6 +652,45 @@ class NativeEngine:
         except EngineError:
             return SlotStats()
         return SlotStats(**{name: int(getattr(c, name)) for name in abi.SLOT_STATS_FIELDS})
+
+    def probe_info(self) -> ProbeInfo | None:
+        if self._info is None or self._asleep or not self._info.probe_labels:
+            return None
+        try:
+            c = self._core.probe_info()
+        except EngineError:
+            return None
+        labels = tuple(
+            ProbeLabel(
+                name=c.labels[i].name.decode(errors="replace"),
+                scope=_PROBE_SCOPES.get(abi.ProbeScope(c.labels[i].scope), "both"),
+                threshold=float(c.labels[i].threshold),
+                safe=bool(c.labels[i].flags & abi.ProbeLabelFlag.SAFE),
+            )
+            for i in range(int(c.n_labels))
+        )
+        return ProbeInfo(
+            model=c.model_name.decode(errors="replace"),
+            kind=c.kind.decode(errors="replace"),
+            window=int(c.window),
+            roll_window=int(c.roll_window),
+            labels=labels,
+        )
+
+    def slot_probe(self, slot: int) -> SlotProbe | None:
+        if self._info is None or self._asleep or slot not in self._slots:
+            return None
+        try:
+            c = self._core.slot_probe(slot)
+        except EngineError:
+            return None
+        n = int(c.n_labels)
+        return SlotProbe(
+            input_flagged=bool(c.input_flagged),
+            output_flagged=bool(c.output_flagged),
+            input_scores=tuple(float(c.input_scores[i]) for i in range(n)),
+            output_scores=tuple(float(c.output_scores[i]) for i in range(n)),
+        )
 
     def close(self) -> None:
         if self._info is not None:

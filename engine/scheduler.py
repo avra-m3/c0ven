@@ -97,7 +97,10 @@ _FINISH = {
     FinishReason.EOS: protocol.Finish.STOP,
     FinishReason.LENGTH: protocol.Finish.LENGTH,
     FinishReason.CANCELLED: protocol.Finish.CANCEL,
+    FinishReason.CONTENT_FILTER: protocol.Finish.CONTENT_FILTER,
 }
+
+_PROBE_MASK = protocol.PROBE_ENABLED | protocol.PROBE_BLOCK_INPUT | protocol.PROBE_BLOCK_OUTPUT | protocol.PROBE_ONLY
 
 
 @dataclass(slots=True)
@@ -137,6 +140,16 @@ class Request:
     """The position the slot waits at for a page, from its STALLED event until it has the page."""
     preempting: bool = False
     """It is stopped to free its pages, and goes back to the queue when it finishes."""
+    probe_flags: int = 0
+    probe_spans: tuple[tuple[int, int], ...] = ()
+
+    @property
+    def probed(self) -> bool:
+        return bool(self.probe_flags & protocol.PROBE_ENABLED)
+
+    @property
+    def probe_only(self) -> bool:
+        return bool(self.probe_flags & protocol.PROBE_ONLY)
 
     @property
     def left(self) -> int:
@@ -218,25 +231,45 @@ class Scheduler:
     def add(self, gen: protocol.Gen, priority: int = 0, images: tuple[Image, ...] = ()) -> list[protocol.Event]:
         if gen.rid in self.by_rid:
             return [protocol.Error(gen.rid, "request id already in use")]
-        if gen.max_new < 1:
+        if (problem := self._probe_problem(gen)) is not None:
+            return [protocol.Error(gen.rid, problem)]
+        probe_only = bool(gen.probe_flags & protocol.PROBE_ONLY)
+        max_new = 0 if probe_only else gen.max_new
+        if not probe_only and max_new < 1:
             return [protocol.Error(gen.rid, "max_new must be at least 1")]
-        if len(gen.prompt) + gen.max_new > self.facts.max_context:
+        if len(gen.prompt) + max_new > self.facts.max_context:
             return [
                 protocol.Error(
                     gen.rid,
-                    f"prompt ({len(gen.prompt)}) plus max_new ({gen.max_new}) exceeds the context "
+                    f"prompt ({len(gen.prompt)}) plus max_new ({max_new}) exceeds the context "
                     f"({self.facts.max_context})",
                 )
             ]
         if (problem := self._image_problem(gen.prompt, images)) is not None:
             return [protocol.Error(gen.rid, problem)]
-        r = Request(gen.rid, gen.prompt, gen.max_new, gen.settings.with_defaults(), self.clock(), priority)
+        r = Request(gen.rid, gen.prompt, max_new, gen.settings.with_defaults(), self.clock(), priority)
         r.given = len(gen.prompt)
         r.images = images
         r.key = prefix_key(gen.prompt, images)
+        r.probe_flags = gen.probe_flags
+        r.probe_spans = gen.probe_spans
         self.by_rid[r.rid] = r
         self.waiting.append(r)
         return []
+
+    def _probe_problem(self, gen: protocol.Gen) -> str | None:
+        if not gen.probe_flags and not gen.probe_spans:
+            return None
+        if (gen.probe_flags & ~_PROBE_MASK) != 0 or not (gen.probe_flags & protocol.PROBE_ENABLED):
+            return f"bad probe flags: {gen.probe_flags}"
+        if not self.facts.probe_labels:
+            return "no streaming probe is loaded"
+        if len(gen.probe_spans) > protocol.MAX_PROBE_SPANS:
+            return f"too many probe spans ({len(gen.probe_spans)} > {protocol.MAX_PROBE_SPANS})"
+        for s, e in gen.probe_spans:
+            if s < 0 or s >= e or e > len(gen.prompt):
+                return f"probe span {s}:{e} out of range for prompt of {len(gen.prompt)}"
+        return None
 
     def _image_problem(self, prompt: tuple[int, ...], images: tuple[Image, ...]) -> str | None:
         if not images:
@@ -289,14 +322,24 @@ class Scheduler:
     def _producer_for(self, r: Request, have: int) -> int | None:
         """The request r should wait for: one that will checkpoint a prefix of r's prompt longer than `have`, or
         has one in progress. -1 for a checkpoint whose producer has moved on but which the core has not answered."""
+        if r.probe_only:
+            return None
         for p in self.by_rid.values():
             if p is r or p.phase is Phase.WAITING or p.priority < r.priority:
                 continue
+            if r.probed and not p.probed:
+                continue
             for position, _ in p.marks:
+                if r.probe_spans and any(max(0, s - 1) < position < e for s, e in r.probe_spans):
+                    continue
                 if have < position < len(r.key) and p.key[:position] == r.key[:position]:
                     return p.rid
         for ck in self.state.checkpoints:
             n = len(ck.tokens)
+            if r.probed and not ck.probed:
+                continue
+            if r.probe_spans and any(max(0, s - 1) < n < e for s, e in r.probe_spans):
+                continue
             if not ck.ready and have < n < len(r.key) and r.key[:n] == ck.tokens:
                 return -1
         return None
@@ -308,14 +351,26 @@ class Scheduler:
             return
         self.waiting.sort(key=lambda r: (-r.priority, r.arrived))
         for r in list(self.waiting):
-            best = self.state.checkpoints.longest_prefix(r.key)
+            best = (
+                None
+                if r.probe_only
+                else self.state.checkpoints.longest_prefix(r.key, require_probed=r.probed, avoid_spans=r.probe_spans)
+            )
             producer = self._producer_for(r, len(best.tokens) if best else 0)
             if producer is not None:
                 r.waiting_for = producer
                 continue
             r.waiting_for = None
             o = self.options
-            admission = self.state.plan_admission(r.key, r.left, o.decode_lookahead + o.decode_batch)
+            ahead = 0 if r.probe_only else o.decode_lookahead + o.decode_batch
+            admission = self.state.plan_admission(
+                r.key,
+                r.left,
+                ahead,
+                allow_checkpoint=not r.probe_only,
+                require_probed=r.probed,
+                avoid_spans=r.probe_spans,
+            )
             if admission is None:
                 break
             self._flush_drops()
@@ -335,6 +390,8 @@ class Scheduler:
                         s.penalty_present,
                         s.seed,
                         r.left,
+                        r.probe_flags,
+                        r.probe_spans,
                     ),
                     r.prompt,
                     r.images,
@@ -360,7 +417,7 @@ class Scheduler:
             # A mark cuts the prompt's spans and makes requests sharing the prefix wait, so a pool of none has no marks.
             r.marks = (
                 sorted((p, k) for p, k in self.rule(r.prompt) if seq.start < p < len(r.prompt))
-                if self.state.checkpoints.size
+                if self.state.checkpoints.size and not r.probe_only
                 else []
             )
             self.by_slot[seq.slot] = r
@@ -396,7 +453,7 @@ class Scheduler:
             self.spans_in_flight[span.slot] = self.spans_in_flight.get(span.slot, 0) + 1
         self.prompt_step_open |= bool(plan.prompt)
         for r, position, kept in marks:
-            ck = self.state.checkpoint(r.slot, position, kept)
+            ck = self.state.checkpoint(r.slot, position, kept, probed=r.probed)
             self._flush_drops()
             if ck is not None:
                 self.engine.checkpoint(r.slot, ck.id)
@@ -498,7 +555,7 @@ class Scheduler:
             if pages_for(r.next_pos + rows) > len(seq.pages):
                 raise AssertionError("prompt span without its pages")
             last = r.next_pos + rows == len(r.prompt)
-            if last:
+            if last and not r.probe_only:
                 self._grow_ahead(r, len(r.prompt))  # its first tokens decode without waiting for a plan
             plan.prompt.append(PromptSpan(r.slot, r.next_pos, rows, last))
             r.next_pos += rows
@@ -561,6 +618,14 @@ class Scheduler:
             case EventKind.FINISHED:
                 first = r.t_first if r.t_first is not None else now
                 st = self.engine.slot_stats(r.slot)  # before the release empties the slot
+                if r.probed:
+                    sp = self.engine.slot_probe(r.slot)
+                    if sp is not None:
+                        out.append(
+                            protocol.ProbeReport(
+                                r.rid, sp.input_flagged, sp.output_flagged, sp.input_scores, sp.output_scores
+                            )
+                        )
                 out.append(
                     protocol.Done(
                         r.rid,

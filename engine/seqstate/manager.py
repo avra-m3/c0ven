@@ -72,13 +72,26 @@ class SeqState:
     def free_slots(self) -> int:
         return len(self._free_slots)
 
-    def plan_admission(self, prompt: tuple[int, ...], max_new: int, ahead: int = 0) -> Admission | None:
+    def plan_admission(
+        self,
+        prompt: tuple[int, ...],
+        max_new: int,
+        ahead: int = 0,
+        *,
+        allow_checkpoint: bool = True,
+        require_probed: bool = False,
+        avoid_spans: tuple[tuple[int, int], ...] = (),
+    ) -> Admission | None:
         """Whether a request fits now, evicting checkpoints for room if it must (`_make_room`), never the one it
         resumes from. None if it does not fit. It reserves the prompt and the first `ahead` cells after it, at most
         `max_new`."""
         if not self._free_slots:
             return None
-        ck = self.checkpoints.longest_prefix(prompt)
+        ck = (
+            self.checkpoints.longest_prefix(prompt, require_probed=require_probed, avoid_spans=avoid_spans)
+            if allow_checkpoint
+            else None
+        )
         shared = len(ck.tokens) // PAGE_CELLS if ck is not None else 0
         need = self.pool.split(shared, pages_for(len(prompt) + min(ahead, max_new)))
         if not self._make_room(list(need), keep=ck):
@@ -200,19 +213,24 @@ class SeqState:
                 seq.source.users.discard(seq.slot)
                 seq.source = None
 
-    def checkpoint(self, slot: int, position: int, kept: bool) -> Checkpoint | None:
+    def checkpoint(self, slot: int, position: int, kept: bool, *, probed: bool = False) -> Checkpoint | None:
         """Record a checkpoint of the slot's state after `position` prompt tokens. None if an equal one exists, or if
         the pool has no room: a later prompt then reads these tokens again."""
         seq = self.sequences[slot]
         tokens = seq.prompt[:position]
         existing = self.checkpoints.find(tokens)
         if existing is not None:
-            existing.kept = existing.kept or kept
-            self.checkpoints.touch(existing)
-            return None
+            if probed and not existing.probed and existing.ready and not existing.users:
+                kept = kept or existing.kept
+                self.checkpoints.remove(existing.id)
+                self.drops.append(existing.id)
+            else:
+                existing.kept = existing.kept or kept
+                self.checkpoints.touch(existing)
+                return None
         if not self.checkpoints.has_room():
             return None
-        ck, evicted = self.checkpoints.add(tokens, tuple(seq.pages[: pages_for(position)]), kept)
+        ck, evicted = self.checkpoints.add(tokens, tuple(seq.pages[: pages_for(position)]), kept, probed=probed)
         self.drops.extend(evicted)
         self.evicted_for_room += len(evicted)
         return ck

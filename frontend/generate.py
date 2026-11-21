@@ -39,6 +39,9 @@ class Engine(Protocol):
         max_new: int,
         settings: protocol.Settings,
         images: Sequence[PromptImage] = (),
+        *,
+        probe_flags: int = 0,
+        probe_spans: Sequence[tuple[int, int]] = (),
     ) -> AsyncGenerator[protocol.Event]: ...
 
 
@@ -48,6 +51,7 @@ class Finish(StrEnum):
     TOOL_CALLS = "tool_calls"
     STOP_STRING = "stop_string"
     CANCEL = "cancel"
+    CONTENT_FILTER = "content_filter"
     ERROR = "error"
 
 
@@ -62,6 +66,8 @@ class Request:
     """The images' encoded bytes, in the order the conversation's image parts come."""
     videos: tuple[bytes, ...] = ()
     """The videos' encoded bytes, in the order the conversation's video parts come."""
+    probe_flags: int = 0
+    probe_spans: tuple[tuple[int, int], ...] = ()
 
 
 @dataclass(slots=True)
@@ -94,6 +100,7 @@ class End:
     accepted: int = 0
     lookup_drafts: int = 0
     lookup_accepted: int = 0
+    probe_report: protocol.ProbeReport | None = None
 
     def speeds(self) -> dict[str, float]:
         """Prompt and decode speeds in tokens a second, and the time in seconds, under TabbyAPI's `usage` names,
@@ -220,15 +227,30 @@ async def stream(model: Model, engine: Engine, request: Request, prompt: Prompt)
     stops = _StopStrings(request.stop)
     generated = 0
     cached = 0
+    probe_report: protocol.ProbeReport | None = None
 
     def pieces(text: str) -> list[Piece]:
         return list(parser.feed(text))
 
-    async with aclosing(engine.generate(prompt.ids, max_new, request.settings, prompt.images)) as events:
+    gen_events = (
+        engine.generate(
+            prompt.ids,
+            max_new,
+            request.settings,
+            prompt.images,
+            probe_flags=request.probe_flags,
+            probe_spans=request.probe_spans,
+        )
+        if request.probe_flags or request.probe_spans
+        else engine.generate(prompt.ids, max_new, request.settings, prompt.images)
+    )
+    async with aclosing(gen_events) as events:
         async for event in events:
             match event:
                 case protocol.Resume(reused=reused):
                     cached = reused
+                case protocol.ProbeReport() as report:
+                    probe_report = report
                 case protocol.Tokens(ids=ids):
                     generated += len(ids)
                     text = detok.push([i for i in ids if i not in model.stop_ids])
@@ -265,6 +287,7 @@ async def stream(model: Model, engine: Engine, request: Request, prompt: Prompt)
                         protocol.Finish.STOP: Finish.STOP,
                         protocol.Finish.LENGTH: Finish.LENGTH,
                         protocol.Finish.CANCEL: Finish.CANCEL,
+                        protocol.Finish.CONTENT_FILTER: Finish.CONTENT_FILTER,
                     }[finish]
                     if why is Finish.STOP and parser.calls:
                         why = Finish.TOOL_CALLS
@@ -281,6 +304,7 @@ async def stream(model: Model, engine: Engine, request: Request, prompt: Prompt)
                         accepted=done.accepted,
                         lookup_drafts=done.lookup_drafts,
                         lookup_accepted=done.lookup_accepted,
+                        probe_report=probe_report,
                     )
                     return
                 case protocol.Error(message=message):

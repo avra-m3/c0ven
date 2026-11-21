@@ -17,6 +17,7 @@ from engine.api.interface import OpenConfig, Tensor
 from engine.memory_plan import MemoryPlan, PlanOptions, plan
 from engine.models.qwen4exp.draft import DFLASH_FILES, read_shapes, split_layout_error
 from engine.models.qwen4exp.memory import model_memory
+from engine.models.qwen4exp.probe import PROBE_FILES, read_probe_budget
 from engine.models.qwen4exp.split import split_of
 from engine.models.qwen4exp.tensors import TensorTable, from_gguf_cached, from_tsv
 from engine.models.qwen4exp.turns import ChatTokens
@@ -25,7 +26,7 @@ from engine.models.qwen4exp.turns import checkpoint_rule as rule_of
 if TYPE_CHECKING:
     from engine.scheduler import CheckpointRule
 
-__all__ = ["checkpoint_rule", "draft_dir", "memory_plan", "open_config", "vision_file"]
+__all__ = ["checkpoint_rule", "draft_dir", "memory_plan", "open_config", "probe_dir", "vision_file"]
 
 CPU_WORKERS = 16
 """One per core of the test machine's 7945HX (DESIGN.md, section 9): the count when the host is not read (the mock and
@@ -33,12 +34,18 @@ the reference)."""
 
 
 def memory_plan(
-    table: TensorTable, options: PlanOptions, draft: Path | None = None, *, served: bool = False
+    table: TensorTable,
+    options: PlanOptions,
+    draft: Path | None = None,
+    *,
+    served: bool = False,
+    probe: Path | None = None,
 ) -> MemoryPlan:
     """draft: the drafter's directory, whose files size it. Without one, a served start (`served`, a model file)
-    plans no drafter; the mock and the reference plan the committed MTP layer."""
+    plans no drafter; the mock and the reference plan the committed MTP layer. probe: streaming probe directory."""
     shapes = read_shapes(draft) if draft is not None else ({} if served else None)
-    return plan(model_memory(table, options.cards, shapes), options)
+    pb = read_probe_budget(probe) if probe is not None else None
+    return plan(model_memory(table, options.cards, shapes, pb), options)
 
 
 @lru_cache(maxsize=4)
@@ -72,6 +79,12 @@ def vision_file(model: Path) -> Path | None:
     return found[0] if len(found) == 1 else None
 
 
+def probe_dir(model: Path) -> Path | None:
+    """The streaming probe beside the model file: `singprobe/` holding config.json and model.safetensors."""
+    cand = model.parent / "singprobe"
+    return cand if all((cand / name).is_file() for name in PROBE_FILES) else None
+
+
 def open_config(
     model: Path | None,
     options: PlanOptions,
@@ -80,15 +93,16 @@ def open_config(
     table_cache: Path | None = None,
     *,
     cpu_workers: int = CPU_WORKERS,
+    probe: Path | None = None,
 ) -> tuple[OpenConfig, MemoryPlan]:
     """The config for `open`. Without a model file the tensor table is the committed IQ3_S one and no tensors are
     passed: enough for the mock and the reference. draft: the draft layer's directory, or None for no drafting.
     table_cache: a directory keeping the model's tensor table between starts, or None. cpu_workers: the CPU's expert
-    workers, which `ENGINE_CPU_WORKERS` overrides."""
+    workers, which `ENGINE_CPU_WORKERS` overrides. probe: streaming hidden-state probe directory, or None."""
     table = table_of(model, table_cache)
     if model is not None:
         options = replace(options, draft=draft is not None)
-    mp = memory_plan(table, options, draft, served=model is not None)
+    mp = memory_plan(table, options, draft, served=model is not None, probe=probe if model is not None else None)
     tensors = (
         tuple(
             Tensor(t.name, t.ggml_type, t.shard - 1, t.offset, t.nbytes, t.shape, split_of(t.name), t.layer)
@@ -113,5 +127,6 @@ def open_config(
         draft_dir=str(draft) if draft is not None else "",
         ngram_in_ram=options.ngram_in_ram,
         ngram_hugetlb=options.ngram_hugetlb,
+        probe_dir=str(probe) if probe is not None else "",
     )
     return config, mp

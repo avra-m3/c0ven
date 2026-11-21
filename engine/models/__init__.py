@@ -25,11 +25,12 @@ class ModelSetup(Protocol):
         table_cache: Path | None = None,
         *,
         cpu_workers: int = ...,
+        probe: Path | None = None,
     ) -> tuple[OpenConfig, MemoryPlan]:
         """The config for `open` and the memory plan it holds. model: any shard of the GGUF, or None for the mock and
         the reference, which need no tensors. draft: the drafter's path, or None for no drafting. table_cache: a
-        directory keeping the tensor table between starts, or None. cpu_workers: the CPU's expert workers. Raises
-        PlanError when the options do not fit."""
+        directory keeping the tensor table between starts, or None. cpu_workers: the CPU's expert workers. probe:
+        streaming hidden-state probe directory, or None. Raises PlanError when the options do not fit."""
         ...
 
     def draft_dir(self, model: Path) -> Path | None:
@@ -38,6 +39,10 @@ class ModelSetup(Protocol):
 
     def vision_file(self, model: Path) -> Path | None:
         """The image encoder's file the model finds beside `model`; None: there is none."""
+        ...
+
+    def probe_dir(self, model: Path) -> Path | None:
+        """The streaming hidden-state probe directory beside `model`; None: there is none."""
         ...
 
     def checkpoint_rule(self, model: Path | None, table_cache: Path | None = None) -> CheckpointRule:

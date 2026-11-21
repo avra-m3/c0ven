@@ -268,6 +268,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="the image encoder's file; default: the one the model finds beside the model file, when there is one",
     )
     p.add_argument("--no-vision", action="store_true", help="read no images")
+    p.add_argument(
+        "--probe",
+        type=Path,
+        help="streaming hidden-state probe directory; default: the one beside the model file, when present",
+    )
+    p.add_argument("--no-probe", action="store_true", help="load no streaming probe")
     p.add_argument("--prompt-budget-ms", type=float, default=SchedulerOptions().prompt_budget_ms)
     p.add_argument("--decode-share", type=float, default=SchedulerOptions().decode_share)
     p.add_argument("--chunk-rows", type=int, default=SchedulerOptions().chunk_rows)
@@ -372,6 +378,15 @@ def serve(
         rows, notes = fit_report(facts) if fit_report is not None else ([], [])
         if rows:
             fit.write(rows, notes)
+        probe_facts: dict[str, str] = {}
+        if (pi := engine.probe_info()) is not None:
+            probe_facts = protocol.ProbeMeta(
+                model=pi.model,
+                kind=pi.kind,
+                window=pi.window,
+                roll_window=pi.roll_window,
+                labels=tuple(protocol.ProbeLabelMeta(lb.name, lb.scope, lb.threshold, lb.safe) for lb in pi.labels),
+            ).to_facts()
         facts_info = {
             "version": facts.version,
             "cards": str(facts.cards),
@@ -383,6 +398,7 @@ def serve(
             "pid": str(os.getpid()),
             "timing_fd": str(facts.timing_fd),
             "image_tokens_max": str(facts.image_tokens_max),
+            **probe_facts,
             **measured,
             **info(),
             **fit.info(rows),
@@ -588,13 +604,22 @@ def main(argv: list[str] | None = None) -> int:
     vision = (
         None if args.no_vision or not native or args.model is None else args.vision or model.vision_file(args.model)
     )
+    probe: Path | None = None
+    if not args.no_probe:
+        if args.probe is not None:
+            probe = args.probe
+        elif native and args.model is not None:
+            probe = model.probe_dir(args.model)
     # The core's working memory from an earlier load with the same options, in place of the estimate. It is kept
     # beside the draft layer's cache.
     working: Path | None = None
     cost: Path | None = None
     if native and (cache := cache_dir()) and args.model is not None:
         working = working_file(
-            Path(cache), args.model, options, f"draft={draft} vision={vision} deterministic={args.deterministic}"
+            Path(cache),
+            args.model,
+            options,
+            f"draft={draft} vision={vision} probe={probe} deterministic={args.deterministic}",
         )
         # The scheduler's cost model, under the same key: its times follow the model file, the engine and the options.
         cost = working.with_name(f"cost-{working.name.removeprefix('working-')}")
@@ -602,14 +627,20 @@ def main(argv: list[str] | None = None) -> int:
             options = dataclasses.replace(options, working_per_card=kept)
     try:
         config, plan = model.open_config(
-            args.model if native else None, options, args.deterministic, draft, args.table_cache, **workers
+            args.model if native else None,
+            options,
+            args.deterministic,
+            draft,
+            args.table_cache,
+            probe=probe,
+            **workers,
         )
         mem_total = the_host.mem_total if the_host is not None else None
         in_ram, ngram_huge = ngram_placement(args.ngram_ram, plan, mem_total) if native else (False, 0)
         if in_ram or ngram_huge:
             options = dataclasses.replace(options, ngram_in_ram=in_ram, ngram_hugetlb=ngram_huge)
             config, plan = model.open_config(
-                args.model, options, args.deterministic, draft, args.table_cache, **workers
+                args.model, options, args.deterministic, draft, args.table_cache, probe=probe, **workers
             )
     except PlanError as exc:
         print(protocol.Error(None, f"memory plan: {exc}").encode(), flush=True)

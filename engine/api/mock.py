@@ -13,13 +13,17 @@ processed, so a sequence resumed from a checkpoint produces the same tokens as o
 
 from __future__ import annotations
 
+import json
 import time
 from collections import deque
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
+from pathlib import Path
+from typing import Any, cast
 
 import numpy as np
 
+import protocol
 from engine.api.interface import (
     NO_SLOT,
     PAGE_CELLS,
@@ -36,6 +40,9 @@ from engine.api.interface import (
     Image,
     OpenConfig,
     PageOp,
+    ProbeInfo,
+    ProbeLabel,
+    SlotProbe,
     SlotSettings,
     SlotStats,
     StepPlan,
@@ -44,6 +51,80 @@ from engine.api.interface import (
 
 type Script = Callable[[Sequence[int]], int]
 """Given a slot's tokens so far (prompt and generated), the next token."""
+
+type ProbeScript = Callable[[Sequence[int], int, bool], Sequence[float]]
+"""Given (tokens_so_far, position, is_output), per-label probabilities in [0, 1]."""
+
+_PROBE_MASK = protocol.PROBE_ENABLED | protocol.PROBE_BLOCK_INPUT | protocol.PROBE_BLOCK_OUTPUT | protocol.PROBE_ONLY
+
+_DEFAULT_SINGPROBE_LABELS: tuple[ProbeLabel, ...] = (
+    ProbeLabel("sexual", "input", 0.5),
+    ProbeLabel("crime_public_safety", "input", 0.5),
+    ProbeLabel("unethical_behavior", "input", 0.5),
+    ProbeLabel("cybersecurity_manipulation", "input", 0.5),
+    ProbeLabel("agent_safety", "input", 0.5),
+    ProbeLabel("politically_sensitive", "input", 0.5),
+    ProbeLabel("animal_abuse", "input", 0.5),
+    ProbeLabel("safe", "input", 0.5, safe=True),
+    ProbeLabel("unsafe_response", "output", 0.5),
+    ProbeLabel("hallucination", "output", 0.5),
+)
+
+
+def _probe_info_from_dir(path_str: str) -> ProbeInfo:
+    """Read probe metadata from a probe directory, or return SingProbe defaults for a synthetic path."""
+    p = Path(path_str)
+    cfg_path = p / "config.json"
+    if not cfg_path.is_file():
+        return ProbeInfo(
+            model=p.name or "mock-singprobe",
+            kind="sing_probe_attn",
+            window=2048,
+            roll_window=10,
+            labels=_DEFAULT_SINGPROBE_LABELS,
+        )
+    cfg = cast("dict[str, Any]", json.loads(cfg_path.read_text()))
+    kind = str(cfg.get("model_type", "sing_probe_attn"))
+    window = int(cfg.get("sliding_window", 2048 if kind == "sing_probe_attn" else 0))
+    roll_window = int(cfg.get("roll_window", 10))
+    model = str(cfg.get("model_name") or p.name)
+    raw_labels = cfg.get("labels")
+    labels: list[ProbeLabel] = []
+    if isinstance(raw_labels, list):
+        for item in cast("list[Any]", raw_labels):
+            if isinstance(item, dict):
+                entry = cast("dict[str, Any]", item)
+                labels.append(
+                    ProbeLabel(
+                        name=str(entry["name"]),
+                        scope=str(entry.get("scope", "input")),
+                        threshold=float(entry.get("threshold", 0.5)),
+                        safe=bool(entry.get("safe", False)),
+                    )
+                )
+    elif int(cfg.get("num_labels", 10)) == len(_DEFAULT_SINGPROBE_LABELS):
+        labels = list(_DEFAULT_SINGPROBE_LABELS)
+    else:
+        n = int(cfg.get("num_labels", 1))
+        labels = [ProbeLabel(f"label_{i}", "both", 0.5) for i in range(n)]
+    cal_path = p / "calibration.json"
+    if cal_path.is_file():
+        cal = cast("dict[str, Any]", json.loads(cal_path.read_text()))
+        if isinstance(cal.get("model_name"), str) and cal["model_name"]:
+            model = str(cal["model_name"])
+        if "roll_window" in cal:
+            roll_window = int(cal["roll_window"])
+        thresholds = cal.get("thresholds")
+        if isinstance(thresholds, dict):
+            th_map = cast("dict[str, Any]", thresholds)
+            labels = [replace(lb, threshold=float(th_map[lb.name])) if lb.name in th_map else lb for lb in labels]
+        elif isinstance(thresholds, list):
+            th_list = cast("list[Any]", thresholds)
+            labels = [
+                replace(lb, threshold=float(th_list[i])) if i < len(th_list) else lb for i, lb in enumerate(labels)
+            ]
+    return ProbeInfo(model=model, kind=kind, window=window, roll_window=roll_window, labels=tuple(labels))
+
 
 _MASK = (1 << 64) - 1
 
@@ -84,12 +165,19 @@ class _Slot:
     generated: int = 0
     steps: int = 0
     """Decode steps that processed one of its own tokens."""
+    probe_in_max: list[float] = field(default_factory=lambda: [])
+    probe_out_max: list[float] = field(default_factory=lambda: [])
+    probe_in_flagged: bool = False
+    probe_out_flagged: bool = False
 
 
 @dataclass(slots=True)
 class _Checkpoint:
     state: int
     tokens: tuple[int, ...]
+    probe_valid: bool = False
+    probe_in_max: tuple[float, ...] = ()
+    probe_in_flagged: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +198,8 @@ class MockEngine:
         realtime: bool = False,
         fetch_rows: int = 0,
         long_chunk_ms: float | None = None,
+        probe_info: ProbeInfo | None = None,
+        probe_script: ProbeScript | None = None,
     ) -> None:
         """`prompt_row_ms` and `decode_step_ms` are the step times it reports (estimates from stand-in kernels:
         docs/measurements/MEASUREMENTS.md#2026-10-13-design-inputs), and `prompt_chunk_ms` the fixed time of a
@@ -117,6 +207,9 @@ class MockEngine:
         share one. A chunk of more than `fetch_rows` rows, when it is not 0, has `long_chunk_ms` instead, if given; the
         facts report `fetch_rows`. With `realtime`, it also sleeps for them."""
         self._script = script
+        self._probe_info_arg = probe_info
+        self._active_probe: ProbeInfo | None = probe_info
+        self._probe_script = probe_script
         self._row_ms = prompt_row_ms
         self._chunk_ms = prompt_chunk_ms
         self._fetch_rows = fetch_rows
@@ -148,6 +241,12 @@ class MockEngine:
         if self._config is not None:
             raise EngineError(ErrorCode.WRONG_STATE, "already open")
         self._config = config
+        if self._probe_info_arg is not None:
+            self._active_probe = self._probe_info_arg
+        elif config.probe_dir:
+            self._active_probe = _probe_info_from_dir(config.probe_dir)
+        else:
+            self._active_probe = None
         return self._facts(config)
 
     def sleep(self) -> None:
@@ -180,6 +279,7 @@ class MockEngine:
             timing_fd=-1,
             version="mock",
             fetch_rows=self._fetch_rows,
+            probe_labels=len(self._active_probe.labels) if self._active_probe is not None else 0,
         )
 
     def admit(self, slot: int, settings: SlotSettings, prompt: tuple[int, ...], images: tuple[Image, ...] = ()) -> None:
@@ -194,7 +294,23 @@ class MockEngine:
             raise EngineError(ErrorCode.INVALID_ARGUMENT, "prompt and max_new exceed the context")
         if any(not 0 <= t < config.vocab_size for t in prompt):
             raise EngineError(ErrorCode.INVALID_ARGUMENT, "token id out of the vocabulary")
-        self._slots[slot] = _Slot(settings, prompt)
+        if settings.probe_flags:
+            if (settings.probe_flags & ~_PROBE_MASK) != 0 or not (settings.probe_flags & protocol.PROBE_ENABLED):
+                raise EngineError(ErrorCode.INVALID_ARGUMENT, f"bad probe_flags: {settings.probe_flags}")
+            if self._active_probe is None:
+                raise EngineError(ErrorCode.INVALID_ARGUMENT, "no probe is loaded")
+        if len(settings.probe_spans) > protocol.MAX_PROBE_SPANS:
+            raise EngineError(ErrorCode.INVALID_ARGUMENT, "too many probe spans")
+        for s_start, s_end in settings.probe_spans:
+            if s_start < 0 or s_start >= s_end or s_end > len(prompt):
+                raise EngineError(ErrorCode.INVALID_ARGUMENT, f"probe span {s_start}:{s_end} out of range")
+        n_labels = len(self._active_probe.labels) if self._active_probe is not None else 0
+        self._slots[slot] = _Slot(
+            settings,
+            prompt,
+            probe_in_max=[0.0] * n_labels,
+            probe_out_max=[0.0] * n_labels,
+        )
 
     def release(self, slot: int) -> None:
         if self._slots.pop(slot, None) is None:
@@ -245,6 +361,20 @@ class MockEngine:
         s = self._slots.get(slot)
         return SlotStats() if s is None else SlotStats(steps=s.steps)
 
+    def probe_info(self) -> ProbeInfo | None:
+        return self._active_probe
+
+    def slot_probe(self, slot: int) -> SlotProbe | None:
+        s = self._slots.get(slot)
+        if s is None or self._active_probe is None or not (s.settings.probe_flags & protocol.PROBE_ENABLED):
+            return None
+        return SlotProbe(
+            input_flagged=s.probe_in_flagged,
+            output_flagged=s.probe_out_flagged,
+            input_scores=tuple(s.probe_in_max),
+            output_scores=tuple(s.probe_out_max),
+        )
+
     def read_timing(self, max_records: int = 4096) -> TimingRecords:
         rows = self._timing[:max_records]
         del self._timing[:max_records]
@@ -292,7 +422,14 @@ class MockEngine:
         match op.kind:
             case "checkpoint":
                 s = self._slot(op.slot)
-                self._checkpoints[op.checkpoint] = _Checkpoint(s.state, tuple(s.tokens))
+                probed = bool(s.settings.probe_flags & protocol.PROBE_ENABLED)
+                self._checkpoints[op.checkpoint] = _Checkpoint(
+                    s.state,
+                    tuple(s.tokens),
+                    probe_valid=probed,
+                    probe_in_max=tuple(s.probe_in_max) if probed else (),
+                    probe_in_flagged=s.probe_in_flagged if probed else False,
+                )
                 self._emit(EventKind.CHECKPOINT_DONE, op.slot, op.checkpoint)
             case "restore":
                 s = self._slot(op.slot)
@@ -305,6 +442,9 @@ class MockEngine:
                     raise PlanFault(op.slot, f"checkpoint {op.checkpoint} is not a strict prefix of the prompt")
                 s.state = ck.state
                 s.tokens = list(ck.tokens)
+                if ck.probe_valid and (s.settings.probe_flags & protocol.PROBE_ENABLED):
+                    s.probe_in_max = list(ck.probe_in_max)
+                    s.probe_in_flagged = ck.probe_in_flagged
             case "drop":
                 self._checkpoints.pop(op.checkpoint, None)
             case _:
@@ -345,7 +485,30 @@ class MockEngine:
         self._pages[physical][position % PAGE_CELLS] = token
         s.tokens.append(token)
         s.state = mix(s.state, token)
+        if s.settings.probe_flags & protocol.PROBE_ENABLED:
+            self._score_probe(s, position)
         return True
+
+    def _score_probe(self, s: _Slot, position: int) -> None:
+        info = self._active_probe
+        if info is None:
+            return
+        is_output = position >= len(s.prompt)
+        if self._probe_script is not None:
+            scores = self._probe_script(s.tokens, position, is_output)
+        else:
+            scores = [0.99 if lb.safe else 0.01 for lb in info.labels]
+        for i, (lb, raw) in enumerate(zip(info.labels, scores, strict=True)):
+            p = float(raw)
+            if not is_output:
+                if lb.scope in ("input", "both", "drift"):
+                    s.probe_in_max[i] = max(s.probe_in_max[i], p)
+                    if not lb.safe and p >= lb.threshold:
+                        s.probe_in_flagged = True
+            elif lb.scope in ("output", "both"):
+                s.probe_out_max[i] = max(s.probe_out_max[i], p)
+                if not lb.safe and p >= lb.threshold:
+                    s.probe_out_flagged = True
 
     def _verify(self, slot: int, s: _Slot) -> None:
         """Read the slot's history back through its page table, as attention would."""
@@ -425,6 +588,9 @@ class MockEngine:
                 continue
             decoded += 1
             s.steps += 1
+            if (s.settings.probe_flags & protocol.PROBE_BLOCK_OUTPUT) and s.probe_out_flagged:
+                self._finish(slot, s, FinishReason.CONTENT_FILTER)
+                continue
             try:
                 self._emit_token(slot, s)
             except PlanFault as fault:
@@ -463,6 +629,10 @@ class MockEngine:
                 raise PlanFault(slot, f"prompt position {position} has no page")
         self._verify(slot, s)
         self._emit(EventKind.PROMPT_DONE, slot, len(s.tokens), count)
-        if last:
+        if (s.settings.probe_flags & protocol.PROBE_BLOCK_INPUT) and s.probe_in_flagged:
+            self._finish(slot, s, FinishReason.CONTENT_FILTER)
+        elif last and (s.settings.probe_flags & protocol.PROBE_ONLY):
+            self._finish(slot, s, FinishReason.EOS)
+        elif last:
             self._emit_token(slot, s)
         return count

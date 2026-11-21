@@ -21,6 +21,11 @@ static void for_regions(Model::Card &card, uint32_t slot, F &&f) {
     f(reinterpret_cast<uint8_t *>(L.S + slot * L.S_stride), L.S_stride * 4);
   }
   f(reinterpret_cast<uint8_t *>(card.ple_hist + slot * card.ple_stride), card.ple_stride * 4);
+  if (card.c == 0 && card.probe && card.probe->k_ring) {
+    const uint64_t hb = card.probe->slot_kv_half_bytes;
+    f(reinterpret_cast<uint8_t *>(card.probe->k_ring) + (uint64_t)slot * hb, hb);
+    f(reinterpret_cast<uint8_t *>(card.probe->v_ring) + (uint64_t)slot * hb, hb);
+  }
 }
 
 uint64_t Model::slot_state_bytes() {

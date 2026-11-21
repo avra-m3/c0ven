@@ -28,11 +28,14 @@ import ctypes
 from dataclasses import dataclass
 from enum import IntEnum
 
-ABI_VERSION = 23
+ABI_VERSION = 24
 
 MAX_STOP = 8
 MAX_STEP_SLOTS = 8
 MAX_PROMPT_PIECES = 4
+MAX_PROBE_LABELS = 32
+MAX_PROBE_NAME = 48
+MAX_PROBE_SPANS = 16
 NO_PAGE = 0xFFFFFFFF
 """In a page change: unmap the logical page and every page after it."""
 
@@ -75,6 +78,25 @@ class CDone(IntEnum):
     STOP = 1
     LENGTH = 2
     CONTEXT = 3
+    CONTENT_FILTER = 4
+
+
+class ProbeFlag(IntEnum):
+    ENABLED = 1
+    BLOCK_INPUT = 2
+    BLOCK_OUTPUT = 4
+    ONLY = 8
+
+
+class ProbeScope(IntEnum):
+    INPUT = 0
+    OUTPUT = 1
+    BOTH = 2
+    DRIFT = 3
+
+
+class ProbeLabelFlag(IntEnum):
+    SAFE = 1
 
 
 class CTimingKind(IntEnum):
@@ -104,6 +126,7 @@ class CConfig(ctypes.Structure):
         ("kv_pages", ctypes.c_uint32),
         ("kv_resident_cells", ctypes.c_uint32),
         ("ngram_huge_bytes", ctypes.c_uint64),
+        ("probe_path", ctypes.c_char_p),
     )
 
 
@@ -136,6 +159,15 @@ class CInfo(ctypes.Structure):
         ("decode_weight", ctypes.c_uint32),
         ("ngram_cache_rows", ctypes.c_uint64),
         ("ngram_huge_bytes", ctypes.c_uint64),
+        ("probe_labels", ctypes.c_uint32),
+        ("probe_reserved", ctypes.c_uint32),
+    )
+
+
+class CTokenSpan(ctypes.Structure):
+    _fields_ = (
+        ("start", ctypes.c_uint32),
+        ("end", ctypes.c_uint32),
     )
 
 
@@ -153,6 +185,9 @@ class CSettings(ctypes.Structure):
         ("penalty_repeat", ctypes.c_float),
         ("penalty_freq", ctypes.c_float),
         ("penalty_present", ctypes.c_float),
+        ("probe_flags", ctypes.c_uint32),
+        ("n_probe_spans", ctypes.c_uint32),
+        ("probe_spans", CTokenSpan * MAX_PROBE_SPANS),
     )
 
 
@@ -290,6 +325,39 @@ class CSlotStats(ctypes.Structure):
     _fields_ = tuple((name, ctypes.c_uint64) for name in SLOT_STATS_FIELDS)
 
 
+class CProbeLabel(ctypes.Structure):
+    _fields_ = (
+        ("name", ctypes.c_char * MAX_PROBE_NAME),
+        ("threshold", ctypes.c_float),
+        ("scope", ctypes.c_uint32),
+        ("flags", ctypes.c_uint32),
+        ("reserved", ctypes.c_uint32),
+    )
+
+
+class CProbeInfo(ctypes.Structure):
+    _fields_ = (
+        ("model_name", ctypes.c_char * MAX_PROBE_NAME),
+        ("kind", ctypes.c_char * MAX_PROBE_NAME),
+        ("n_labels", ctypes.c_uint32),
+        ("window", ctypes.c_uint32),
+        ("roll_window", ctypes.c_uint32),
+        ("reserved", ctypes.c_uint32),
+        ("labels", CProbeLabel * MAX_PROBE_LABELS),
+    )
+
+
+class CSlotProbe(ctypes.Structure):
+    _fields_ = (
+        ("n_labels", ctypes.c_uint32),
+        ("input_flagged", ctypes.c_uint32),
+        ("output_flagged", ctypes.c_uint32),
+        ("reserved", ctypes.c_uint32),
+        ("input_scores", ctypes.c_float * MAX_PROBE_LABELS),
+        ("output_scores", ctypes.c_float * MAX_PROBE_LABELS),
+    )
+
+
 class CCard(ctypes.Structure):
     """`engine_card`: one card the engine can use."""
 
@@ -321,6 +389,7 @@ class CAbiRow(ctypes.Structure):
 STRUCTS: dict[str, type[ctypes.Structure]] = {
     "engine_config": CConfig,
     "engine_info": CInfo,
+    "engine_token_span": CTokenSpan,
     "engine_settings": CSettings,
     "engine_page_change": CPageChange,
     "engine_prompt_piece": CPromptPiece,
@@ -330,6 +399,9 @@ STRUCTS: dict[str, type[ctypes.Structure]] = {
     "engine_image": CImage,
     "engine_stats": CStats,
     "engine_slot_stats": CSlotStats,
+    "engine_probe_label": CProbeLabel,
+    "engine_probe_info": CProbeInfo,
+    "engine_slot_probe": CSlotProbe,
     "engine_card": CCard,
     "engine_abi_row": CAbiRow,
 }
