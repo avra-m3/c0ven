@@ -79,6 +79,9 @@ class Runtime {
   void free_card(uint32_t card);
   uint64_t device_bytes(uint32_t card) const { return device_bytes_.at(card); }
   uint64_t host_bytes() const { return host_bytes_; }
+  // Whether cards a and b copy device memory directly both ways: checks zeDeviceCanAccessPeer and
+  // zeDeviceGetP2PProperties, then verifies a small copy each way on a regular list. Sets *why on false.
+  bool peer_access(uint32_t a, uint32_t b, std::string *why = nullptr);
 
   // Virtual memory (docs/measurements/LEVEL_ZERO.md, row 32): a reserved range of addresses whose blocks are mapped to device
   // memory and unmapped again, while the range stays where it is. vm_block is the granularity of both for large
@@ -192,6 +195,7 @@ class List {
   Kind kind() const { return kind_; }
 
  private:
+  friend class Runtime;
   // Marks the thread inside the list's calls (ENGINE_CHECK_LISTS): another thread's call throws, and the same
   // thread's nested calls pass.
   struct OneUser {

@@ -123,7 +123,7 @@ void Model::load_prompt(Card &card) {
   }
   P.ncells = u32(T);
   P.cand = u32(T * shape_.idx_cand());
-  P.cand_peer = u32(T * shape_.idx_cand());
+  if (ncards_ == 1 || p2p_) P.cand_peer = u32(T * shape_.idx_cand());
   P.merged = f32(T * 2 * (shape_.idx_blocks() + 1));
   P.kh = u16((uint64_t)opt_.max_ctx * card.nkv * shape_.att_key);
   P.vh = u16((uint64_t)opt_.max_ctx * card.nkv * shape_.att_key);
@@ -153,8 +153,10 @@ void Model::load_prompt(Card &card) {
   P.shh = u16(T * card.ff);
   P.s = f32(T * shape_.embd);
   P.part = u16(T * shape_.embd);
-  P.recv[0] = u16(T * shape_.embd);
-  P.recv[1] = u16(T * shape_.embd);
+  if (ncards_ == 1 || p2p_) {
+    P.recv[0] = u16(T * shape_.embd);
+    P.recv[1] = u16(T * shape_.embd);
+  }
   P.ub = u16(T * shape_.embd);
   P.pv = f32(T * shape_.embd);
   P.gates = f32(T * shape_.hc);
@@ -451,26 +453,31 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
              (m.rows * units + 63) / 64, 1, 1, 64);
     gemm(false, P.w16, m.rows, m.K, x, ldx, y, ldy, yhalf, 0, 1.0f, sig, 8, 2, y2);
   };
-  // An exchange: the kernel that makes each card's fp16 partial also writes it into the other card's memory as it
-  // computes, and signals (docs/measurements/MEASUREMENTS.md#2026-10-15-prompt-exchange-stores); both cards add the two partials
-  // in card order, so their residuals stay the same. Exchange e = 2 l + which uses recv[e % 2]: a card writes e + 2
-  // only after the other card has sent e + 1, which it does after reading e.
-  PromptCard *peer = C > 1 ? cards_[1 - c]->pc.get() : nullptr;
+  // An exchange: the kernel that makes each card's fp16 partial also writes it into the other card's memory (with peer
+  // access, docs/measurements/MEASUREMENTS.md#2026-10-15-prompt-exchange-stores) or into pinned host memory (pex_,
+  // ADR-0080), and signals; both cards add the two partials in card order, so their residuals stay the same. Exchange
+  // e = 2 l + which uses slot e % 2: a card writes e + 2 only after the other card has sent e + 1, which follows
+  // reading e.
+  PromptCard *peer = C > 1 && p2p_ ? cards_[1 - c]->pc.get() : nullptr;
   // From layer 1's PLE module on, a chunk of kHcSplitRows or more splits the hyper-connections' rows between the
-  // cards: card c keeps R for rows r0 .. r1 - 1 (prows_[c] of them) and sends the other card its rows of the mixed x
-  // (event kMix). Before, both cards compute every row, as the PLE module's convolution reads across rows.
-  const bool split = C > 1 && T >= kHcSplitRows;
+  // cards when peer access is available: card c keeps R for rows r0 .. r1 - 1 (prows_[c] of them) and sends the other
+  // card its rows of the mixed x (event kMix). Without peer access, both cards compute every row (ADR-0080).
+  const bool split = C > 1 && p2p_ && T >= kHcSplitRows;
   const bool fetch = T <= kFetchRows && P.stage_cpu;  // the host fetches the uncached experts (fetch_experts)
   const uint32_t cpu_rows = fetch && P.xg_host ? kCpuRows : 0;
   const uint32_t half = split ? T / 2 : T;
   uint32_t r0 = 0, r1 = T;  // this card's rows, all of them until the split
   const uint32_t *nown = &pplan_->n;
+  auto pex_slot = [&](uint32_t e, uint32_t who) -> uint16_t * {
+    return pex_ + ((size_t)(e % 2) * C + who) * tmax_ * shape_.embd;
+  };
   // next_norm: the norm of the block that follows, done with the combine (p_hc_combine_norm), or null.
   auto exchange = [&](uint32_t l, uint32_t which, const float *inj, const float *next_norm) {
     const uint16_t *p0 = P.part, *p1 = nullptr;
     if (C > 1) {
-      uint16_t *mine = P.recv[(2 * l + which) % 2];
-      L.wait({(*pevents_)[pev(kEx, 2 * l + which, 1 - c)]});
+      const uint32_t e = 2 * l + which;
+      const uint16_t *mine = p2p_ ? P.recv[e % 2] : pex_slot(e, 1 - c);
+      L.wait({(*pevents_)[pev(kEx, e, 1 - c)]});
       p0 = c == 0 ? P.part : mine;
       p1 = c == 0 ? mine : P.part;
     }
@@ -526,7 +533,11 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
     }
     hc_mix(Ly, 0, l >= 2, 2 * l);  // after layer 0 the PLE module stands between the combine and the norm
     // Where this card's partial of exchange `which` also goes, and the event that says it is there.
-    auto peer_part = [&](uint32_t which) { return C > 1 ? peer->recv[(2 * l + which) % 2] : nullptr; };
+    auto peer_part = [&](uint32_t which) -> uint16_t * {
+      if (C <= 1) return nullptr;
+      const uint32_t e = 2 * l + which;
+      return p2p_ ? peer->recv[e % 2] : pex_slot(e, c);
+    };
     auto sent = [&](uint32_t which) { return C > 1 ? (*pevents_)[pev(kEx, 2 * l + which, c)] : nullptr; };
     if (!Ly.attn) {
       const uint32_t nch = card.nch, nvo = card.nvh * shape_.gdn_d;
@@ -575,10 +586,12 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
       L.launch(q4("p_idx_cand"), {P.scores, nbl, runs_p, P.blocks, P.bscores, P.cand, c, C}, T, 1, 1, 1024);
       const uint32_t *c0 = P.cand, *c1 = nullptr;
       if (C > 1) {
-        L.copy(peer->cand_peer, P.cand, (size_t)T * shape_.idx_cand() * 4, (*pevents_)[pev(kIdx, Ly.idx, c)]);
+        uint32_t *dst = p2p_ ? peer->cand_peer : picand_ + (size_t)c * tmax_ * shape_.idx_cand();
+        const uint32_t *other = p2p_ ? P.cand_peer : picand_ + (size_t)(1 - c) * tmax_ * shape_.idx_cand();
+        L.copy(dst, P.cand, (size_t)T * shape_.idx_cand() * 4, (*pevents_)[pev(kIdx, Ly.idx, c)]);
         L.wait({(*pevents_)[pev(kIdx, Ly.idx, 1 - c)]});
-        c0 = c == 0 ? P.cand : P.cand_peer;
-        c1 = c == 0 ? P.cand_peer : P.cand;
+        c0 = c == 0 ? P.cand : other;
+        c1 = c == 0 ? other : P.cand;
       }
       L.launch(q4("p_idx_merge"),
                {c0, c1, runs_p, P.merged, P.blocks, P.bscores, P.cells, P.ncells}, T, 1, 1, 1024);
