@@ -35,6 +35,7 @@ import protocol
 from engine.api.interface import (
     MAX_PAGE_CHANGES,
     MAX_PROMPT_SPANS,
+    MAX_SCORE_TOKENS,
     NO_SLOT,
     PAGE_CELLS,
     PROMPT_RUNS,
@@ -137,6 +138,10 @@ class Request:
     """The position the slot waits at for a page, from its STALLED event until it has the page."""
     preempting: bool = False
     """It is stopped to free its pages, and goes back to the queue when it finishes."""
+    score_tokens: tuple[int, ...] = ()
+    """Caller-chosen token ids to score at the prompt's end (DECIDE)."""
+    score_only: bool = False
+    """Temporary check slot: reuses checkpoints, saves none, emits scores at prompt end, and frees its slot."""
 
     @property
     def left(self) -> int:
@@ -238,6 +243,39 @@ class Scheduler:
         self.waiting.append(r)
         return []
 
+    def add_decide(
+        self, decide: protocol.Decide, priority: int = 0, images: tuple[Image, ...] = ()
+    ) -> list[protocol.Event]:
+        if decide.rid in self.by_rid:
+            return [protocol.Error(decide.rid, "request id already in use")]
+        if not 1 <= len(decide.choices) <= MAX_SCORE_TOKENS:
+            return [protocol.Error(decide.rid, f"choices must hold 1..{MAX_SCORE_TOKENS} ids")]
+        if len(decide.prompt) > self.facts.max_context:
+            return [
+                protocol.Error(
+                    decide.rid,
+                    f"prompt ({len(decide.prompt)}) exceeds the context ({self.facts.max_context})",
+                )
+            ]
+        if (problem := self._image_problem(decide.prompt, images)) is not None:
+            return [protocol.Error(decide.rid, problem)]
+        r = Request(
+            decide.rid,
+            decide.prompt,
+            0,
+            protocol.Settings(temperature=0.0).with_defaults(),
+            self.clock(),
+            priority,
+            score_tokens=decide.choices,
+            score_only=True,
+        )
+        r.given = len(decide.prompt)
+        r.images = images
+        r.key = prefix_key(decide.prompt, images)
+        self.by_rid[r.rid] = r
+        self.waiting.append(r)
+        return []
+
     def _image_problem(self, prompt: tuple[int, ...], images: tuple[Image, ...]) -> str | None:
         if not images:
             return None
@@ -315,7 +353,8 @@ class Scheduler:
                 continue
             r.waiting_for = None
             o = self.options
-            admission = self.state.plan_admission(r.key, r.left, o.decode_lookahead + o.decode_batch)
+            ahead = 0 if r.score_only else o.decode_lookahead + o.decode_batch
+            admission = self.state.plan_admission(r.key, r.left, ahead)
             if admission is None:
                 break
             self._flush_drops()
@@ -335,6 +374,8 @@ class Scheduler:
                         s.penalty_present,
                         s.seed,
                         r.left,
+                        r.score_tokens,
+                        r.score_only,
                     ),
                     r.prompt,
                     r.images,
@@ -358,10 +399,11 @@ class Scheduler:
                 r.reused = seq.start
                 r.t_admit = self.clock()
             # A mark cuts the prompt's spans and makes requests sharing the prefix wait, so a pool of none has no marks.
+            # Score-only check slots never take checkpoints so they never displace real session checkpoints.
             r.marks = (
-                sorted((p, k) for p, k in self.rule(r.prompt) if seq.start < p < len(r.prompt))
-                if self.state.checkpoints.size
-                else []
+                []
+                if r.score_only or not self.state.checkpoints.size
+                else sorted((p, k) for p, k in self.rule(r.prompt) if seq.start < p < len(r.prompt))
             )
             self.by_slot[seq.slot] = r
             if admission.checkpoint is not None:
@@ -498,7 +540,7 @@ class Scheduler:
             if pages_for(r.next_pos + rows) > len(seq.pages):
                 raise AssertionError("prompt span without its pages")
             last = r.next_pos + rows == len(r.prompt)
-            if last:
+            if last and not r.score_only:
                 self._grow_ahead(r, len(r.prompt))  # its first tokens decode without waiting for a plan
             plan.prompt.append(PromptSpan(r.slot, r.next_pos, rows, last))
             r.next_pos += rows
@@ -561,6 +603,11 @@ class Scheduler:
             case EventKind.FINISHED:
                 first = r.t_first if r.t_first is not None else now
                 st = self.engine.slot_stats(r.slot)  # before the release empties the slot
+                reason = FinishReason(event.a)
+                if r.score_tokens and reason is not FinishReason.CANCELLED:
+                    sc = self.engine.slot_scores(r.slot)
+                    if sc.logits:
+                        out.append(protocol.Scores(r.rid, sc.logsumexp, sc.logits))
                 out.append(
                     protocol.Done(
                         r.rid,
@@ -568,7 +615,7 @@ class Scheduler:
                         r.given,
                         (first - r.t_admit) * 1e3,
                         (now - first) * 1e3,
-                        _FINISH[FinishReason(event.a)],
+                        _FINISH[reason],
                         r.reused,
                         (r.t_admit - r.arrived) * 1e3,
                         st.steps,

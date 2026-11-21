@@ -6,6 +6,7 @@
 #include "engine_api.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -100,6 +101,8 @@ struct Slot {
   uint64_t choice = 0;          // the trial's choice that shared out drafts (TrialPick); 0 for drafts made otherwise
   bool lookup_round = false;    // drafts holds the lookup's drafts
   engine_slot_stats stats{};
+  engine_slot_scores scores{};
+  bool scores_ready = false;
   uint64_t last_ns = 0;         // when a plan last computed it
   bool resident = false;        // its pages count for the streamed pool's ring (kv_resident)
   // Admit's and admit_images' work on the model, which the engine thread does before its next plan (set_up): the
@@ -151,6 +154,8 @@ uint64_t now_ns() {
 }
 
 constexpr size_t kTimingRing = 4096;
+
+bool score_only(const engine_settings &st) { return (st.flags & ENGINE_SETTINGS_SCORE_ONLY) != 0; }
 
 }  // namespace
 
@@ -343,6 +348,29 @@ struct engine_ctx {
   void produce(uint32_t s, const std::vector<Candidate> &cand) {
     Slot &sl = slots[s];
     emit_token(s, sample_p(cand, sl.settings, sl.fed, penalty_window(sl.tokens, sl.settings)).first, sl.fed);
+  }
+
+  // Reads raw logits for slot's requested score_tokens from row of the last step or prompt_runs pass, before any
+  // draft pass reuses the logits buffer. Runs on the engine thread without holding mu across the model call.
+  void collect_scores(uint32_t s, uint32_t row) {
+    std::array<int32_t, ENGINE_MAX_SCORE_TOKENS> toks{};
+    uint32_t n = 0;
+    {
+      std::lock_guard<std::mutex> lk(mu);
+      const Slot &sl = slots[s];
+      if (!sl.used || sl.settings.n_score_tokens == 0) return;
+      n = sl.settings.n_score_tokens;
+      std::copy_n(sl.settings.score_tokens, n, toks.begin());
+    }
+    const engine::TokenScores ts = model->read_logits(row, toks.data(), n);
+    std::lock_guard<std::mutex> lk(mu);
+    Slot &sl = slots[s];
+    if (!sl.used) return;
+    sl.scores = {};
+    sl.scores.n = n;
+    sl.scores.logsumexp = ts.logsumexp;
+    for (uint32_t i = 0; i < n && i < ts.logits.size(); i++) sl.scores.logits[i] = ts.logits[i];
+    sl.scores_ready = true;
   }
 
   // The tokens before a slot's first draft, for its penalties: what it has fed, then the token sampled last. Under mu.
@@ -604,6 +632,7 @@ struct engine_ctx {
     int32_t p1 = kNoToken, p2 = kNoToken, p3 = kNoToken;  // the tokens before pos0, p1 the nearest
     bool windowed = false, restart = false;
     bool writer = false;  // a writing slot's next token, read beside the prompt pieces (add_writers)
+    bool scoring = false;  // ENGINE_SETTINGS_SCORE_ONLY
   };
 
   // Reads the piece's tokens from its slot. False when there is nothing to read: the slot is gone or done, or its next
@@ -633,6 +662,7 @@ struct engine_ctx {
       image |= im.first < pos0 + n && im.first + (im.grid_h / 2) * (im.grid_w / 2) > pos0;
     pi.windowed = n <= window && !image;
     pi.restart = sl.windows_end != pos0;
+    pi.scoring = score_only(sl.settings);
     // The piece expected next, of the same size, so its n-gram rows are read while this one runs. A short one is
     // read as windows, which gather their own rows.
     const uint32_t nn = std::min(left - n, pc.tokens ? std::min(pc.tokens, info.prompt_chunk) : info.prompt_chunk);
@@ -716,6 +746,17 @@ struct engine_ctx {
       stats.prompt_rows += n - wrote;
       stats.prompt_ns += t1 - t0;
     }
+    // Read requested choice logits while card->logits still holds this chunk's last rows (before any draft pass).
+    for (uint32_t r = 0; r < pieces.size(); r++) {
+      if (pieces[r].writer) continue;
+      bool want = false;
+      {
+        std::lock_guard<std::mutex> lk(mu);
+        const Slot &sl = slots[pieces[r].slot];
+        want = sl.used && sl.settings.n_score_tokens > 0 && pieces[r].pos0 + pieces[r].n == sl.prompt.size();
+      }
+      if (want) collect_scores(pieces[r].slot, r);
+    }
     for (uint32_t r = 0, end = 0; r < pieces.size(); r++) {
       end += pieces[r].n;
       if (pieces[r].writer)
@@ -733,10 +774,15 @@ struct engine_ctx {
     Slot &sl = slots[pi.slot];
     if (!sl.used) return;  // released while it ran
     sl.tokens.insert(sl.tokens.end(), pi.toks.begin(), pi.toks.end());
-    if (model->drafting()) sl.lookup.index(sl.tokens);  // a piece at a time, not all at the first round
+    if (model->drafting() && !score_only(sl.settings)) sl.lookup.index(sl.tokens);  // a piece at a time, not all at the first round
     sl.fed = pi.pos0 + pi.n;
     emit({ENGINE_EVENT_PROMPT, pi.slot, kNoToken, sl.fed});
     if (sl.fed != sl.prompt.size()) return;
+    if (score_only(sl.settings)) {
+      sl.done = true;
+      emit({ENGINE_EVENT_DONE, pi.slot, kNoToken, ENGINE_DONE_STOP});
+      return;
+    }
     prompt_ended = true;
     produce(pi.slot, cand);
     if (!model->drafting() || sl.done) return;
@@ -762,13 +808,102 @@ struct engine_ctx {
     sl.set_drafts(std::move(d), draft_max, stop);
   }
 
+  // Short score-only prompt pieces batched in multi-slot decode windows of up to STEP_MAX_ROWS rows (STEP_MAX_RUN per
+  // slot), with no drafting: skips drafter catch-up and lets swapped-order checks share each step (ADR-0078).
+  void prompt_score_windows(uint32_t plan, std::vector<Piece> &pieces) {
+    if (pieces.empty()) return;
+    const size_t np = pieces.size();
+    std::vector<bool> ends_prompt(np, false), wants_scores(np, false);
+    {
+      std::lock_guard<std::mutex> lk(mu);
+      for (size_t j = 0; j < np; j++) {
+        const Slot &sl = slots[pieces[j].slot];
+        ends_prompt[j] = sl.used && pieces[j].pos0 + pieces[j].n == sl.prompt.size();
+        wants_scores[j] = sl.used && sl.settings.n_score_tokens > 0;
+      }
+    }
+    std::vector<uint32_t> done(np, 0);
+    std::vector<StepIn> cur(np);
+    uint32_t total_rows = 0;
+    for (size_t j = 0; j < np; j++) {
+      const Piece &pi = pieces[j];
+      cur[j] = StepIn{pi.slot, pi.pos0, pi.toks[0], pi.p1, pi.p2, pi.p3};
+      total_rows += pi.n;
+    }
+    const uint64_t t0 = now_ns();
+    for (;;) {
+      bool any = false;
+      for (size_t j = 0; j < np; j++) any |= done[j] < pieces[j].n;
+      if (!any) break;
+      std::vector<StepIn> rows;
+      std::vector<CommitRun> commits;
+      std::vector<std::pair<size_t, uint32_t>> take;
+      std::vector<std::pair<size_t, uint32_t>> score_due;
+      // Pack up to STEP_MAX_ROWS rows across active pieces; fall back to STEP_MAX_RUN if the KV ring is tight.
+      for (const uint32_t cap : {(uint32_t)STEP_MAX_ROWS, (uint32_t)STEP_MAX_RUN}) {
+        rows.clear();
+        commits.clear();
+        take.clear();
+        score_due.clear();
+        for (size_t j = 0; j < np && rows.size() < cap; j++) {
+          const uint32_t left = pieces[j].n - done[j];
+          if (left == 0) continue;
+          const uint32_t w = std::min<uint32_t>({left, STEP_MAX_RUN, cap - (uint32_t)rows.size()});
+          const uint32_t row0 = (uint32_t)rows.size();
+          StepIn r = cur[j];
+          for (uint32_t k = 0; k < w; k++) {
+            if (done[j] + k > 0) r = row_after(r, pieces[j].toks[done[j] + k]);
+            rows.push_back(r);
+          }
+          commits.push_back({w, pieces[j].pos0 + done[j], pieces[j].slot, row0});
+          take.push_back({j, w});
+          if (done[j] + w == pieces[j].n && ends_prompt[j] && wants_scores[j])
+            score_due.push_back({j, row0 + w - 1});
+        }
+        if (model->step_fits(rows.data(), (uint32_t)rows.size())) break;
+      }
+      model->step(rows.data(), (uint32_t)rows.size(), true, true);
+      model->commit_runs(commits.data(), (uint32_t)commits.size());
+      for (auto [j, row_idx] : score_due) collect_scores(pieces[j].slot, row_idx);
+      for (size_t t = 0; t < take.size(); t++) {
+        const auto [j, w] = take[t];
+        cur[j] = rows[commits[t].row0 + w - 1];
+        done[j] += w;
+      }
+    }
+    std::lock_guard<std::mutex> lk(mu);
+    const uint64_t t1 = now_ns();
+    record({ENGINE_TIMING_PROMPT, plan, total_rows, 0, t0, t1});
+    stats.window_pieces += np;
+    stats.window_rows += total_rows;
+    stats.window_ns += t1 - t0;
+    for (const Piece &pi : pieces) {
+      Slot &sl = slots[pi.slot];
+      if (!sl.used) continue;
+      sl.tokens.insert(sl.tokens.end(), pi.toks.begin(), pi.toks.end());
+      sl.fed = pi.pos0 + pi.n;
+      sl.windows_end = sl.fed;
+      emit({ENGINE_EVENT_PROMPT, pi.slot, kNoToken, sl.fed});
+      if (sl.fed == sl.prompt.size()) {
+        sl.done = true;
+        emit({ENGINE_EVENT_DONE, pi.slot, kNoToken, ENGINE_DONE_STOP});
+      }
+    }
+    pieces.clear();
+  }
+
   // A plan's prompt pieces. Those of different slots that the prompt path reads go as one chunk, up to
   // PROMPT_MAX_RUNS of them and prompt_chunk rows; a short one goes as windows when it comes. Runs on the engine
   // thread.
   void prompt_pieces(uint32_t plan, const engine_step_plan &sp) {
     const uint32_t window = sp.window_rows ? sp.window_rows : kWindowPrompt;
-    std::vector<Piece> chunk;
+    std::vector<Piece> chunk, score_win;
     uint32_t rows = 0;
+    auto flush_score = [&] {
+      if (score_win.empty()) return;
+      prompt_score_windows(plan, score_win);
+      if (swaps) model->note_prompt_routing(engine::count_prompt_routing(writing_at_start));
+    };
     auto flush = [&] {
       if (chunk.empty()) return;
       prompt_chunk(plan, chunk);
@@ -776,23 +911,35 @@ struct engine_ctx {
       if (swaps) model->note_prompt_routing(engine::count_prompt_routing(writing_at_start));
     };
     for (uint32_t i = 0; i < sp.npieces && i < ENGINE_MAX_PROMPT_PIECES; i++) {
-      // A piece of a slot already in the chunk starts where that one ends.
+      // A piece of a slot already in the chunk or score batch starts where that one ends.
       for (const Piece &pi : chunk)
         if (pi.slot == sp.pieces[i].slot) {
           flush();
           break;
         }
+      for (const Piece &pi : score_win)
+        if (pi.slot == sp.pieces[i].slot) {
+          flush_score();
+          break;
+        }
       Piece pi;
       if (!prepare_piece(sp.pieces[i], window, pi)) continue;
       if (pi.windowed) {  // its slot is not in the chunk, which can wait for it
+        if (pi.scoring) {
+          score_win.push_back(std::move(pi));
+          continue;
+        }
+        flush_score();
         prompt_windows(plan, StepIn{pi.slot, pi.pos0, pi.toks[0], pi.p1, pi.p2, pi.p3}, pi.toks, pi.restart);
         if (swaps) model->note_prompt_routing(engine::count_prompt_routing(writing_at_start));
         continue;
       }
+      flush_score();
       if (chunk.size() == PROMPT_MAX_RUNS || rows + pi.n > info.prompt_chunk) flush();
       rows += pi.n;
       chunk.push_back(std::move(pi));
     }
+    flush_score();
     flush();
   }
 
@@ -803,10 +950,12 @@ struct engine_ctx {
     const uint32_t s = first.slot, pos0 = first.pos, n = (uint32_t)toks.size();
     const bool mtp = model->drafting();
     int32_t after;  // the prompt's token after the piece, or kNoToken when the piece ends the prompt
+    bool want_scores = false;
     {
       std::lock_guard<std::mutex> lk(mu);
       const Slot &sl = slots[s];
       after = pos0 + n < sl.prompt.size() ? sl.prompt[pos0 + n] : kNoToken;
+      want_scores = sl.used && sl.settings.n_score_tokens > 0 && pos0 + n == sl.prompt.size();
     }
     uint64_t t0 = now_ns();
     if (mtp && restart) model->draft_start(s, pos0);
@@ -822,6 +971,7 @@ struct engine_ctx {
       }
       auto out = model->step(rows.data(), w, true, true);
       model->commit(s, pos0 + i, w);
+      if (want_scores && i + w == n) collect_scores(s, w - 1);
       cand = out[w - 1];
       mr.clear();
       for (uint32_t k = i; k < i + w; k++)
@@ -929,6 +1079,15 @@ struct engine_ctx {
     }
     uint64_t t0 = now_ns();
     auto out = model->step(rows.data(), (uint32_t)rows.size());
+    for (size_t i = 0; i < rows.size(); i++) {
+      bool want = false;
+      {
+        std::lock_guard<std::mutex> lk(mu);
+        const Slot &sl = slots[who[i]];
+        want = sl.used && sl.settings.n_score_tokens > 0 && rows[i].pos + 1 == sl.prompt.size();
+      }
+      if (want) collect_scores(who[i], (uint32_t)i);
+    }
     std::vector<StepIn> mr;  // the draft layer's catch-up: each row with the token after it
     uint64_t sampled;  // the rows' tokens sampled: the end of the window as a round of several slots times it
     uint32_t misses;   // the experts the CPU computed in the step
@@ -955,10 +1114,15 @@ struct engine_ctx {
         sl.fed = rows[i].pos + 1;
         if (sl.fed < sl.prompt.size()) {
           if (sl.fed % 512 == 0) emit({ENGINE_EVENT_PROMPT, s, kNoToken, sl.fed});
-          mr.push_back({s, rows[i].pos, sl.prompt[sl.fed], kNoToken, kNoToken});
+          if (!score_only(sl.settings)) mr.push_back({s, rows[i].pos, sl.prompt[sl.fed], kNoToken, kNoToken});
           continue;
         }
         if (sl.fed == sl.prompt.size()) emit({ENGINE_EVENT_PROMPT, s, kNoToken, sl.fed});
+        if (score_only(sl.settings)) {
+          sl.done = true;
+          emit({ENGINE_EVENT_DONE, s, kNoToken, ENGINE_DONE_STOP});
+          continue;
+        }
         if (sl.fed > sl.prompt.size()) sl.stats.steps++;  // the row was one of its own tokens
         produce(s, out[i]);
         sl.clear_drafts();
@@ -1586,6 +1750,12 @@ engine_status engine_admit(engine_ctx *e, uint32_t slot, const engine_settings *
   if (n_prompt > e->info.max_ctx) return ENGINE_BAD_ARGUMENT;
   if (!(settings->min_p >= 0.0f && settings->min_p <= 1.0f)) return ENGINE_BAD_ARGUMENT;
   if (penalised(*settings) && !(settings->penalty_repeat > 0.0f)) return ENGINE_BAD_ARGUMENT;
+  if ((settings->flags & ~ENGINE_SETTINGS_SCORE_ONLY) != 0) return ENGINE_BAD_ARGUMENT;
+  if (settings->n_score_tokens > ENGINE_MAX_SCORE_TOKENS) return ENGINE_BAD_ARGUMENT;
+  if ((settings->flags & ENGINE_SETTINGS_SCORE_ONLY) && settings->n_score_tokens == 0) return ENGINE_BAD_ARGUMENT;
+  for (uint32_t i = 0; i < settings->n_score_tokens; i++)
+    if (settings->score_tokens[i] < 0 || (uint32_t)settings->score_tokens[i] >= e->info.vocab)
+      return ENGINE_BAD_ARGUMENT;
   if (e->sleeping()) return ENGINE_ERROR;
   Slot &sl = e->slots[slot];
   if (sl.used) return ENGINE_BUSY;
@@ -1790,6 +1960,14 @@ engine_status engine_read_slot_stats(engine_ctx *e, uint32_t slot, engine_slot_s
   return ENGINE_OK;
 }
 
+engine_status engine_read_slot_scores(engine_ctx *e, uint32_t slot, engine_slot_scores *out) {
+  if (!e || !out) return ENGINE_BAD_ARGUMENT;
+  std::lock_guard<std::mutex> lk(e->mu);
+  if (slot >= e->slots.size() || !e->slots[slot].used || !e->slots[slot].scores_ready) return ENGINE_BAD_ARGUMENT;
+  *out = e->slots[slot].scores;
+  return ENGINE_OK;
+}
+
 engine_status engine_sleep(engine_ctx *e) {
   if (!e) return ENGINE_BAD_ARGUMENT;
   std::unique_lock<std::mutex> lk(e->mu);
@@ -1916,6 +2094,7 @@ uint32_t engine_abi_layout(engine_abi_row *table, uint32_t cap) {
       ROW(engine_settings, max_tokens), ROW(engine_settings, seed), ROW(engine_settings, n_stop),
       ROW(engine_settings, stop), ROW(engine_settings, min_p), ROW(engine_settings, penalty_last_n),
       ROW(engine_settings, penalty_repeat), ROW(engine_settings, penalty_freq), ROW(engine_settings, penalty_present),
+      ROW(engine_settings, flags), ROW(engine_settings, n_score_tokens), ROW(engine_settings, score_tokens),
       SIZE(engine_settings),
       ROW(engine_page_change, slot), ROW(engine_page_change, logical), ROW(engine_page_change, page),
       ROW(engine_page_change, source), ROW(engine_page_change, cells), SIZE(engine_page_change),
@@ -1953,6 +2132,8 @@ uint32_t engine_abi_layout(engine_abi_row *table, uint32_t cap) {
       ROW(engine_slot_stats, steps), ROW(engine_slot_stats, rounds), ROW(engine_slot_stats, drafts),
       ROW(engine_slot_stats, accepted), ROW(engine_slot_stats, lookup_rounds), ROW(engine_slot_stats, lookup_drafts),
       ROW(engine_slot_stats, lookup_accepted), SIZE(engine_slot_stats),
+      ROW(engine_slot_scores, n), ROW(engine_slot_scores, reserved), ROW(engine_slot_scores, logits),
+      ROW(engine_slot_scores, logsumexp), SIZE(engine_slot_scores),
       ROW(engine_card, name), ROW(engine_card, pci), ROW(engine_card, memory), ROW(engine_card, device_id),
       ROW(engine_card, ip_version), ROW(engine_card, xe_cores), ROW(engine_card, pcie_gen),
       ROW(engine_card, pcie_width), ROW(engine_card, reserved), ROW(engine_card, pcie_bytes_per_s), SIZE(engine_card),

@@ -9,14 +9,15 @@ Front end to engine:
 
     IMG <rid> <first> <grid_h> <grid_w> <frames> <path>
     GEN <rid> <max_new> [key=value ...] <id,id,...>
+    DECIDE <rid> <choice,choice,...> <id,id,...>
     STOP <rid>
     STATS
     SLEEP [<drain_ms>]
     WAKE
     QUIT
 
-A request's images come before its GEN, one IMG line each, in prompt order; a video is one IMG line per pair of its
-frames, `frames` 2. `path` names a file of the front end's (a memfd, as /proc/<pid>/fd/<n>) holding the image's
+A request's images come before its GEN or DECIDE, one IMG line each, in prompt order; a video is one IMG line per pair
+of its frames, `frames` 2. `path` names a file of the front end's (a memfd, as /proc/<pid>/fd/<n>) holding the image's
 patches, which the engine reads when it reads the line.
 
 Engine to front end:
@@ -27,6 +28,7 @@ Engine to front end:
     RESUME <rid> <reused>
     PP <rid> <reached> <prompt> <ms>
     T <rid> <id>[,<id>...]
+    SCORES <rid> <logsumexp> <logit,logit,...>
     DONE <rid> <generated> <prompt> <prompt_ms> <decode_ms> <finish> <reused> [key=value ...]
     STATS key=value ...
     ERR <rid|-> <message>
@@ -54,6 +56,8 @@ from typing import ClassVar
 
 TOP_K_MAX = 64
 """The largest top-k the cards sample from (Strata's limit, kept: the cards exchange top-k candidates)."""
+MAX_SCORE_TOKENS = 16
+"""The most caller-chosen token ids scored at prompt end by DECIDE (ENGINE_MAX_SCORE_TOKENS)."""
 
 
 class ProtocolError(ValueError):
@@ -178,6 +182,15 @@ def _float(text: str, name: str) -> float:
         raise ProtocolError(f"bad {name}: {text!r}") from None
 
 
+def _floats(text: str, name: str) -> tuple[float, ...]:
+    if not text:
+        raise ProtocolError(f"empty {name}")
+    vals = tuple(_float(part, name) for part in text.split(","))
+    if any(not math.isfinite(v) for v in vals):
+        raise ProtocolError(f"non-finite {name}")
+    return vals
+
+
 def _one_line(text: str) -> str:
     return " ".join(text.split())
 
@@ -196,6 +209,27 @@ class Gen:
         return " ".join(
             ["GEN", str(self.rid), str(self.max_new), *self.settings.encode(), ",".join(map(str, self.prompt))]
         )
+
+
+@dataclass(frozen=True, slots=True)
+class Decide:
+    """Read `prompt` on a temporary slot (reusing any matching checkpoint without taking a new one) and return raw
+    logits for `choices` at the final prompt position."""
+
+    rid: int
+    choices: tuple[int, ...]
+    prompt: tuple[int, ...]
+
+    def __post_init__(self) -> None:
+        if not 1 <= len(self.choices) <= MAX_SCORE_TOKENS:
+            raise ProtocolError(f"choices must hold 1..{MAX_SCORE_TOKENS} ids, not {len(self.choices)}")
+        if any(i < 0 for i in self.choices):
+            raise ProtocolError("negative choice token id")
+        if not self.prompt or any(i < 0 for i in self.prompt):
+            raise ProtocolError("bad prompt token list")
+
+    def encode(self) -> str:
+        return f"DECIDE {self.rid} {','.join(map(str, self.choices))} {','.join(map(str, self.prompt))}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -253,7 +287,7 @@ class Quit:
         return "QUIT"
 
 
-type Command = Img | Gen | Stop | Stats | Sleep | Wake | Quit
+type Command = Img | Gen | Decide | Stop | Stats | Sleep | Wake | Quit
 
 
 def parse_command(line: str) -> Command:
@@ -263,6 +297,8 @@ def parse_command(line: str) -> Command:
     match parts:
         case ["GEN", rid, max_new, *rest] if rest:
             return Gen(_int(rid, "rid"), _int(max_new, "max_new"), _ids(rest[-1]), Settings.decode(rest[:-1]))
+        case ["DECIDE", rid, choices, prompt]:
+            return Decide(_int(rid, "rid"), _ids(choices), _ids(prompt))
         case ["IMG", rid, first, grid_h, grid_w, frames, path]:
             return Img(
                 _int(rid, "rid"),
@@ -355,6 +391,27 @@ class Tokens:
 
 
 @dataclass(frozen=True, slots=True)
+class Scores:
+    """Raw logits for a DECIDE request's choice tokens at the final prompt position, and the full vocabulary's
+    log-sum-exp there."""
+
+    rid: int
+    logsumexp: float
+    logits: tuple[float, ...]
+
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.logsumexp):
+            raise ProtocolError(f"logsumexp must be finite, not {self.logsumexp}")
+        if not 1 <= len(self.logits) <= MAX_SCORE_TOKENS:
+            raise ProtocolError(f"logits must hold 1..{MAX_SCORE_TOKENS} values, not {len(self.logits)}")
+        if any(not math.isfinite(v) for v in self.logits):
+            raise ProtocolError("non-finite score logit")
+
+    def encode(self) -> str:
+        return f"SCORES {self.rid} {self.logsumexp!r} {','.join(map(repr, self.logits))}"
+
+
+@dataclass(frozen=True, slots=True)
 class Done:
     rid: int
     generated: int
@@ -427,7 +484,7 @@ class Error:
         return f"ERR {'-' if self.rid is None else self.rid} {_one_line(self.message)}"
 
 
-type Event = Info | Ready | Asleep | Resume | Progress | Tokens | Done | StatsReport | Error
+type Event = Info | Ready | Asleep | Resume | Progress | Tokens | Scores | Done | StatsReport | Error
 
 
 def parse_event(line: str) -> Event:
@@ -449,6 +506,8 @@ def parse_event(line: str) -> Event:
             return Progress(_int(rid, "rid"), _int(reached, "reached"), _int(prompt, "prompt"), _float(ms, "ms"))
         case ["T", rid, ids]:
             return Tokens(_int(rid, "rid"), _ids(ids))
+        case ["SCORES", rid, lse, logits]:
+            return Scores(_int(rid, "rid"), _float(lse, "logsumexp"), _floats(logits, "logits"))
         case ["DONE", rid, generated, prompt, prompt_ms, decode_ms, finish, *rest]:
             try:
                 why = Finish(finish)

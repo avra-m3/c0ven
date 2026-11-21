@@ -52,6 +52,7 @@ from engine.api.interface import (
     OpenConfig,
     PageChange,
     PageOp,
+    SlotScores,
     SlotSettings,
     SlotStats,
     StepPlan,
@@ -146,6 +147,7 @@ def load_library(path: Path | None = None) -> ctypes.CDLL:
         "engine_read_timing": ([_ctx, ctypes.POINTER(abi.CTiming), _u32, _p_u32], ctypes.c_int),
         "engine_read_stats": ([_ctx, ctypes.POINTER(abi.CStats)], ctypes.c_int),
         "engine_read_slot_stats": ([_ctx, _u32, ctypes.POINTER(abi.CSlotStats)], ctypes.c_int),
+        "engine_read_slot_scores": ([_ctx, _u32, ctypes.POINTER(abi.CSlotScores)], ctypes.c_int),
         "engine_sleep": ([_ctx], ctypes.c_int),
         "engine_wake": ([_ctx, ctypes.POINTER(abi.CInfo)], ctypes.c_int),
         "engine_last_error": ([_ctx], ctypes.c_char_p),
@@ -215,6 +217,10 @@ class Core(Protocol):
     def read_stats(self) -> abi.CStats: ...
     def slot_stats(self, slot: int) -> abi.CSlotStats:
         """Raises EngineError for a slot not admitted."""
+        ...
+
+    def slot_scores(self, slot: int) -> abi.CSlotScores:
+        """Raises EngineError for a slot not admitted or with no scores ready."""
         ...
 
     def sleep(self) -> None: ...
@@ -310,6 +316,11 @@ class CtypesCore:
         self._check(self._lib.engine_read_slot_stats(self._ctx, slot, ctypes.byref(out)), "slot_stats")
         return out
 
+    def slot_scores(self, slot: int) -> abi.CSlotScores:
+        out = abi.CSlotScores()
+        self._check(self._lib.engine_read_slot_scores(self._ctx, slot, ctypes.byref(out)), "slot_scores")
+        return out
+
     def sleep(self) -> None:
         self._check(self._lib.engine_sleep(self._ctx), "sleep")
 
@@ -335,6 +346,7 @@ class _Slot:
     """Each queued span's end position and row count, until the core reports it read."""
     decoding: bool = False
     finished: bool = False
+    score_only: bool = False
 
 
 @dataclass(slots=True)
@@ -504,6 +516,15 @@ class NativeEngine:
         c.n_stop = len(self._stop_ids)
         for i, token in enumerate(self._stop_ids):
             c.stop[i] = token
+        if settings.score_only:
+            c.flags |= abi.SettingsFlag.SCORE_ONLY
+        if len(settings.score_tokens) > abi.MAX_SCORE_TOKENS:
+            raise EngineError(
+                ErrorCode.INVALID_ARGUMENT, f"{len(settings.score_tokens)} score tokens > {abi.MAX_SCORE_TOKENS}"
+            )
+        c.n_score_tokens = len(settings.score_tokens)
+        for i, token in enumerate(settings.score_tokens):
+            c.score_tokens[i] = token
         self._core.admit(slot, c, prompt)
         if images:
             try:
@@ -511,7 +532,7 @@ class NativeEngine:
             except EngineError:
                 self._core.release(slot)
                 raise
-        self._slots[slot] = _Slot(len(prompt))
+        self._slots[slot] = _Slot(len(prompt), score_only=settings.score_only)
 
     def release(self, slot: int) -> None:
         if self._slots.pop(slot, None) is None:
@@ -546,7 +567,7 @@ class NativeEngine:
                 pieces.append((span.slot, min(chunk, end - first)))
             s.fed = end
             s.spans.append((end, span.count))
-            if span.last:
+            if span.last and not s.score_only:
                 joining.append(s)
         changes = _page_changes(plan.pages)
         for i in range(0, len(pieces), abi.MAX_PROMPT_PIECES):
@@ -608,6 +629,15 @@ class NativeEngine:
         except EngineError:
             return SlotStats()
         return SlotStats(**{name: int(getattr(c, name)) for name in abi.SLOT_STATS_FIELDS})
+
+    def slot_scores(self, slot: int) -> SlotScores:
+        if self._info is None or self._asleep or slot not in self._slots:
+            return SlotScores()
+        try:
+            c = self._core.slot_scores(slot)
+        except EngineError:
+            return SlotScores()
+        return SlotScores(tuple(float(c.logits[i]) for i in range(c.n)), float(c.logsumexp))
 
     def close(self) -> None:
         if self._info is not None:

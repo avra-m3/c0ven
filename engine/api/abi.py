@@ -28,13 +28,18 @@ import ctypes
 from dataclasses import dataclass
 from enum import IntEnum
 
-ABI_VERSION = 23
+ABI_VERSION = 24
 
 MAX_STOP = 8
+MAX_SCORE_TOKENS = 16
 MAX_STEP_SLOTS = 8
 MAX_PROMPT_PIECES = 4
 NO_PAGE = 0xFFFFFFFF
 """In a page change: unmap the logical page and every page after it."""
+
+
+class SettingsFlag(IntEnum):
+    SCORE_ONLY = 1
 
 
 class Status(IntEnum):
@@ -153,6 +158,9 @@ class CSettings(ctypes.Structure):
         ("penalty_repeat", ctypes.c_float),
         ("penalty_freq", ctypes.c_float),
         ("penalty_present", ctypes.c_float),
+        ("flags", ctypes.c_uint32),
+        ("n_score_tokens", ctypes.c_uint32),
+        ("score_tokens", ctypes.c_int32 * MAX_SCORE_TOKENS),
     )
 
 
@@ -290,6 +298,17 @@ class CSlotStats(ctypes.Structure):
     _fields_ = tuple((name, ctypes.c_uint64) for name in SLOT_STATS_FIELDS)
 
 
+class CSlotScores(ctypes.Structure):
+    """`engine_slot_scores`: one admitted slot's prompt-end choice logits and full-vocab log-sum-exp."""
+
+    _fields_ = (
+        ("n", ctypes.c_uint32),
+        ("reserved", ctypes.c_uint32),
+        ("logits", ctypes.c_float * MAX_SCORE_TOKENS),
+        ("logsumexp", ctypes.c_double),
+    )
+
+
 class CCard(ctypes.Structure):
     """`engine_card`: one card the engine can use."""
 
@@ -330,6 +349,7 @@ STRUCTS: dict[str, type[ctypes.Structure]] = {
     "engine_image": CImage,
     "engine_stats": CStats,
     "engine_slot_stats": CSlotStats,
+    "engine_slot_scores": CSlotScores,
     "engine_card": CCard,
     "engine_abi_row": CAbiRow,
 }

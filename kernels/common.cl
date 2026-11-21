@@ -177,3 +177,41 @@ __kernel void swiglu(__global const float *g, __global const float *u, __global 
   uint i = get_global_id(0);
   if (i < n) out[i] = SWIGLU(g[i], u[i]);
 }
+
+// Raw logits for ntok caller-chosen token ids on this card's slice [offset, offset + n) of row `row` (rows v_stride
+// apart), plus this slice's max and exp-sum in out_stats[0..1] for full-vocabulary log-sum-exp. One group of 256.
+REQD_SG __kernel void gather_logits(__global const float *v, uint v_stride, uint row, uint n, uint offset,
+                                    __global const int *tokens, uint ntok, __global float *out_logits,
+                                    __global float *out_stats) {
+  __local float red[16];
+  __global const float *r = v + (ulong)row * v_stride;
+  const uint lid = get_local_id(0), lsz = get_local_size(0);
+  float mx = -INFINITY;
+  for (uint i = lid; i < n; i += lsz) mx = fmax(mx, r[i]);
+  mx = sub_group_reduce_max(mx);
+  if (sg_lane() == 0) red[sg_id()] = mx;
+  barrier(CLK_LOCAL_MEM_FENCE);
+  if (lid == 0) {
+    float m = -INFINITY;
+    for (uint i = 0; i < get_num_sub_groups(); i++) m = fmax(m, red[i]);
+    red[0] = m;
+  }
+  barrier(CLK_LOCAL_MEM_FENCE);
+  mx = red[0];
+  float sum = 0.0f;
+  if (mx != -INFINITY)
+    for (uint i = lid; i < n; i += lsz) sum += exp(r[i] - mx);
+  sum = sg_sum(sum);
+  if (sg_lane() == 0) red[sg_id()] = sum;
+  barrier(CLK_LOCAL_MEM_FENCE);
+  if (lid == 0) {
+    float s = 0.0f;
+    for (uint i = 0; i < get_num_sub_groups(); i++) s += red[i];
+    out_stats[0] = mx;
+    out_stats[1] = s;
+  }
+  if (lid < ntok) {
+    int tok = tokens[lid];
+    if (tok >= (int)offset && (uint)(tok - (int)offset) < n) out_logits[lid] = r[(uint)(tok - (int)offset)];
+  }
+}

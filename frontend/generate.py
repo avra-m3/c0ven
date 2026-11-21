@@ -41,6 +41,13 @@ class Engine(Protocol):
         images: Sequence[PromptImage] = (),
     ) -> AsyncGenerator[protocol.Event]: ...
 
+    def decide(
+        self,
+        prompt: Sequence[int],
+        choices: Sequence[int],
+        images: Sequence[PromptImage] = (),
+    ) -> AsyncGenerator[protocol.Event]: ...
+
 
 class Finish(StrEnum):
     STOP = "stop"
@@ -124,9 +131,17 @@ def _pad(model: Model, token: str) -> int:
     return pad
 
 
-def render(model: Model, request: Request, image_tokens_max: int = 0) -> Prompt:
+def render(
+    model: Model,
+    request: Request,
+    image_tokens_max: int = 0,
+    *,
+    close_thinking: bool = False,
+    assistant_prefix: str = "",
+) -> Prompt:
     """The prompt's text and ids; with images and videos, each image and each pair of a video's frames sized to at
-    most `image_tokens_max` tokens. A video's template item becomes its frame pairs' text before tokenizing."""
+    most `image_tokens_max` tokens. A video's template item becomes its frame pairs' text before tokenizing.
+    `close_thinking` appends a closing `</think>` at the tail without altering the leading prefix."""
     if (request.images or request.videos) and not image_tokens_max:
         raise BadRequest("this engine reads no images or videos")
     try:
@@ -143,6 +158,13 @@ def render(model: Model, request: Request, image_tokens_max: int = 0) -> Prompt:
         if len(parts) != len(videos) + 1:
             raise BadRequest(f"the rendered prompt has {len(parts) - 1} video places for {len(videos)} videos")
         text = parts[0] + "".join(video.placeholder(v) + rest for v, rest in zip(videos, parts[1:], strict=True))
+    if close_thinking:
+        if text.endswith("<think>\n"):
+            text += "\n</think>\n\n"
+        elif text.endswith("<think>"):
+            text += "</think>"
+    if assistant_prefix:
+        text += assistant_prefix
     ids = encode(model.tokenizer, text)
     images: list[PromptImage] = []
     if prepared or videos:

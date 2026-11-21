@@ -70,6 +70,12 @@ struct Candidate {
   float logit;
 };
 
+// Raw logits for caller-chosen token ids at one row, and the full vocabulary's log-sum-exp there.
+struct TokenScores {
+  std::vector<float> logits;
+  double logsumexp = 0.0;
+};
+
 struct LoadInfo {
   uint32_t cards = 0;
   uint32_t experts_per_layer = 0;
@@ -242,6 +248,14 @@ class Model {
   // or null; the model may read ahead for them.
   virtual std::vector<std::vector<Candidate>> prompt_runs(const PromptRun *runs, uint32_t nruns,
                                                           const int32_t *next = nullptr, uint32_t next_n = 0) = 0;
+  // Raw logits for n caller-chosen token ids at row of the last step or prompt_runs pass, plus the full-vocabulary
+  // log-sum-exp. Called on demand before any draft pass reuses the logits buffer.
+  virtual TokenScores read_logits(uint32_t row, const int32_t *tokens, uint32_t n) {
+    (void)row;
+    (void)tokens;
+    (void)n;
+    return {};
+  }
   // The most rows a prompt chunk takes; 0: no prompt path, one token a step.
   virtual uint32_t prompt_chunk() const = 0;
   // The most rows a chunk may have and fetch only the uncached experts its router picks; a longer one copies every

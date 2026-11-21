@@ -20,7 +20,7 @@ import contextlib
 import itertools
 import logging
 import os
-from collections.abc import AsyncGenerator, Sequence
+from collections.abc import AsyncGenerator, Callable, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 
@@ -306,7 +306,7 @@ class EngineClient:
             process.stdin.write(line.encode() + b"\n")
             await process.stdin.drain()
 
-    async def generate(
+    def generate(
         self,
         prompt: Sequence[int],
         max_new: int,
@@ -315,6 +315,22 @@ class EngineClient:
     ) -> AsyncGenerator[protocol.Event]:
         """The request's events, ending with Done or Error. Leaving early (a client gone, a stop string) sends
         STOP and drains the request's lines in the background, so they never reach a later request."""
+        return self._run_request(lambda rid: protocol.Gen(rid, max_new, tuple(prompt), settings), images)
+
+    def decide(
+        self,
+        prompt: Sequence[int],
+        choices: Sequence[int],
+        images: Sequence[PromptImage] = (),
+    ) -> AsyncGenerator[protocol.Event]:
+        """Score `choices` at the end of `prompt` on a temporary check slot; yields Scores then Done, or Error."""
+        return self._run_request(lambda rid: protocol.Decide(rid, tuple(choices), tuple(prompt)), images)
+
+    async def _run_request(
+        self,
+        build: Callable[[int], protocol.Command],
+        images: Sequence[PromptImage] = (),
+    ) -> AsyncGenerator[protocol.Event]:
         if self._asleep:
             raise EngineUnavailable("the engine is asleep")
         await self.start()
@@ -333,7 +349,7 @@ class EngineClient:
                     view = view[os.write(fd, view) :]
                 path = f"/proc/{os.getpid()}/fd/{fd}"
                 await self._send(protocol.Img(rid, im.first, im.grid_h, im.grid_w, path, im.frames).encode())
-            await self._send(protocol.Gen(rid, max_new, tuple(prompt), settings).encode())
+            await self._send(build(rid).encode())
             while True:
                 event = await q.get()
                 if isinstance(event, protocol.Tokens):

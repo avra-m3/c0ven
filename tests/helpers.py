@@ -4,7 +4,8 @@ fake engine. The model's own tokenizer and template are tested in tests/end_to_e
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator, Sequence
+import math
+from collections.abc import AsyncGenerator, Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -152,6 +153,8 @@ class FakeEngine:
     wakes: int = 0
     counts: dict[str, str] = field(default_factory=lambda: {"plans": "4", "steps": "3", "step_ns": "30000000"})
     """Its STATS line."""
+    decide_choices: list[list[int]] = field(default_factory=lambda: [])
+    score_fn: Callable[[Sequence[int], Sequence[int]], tuple[Sequence[float], float]] | None = None
 
     @property
     def info(self) -> dict[str, str]:
@@ -217,6 +220,35 @@ class FakeEngine:
                 await asyncio.Event().wait()
             done = True
             yield protocol.Done(1, len(ids), len(prompt), 1.0, 2.0, finish, self.reused, 0.5, len(ids), 2, 1)
+        finally:
+            if not done:
+                self.stopped_early += 1
+
+    async def decide(
+        self,
+        prompt: Sequence[int],
+        choices: Sequence[int],
+        images: Sequence[PromptImage] = (),
+    ) -> AsyncGenerator[protocol.Event]:
+        self.prompts.append(list(prompt))
+        self.decide_choices.append(list(choices))
+        self.images.append(list(images))
+        done = False
+        try:
+            if self.reused:
+                yield protocol.Resume(1, self.reused)
+            if self.hang:
+                await asyncio.Event().wait()
+            if self.score_fn is not None:
+                logits, lse = self.score_fn(prompt, choices)
+                logits_t = tuple(float(v) for v in logits)
+            else:
+                logits_t = tuple(float(len(choices) - i) for i in range(len(choices)))
+                mx = max(logits_t)
+                lse = mx + math.log(sum(math.exp(v - mx) for v in logits_t) + 0.01)
+            yield protocol.Scores(1, float(lse), logits_t)
+            done = True
+            yield protocol.Done(1, 0, len(prompt), 1.0, 0.0, protocol.Finish.STOP, self.reused, 0.5)
         finally:
             if not done:
                 self.stopped_early += 1
