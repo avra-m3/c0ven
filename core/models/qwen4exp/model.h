@@ -205,7 +205,6 @@ class Model final : public engine::Model {
   // ngram.h. On the engine thread.
   NgramStats ngram_stats() const override { return ngram_ ? ngram_->stats() : NgramStats{}; }
   const Options &options() const { return opt_; }
-  bool peer_access() const { return p2p_; }
 
  public:
   struct Card;  // the model's state on one card (model_impl.h)

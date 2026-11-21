@@ -154,7 +154,7 @@ Model::Model(const std::string &path, const Options &opt) : opt_(opt), gguf_(pat
       std::fprintf(stderr, "engine: peer access disabled by ENGINE_NO_P2P; exchanges go through host memory\n");
     } else {
       std::string why;
-      p2p_ = rt_->peer_access(0, 1, &why);
+      p2p_ = rt_->peer_access(0, 1, lib_.get(), &why);
       if (!p2p_)
         std::fprintf(stderr, "engine: no peer access between cards 0 and 1 (%s); exchanges go through host memory\n",
                      why.c_str());
