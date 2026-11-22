@@ -31,8 +31,11 @@ from typing import Any
 type Body = dict[str, Any]
 type Rec = dict[str, Any]
 
-DEPLOYED = ("--slots", "4", "--context", "262144", "--kv-tokens", "524288", "--default-max-tokens", "32768")
-ONE_SLOT = ("--slots", "1", "--context", "262144")
+# Every configuration puts the expert arena in the host's reserved huge pages (`--hugepages`, OPTIONS.md), so the memory
+# plan counts them as room for it; a host without them keeps the arena in ordinary memory.
+HUGE = ("--engine-arg=--hugepages",)
+DEPLOYED = ("--slots", "4", "--context", "262144", "--kv-tokens", "524288", "--default-max-tokens", "32768", *HUGE)
+ONE_SLOT = ("--slots", "1", "--context", "262144", *HUGE)
 # name: (flags, extra environment). Same-tokens turns checkpoints off, so a prompt sent again is read again.
 CONFIGS: dict[str, tuple[tuple[str, ...], dict[str, str]]] = {
     "deployed": (DEPLOYED, {}),
