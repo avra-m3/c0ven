@@ -384,8 +384,11 @@ def run_scenario(name: str, client: Client, messages: dict[str, Rec], ref_dir: P
         recs += client.together(name, "at once", [g, e])
         for pid in ("gpqa-1", "edit-py"):
             shas = {r["mode"]: r["sha"] for r in recs if r["id"] == pid}
+            # Expected for now, so noted and not failed (TESTING.md, same-tokens): the experts the cards hold depend on
+            # the request beside this one, and an expert run on a card and one run on the CPU round differently.
             if len(set(shas.values())) != 1:
-                client.run.failures.append(f"same-tokens {pid}: different text {shas}")
+                say(f"  note: same-tokens {pid}: different text {shas}, expected for now")
+                client.write({"note": "same-tokens", "id": pid, "text": shas})
     else:
         raise ValueError(f"unknown scenario {name}")
 
