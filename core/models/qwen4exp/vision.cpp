@@ -215,6 +215,11 @@ void Model::load_vision(bool first) {
     vpix_ = static_cast<uint8_t *>(rt_->alloc_host((size_t)4 * W * kVPatch * kFramesMax));
     venc_ = static_cast<float *>(rt_->alloc_host((size_t)W * kVOut * 4));
     vcount_ = static_cast<uint32_t *>(rt_->alloc_host(64 * C));
+    if (C > 1 && !p2p_) {
+      const size_t kv_bytes = (size_t)4 * W * kVQkvW * 2;
+      vk_host_ = static_cast<uint16_t *>(rt_->alloc_host(kv_bytes));
+      vv_host_ = static_cast<uint16_t *>(rt_->alloc_host(kv_bytes));
+    }
     vevents_ = std::make_unique<ze::EventPool>(*rt_, (2 * kStages + 2 * kVLayers) * C);
   }
 
@@ -346,11 +351,17 @@ void Model::encode_image(const Image &im, float *out) {
       L.launch(vk(c, "v_qkv"), {V.y, Ly.bqkv, R[c], r0[c], gw, V.q, V.k + kv0, V.v + kv0}, kVHeads * V_ROT / 64, R[c], 1,
                64);
       if (C > 1) {
-        // Into the other card's K and V once it has finished with the last layer's.
-        VisionCard &peer = *cards_[1 - c]->vc;
+        // Into the other card's K and V, or pinned host staging without peer access (ADR-0080), once the other card
+        // has finished with the last layer's.
         if (l > 0) L.wait({ev(3, l - 1, 1 - c)});
-        L.copy(peer.k + kv0, V.k + kv0, (size_t)R[c] * kVQkvW * 2);
-        L.copy(peer.v + kv0, V.v + kv0, (size_t)R[c] * kVQkvW * 2, ev(2, l, c));
+        if (p2p_) {
+          VisionCard &peer = *cards_[1 - c]->vc;
+          L.copy(peer.k + kv0, V.k + kv0, (size_t)R[c] * kVQkvW * 2);
+          L.copy(peer.v + kv0, V.v + kv0, (size_t)R[c] * kVQkvW * 2, ev(2, l, c));
+        } else {
+          L.copy(vk_host_ + kv0, V.k + kv0, (size_t)R[c] * kVQkvW * 2);
+          L.copy(vv_host_ + kv0, V.v + kv0, (size_t)R[c] * kVQkvW * 2, ev(2, l, c));
+        }
       }
     }
     // The rest of the layer, and the stage two ahead into the slot it frees.
@@ -360,7 +371,15 @@ void Model::encode_image(const Image &im, float *out) {
       const VisionCard::Layer &Ly = V.layers[l];
       const uint8_t *st = V.slot[l % 2];
       const uint32_t *nrows = &vcount_[16 * c];
-      if (C > 1) L.wait({ev(2, l, 1 - c)});
+      if (C > 1) {
+        L.wait({ev(2, l, 1 - c)});
+        if (!p2p_) {
+          const size_t pkv0 = (size_t)r0[1 - c] * kVQkvW;
+          const size_t pbytes = (size_t)R[1 - c] * kVQkvW * 2;
+          L.copy(V.k + pkv0, vk_host_ + pkv0, pbytes);
+          L.copy(V.v + pkv0, vv_host_ + pkv0, pbytes);
+        }
+      }
       L.launch(kernel(c, "qwen4exp_vision_attn", "v_attn"), {V.q, R[c], V.k, V.v, N, scale, V.o}, kVHeads,
                (R[c] + 15) / 16, 1, 16);
       if (C > 1) L.signal(ev(3, l, c));

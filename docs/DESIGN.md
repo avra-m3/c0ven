@@ -337,8 +337,10 @@ flowchart TB
 The cards exchange partial sums twice per layer, and each exchange is signalled by an event. The first adds the token
 mixer's output, the second the experts'. A one-row step exchanges through pinned host memory. A window of two rows or
 more writes each card's partial sums straight into the other card's memory, and so does the prompt path
-([ADR-0030](adr/0030-exchanges-into-the-other-card.md)). An attention layer adds a third exchange, for the indexer
-(section 4).
+([ADR-0030](adr/0030-exchanges-into-the-other-card.md)). When the cards lack peer access or `ENGINE_NO_P2P=1` is set,
+those exchanges and the image encoder's K and V fall back to pinned host memory, and the prompt path skips
+hyper-connection row splitting ([ADR-0080](adr/0080-peer-exchanges-fall-back-to-host-memory.md)). An attention layer
+adds a third exchange, for the indexer (section 4).
 
 Both cards route every token in full, so both know its misses. Card 0 alone hands them to the CPU, through flags in
 host memory, each with one writer ([ADR-0011](adr/0011-cpu-gpu-signalling.md)). The CPU computes each missed expert
@@ -360,7 +362,7 @@ No card is kept busy to hold its clock up. In decode both cards stay at 2,400 MH
 | Where | What it holds |
 | --- | --- |
 | Each card's VRAM (`zeMemAllocDevice`) | The card's half of every layer's weights and of each cached expert, its KV pages and state heads, its buffers and recorded lists |
-| Pinned host memory (`zeMemAllocHost`) | Each card's K and V of every KV page. What both cards or the CPU read: step plans, the misses' jobs and answers, the one-row exchanges, the step's n-gram rows, the cards' candidates, the checkpoints, the image encoder's weights |
+| Pinned host memory (`zeMemAllocHost`) | Each card's K and V of every KV page. What both cards or the CPU read: step plans, the misses' jobs and answers, the one-row exchanges (and multi-row, prompt and vision exchanges without peer access, [ADR-0080](adr/0080-peer-exchanges-fall-back-to-host-memory.md)), the step's n-gram rows, the cards' candidates, the checkpoints, the image encoder's weights |
 | The expert arena: the engine's own memory, from `mmap` in 1 GiB pieces, in huge pages while the host keeps free 2 MiB blocks; with `--hugepages`, in the host's reserved huge pages while they last ([ADR-0066](adr/0066-the-arena-may-take-reserved-huge-pages.md)) | Every expert no card caches, each in one place. The CPU reads it for misses and copies from it for short prompt chunks, and the copy engines read it in place for longer chunks and swaps. The driver cannot move this memory under the host's reclaim, and it counts against the engine's cgroup ([ADR-0035](adr/0035-the-arena-in-the-engines-own-memory.md); [known limits](../README.md#known-limits)) |
 | RAM | The n-gram rows already read, in a cache of 1,048,576 rows; or the whole n-gram table, when the host has room for it ([ADR-0057](adr/0057-the-engine-reads-the-host-it-runs-on.md)). With `--hugepages` and `--ngram-ram auto`, the reserved huge pages the arena leaves at its largest hold the table, its first part when the rest fits the host's memory, or else a cache of as many rows as they hold ([ADR-0070](adr/0070-the-ngram-table-takes-the-huge-pages-the-arena-leaves.md)) |
 | The SSD | The n-gram table, 28.8 GB, read with `O_DIRECT` past the page cache ([ADR-0015](adr/0015-ngram-table-on-the-ssd.md)), unless it is in RAM |

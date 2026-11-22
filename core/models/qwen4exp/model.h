@@ -362,6 +362,7 @@ class Model final : public engine::Model {
   std::vector<std::unique_ptr<Card>> cards_;
   std::vector<std::unique_ptr<HostLayer>> host_layers_;
   uint32_t ncards_ = 1;
+  bool p2p_ = false;       // cards 0 and 1 can copy device memory directly (ze::Runtime::peer_access)
   uint32_t npp_ = 0;       // pages per slot's row of the table: the context's, rounded up to a multiple of the cards
   uint32_t kv_pages_ = 0;  // pages in the pool
   uint32_t kv_res_ = 0;    // streamed (Options::kv_resident): the ring of resident K and V pages a layer on each
@@ -496,6 +497,10 @@ class Model final : public engine::Model {
   uint32_t ppos_run() const { return (tmax_ + shape_.idx_block) * 4; }
   float *pembed_ = nullptr, *pngram_ = nullptr;
   uint16_t *pngram16_ = nullptr;  // the n-gram rows as bf16, for the cards
+  // Without peer access (ADR-0080): [slot 0..1][card][tmax_][embd] fp16 partial sums, and [card][tmax_][idx_cand()]
+  // indexer candidates in pinned host memory; kept across sleeps.
+  uint16_t *pex_ = nullptr;
+  uint32_t *picand_ = nullptr;
   // The next chunk's n-gram rows, read during this chunk (prompt's next), and which chunk they are for.
   struct NgramAhead {
     bool valid = false;
@@ -515,6 +520,8 @@ class Model final : public engine::Model {
   uint8_t *vpix_ = nullptr;    // pinned host memory: an image's pixels on their way to the cards
   uint32_t *vcount_ = nullptr; // host memory: per card, its rows and its windows (the products' ntok)
   float *venc_ = nullptr;      // host memory: the last image encoded, its rows of 2,560
+  // Without peer access (ADR-0080): pinned host staging for the two cards' K and V rows ([4 vmax_tokens_][kVQkvW]).
+  uint16_t *vk_host_ = nullptr, *vv_host_ = nullptr;
   // And whose: the slot, its images' generation and the image's index. set_images gives a slot's images a new
   // generation (from vgen_), so an encoding is never taken for another prompt's image.
   int64_t venc_slot_ = -1;

@@ -148,6 +148,18 @@ Model::Model(const std::string &path, const Options &opt) : opt_(opt), gguf_(pat
   for (uint32_t c = 0; c < ncards_ && opt_.anon_arena; c++)
     std::fprintf(stderr, "engine: %s: shared system USM capabilities 0x%x\n", rt_->cards()[c].name.c_str(),
                  rt_->cards()[c].shared_system);
+  if (ncards_ > 1) {
+    const char *no_p2p = std::getenv("ENGINE_NO_P2P");
+    if (no_p2p && *no_p2p && std::strcmp(no_p2p, "0") != 0) {
+      std::fprintf(stderr, "engine: peer access disabled by ENGINE_NO_P2P; exchanges go through host memory\n");
+    } else {
+      std::string why;
+      p2p_ = rt_->peer_access(0, 1, lib_.get(), &why);
+      if (!p2p_)
+        std::fprintf(stderr, "engine: no peer access between cards 0 and 1 (%s); exchanges go through host memory\n",
+                     why.c_str());
+    }
+  }
   npp_ = (opt_.max_ctx / KV_PAGE_CELLS + ncards_ - 1) / ncards_ * ncards_;
   kv_pages_ = opt_.kv_pages ? (opt_.kv_pages + ncards_ - 1) / ncards_ * ncards_ : opt_.slots * npp_;
   if (opt_.kv_resident) {
@@ -220,6 +232,10 @@ Model::Model(const std::string &path, const Options &opt) : opt_(opt), gguf_(pat
     pngram_ = static_cast<float *>(rt_->alloc_host((size_t)tmax_ * shape_.embd * 4));
     pngram16_ = static_cast<uint16_t *>(rt_->alloc_host((size_t)tmax_ * shape_.embd * 2));
     std::memset(pngram16_, 0, (size_t)tmax_ * shape_.embd * 2);
+    if (ncards_ > 1 && !p2p_) {
+      pex_ = static_cast<uint16_t *>(rt_->alloc_host((size_t)2 * ncards_ * tmax_ * shape_.embd * 2));
+      picand_ = static_cast<uint32_t *>(rt_->alloc_host((size_t)ncards_ * tmax_ * shape_.idx_cand() * 4));
+    }
   }
   if (!opt_.mtp_dir.empty() && !init_dflash()) {
     mtp_on_ = true;
@@ -919,7 +935,7 @@ void Model::load_card(Card &card) {
   card.ha8 = upload<uint8_t>(card, nullptr, W * shape_.used * a8_bytes(card.ff));
   card.sha8 = upload<uint8_t>(card, nullptr, W * a8_bytes(card.ff));
   card.yo = fbuf(shape_.embd);
-  if (ncards_ > 1) card.xp = upload<float>(card, nullptr, (size_t)2 * ncards_ * STEP_MAX_ROWS * shape_.embd * 4);
+  if (p2p_) card.xp = upload<float>(card, nullptr, (size_t)2 * ncards_ * STEP_MAX_ROWS * shape_.embd * 4);
 }
 
 // Which experts the cards cache, and the arena of the others for the CPU. Each card holds half of every cached
@@ -1246,10 +1262,11 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
   };
   const size_t ex_layer = (size_t)C * STEP_MAX_ROWS * shape_.embd;  // floats per layer in ex1_ and ex2_
   // The mixer's out product, this card's partial sums into ex1_; from 2 rows via card memory and one copy to host
-  // (docs/measurements/MEASUREMENTS.md#2026-10-16-out-products-host-writes). With two cards, 2 rows or more exchange card to card
-  // (ADR-0030, docs/measurements/MEASUREMENTS.md#2026-10-16-peer-exchange): a card's block of xp is copied to the same block of the
-  // other's, and the combine reads both in card order, so the sums match. k: 0 the mixer's exchange, 1 the MoE's.
-  const bool peer = C > 1 && W > 1;
+  // (docs/measurements/MEASUREMENTS.md#2026-10-16-out-products-host-writes). With peer access, 2 rows or more exchange
+  // card to card (ADR-0030, docs/measurements/MEASUREMENTS.md#2026-10-16-peer-exchange): a card's block of xp is copied
+  // to the same block of the other's, and the combine reads both in card order, so the sums match. Without peer access,
+  // exchanges stay in ex1_ and ex2_ (ADR-0080). k: 0 the mixer's exchange, 1 the MoE's.
+  const bool peer = p2p_ && W > 1;
   auto xp_block = [&](const Card &to, uint32_t k) { return to.xp + ((size_t)k * C + c) * STEP_MAX_ROWS * shape_.embd; };
   auto send_peer = [&](uint32_t k, uint32_t layer, uint32_t base) {
     L.copy(xp_block(*cards_[1 - c], k), xp_block(card, k), (size_t)W * shape_.embd * 4,
