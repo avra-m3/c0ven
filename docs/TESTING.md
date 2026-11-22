@@ -132,10 +132,12 @@ larger arm's range, which suits only scenarios that repeat closely, such as a 25
 
 | Configuration | Flags |
 | --- | --- |
-| deployed | `--slots 4 --context 262144 --kv-tokens 524288 --default-max-tokens 32768` |
-| one-slot | `--slots 1 --context 262144` |
+| deployed | `--slots 4 --context 262144 --kv-tokens 524288 --default-max-tokens 32768 --engine-arg=--hugepages` |
+| one-slot | `--slots 1 --context 262144 --engine-arg=--hugepages` |
 | one-card | one-slot, with `ZE_AFFINITY_MASK=0` |
 | same-tokens | deployed, with `--engine-arg=--deterministic --engine-arg=--checkpoints=0` |
+
+Every configuration puts the expert arena in the host's reserved huge pages (`--hugepages`, [OPTIONS.md](OPTIONS.md#reserved-huge-pages)), so the memory plan counts the free ones as room for it. Without them, a one-card load's arena does not fit beside the rest of the host's memory and the plan refuses it. A host with no reserved huge pages keeps the arena in ordinary memory.
 
 | Scenario | Configuration | Requests, 512 tokens out each unless named |
 | --- | --- | --- |
