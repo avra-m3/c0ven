@@ -33,6 +33,24 @@ MAX_SOURCE_PIXELS = 64 * 2**20
 IMAGE_PAD = "<|image_pad|>"
 
 
+@dataclass(frozen=True, slots=True)
+class ImageSpec:
+    """Patch geometry and resizing mode for a vision encoder."""
+
+    patch: int
+    merge: int
+    pad_token: str
+    resize: str = "smart"
+
+    @property
+    def factor(self) -> int:
+        return self.patch * self.merge
+
+
+QWEN_IMAGE = ImageSpec(patch=PATCH, merge=2, pad_token=IMAGE_PAD, resize="smart")
+INKLING2_IMAGE = ImageSpec(patch=20, merge=2, pad_token="<|unused_200054|>", resize="pad")
+
+
 class ImageError(ValueError):
     """The client's image is unreadable or not allowed."""
 
@@ -40,17 +58,18 @@ class ImageError(ValueError):
 @dataclass(frozen=True, slots=True)
 class PromptImage:
     """An image, or a video's frame pair, of the prompt: its tokens start at `first`; `pixels` holds grid_h x grid_w
-    patches of `frames` x 768 bytes."""
+    patches."""
 
     first: int
     grid_h: int
     grid_w: int
     pixels: bytes = field(repr=False)
     frames: int = 1
+    merge: int = 2
 
     @property
     def tokens(self) -> int:
-        return (self.grid_h // 2) * (self.grid_w // 2)
+        return (self.grid_h // self.merge) * (self.grid_w // self.merge)
 
 
 def from_data_url(url: str) -> bytes:
@@ -87,16 +106,39 @@ def smart_resize(height: int, width: int, max_pixels: int, min_pixels: int = MIN
     return h, w
 
 
-def patches(rgb: np.ndarray) -> bytes:
-    """An H x W x 3 uint8 image, both sides multiples of 32, as patches in the encoder's order: merge windows
-    row-major, each window's four patches row-major, each patch channel, row, column (section 2.2)."""
+def patches(rgb: np.ndarray, patch: int = PATCH, merge: int = 2) -> bytes:
+    """An H x W x 3 uint8 image, both sides multiples of `patch * merge`, as patches in merge-window order."""
     height, width, _ = rgb.shape
-    gh, gw = height // PATCH, width // PATCH
-    blocks = rgb.reshape(gh // 2, 2, PATCH, gw // 2, 2, PATCH, 3)  # R, dr, y, C, dc, x, channel
+    gh, gw = height // patch, width // patch
+    blocks = rgb.reshape(gh // merge, merge, patch, gw // merge, merge, patch, 3)
     return np.ascontiguousarray(blocks.transpose(0, 3, 1, 4, 6, 2, 5)).tobytes()
 
 
-def prepare(raw: bytes, max_tokens: int) -> tuple[int, int, bytes]:
+def _pad_resize(width: int, height: int, max_tokens: int, factor: int) -> tuple[int, int, int, int]:
+    """Scale `(width, height)` down only when padded area exceeds `max_tokens` tokens, then pad up to `factor`."""
+    aw = max(factor, -(-width // factor) * factor)
+    ah = max(factor, -(-height // factor) * factor)
+    max_pixels = max_tokens * factor * factor
+    rw, rh = width, height
+    if aw * ah > max_pixels:
+        scale = math.sqrt(max_pixels / (aw * ah))
+        rw = max(1, math.floor(width * scale))
+        rh = max(1, math.floor(height * scale))
+        aw = max(factor, -(-rw // factor) * factor)
+        ah = max(factor, -(-rh // factor) * factor)
+        while (aw // factor) * (ah // factor) > max_tokens:
+            if rw * ah >= rh * aw and aw > factor:
+                aw -= factor
+                rw = min(rw, aw)
+            elif ah > factor:
+                ah -= factor
+                rh = min(rh, ah)
+            else:
+                break
+    return rw, rh, aw, ah
+
+
+def prepare(raw: bytes, max_tokens: int, spec: ImageSpec = QWEN_IMAGE) -> tuple[int, int, bytes]:
     """An image's grid (in patches) and pixels, sized to at most `max_tokens` tokens."""
     try:
         with PILImage.open(io.BytesIO(raw)) as im:
@@ -105,16 +147,23 @@ def prepare(raw: bytes, max_tokens: int) -> tuple[int, int, bytes]:
             rgb = im.convert("RGB")
     except (UnidentifiedImageError, OSError, PILImage.DecompressionBombError) as exc:
         raise ImageError(f"the image does not decode: {exc}") from None
-    h, w = smart_resize(rgb.height, rgb.width, max_tokens * FACTOR * FACTOR)
+    if spec.resize == "pad":
+        rw, rh, aw, ah = _pad_resize(rgb.width, rgb.height, max_tokens, spec.factor)
+        if (rw, rh) != (rgb.width, rgb.height):
+            rgb = rgb.resize((rw, rh), PILImage.Resampling.BILINEAR)
+        arr = np.zeros((ah, aw, 3), dtype=np.uint8)
+        arr[:rh, :rw, :] = np.asarray(rgb, dtype=np.uint8)
+        return ah // spec.patch, aw // spec.patch, patches(arr, spec.patch, spec.merge)
+    h, w = smart_resize(rgb.height, rgb.width, max_tokens * spec.factor * spec.factor)
     # The minimum can push a small limit over: the longer side gives way.
-    while (h // FACTOR) * (w // FACTOR) > max_tokens:
+    while (h // spec.factor) * (w // spec.factor) > max_tokens:
         if h >= w:
-            h -= FACTOR
+            h -= spec.factor
         else:
-            w -= FACTOR
+            w -= spec.factor
     if (rgb.height, rgb.width) != (h, w):
         rgb = rgb.resize((w, h), PILImage.Resampling.BICUBIC)
-    return h // PATCH, w // PATCH, patches(np.asarray(rgb, dtype=np.uint8))
+    return h // spec.patch, w // spec.patch, patches(np.asarray(rgb, dtype=np.uint8), spec.patch, spec.merge)
 
 
 def expand(
@@ -123,6 +172,8 @@ def expand(
     images: Sequence[tuple[int, int, bytes]],
     video_pad_id: int = -1,
     pairs: Sequence[tuple[int, int, bytes]] = (),
+    *,
+    image_merge: int = 2,
 ) -> tuple[list[int], list[PromptImage]]:
     """The prompt with each image's one pad token repeated once per token of the image, and each frame pair's one
     video pad likewise, and where each starts, in prompt order."""
@@ -133,15 +184,15 @@ def expand(
     if len(vpads) != len(pairs):
         raise ImageError(f"the rendered prompt has {len(vpads)} places for {len(pairs)} frame pairs")
     places = sorted(
-        [(at, pad_id, 1, im) for at, im in zip(pads, images, strict=True)]
-        + [(at, video_pad_id, 2, p) for at, p in zip(vpads, pairs, strict=True)]
+        [(at, pad_id, 1, image_merge, im) for at, im in zip(pads, images, strict=True)]
+        + [(at, video_pad_id, 2, 2, p) for at, p in zip(vpads, pairs, strict=True)]
     )
     out: list[int] = []
     placed: list[PromptImage] = []
     start = 0
-    for at, pad, frames, (gh, gw, pixels) in places:
+    for at, pad, frames, merge, (gh, gw, pixels) in places:
         out.extend(ids[start:at])
-        im = PromptImage(len(out), gh, gw, pixels, frames)
+        im = PromptImage(len(out), gh, gw, pixels, frames, merge)
         out.extend([pad] * im.tokens)
         placed.append(im)
         start = at + 1

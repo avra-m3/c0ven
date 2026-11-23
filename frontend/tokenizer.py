@@ -30,7 +30,16 @@ JOYAI_LLM = (
 punctuation. DeepSeek-V4.1-Flash's tokenizer.json has these and no normalizer; llama.cpp gives `joyai-llm` the same
 (`src/llama-vocab.cpp:319-328` at 3cf0325)."""
 
-PRE_TOKENIZERS = ("qwen35", "joyai-llm")
+GPT4O = (
+    r"[^\r\n\p{L}\p{N}]?((?=[\p{L}\p{M}])([^a-z]))*((?=[\p{L}\p{M}])([^A-Z]))+"
+    r"(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])?"
+    r"|[^\r\n\p{L}\p{N}]?((?=[\p{L}\p{M}])([^a-z]))+((?=[\p{L}\p{M}])([^A-Z]))*"
+    r"(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])?"
+    r"|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n/]*|\s*[\r\n]+|\s+(?!\S)|\s+"
+)
+"""Inkling-2 and GPT-4o splits (`src/llama-vocab.cpp`, `LLAMA_VOCAB_PRE_TYPE_GPT4O`)."""
+
+PRE_TOKENIZERS = ("qwen35", "joyai-llm", "inkling2")
 """The `tokenizer.ggml.pre` values from_vocabulary builds."""
 
 CONTROL = 3
@@ -60,12 +69,17 @@ def from_vocabulary(tokens: Sequence[str], merges: Sequence[str], token_types: S
         if not sep:
             raise ValueError(f"bad merge: {m!r}")
         pairs.append((a, b))
-    tk = Tokenizer(models.BPE(vocab=vocab, merges=pairs, fuse_unk=False, byte_fallback=False))
-    if pre == "qwen35":
-        tk.normalizer = normalizers.NFC()
-        splits = [PRETOKENIZE]
-    else:
-        splits = list(JOYAI_LLM)
+    tk = Tokenizer(
+        models.BPE(vocab=vocab, merges=pairs, fuse_unk=False, byte_fallback=False, ignore_merges=pre == "inkling2")
+    )
+    match pre:
+        case "qwen35":
+            tk.normalizer = normalizers.NFC()
+            splits = [PRETOKENIZE]
+        case "joyai-llm":
+            splits = list(JOYAI_LLM)
+        case "inkling2":
+            splits = [GPT4O]
     tk.pre_tokenizer = pre_tokenizers.Sequence(
         [
             *(pre_tokenizers.Split(Regex(r), behavior="isolated", invert=False) for r in splits),

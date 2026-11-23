@@ -15,6 +15,7 @@ import gguf
 from tokenizers import Tokenizer
 
 import protocol
+from frontend.images import INKLING2_IMAGE, QWEN_IMAGE, ImageSpec
 from frontend.template import ChatTemplate
 from frontend.tokenizer import from_json, from_vocabulary
 
@@ -30,6 +31,7 @@ class Model:
     path: str = ""
     arch: str = ""
     """The GGUF's `general.architecture`, passed to the engine so it need not read the header again."""
+    image_spec: ImageSpec = QWEN_IMAGE
 
 
 SHARD = re.compile(r"^(?P<stem>.*)-\d{5}-of-(?P<count>\d{5})\.gguf$")
@@ -57,10 +59,16 @@ def _array(reader: gguf.GGUFReader, key: str) -> list[str | int]:
 
 def _stop_ids(tokenizer: Tokenizer, *ids: object) -> frozenset[int]:
     out = {i for i in ids if isinstance(i, int)}
-    for token in ("<|im_end|>", "<|endoftext|>"):
+    for token in ("<|im_end|>", "<|endoftext|>", "<|content_model_end_sampling|>"):
         if (i := tokenizer.token_to_id(token)) is not None:
             out.add(i)
     return frozenset(out)
+
+
+def _image_spec(arch: str, tokenizer: Tokenizer) -> ImageSpec:
+    if arch == "inkling2_loop" or tokenizer.token_to_id(INKLING2_IMAGE.pad_token) is not None:
+        return INKLING2_IMAGE
+    return QWEN_IMAGE
 
 
 def load(
@@ -79,6 +87,7 @@ def load(
             ChatTemplate(chat_template.read_text()),
             _stop_ids(tokenizer),
             protocol.Settings(),
+            image_spec=_image_spec("", tokenizer),
         )
     reader = gguf.GGUFReader(first_shard(gguf_path))
     if tokenizer_json is not None:
@@ -102,6 +111,7 @@ def load(
         top_p=float(top_p) if isinstance(top_p, (int, float)) else defaults.top_p,
     )
     model_name = name or str(_field(reader, "general.name") or gguf_path.stem)
+    arch = str(_field(reader, "general.architecture") or "")
     return Model(
         model_name,
         tokenizer,
@@ -113,5 +123,6 @@ def load(
         ),
         defaults,
         str(gguf_path),
-        str(_field(reader, "general.architecture") or ""),
+        arch,
+        _image_spec(arch, tokenizer),
     )

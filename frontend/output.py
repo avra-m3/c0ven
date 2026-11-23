@@ -12,7 +12,7 @@ import re
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Any
+from typing import Any, cast
 
 THINK_END = "</think>"
 CALL_START = "<tool_call>"
@@ -152,9 +152,41 @@ DSML_FORMAT = ToolCallFormat(f"<{DSML} calls>", f"</{DSML} calls>", _INVOKE_STAR
     </|DSML| calls>
 """
 
+INK_MODEL = "<|message_model|>"
+INK_THINK = "<|content_thinking|>"
+INK_TEXT = "<|content_text|>"
+INK_TOOL_JSON = "<|content_invoke_tool_json|>"
+INK_END = "<|end_message|>"
+_INK_NAME = re.compile(r'"name"\s*:\s*"([^"\n\\]+)"')
+
+
+def parse_inkling2_call(body: str, schemas: Mapping[str, Mapping[str, Any]] | None = None) -> ToolCall:
+    """Parse one Inkling-2 tool-call JSON body (`{"name": ..., "args": {...}}`)."""
+    del schemas
+    try:
+        loaded = json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise ToolCallError(f"bad tool call JSON: {exc}") from None
+    if not isinstance(loaded, dict):
+        raise ToolCallError(f"bad tool call payload: {body[:80]!r}")
+    data = cast("dict[str, Any]", loaded)
+    name = data.get("name")
+    if not isinstance(name, str):
+        raise ToolCallError(f"bad tool call payload: {body[:80]!r}")
+    raw_args = data.get("args") if "args" in data else data.get("arguments", {})
+    if not isinstance(raw_args, dict):
+        raise ToolCallError(f"tool call arguments must be an object for {name!r}")
+    return ToolCall(name, cast("dict[str, Any]", raw_args), body)
+
+
+INKLING2_FORMAT = ToolCallFormat(INK_TOOL_JSON, INK_END, _INK_NAME, parse_inkling2_call)
+"""Inkling-2 block format (`<|message_model|>NAME<|content_invoke_tool_json|>...<|end_message|>`)."""
+
 
 def call_format(template: str) -> ToolCallFormat:
-    """The format of the calls a chat template's source teaches: DSML when it holds the DSML token, else XML."""
+    """The format of the calls a chat template's source teaches."""
+    if INK_TOOL_JSON in template or INK_MODEL in template:
+        return INKLING2_FORMAT
     return DSML_FORMAT if DSML in template else XML_FORMAT
 
 
@@ -162,6 +194,7 @@ class _Mode(Enum):
     REASONING = auto()
     CONTENT = auto()
     TOOL_CALL = auto()
+    BETWEEN = auto()
 
 
 def _held(text: str, tag: str) -> int:
@@ -200,17 +233,65 @@ class OutputParser:
     """No call name starts before this offset in the buffer."""
 
     def __post_init__(self) -> None:
-        self._mode = _Mode.REASONING if self.thinking else _Mode.CONTENT
+        self._mode = (
+            _Mode.BETWEEN
+            if self.call_format is INKLING2_FORMAT
+            else (_Mode.REASONING if self.thinking else _Mode.CONTENT)
+        )
+
+    def _next_mode(self) -> _Mode:
+        return _Mode.BETWEEN if self.call_format is INKLING2_FORMAT else _Mode.CONTENT
 
     def feed(self, text: str) -> Iterator[Piece]:
         self._buffer += text
         while True:
             match self._mode:
-                case _Mode.REASONING:
-                    if not (yield from self._until(THINK_END, Reasoning)):
+                case _Mode.BETWEEN:
+                    while True:
+                        stripped = self._buffer.lstrip()
+                        if stripped.startswith(INK_MODEL):
+                            self._buffer = stripped[len(INK_MODEL) :]
+                            self._scanned = 0
+                            continue
+                        break
+                    ink_marks: tuple[tuple[str, _Mode], ...] = (
+                        (INK_THINK, _Mode.REASONING),
+                        (INK_TEXT, _Mode.CONTENT),
+                        (INK_TOOL_JSON, _Mode.TOOL_CALL),
+                    )
+                    best: tuple[int, str, _Mode] | None = None
+                    for tag, mode in ink_marks:
+                        pos = int(self._buffer.find(tag))
+                        if pos >= 0 and (best is None or pos < best[0]):
+                            best = (pos, tag, mode)
+                    if best is None:
                         return
-                    self._switch(_Mode.CONTENT)
+                    idx, tag, mode = best
+                    prefix = self._buffer[:idx]
+                    self._drop(idx + len(tag))
+                    if mode is _Mode.TOOL_CALL:
+                        if self.tools:
+                            self._switch(_Mode.TOOL_CALL)
+                            name = prefix.strip()
+                            if name:
+                                self._named = True
+                                yield ToolCallStart(name)
+                        else:
+                            self._switch(_Mode.CONTENT)
+                            self._buffer = prefix + tag + self._buffer
+                    else:
+                        self._switch(mode)
+                case _Mode.REASONING:
+                    tag = INK_END if self.call_format is INKLING2_FORMAT else THINK_END
+                    if not (yield from self._until(tag, Reasoning)):
+                        return
+                    self._switch(self._next_mode() if self.call_format is INKLING2_FORMAT else _Mode.CONTENT)
                 case _Mode.CONTENT:
+                    if self.call_format is INKLING2_FORMAT:
+                        if not (yield from self._until(INK_END, Content)):
+                            return
+                        self._switch(_Mode.BETWEEN)
+                        continue
                     if not self.tools:
                         yield from self._until(None, Content)
                         return
@@ -244,7 +325,7 @@ class OutputParser:
                         # Its ToolCallStart is out, and a client expects the arguments to follow.
                         raise ToolCallError(f"the tool-call block closed inside a call: {self._buffer[:80]!r}")
                     self._drop(end + len(fmt.end))
-                    self._switch(_Mode.CONTENT)
+                    self._switch(self._next_mode())
 
     def finish(self, cut: bool = False) -> Iterator[Piece]:
         """The end of the output: whatever is held back. An unterminated tool call is dropped when the output was cut
@@ -252,6 +333,9 @@ class OutputParser:
         rest = self._buffer.rstrip()
         self._drop(len(self._buffer))
         match self._mode:
+            case _Mode.BETWEEN:
+                if rest and not cut and "<|" not in rest:
+                    yield from self._piece(Content, rest)
             case _Mode.REASONING:
                 yield from self._piece(Reasoning, rest)
             case _Mode.CONTENT:

@@ -130,19 +130,30 @@ def _messages(raw: list[Any], images: list[bytes], videos: list[bytes]) -> list[
                     msg["reasoning_content"] = reasoning
                 calls: list[JSONObject] = []
                 for j, c in enumerate(array(m.get("tool_calls") or [], f"{what}.tool_calls")):
-                    fn = obj(obj(c, f"{what}.tool_calls[{j}]").get("function"), f"{what}.tool_calls[{j}].function")
+                    call = obj(c, f"{what}.tool_calls[{j}]")
+                    fn = obj(call.get("function"), f"{what}.tool_calls[{j}].function")
                     arguments: object = fn.get("arguments", {})
                     if isinstance(arguments, str):
                         try:
                             arguments = json.loads(arguments) if arguments.strip() else {}
                         except json.JSONDecodeError:
                             raise BadRequest(f"{what}.tool_calls[{j}]: arguments are not JSON") from None
-                    calls.append({"function": {"name": str(fn.get("name")), "arguments": obj(arguments, "arguments")}})
+                    entry: JSONObject = {
+                        "function": {"name": str(fn.get("name")), "arguments": obj(arguments, "arguments")}
+                    }
+                    if isinstance(call.get("id"), str):
+                        entry["id"] = call["id"]
+                    calls.append(entry)
                 if calls:
                     msg["tool_calls"] = calls
                 out.append(msg)
             case "tool":
-                out.append({"role": "tool", "content": _text(m.get("content"), what)})
+                tmsg: JSONObject = {"role": "tool", "content": _text(m.get("content"), what)}
+                if isinstance(m.get("tool_call_id"), str):
+                    tmsg["tool_call_id"] = m["tool_call_id"]
+                if isinstance(m.get("name"), str):
+                    tmsg["name"] = m["name"]
+                out.append(tmsg)
             case _:
                 raise BadRequest(f"{what}: unknown role {role!r}")
     return out

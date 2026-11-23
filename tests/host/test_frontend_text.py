@@ -482,3 +482,68 @@ def test_dsml_a_call_without_a_name_is_not_named_from_the_next(step: int):
     with pytest.raises(ToolCallError):
         feed()
     assert got == []
+
+
+INKLING_SOURCE = (
+    '{%- set effort_map = {"none": 0.0, "minimal": 0.1, "low": 0.2, "medium": 0.7, "high": 0.9, "xhigh": 0.99} -%}'
+    '{%- set role_token = {"user": "<|message_user|>", "assistant": "<|message_model|>", '
+    '"system": "<|message_system|>", "tool": "<|message_tool|>"} -%}'
+    '{%- if tools -%}{{- "<|message_system|>tool_declare<|content_xml|>" -}}'
+    '{{- tools | tojson(sort_keys=true, separators=(",", ":")) -}}{{- "<|end_message|>" -}}{%- endif -%}'
+    '{%- set eff = reasoning_effort if reasoning_effort is defined and reasoning_effort is not none else "high" -%}'
+    '{{- "<|message_system|><|content_text|>Thinking effort level: " ~ effort_map[eff] ~ "<|end_message|>" -}}'
+    "{%- for m in messages -%}"
+    "{%- set rendered -%}{{ role_token[m.role] }}<|content_text|>{{ m.content }}<|end_message|>{%- endset -%}"
+    '{%- if m.role == "assistant" -%}{%- generation -%}{{- rendered -}}{%- endgeneration -%}'
+    "{%- else -%}{{- rendered -}}{%- endif -%}{%- endfor -%}"
+)
+
+
+def test_inkling2_template_renders_tojson_separators_and_generation():
+    t = ChatTemplate(INKLING_SOURCE)
+    assert t.tool_calls.start == "<|content_invoke_tool_json|>"
+    assert "high" in t.efforts.levels
+    rendered = t.render(
+        Conversation(
+            [{"role": "user", "content": "hi"}],
+            tools=[{"type": "function", "function": {"name": "ping", "parameters": {"type": "object"}}}],
+            enable_thinking=False,
+        )
+    )
+    assert '"name":"ping"' in rendered
+    assert "Thinking effort level: 0.0<|end_message|>" in rendered
+    tk = tiny_tokenizer("inkling2")
+    assert tk.encode("def f(x):\n  return 1234", add_special_tokens=False).ids
+
+
+@pytest.mark.parametrize("step", STEPS)
+def test_inkling2_output_parser_thinking_text_and_tools(step: int):
+    from frontend.output import INKLING2_FORMAT  # noqa: PLC0415
+
+    reply = (
+        "<|message_model|><|content_thinking|>Compute carefully.<|end_message|>"
+        '<|message_model|>get_weather<|content_invoke_tool_json|>{"name":"get_weather","args":{"city":"Paris"}}'
+        "<|end_message|>"
+        "<|message_model|><|content_text|>Done!<|end_message|>"
+    )
+    pieces = pieces_of(reply, True, step, call_format=INKLING2_FORMAT)
+    assert [type(x) for x in pieces if not isinstance(x, (Reasoning, Content))] == [ToolCallStart, ToolCall]
+    r, c, calls = joined(pieces)
+    assert r == "Compute carefully."
+    assert c == "Done!"
+    assert [(x.name, x.arguments) for x in calls] == [("get_weather", {"city": "Paris"})]
+
+
+def test_inkling2_output_parser_cut_and_error():
+    from frontend.output import INKLING2_FORMAT  # noqa: PLC0415
+
+    p_cut = OutputParser(False, call_format=INKLING2_FORMAT)
+    got = list(p_cut.feed('<|message_model|>f<|content_invoke_tool_json|>{"name":"f","args":{"x":1')) + list(
+        p_cut.finish(cut=True)
+    )
+    assert got == [ToolCallStart("f")]
+
+    p_err = OutputParser(False, call_format=INKLING2_FORMAT)
+    list(p_err.feed('<|message_model|>f<|content_invoke_tool_json|>{"name":"f"'))
+    with pytest.raises(ToolCallError):
+        list(p_err.finish(cut=False))

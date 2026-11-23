@@ -180,3 +180,30 @@ def test_the_scheduler_refuses_images_out_of_place():
     run.add(1, prompt, 3, (Image(18, 4, 4, b"\x00" * 16 * 768),))
     (err,) = [e for e in run.events if isinstance(e, protocol.Error)]
     assert "past the prompt" in err.message
+
+
+def test_image_supports_non_qwen_patch_sizes():
+    im = Image(0, 2, 4, b"\x00" * 8 * 1200, patch_bytes=1200, merge=2)
+    im.check()
+    assert im.tokens == 2
+    with pytest.raises(ValueError, match="bytes of pixels"):
+        Image(0, 2, 4, b"\x00" * 8 * 768, patch_bytes=1200, merge=2).check()
+
+
+def test_inkling2_image_prepare_and_expand():
+    import io  # noqa: PLC0415
+
+    from PIL import Image as PILImage  # noqa: PLC0415
+
+    from frontend.images import INKLING2_IMAGE, expand, prepare  # noqa: PLC0415
+
+    buf = io.BytesIO()
+    PILImage.new("RGB", (100, 60), (10, 20, 30)).save(buf, format="PNG")
+    gh, gw, pixels = prepare(buf.getvalue(), 64, INKLING2_IMAGE)
+    assert (gh, gw) == (4, 6)  # 60->80 (4 patches), 100->120 (6 patches)
+    assert len(pixels) == 24 * 1200
+    ids, placed = expand([100, 200054, 101], 200054, [(gh, gw, pixels)], image_merge=INKLING2_IMAGE.merge)
+    assert len(placed) == 1
+    assert placed[0].tokens == 6
+    assert placed[0].merge == 2
+    assert ids == [100, *([200054] * 6), 101]

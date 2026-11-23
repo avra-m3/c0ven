@@ -9,10 +9,13 @@ reasoning efforts it accepts are found by rendering one message with each.
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, NoReturn
+from typing import Any, ClassVar, NoReturn
 
-from jinja2 import TemplateError, meta
+from jinja2 import TemplateError, ext, meta
+from jinja2.nodes import Node
+from jinja2.parser import Parser
 from jinja2.sandbox import ImmutableSandboxedEnvironment
 
 from frontend.output import ToolCallFormat, call_format
@@ -32,8 +35,35 @@ def _raise(message: str) -> NoReturn:
     raise TemplateFailed(message)
 
 
-def _tojson(value: JSON, indent: int | None = None, ensure_ascii: bool = False, sort_keys: bool = False) -> str:
-    return json.dumps(value, indent=indent, ensure_ascii=ensure_ascii, sort_keys=sort_keys)
+def _tojson(
+    value: JSON,
+    indent: int | None = None,
+    ensure_ascii: bool = False,
+    sort_keys: bool = False,
+    separators: Sequence[str] | None = None,
+) -> str:
+    pair: tuple[str, str] | None = None
+    if separators is not None:
+        if len(separators) != 2:
+            raise ValueError(f"tojson separators must have two strings, not {separators!r}")
+        pair = (separators[0], separators[1])
+    return json.dumps(
+        value,
+        indent=indent,
+        ensure_ascii=ensure_ascii,
+        sort_keys=sort_keys,
+        separators=pair,
+    )
+
+
+class _GenerationExtension(ext.Extension):
+    """Passthrough for Hugging Face `{% generation %}...{% endgeneration %}` spans."""
+
+    tags: ClassVar[set[str]] = {"generation"}  # pyright: ignore[reportIncompatibleVariableOverride]
+
+    def parse(self, parser: Parser) -> list[Node]:
+        next(parser.stream)
+        return list(parser.parse_statements(("name:endgeneration",), drop_needle=True))
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,7 +105,9 @@ class Efforts:
 class ChatTemplate:
     def __init__(self, source: str) -> None:
         env = ImmutableSandboxedEnvironment(
-            trim_blocks=True, lstrip_blocks=True, extensions=["jinja2.ext.loopcontrols"]
+            trim_blocks=True,
+            lstrip_blocks=True,
+            extensions=["jinja2.ext.loopcontrols", _GenerationExtension],
         )
         env.filters["tojson"] = _tojson
         env.globals["raise_exception"] = _raise  # pyright: ignore[reportArgumentType]
@@ -85,8 +117,10 @@ class ChatTemplate:
         parsed = env.parse(source)
         self._variables = meta.find_undeclared_variables(parsed)
         self._template = env.from_string(parsed)
+        self._none_effort = False
         self.efforts = self._efforts()
         """The reasoning efforts the template accepts."""
+        self._none_effort = self._accepts("none")
 
     def _accepts(self, effort: str | int | None) -> bool:
         try:
@@ -112,6 +146,14 @@ class ChatTemplate:
             value = getattr(c, key)
             if value is not None:
                 variables[key] = value
+        if (
+            c.enable_thinking is False
+            and "reasoning_effort" not in variables
+            and "enable_thinking" not in self._variables
+            and "reasoning_effort" in self._variables
+            and self._none_effort
+        ):
+            variables["reasoning_effort"] = "none"
         # A template with `drop_thinking` (default true) drops earlier turns' reasoning unless told not to.
         if c.preserve_thinking is not None and "drop_thinking" in self._variables:
             variables["drop_thinking"] = not c.preserve_thinking

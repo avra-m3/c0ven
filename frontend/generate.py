@@ -15,9 +15,18 @@ from typing import Any, Protocol
 
 import protocol
 from frontend import video
-from frontend.images import IMAGE_PAD, ImageError, PromptImage, expand, prepare
+from frontend.images import ImageError, PromptImage, expand, prepare
 from frontend.model import Model
-from frontend.output import Content, OutputParser, Piece, Reasoning, ToolCall, ToolCallError, ToolCallStart
+from frontend.output import (
+    INKLING2_FORMAT,
+    Content,
+    OutputParser,
+    Piece,
+    Reasoning,
+    ToolCall,
+    ToolCallError,
+    ToolCallStart,
+)
 from frontend.template import Conversation, TemplateFailed
 from frontend.tokenizer import Detokenizer, encode
 
@@ -130,7 +139,7 @@ def render(model: Model, request: Request, image_tokens_max: int = 0) -> Prompt:
     if (request.images or request.videos) and not image_tokens_max:
         raise BadRequest("this engine reads no images or videos")
     try:
-        prepared = [prepare(raw, image_tokens_max) for raw in request.images]
+        prepared = [prepare(raw, image_tokens_max, model.image_spec) for raw in request.images]
         videos = [video.prepare(raw, image_tokens_max) for raw in request.videos]
     except ImageError as exc:
         raise BadRequest(str(exc)) from None
@@ -150,15 +159,16 @@ def render(model: Model, request: Request, image_tokens_max: int = 0) -> Prompt:
         try:
             ids, images = expand(
                 ids,
-                _pad(model, IMAGE_PAD) if prepared else -1,
+                _pad(model, model.image_spec.pad_token) if prepared else -1,
                 prepared,
                 _pad(model, video.VIDEO_PAD) if videos else -1,
                 pairs,
+                image_merge=model.image_spec.merge,
             )
         except ImageError as exc:
             raise BadRequest(str(exc)) from None
-    # Templates end a thinking prompt with "<think>\n" or a bare "<think>"; one with thinking off ends after "</think>".
-    return Prompt(text, ids, text.endswith(("<think>", "<think>\n")), images)
+    thinking = False if model.template.tool_calls is INKLING2_FORMAT else text.endswith(("<think>", "<think>\n"))
+    return Prompt(text, ids, thinking, images)
 
 
 def budget(engine: Engine, prompt: Prompt, max_tokens: int | None, default: int = 0) -> int:

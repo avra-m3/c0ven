@@ -88,7 +88,10 @@ def _messages(system: object, raw: list[Any], images: list[bytes], videos: list[
                         body = _block_text(result, f"{what}.tool_result") if result else ""
                         if b.get("is_error"):
                             body = f"Error: {body}"
-                        out.append({"role": "tool", "content": body})
+                        tmsg: JSONObject = {"role": "tool", "content": body}
+                        if isinstance(b.get("tool_use_id"), str):
+                            tmsg["tool_call_id"] = b["tool_use_id"]
+                        out.append(tmsg)
                     case kind:
                         raise BadRequest(f"{what}: unsupported block {kind!r}")
             if len(items) > len(text):
@@ -107,9 +110,12 @@ def _messages(system: object, raw: list[Any], images: list[bytes], videos: list[
                     case "redacted_thinking":
                         pass
                     case "tool_use":
-                        calls.append(
-                            {"function": {"name": str(b.get("name")), "arguments": obj(b.get("input", {}), "input")}}
-                        )
+                        entry: JSONObject = {
+                            "function": {"name": str(b.get("name")), "arguments": obj(b.get("input", {}), "input")}
+                        }
+                        if isinstance(b.get("id"), str):
+                            entry["id"] = b["id"]
+                        calls.append(entry)
                     case kind:
                         raise BadRequest(f"{what}: unsupported block {kind!r}")
             if calls:
