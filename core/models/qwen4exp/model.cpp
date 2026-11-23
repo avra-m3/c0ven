@@ -137,7 +137,7 @@ Model::Model(const std::string &path, const Options &opt) : opt_(opt), gguf_(pat
   if (opt_.max_ctx % shape_.idx_block) throw std::runtime_error("max_ctx must be a multiple of 4");
   rt_ = std::make_unique<ze::Runtime>(1);
   lib_ = std::make_unique<ze::Library>(*rt_);
-  ncards_ = std::min(opt_.max_cards, rt_->ncards());
+  ncards_ = std::min({opt_.max_cards, rt_->ncards(), 2u});  // qwen4exp exchanges across two cards at most
   if (ncards_ != 1 && ncards_ != 2) throw std::runtime_error("the engine runs on one or two cards");
   if (const auto bad = split_mismatches(shape_, gguf_.tensors(), ncards_); !bad.empty())
     throw std::runtime_error(path + ": this file does not split over " + std::to_string(ncards_) + " cards: " + bad[0]);

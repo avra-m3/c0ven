@@ -28,8 +28,9 @@ import ctypes
 from dataclasses import dataclass
 from enum import IntEnum
 
-ABI_VERSION = 23
+ABI_VERSION = 24
 
+MAX_CARDS = 8
 MAX_STOP = 8
 MAX_STEP_SLOTS = 8
 MAX_PROMPT_PIECES = 4
@@ -115,7 +116,7 @@ class CInfo(ctypes.Structure):
         ("max_ctx", ctypes.c_uint32),
         ("experts_per_layer", ctypes.c_uint32),
         ("vocab", ctypes.c_uint32),
-        ("device_bytes", ctypes.c_uint64 * 2),
+        ("device_bytes", ctypes.c_uint64 * MAX_CARDS),
         ("arena_bytes", ctypes.c_uint64),
         ("load_seconds", ctypes.c_double),
         ("prompt_chunk", ctypes.c_uint32),
@@ -130,12 +131,14 @@ class CInfo(ctypes.Structure):
         ("ngram_in_ram", ctypes.c_uint32),
         ("loader_bytes_per_s", ctypes.c_double),
         ("ngram_read_us", ctypes.c_double),
-        ("copy_bytes_per_s", ctypes.c_double * 2),
-        ("expert_budget", ctypes.c_uint64 * 2),
+        ("copy_bytes_per_s", ctypes.c_double * MAX_CARDS),
+        ("expert_budget", ctypes.c_uint64 * MAX_CARDS),
         ("fetch_rows", ctypes.c_uint32),
         ("decode_weight", ctypes.c_uint32),
         ("ngram_cache_rows", ctypes.c_uint64),
         ("ngram_huge_bytes", ctypes.c_uint64),
+        ("image_patch_bytes", ctypes.c_uint32),
+        ("image_merge", ctypes.c_uint32),
     )
 
 

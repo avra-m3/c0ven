@@ -38,6 +38,7 @@ import numpy as np
 
 from engine.api import abi
 from engine.api.interface import (
+    IMAGE_PATCH_BYTES,
     NO_SLOT,
     TIMING_DTYPE,
     WINDOW_ROWS,
@@ -394,6 +395,7 @@ class NativeEngine:
         c.model_path = self._model_path
         c.slots = config.slots
         c.max_ctx = config.max_context
+        c.max_cards = config.max_cards
         c.cpu_threads = config.cpu_workers
         c.checkpoints = config.checkpoints
         c.kv_pages = config.pages
@@ -461,6 +463,8 @@ class NativeEngine:
             expert_budget=tuple(int(info.expert_budget[i]) for i in range(info.cards)),
             fetch_rows=int(info.fetch_rows),
             decode_weight=int(info.decode_weight),
+            image_patch_bytes=int(info.image_patch_bytes) or IMAGE_PATCH_BYTES,
+            image_merge=int(info.image_merge) or 2,
         )
 
     def sleep(self) -> None:

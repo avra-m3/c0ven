@@ -23,7 +23,8 @@ extern "C" {
 #define ENGINE_API
 #endif
 
-#define ENGINE_API_VERSION 23
+#define ENGINE_API_VERSION 24
+#define ENGINE_MAX_CARDS 8
 
 typedef enum {
   ENGINE_OK = 0,
@@ -40,7 +41,7 @@ typedef struct {
   const char *model_path;      /* the first shard of the GGUF */
   uint32_t slots;              /* sequences resident at once; default 1, at most 8 decode together */
   uint32_t max_ctx;            /* positions per sequence, a multiple of 4; default 32768 */
-  uint32_t max_cards;          /* 1 or 2; default 2 */
+  uint32_t max_cards;          /* 1 to ENGINE_MAX_CARDS; 0: up to ENGINE_MAX_CARDS */
   int32_t experts_per_layer;   /* experts cached on the cards per layer; negative or 0 with the flag: as many as fit */
   uint32_t cpu_threads;        /* the CPU's expert workers, the engine thread among them; default 16 */
   uint32_t flags;              /* ENGINE_CONFIG_* */
@@ -86,7 +87,7 @@ typedef struct {
   uint32_t max_ctx;
   uint32_t experts_per_layer;
   uint32_t vocab;
-  uint64_t device_bytes[2];
+  uint64_t device_bytes[ENGINE_MAX_CARDS];
   uint64_t arena_bytes;        /* host memory holding the experts the cards do not cache */
   double load_seconds;
   uint32_t prompt_chunk;       /* 0: prompts go one token per step */
@@ -105,9 +106,10 @@ typedef struct {
   double loader_bytes_per_s;   /* their read rate in the probe; 0: not measured (ENGINE_LOADER_THREADS is set, or
                                   the largest shard is too short to probe) */
   double ngram_read_us;        /* one 4 KiB row read from the file at open, microseconds; 0 with the table in RAM */
-  double copy_bytes_per_s[2];  /* each card's copy engine reading pinned host memory at open, bytes a second */
-  uint64_t expert_budget[2];   /* per card: the device memory left for the expert cache at load, once everything else
-                                  is allocated, the whole KV pool backed and reserve_bytes kept free */
+  double copy_bytes_per_s[ENGINE_MAX_CARDS];  /* each card's copy engine reading pinned host memory, bytes a second */
+  uint64_t expert_budget[ENGINE_MAX_CARDS];   /* per card: the device memory left for the expert cache at load, once
+                                                 everything else is allocated, the whole KV pool backed and
+                                                 reserve_bytes kept free */
   uint32_t fetch_rows;         /* the most rows a prompt chunk may have and still fetch only the uncached experts its
                                   router picks; a longer one copies every uncached expert; 0: every chunk is staged
                                   one way (all experts cached, or a model with one path) */
@@ -115,6 +117,8 @@ typedef struct {
                                   beside writers; 0: decode does not count */
   uint64_t ngram_cache_rows;   /* rows the n-gram table's cache holds */
   uint64_t ngram_huge_bytes;   /* the n-gram table's or its cache's bytes in reserved huge pages */
+  uint32_t image_patch_bytes;  /* bytes per frame of one 8-bit RGB patch; 0: none */
+  uint32_t image_merge;        /* patches per side merged into one vision token; 0: none */
 } engine_info;
 
 /* A request's sampling and stopping, copied once by admit. The core samples in llama.cpp's order: penalties, top-k,

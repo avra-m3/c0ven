@@ -37,6 +37,8 @@ def memory_plan(
 ) -> MemoryPlan:
     """draft: the drafter's directory, whose files size it. Without one, a served start (`served`, a model file)
     plans no drafter; the mock and the reference plan the committed MTP layer."""
+    if options.cards > 2:
+        options = replace(options, cards=2)
     shapes = read_shapes(draft) if draft is not None else ({} if served else None)
     return plan(model_memory(table, options.cards, shapes), options)
 
@@ -113,5 +115,6 @@ def open_config(
         draft_dir=str(draft) if draft is not None else "",
         ngram_in_ram=options.ngram_in_ram,
         ngram_hugetlb=options.ngram_hugetlb,
+        max_cards=mp.cards,
     )
     return config, mp

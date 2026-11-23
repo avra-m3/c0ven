@@ -1474,7 +1474,12 @@ struct engine_ctx {
 namespace engine {
 
 engine_status open_engine(const engine_config *config, engine_info *info, engine_ctx **out, OpenModel opener) {
+  static_assert(engine::kMaxCards == ENGINE_MAX_CARDS, "ENGINE_MAX_CARDS must match engine::kMaxCards");
   if (!config || !config->model_path || !out) return ENGINE_BAD_ARGUMENT;
+  if (config->max_cards > ENGINE_MAX_CARDS) {
+    open_error = "max_cards exceeds ENGINE_MAX_CARDS";
+    return ENGINE_BAD_ARGUMENT;
+  }
   try {
     if (const std::string missing = engine::missing_cpu_features(ENGINE_CPU_FEATURES); !missing.empty())
       throw std::runtime_error("this CPU lacks " + missing + ", which this library's ggml build (level " ENGINE_CPU_LEVEL
@@ -1509,10 +1514,11 @@ engine_status open_engine(const engine_config *config, engine_info *info, engine
     e->info.max_ctx = opt.max_ctx;
     e->info.experts_per_layer = li.experts_per_layer;
     e->info.vocab = li.vocab;
-    e->info.device_bytes[0] = li.device_bytes[0];
-    e->info.device_bytes[1] = li.device_bytes[1];
-    e->info.expert_budget[0] = li.expert_budget[0];
-    e->info.expert_budget[1] = li.expert_budget[1];
+    for (uint32_t c = 0; c < ENGINE_MAX_CARDS; c++) {
+      e->info.device_bytes[c] = li.device_bytes[c];
+      e->info.expert_budget[c] = li.expert_budget[c];
+      e->info.copy_bytes_per_s[c] = li.copy_bytes_per_s[c];
+    }
     e->info.arena_bytes = li.arena_bytes;
     e->info.load_seconds = li.seconds;
     e->info.host_read_bytes_per_s = li.host_read_bytes_per_s;
@@ -1522,8 +1528,8 @@ engine_status open_engine(const engine_config *config, engine_info *info, engine
     e->info.ngram_read_us = li.ngram_read_us;
     e->info.ngram_cache_rows = li.ngram_cache_rows;
     e->info.ngram_huge_bytes = li.ngram_huge_bytes;
-    e->info.copy_bytes_per_s[0] = li.copy_bytes_per_s[0];
-    e->info.copy_bytes_per_s[1] = li.copy_bytes_per_s[1];
+    e->info.image_patch_bytes = e->image_shape.patch_bytes;
+    e->info.image_merge = e->image_shape.merge;
     e->info.prompt_chunk = e->model->prompt_chunk();
     e->info.fetch_rows = e->model->fetch_rows();
     e->info.decode_weight = e->model->decode_weight();
@@ -1808,7 +1814,7 @@ engine_status engine_sleep(engine_ctx *e) {
     return ENGINE_ERROR;
   }
   e->asleep = true;
-  e->info.device_bytes[0] = e->info.device_bytes[1] = 0;
+  for (uint32_t c = 0; c < ENGINE_MAX_CARDS; c++) e->info.device_bytes[c] = 0;
   return ENGINE_OK;
 }
 
@@ -1831,10 +1837,10 @@ engine_status engine_wake(engine_ctx *e, engine_info *info) {
     std::fill(e->queued_mapped.begin(), e->queued_mapped.end(), 0u);
     const auto &li = e->model->info();
     e->info.experts_per_layer = li.experts_per_layer;
-    e->info.device_bytes[0] = li.device_bytes[0];
-    e->info.device_bytes[1] = li.device_bytes[1];
-    e->info.expert_budget[0] = li.expert_budget[0];
-    e->info.expert_budget[1] = li.expert_budget[1];
+    for (uint32_t c = 0; c < ENGINE_MAX_CARDS; c++) {
+      e->info.device_bytes[c] = li.device_bytes[c];
+      e->info.expert_budget[c] = li.expert_budget[c];
+    }
     e->info.fetch_rows = e->model->fetch_rows();
     e->info.decode_weight = e->model->decode_weight();
     e->info.load_seconds = li.seconds;
@@ -1911,7 +1917,8 @@ uint32_t engine_abi_layout(engine_abi_row *table, uint32_t cap) {
       ROW(engine_info, host_read_bytes_per_s), ROW(engine_info, loader_threads), ROW(engine_info, ngram_in_ram),
       ROW(engine_info, loader_bytes_per_s), ROW(engine_info, ngram_read_us), ROW(engine_info, copy_bytes_per_s),
       ROW(engine_info, expert_budget), ROW(engine_info, fetch_rows), ROW(engine_info, decode_weight),
-      ROW(engine_info, ngram_cache_rows), ROW(engine_info, ngram_huge_bytes), SIZE(engine_info),
+      ROW(engine_info, ngram_cache_rows), ROW(engine_info, ngram_huge_bytes),
+      ROW(engine_info, image_patch_bytes), ROW(engine_info, image_merge), SIZE(engine_info),
       ROW(engine_settings, temperature), ROW(engine_settings, top_k), ROW(engine_settings, top_p),
       ROW(engine_settings, max_tokens), ROW(engine_settings, seed), ROW(engine_settings, n_stop),
       ROW(engine_settings, stop), ROW(engine_settings, min_p), ROW(engine_settings, penalty_last_n),

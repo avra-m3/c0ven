@@ -15,6 +15,7 @@
 namespace engine {
 
 constexpr int32_t kNoToken = -1;
+constexpr uint32_t kMaxCards = 8;
 
 struct Options {
   uint32_t slots = 1;                       // sequences resident at once
@@ -23,7 +24,7 @@ struct Options {
                                             // whole context
   uint32_t kv_resident = 0;                 // K and V cells per slot kept in VRAM, the rest in host memory (ADR-0008
                                             // item 3); 0: every cell
-  uint32_t max_cards = 2;                   // 1 runs the whole model on card 0
+  uint32_t max_cards = kMaxCards;           // 1 runs the whole model on card 0; up to kMaxCards
   uint64_t reserve_bytes = 1ull << 30;      // device memory the engine does not count on: the driver's own, and some free
   int32_t experts_per_layer = -1;           // experts cached per layer; -1: as many as fit
   unsigned cpu_threads = 16;                // the CPU's expert workers, with the host thread
@@ -74,10 +75,10 @@ struct LoadInfo {
   uint32_t cards = 0;
   uint32_t experts_per_layer = 0;
   uint32_t vocab = 0;
-  uint64_t device_bytes[2] = {0, 0};
+  uint64_t device_bytes[kMaxCards]{};
   uint64_t arena_bytes = 0;  // host memory holding the experts not on the cards
-  uint64_t expert_budget[2] = {0, 0};  // device memory each card had left for the expert cache with the whole KV pool
-                                       // backed
+  uint64_t expert_budget[kMaxCards]{};  // device memory each card had left for the expert cache with the whole KV pool
+                                        // backed
   bool arena_anon = false;   // the arena is the process's own memory (Options::anon_arena)
   double seconds = 0;
   double host_read_bytes_per_s = 0;  // the CPU workers' read of the arena at the first load; 0: not measured
@@ -87,7 +88,7 @@ struct LoadInfo {
   double ngram_read_us = 0;          // one 4 KiB row read from the file, when the table is not in RAM
   uint64_t ngram_cache_rows = 0;     // rows the n-gram cache holds
   uint64_t ngram_huge_bytes = 0;     // the n-gram table's or its cache's bytes in reserved huge pages
-  double copy_bytes_per_s[2] = {0, 0};  // each card's copy engine reading pinned host memory
+  double copy_bytes_per_s[kMaxCards]{};  // each card's copy engine reading pinned host memory
 };
 
 // One row of a decode step: a token of a sequence at its position; p1, p2 and p3 are the three tokens before it, p1

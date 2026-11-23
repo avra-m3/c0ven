@@ -245,6 +245,11 @@ class Scheduler:
             return "this engine reads no images"
         end = 0
         for i, im in enumerate(images):
+            if im.patch_bytes != self.facts.image_patch_bytes or im.merge != self.facts.image_merge:
+                return (
+                    f"image {i}: expected {self.facts.image_patch_bytes}-byte patches "
+                    f"and merge {self.facts.image_merge}"
+                )
             try:
                 im.check()
             except ValueError as exc:

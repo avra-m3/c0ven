@@ -86,7 +86,7 @@ class FinishReason(IntEnum):
 
 
 class SplitKind(IntEnum):
-    """How a tensor is laid over the two cards (ADR-0023). The model's rules are in models/<arch>/split.py."""
+    """How a tensor is laid over the cards (ADR-0023). The model's rules are in models/<arch>/split.py."""
 
     WHOLE = 0
     """Both cards hold all of it."""
@@ -157,7 +157,12 @@ class OpenConfig:
     """Bytes of the host's reserved huge pages for the n-gram table, a multiple of their size: with ngram_in_ram its
     first part, otherwise its row cache, as many rows as they hold. If the core cannot map them, the table is read from
     the file with the default cache. 0: none."""
-    """The image encoder's file (the mmproj GGUF, spec/MODEL_VISION.md); empty: no images."""
+    max_cards: int = 0
+    """Cards to use (1 to ENGINE_MAX_CARDS); 0 lets the core use up to ENGINE_MAX_CARDS."""
+
+
+IMAGE_PATCH_BYTES = 768
+"""One frame of a patch: 16 x 16 pixels, 8-bit RGB, channel, row, column (spec/MODEL_VISION.md, section 2.2)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,13 +204,12 @@ class EngineFacts:
     decode_weight: int = 0
     """What a decode token is worth in prompt rows when the scheduler sizes a prompt piece beside writers. 0: decode
     does not count."""
+    image_patch_bytes: int = IMAGE_PATCH_BYTES
+    image_merge: int = 2
 
-
-IMAGE_PATCH_BYTES = 768
 
 CORE_RESERVE = 2**30
 """The device memory per card the core does not count on, by default (engine_config.reserve_bytes)."""
-"""One frame of a patch: 16 x 16 pixels, 8-bit RGB, channel, row, column (spec/MODEL_VISION.md, section 2.2)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,17 +224,27 @@ class Image:
     grid_w: int
     pixels: bytes = field(repr=False)
     frames: int = 1
+    patch_bytes: int = IMAGE_PATCH_BYTES
+    merge: int = 2
 
     @property
     def tokens(self) -> int:
-        return (self.grid_h // 2) * (self.grid_w // 2)
+        return (self.grid_h // self.merge) * (self.grid_w // self.merge)
 
     def check(self) -> None:
-        if self.grid_h <= 0 or self.grid_w <= 0 or self.grid_h % 2 or self.grid_w % 2:
-            raise ValueError(f"an image's grid must be even and not empty, not {self.grid_h} x {self.grid_w}")
+        if (
+            self.merge <= 0
+            or self.grid_h <= 0
+            or self.grid_w <= 0
+            or self.grid_h % self.merge
+            or self.grid_w % self.merge
+        ):
+            raise ValueError(
+                f"an image's grid must be a non-empty multiple of {self.merge}, not {self.grid_h} x {self.grid_w}"
+            )
         if self.frames not in (1, 2):
             raise ValueError(f"an image has 1 frame or 2, not {self.frames}")
-        if len(self.pixels) != self.grid_h * self.grid_w * self.frames * IMAGE_PATCH_BYTES:
+        if len(self.pixels) != self.grid_h * self.grid_w * self.frames * self.patch_bytes:
             raise ValueError(
                 f"{len(self.pixels)} bytes of pixels for {self.grid_h} x {self.grid_w} patches of "
                 f"{self.frames} frame(s)"

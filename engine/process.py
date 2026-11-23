@@ -32,6 +32,7 @@ import gguf
 
 import protocol
 from engine import fit, host
+from engine.api import abi
 from engine.api.interface import CORE_RESERVE, IMAGE_PATCH_BYTES, Engine, EngineError, EngineFacts, Image, OpenConfig
 from engine.gguf_files import first_shard
 from engine.memory_plan import (
@@ -293,16 +294,16 @@ def _reader(stream: TextIO, commands: queue.Queue[protocol.Command]) -> None:
     commands.put(protocol.Quit())
 
 
-def read_image(img: protocol.Img) -> Image:
+def read_image(img: protocol.Img, patch_bytes: int = IMAGE_PATCH_BYTES, merge: int = 2) -> Image:
     """An IMG line's image or frame pair, its pixels read from the front end's file now."""
     if img.frames not in (1, 2):
         raise ValueError(f"an image has 1 frame or 2, not {img.frames}")
-    size = img.grid_h * img.grid_w * img.frames * IMAGE_PATCH_BYTES
+    size = img.grid_h * img.grid_w * img.frames * patch_bytes
     with Path(img.path).open("rb") as f:
         pixels = f.read(size + 1)
     if len(pixels) != size:
         raise ValueError(f"{img.path} holds {len(pixels)} bytes, not {size}")
-    image = Image(img.first, img.grid_h, img.grid_w, pixels, img.frames)
+    image = Image(img.first, img.grid_h, img.grid_w, pixels, img.frames, patch_bytes, merge)
     image.check()
     return image
 
@@ -383,6 +384,8 @@ def serve(
             "pid": str(os.getpid()),
             "timing_fd": str(facts.timing_fd),
             "image_tokens_max": str(facts.image_tokens_max),
+            "image_patch_bytes": str(facts.image_patch_bytes),
+            "image_merge": str(facts.image_merge),
             **measured,
             **info(),
             **fit.info(rows),
@@ -431,7 +434,9 @@ def serve(
                 match command:
                     case protocol.Img(rid=rid):
                         try:
-                            images.setdefault(rid, []).append(read_image(command))
+                            images.setdefault(rid, []).append(
+                                read_image(command, facts.image_patch_bytes, facts.image_merge)
+                            )
                         except (OSError, ValueError) as exc:
                             bad_images.setdefault(rid, f"image {len(images.get(rid, []))}: {exc}")
                     case protocol.Gen(rid=rid) if state is not State.AWAKE:
@@ -558,7 +563,7 @@ def main(argv: list[str] | None = None) -> int:
         except EngineError as exc:
             print(protocol.Error(None, f"cards: {exc}").encode(), flush=True)
             return 1
-    used = cards[:2]
+    used = cards[: abi.MAX_CARDS]
     card_size = card_memory([c.memory for c in used], args.card_memory)
     if card_size is None and not native:
         from engine.api.mock import CARD_MEMORY  # noqa: PLC0415
