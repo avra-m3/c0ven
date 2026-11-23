@@ -32,6 +32,7 @@ endif()
 
 # Each architecture adds its own sources (ADR-0061); models/open.cpp picks one by the file's general.architecture.
 add_subdirectory(models/qwen4exp)
+add_subdirectory(models/inkling2_loop)
 
 # The multi-row dots copy ggml's AVX2 paths; multirow.cpp checks the CPU before using them.
 set_source_files_properties(cpu/multirow.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c")
