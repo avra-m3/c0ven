@@ -37,6 +37,7 @@ inline constexpr uint32_t kKvsAhead = 32;
 inline uint32_t kvs_row_claims(const Shape &s) { return s.idx_blocks() + 2 + kKvsAhead; }
 inline uint32_t kvs_max_miss(const Shape &s) { return STEP_MAX_ROWS * kvs_row_claims(s); }
 inline constexpr uint32_t kKvsSkipList = 16;
+inline constexpr uint32_t kProbeList = 32;  // added to list key when hidden-state probe tapping is recorded
 inline constexpr uint32_t kMvKsRows = 512;  // dense products of up to this many rows split K (matvec_ks)
 // The decode step's widths, each with its own lists: a step runs the smallest of at least its rows, and its products
 // and expert kernels compute that many.
@@ -256,8 +257,9 @@ struct Model::Card {
   float *Sw = nullptr;                                  // a window's DeltaNet state past its first row
   std::unique_ptr<PromptCard> pc;
   std::unique_ptr<MtpCard> mtp;  // the draft layer (mtp.cpp)
-  std::unique_ptr<DfCard> df;    // the DFlash 2 drafter (dflash.cpp)
+  std::unique_ptr<DfCard> df;      // the DFlash 2 drafter (dflash.cpp)
   std::unique_ptr<VisionCard> vc;  // the image encoder (vision.cpp)
+  std::unique_ptr<ProbeCard> probe;  // streaming hidden-state probe (probe.cpp)
   // With Options::share_kv (kv_share.cpp): the KV pool's buffers and the layers' caches as regions, and the blocks
   // mapped in none.
   std::vector<Region> kv, cache;
@@ -353,6 +355,32 @@ struct Model::VisionCard {
   uint16_t *a = nullptr, *q = nullptr, *k = nullptr, *v = nullptr, *o = nullptr, *h = nullptr;
   uint8_t *pix = nullptr;
   std::unique_ptr<ze::List> list, copy;
+};
+
+// Streaming hidden-state probe weights and scratch buffers on one card (probe.cpp). Card 0 owns the head weights,
+// decode buffers, and per-slot BF16 KV rings; card 1 holds only per-tap projections and prompt scratch when chunks split.
+struct Model::ProbeCard {
+  std::vector<uint16_t *> proj_tap;  // per tapped layer k: [proj_stride, embd] BF16 for prompt GEMM
+  uint16_t *proj_full = nullptr;     // [proj_stride, feat_dim] BF16 for decode XMX matvec (card 0)
+  uint16_t *feat = nullptr;          // [STEP_MAX_ROWS, feat_dim] BF16 tapped decode features (card 0)
+  float *qkv = nullptr;              // [STEP_MAX_ROWS, proj_stride] FP32 decode projections (card 0)
+  float *pqkv = nullptr;             // [prompt_rows, proj_stride] FP32 accumulated prompt projections
+  float *ptmp = nullptr;             // [prompt_rows, proj_stride] FP32 per-tap prompt GEMM scratch
+  // SingProbeAttn head and per-slot KV ring (card 0 only).
+  uint16_t *o_proj = nullptr;
+  float *norm_w = nullptr;
+  float *cls_w = nullptr;
+  float *cls_b = nullptr;
+  uint16_t *k_ring = nullptr;        // [slots, window, kv_dim] BF16
+  uint16_t *v_ring = nullptr;        // [slots, window, kv_dim] BF16
+  uint64_t slot_kv_half_bytes = 0;   // window * kv_dim * 2 (per K or V ring, per slot)
+  // SingProbeMlp head (card 0 only).
+  float *fc1_b = nullptr;
+  float *fc2_w = nullptr;
+  float *fc2_b = nullptr;
+  // Linear/drift biases and drift flags (card 0 only).
+  float *lin_b = nullptr;
+  uint32_t *lin_is_drift = nullptr;
 };
 
 // A traced list's last run, summed per kernel name.

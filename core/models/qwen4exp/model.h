@@ -154,6 +154,13 @@ class Model final : public engine::Model {
   // derived from the GGUF, since the time ratio follows the file's layout and quantization
   // (docs/measurements/MEASUREMENTS.md#2026-11-01-piece-rule-with-a-slow-split).
   uint32_t decode_weight() const override { return 30; }
+
+  // Streaming hidden-state probe (probe.cpp).
+  const engine::ProbeSpec *probe_spec() const override { return probe_on_ ? &probe_weights_.spec : nullptr; }
+  void set_probe_active(bool on) override { probe_active_ = probe_on_ && on; }
+  void probe_start(uint32_t slot, uint32_t pos) override;
+  std::vector<float> probe_commit_step(const CommitRun *runs, uint32_t nruns) override;
+  std::vector<float> probe_commit_prompt(const CommitRun *runs, uint32_t nruns) override;
   // With Options::trace: the last prompt chunk's (or decode step's) time on a card per kernel, largest first.
   std::vector<TraceRow> prompt_trace(uint32_t card) const;
   std::vector<TraceRow> step_trace(uint32_t card) const;
@@ -221,6 +228,7 @@ class Model final : public engine::Model {
   struct DfCard;
   struct PromptCard;
   struct VisionCard;
+  struct ProbeCard;
 
   void wait_commit();  // until the last commit has run
   // rope_[slot] for a step whose first row of slot is at cell; check: refuse a cell of an image.
@@ -234,7 +242,7 @@ class Model final : public engine::Model {
   void load_experts(bool first);
   std::unique_ptr<HostLayer> host_layer(uint32_t l, uint64_t n, const std::vector<uint64_t> &profile,
                                         uint64_t stg_bytes, uint32_t positions);
-  void record(Card &card, uint32_t width, bool kvs = true);  // kvs: with the streamed pool's claim
+  void record(Card &card, uint32_t width, bool kvs = true, bool probe = false);  // kvs: streamed claim; probe: tap
   void record_head(ze::List &L, Card &card, const StepPlan *plan, uint32_t width);
   void record_commit(Card &card);
   uint64_t mtp_bytes() const;
@@ -251,6 +259,9 @@ class Model final : public engine::Model {
   // The image encoder: first, its host side (the weights' stages, pixels, encoding); always, each card's side.
   void load_vision(bool first);
   void vision_slots();
+  void init_probe();
+  void load_probe_card(Card &card);
+  std::vector<float> probe_run_head(const float *qkv_dev, uint32_t qkv_stride, const CommitRun *runs, uint32_t nruns);
   // Each image block of the slot's prompt that meets cells pos0 .. pos0 + n - 1 into pembed_, from row row0
   // (vision.cpp).
   void place_images(uint32_t slot, uint32_t pos0, uint32_t n, uint32_t row0);
@@ -265,7 +276,7 @@ class Model final : public engine::Model {
   // A short chunk's uncached experts that kCpuRows rows or fewer picked, on one card: each layer's, on this thread and
   // the workers, as the chunk reads back the layer's inputs.
   void rare_experts();
-  ze::List &prompt_list(Card &card, uint32_t T, uint32_t runs);
+  ze::List &prompt_list(Card &card, uint32_t T, uint32_t runs, bool probe = false);
   uint32_t pev(uint32_t kind, uint32_t layer, uint32_t c) const;
   Mat mat(Card &card, const GgufTensor &t, const std::vector<std::pair<uint64_t, uint64_t>> &rows,
           const std::vector<std::pair<uint64_t, uint64_t>> &cols = {});
@@ -530,6 +541,18 @@ class Model final : public engine::Model {
   uint64_t vgen_ = 0;
   std::vector<uint64_t> slot_gen_;  // [slot]
   std::unique_ptr<ze::EventPool> vevents_;
+
+  // Streaming hidden-state probe (probe.cpp).
+  bool probe_on_ = false;
+  bool probe_active_ = false;
+  bool plast_split_ = false;
+  engine::ProbeWeights probe_weights_;
+  uint32_t probe_proj_rows_ = 0;
+  uint32_t probe_proj_stride_ = 0;
+  uint32_t *probe_ntok_ = nullptr;
+  float *probe_out_ = nullptr;
+  float *pprobe_qkv_ = nullptr;
+  std::vector<uint32_t> probe_start_;
 };
 
 }  // namespace engine::qwen4exp

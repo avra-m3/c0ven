@@ -3,6 +3,7 @@
 add_library(engine_core STATIC
   api/draft_gate.cpp
   api/lookup.cpp
+  api/probe.cpp
   api/swap_cadence.cpp
   api/sampling.cpp
   cpu/experts.cpp

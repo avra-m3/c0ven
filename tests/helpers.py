@@ -152,10 +152,17 @@ class FakeEngine:
     wakes: int = 0
     counts: dict[str, str] = field(default_factory=lambda: {"plans": "4", "steps": "3", "step_ns": "30000000"})
     """Its STATS line."""
+    probe_meta: protocol.ProbeMeta | None = None
+    probe_report: protocol.ProbeReport | None = None
+    probe_flags_seen: list[int] = field(default_factory=lambda: [])
+    probe_spans_seen: list[tuple[tuple[int, int], ...]] = field(default_factory=lambda: [])
 
     @property
     def info(self) -> dict[str, str]:
-        return {"backend": "fake"}
+        base = {"backend": "fake"}
+        if self.probe_meta is not None:
+            base.update(self.probe_meta.to_facts())
+        return base
 
     @property
     def slots(self) -> int:
@@ -196,17 +203,48 @@ class FakeEngine:
         max_new: int,
         settings: protocol.Settings,
         images: Sequence[PromptImage] = (),
+        *,
+        probe_flags: int = 0,
+        probe_spans: Sequence[tuple[int, int]] = (),
     ) -> AsyncGenerator[protocol.Event]:
         self.prompts.append(list(prompt))
         self.max_news.append(max_new)
         self.images.append(list(images))
-        ids = encode(self.tokenizer, self.output)
-        if self.eos is not None and self.finish is protocol.Finish.STOP:
-            eos = self.tokenizer.token_to_id(self.eos)
-            assert eos is not None
-            ids.append(eos)
-        ids = ids[:max_new]
-        finish = protocol.Finish.LENGTH if len(ids) == max_new and self.finish is protocol.Finish.STOP else self.finish
+        self.probe_flags_seen.append(probe_flags)
+        self.probe_spans_seen.append(tuple(probe_spans))
+        probed = bool(probe_flags & protocol.PROBE_ENABLED)
+        probe_only = bool(probe_flags & protocol.PROBE_ONLY)
+        report = self.probe_report
+        if probed and report is None and self.probe_meta is not None:
+            n = len(self.probe_meta.labels)
+            report = protocol.ProbeReport(
+                1,
+                False,
+                False,
+                tuple(0.99 if lb.safe else 0.01 for lb in self.probe_meta.labels),
+                tuple(0.01 for _ in range(n)),
+            )
+        block_in = bool(probe_flags & protocol.PROBE_BLOCK_INPUT) and report is not None and report.input_flagged
+        block_out = bool(probe_flags & protocol.PROBE_BLOCK_OUTPUT) and report is not None and report.output_flagged
+        if probe_only or block_in:
+            ids: list[int] = []
+            finish = protocol.Finish.CONTENT_FILTER if block_in else protocol.Finish.STOP
+        else:
+            ids = encode(self.tokenizer, self.output)
+            if self.eos is not None and self.finish is protocol.Finish.STOP:
+                eos = self.tokenizer.token_to_id(self.eos)
+                assert eos is not None
+                ids.append(eos)
+            ids = ids[:max_new]
+            if block_out:
+                ids = ids[:1]
+                finish = protocol.Finish.CONTENT_FILTER
+            else:
+                finish = (
+                    protocol.Finish.LENGTH
+                    if len(ids) == max_new and self.finish is protocol.Finish.STOP
+                    else self.finish
+                )
         done = False
         try:
             if self.reused:
@@ -215,6 +253,8 @@ class FakeEngine:
                 yield protocol.Tokens(1, (i,))
             if self.hang:
                 await asyncio.Event().wait()
+            if probed and report is not None:
+                yield report
             done = True
             yield protocol.Done(1, len(ids), len(prompt), 1.0, 2.0, finish, self.reused, 0.5, len(ids), 2, 1)
         finally:

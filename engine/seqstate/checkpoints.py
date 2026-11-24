@@ -35,6 +35,8 @@ class Checkpoint:
     """Slots being restored from it, which it must outlive until their restore is queued."""
     parent: Checkpoint | None = None
     """The longest other checkpoint whose tokens are a strict prefix of these."""
+    probed: bool = False
+    """True when the checkpoint holds streaming probe KV and rolling tracker state."""
 
 
 def extends(longer: tuple[int, ...], shorter: tuple[int, ...]) -> bool:
@@ -61,12 +63,22 @@ class CheckpointPool:
     def get(self, checkpoint_id: int) -> Checkpoint | None:
         return self._by_id.get(checkpoint_id)
 
-    def longest_prefix(self, prompt: tuple[int, ...]) -> Checkpoint | None:
+    def longest_prefix(
+        self,
+        prompt: tuple[int, ...],
+        *,
+        require_probed: bool = False,
+        avoid_spans: tuple[tuple[int, int], ...] = (),
+    ) -> Checkpoint | None:
         """The ready checkpoint with the longest tokens that are a strict prefix of `prompt`."""
         best: Checkpoint | None = None
         for ck in self._by_id.values():
             n = len(ck.tokens)
             if not ck.ready or n >= len(prompt) or (best is not None and n <= len(best.tokens)):
+                continue
+            if require_probed and not ck.probed:
+                continue
+            if avoid_spans and any(max(0, s - 1) < n < e for s, e in avoid_spans):
                 continue
             if prompt[:n] == ck.tokens:
                 best = ck
@@ -85,7 +97,9 @@ class CheckpointPool:
         """Whether `add` can take a new checkpoint: an id is free, or a checkpoint can be evicted for one."""
         return bool(self._free) or self.victim() is not None
 
-    def add(self, tokens: tuple[int, ...], pages: tuple[int, ...], kept: bool) -> tuple[Checkpoint, list[int]]:
+    def add(
+        self, tokens: tuple[int, ...], pages: tuple[int, ...], kept: bool, *, probed: bool = False
+    ) -> tuple[Checkpoint, list[int]]:
         """A new checkpoint holding a reference on each of `pages`, and the ids of any evicted to make room."""
         evicted: list[int] = []
         if kept and sum(ck.kept for ck in self._by_id.values()) >= self.max_kept:
@@ -98,7 +112,7 @@ class CheckpointPool:
             evicted.append(victim.id)
             log.info("checkpoint %d of %d tokens evicted: the checkpoint pool is full", victim.id, len(victim.tokens))
             self.remove(victim.id)
-        ck = Checkpoint(self._free.pop(), tokens, pages, kept)
+        ck = Checkpoint(self._free.pop(), tokens, pages, kept, probed=probed)
         for page in pages:
             self._pages.incref(page)
         for other in self._by_id.values():

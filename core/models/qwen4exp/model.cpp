@@ -254,6 +254,7 @@ Model::Model(const std::string &path, const Options &opt) : opt_(opt), gguf_(pat
     mevents_ = std::make_unique<ze::EventPool>(*rt_, 2 * ncards_);
   }
   use_.assign((size_t)shape_.layers * shape_.experts, 0.0f);
+  init_probe();
   load_cards(true);
   info_.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
 }
@@ -287,6 +288,8 @@ void Model::load_cards(bool first) {
     for (auto &card : cards_) load_mtp(*card);
   if (df_on_)
     for (auto &card : cards_) load_dflash(*card);
+  if (probe_on_)
+    for (auto &card : cards_) load_probe_card(*card);
   load_experts(first);
   ring_sync();
   std::fprintf(stderr, "engine: read %.2f GB of weights with O_DIRECT in %.2f s%s\n", reader_->bytes_read() / 1e9,
@@ -1198,8 +1201,8 @@ void Model::matvec(ze::List &list, Card &card, const Mat &m, const uint8_t *act,
 // in host memory, so a list serves any step of up to W rows, and the kernels skip the rows past the plan's. Streamed,
 // a second list a width leaves out the claim (kvs: false, key W + kKvsSkipList), for the steps whose pages are claimed
 // already (step).
-void Model::record(Card &card, uint32_t W, bool kvs) {
-  const uint32_t key = kvs ? W : W + kKvsSkipList;
+void Model::record(Card &card, uint32_t W, bool kvs, bool probe) {
+  const uint32_t key = (kvs ? W : W + kKvsSkipList) + (probe ? kProbeList : 0);
   // Not in order: the launches between L.together(true) and L.together(false) read the same inputs and write their
   // own outputs, so they may run side by side; each other command waits for those before it.
   auto list = std::make_unique<ze::List>(*rt_, card.c, ze::List::regular, false, false);
@@ -1437,6 +1440,14 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
     for (uint32_t k = 0; df_on_ && k < DF_LAYERS; k++)
       if (l == dfc_.targets[k])
         L.launch(kernel(c, "qwen4exp_dflash", "df_feat"), {card.R, k, plan, card.df->feat}, shape_.embd / 64, W, 1, 64);
+    if (probe && c == 0) {
+      const auto &sp = probe_weights_.spec;
+      const uint32_t ntaps = sp.n_taps(), do_norm = sp.rms_norm_taps ? 1u : 0u;
+      for (uint32_t k = 0; k < ntaps; k++)
+        if (l == sp.layer_ids[k])
+          L.launch(kernel(0, "qwen4exp_probe", "probe_tap"),
+                   {card.R, k, ntaps, plan, sp.norm_eps, do_norm, card.probe->feat}, W, 1, 1, 256);
+    }
   }
   record_head(L, card, plan, W);
   L.close();
@@ -1533,8 +1544,14 @@ void Model::reset_slot(uint32_t slot) {
       card->up->fill(L.S + slot * L.S_stride, &zero, 4, L.S_stride * 4);
     }
     card->up->fill(card->ple_hist + slot * card->ple_stride, &zero, 4, card->ple_stride * 4);
+    if (card->c == 0 && card->probe && card->probe->k_ring) {
+      const uint64_t hb = card->probe->slot_kv_half_bytes;
+      card->up->fill(reinterpret_cast<uint8_t *>(card->probe->k_ring) + (uint64_t)slot * hb, &zero, 4, hb);
+      card->up->fill(reinterpret_cast<uint8_t *>(card->probe->v_ring) + (uint64_t)slot * hb, &zero, 4, hb);
+    }
     card->up->synchronize();
   }
+  if (probe_on_) probe_start_[slot] = 0;
 }
 
 std::vector<Candidate> Model::step(uint32_t slot, uint32_t pos, int32_t token, int32_t p1, int32_t p2) {
@@ -1585,8 +1602,12 @@ std::vector<std::vector<Candidate>> Model::step(const StepIn *rows, uint32_t n, 
   const uint32_t idx_cells = shape_.idx_cells();
   for (uint32_t r = 0; kv_res_ && r < n && !kvs; r++)
     kvs = rows[r].pos + 1 > idx_cells || kvs_to_[rows[r].slot] <= rows[r].pos;
-  const uint32_t key = kv_res_ && !kvs ? W + kKvsSkipList : W;
-  last_width_ = key;
+  const bool use_kvs = !(kv_res_ && !kvs);
+  const uint32_t base_key = use_kvs ? W : W + kKvsSkipList;
+  const bool use_probe = probe_on_ && probe_active_;
+  const uint32_t key0 = base_key + (use_probe ? kProbeList : 0);
+  if (use_probe && cards_[0]->lists.find(key0) == cards_[0]->lists.end()) record(*cards_[0], W, use_kvs, true);
+  last_width_ = key0;
   plan_->nrows = n;
   plan_->window = window ? 1 : 0;
   plan_->step++;
@@ -1601,7 +1622,7 @@ std::vector<std::vector<Candidate>> Model::step(const StepIn *rows, uint32_t n, 
     if (first) set_rope(rows[r].slot, rows[r].pos, true);
   }
   for (uint32_t i = 0; i < events_->size(); i++) ZE_CHECK(zeEventHostReset((*events_)[i]));
-  for (uint32_t c = ncards_; c-- > 0;) cards_[c]->lists.at(key)->execute();
+  for (uint32_t c = ncards_; c-- > 0;) cards_[c]->lists.at(c == 0 ? key0 : base_key)->execute();
   // The n-gram rows, all read at once while the cards run layer 0 (ADR-0015); they wait for the event before layer 1.
   {
     int32_t t[STEP_MAX_ROWS], p1[STEP_MAX_ROWS], p2[STEP_MAX_ROWS];
@@ -1640,7 +1661,7 @@ std::vector<std::vector<Candidate>> Model::step(const StepIn *rows, uint32_t n, 
     cpu_->compute_many(hl.shape, jobs, n, xs.data(), E, cpu_y_ + (size_t)l * STEP_MAX_ROWS * E, E);
     std::atomic_ref<uint32_t>(ans_seq_[16 * l]).store(step, std::memory_order_release);
   }
-  for (auto &card : cards_) card->lists.at(key)->synchronize();
+  for (auto &card : cards_) card->lists.at(card->c == 0 ? key0 : base_key)->synchronize();
   if (*stuck_) throw std::runtime_error("card 0 gave up waiting for the CPU's experts");
   if (kvs) {
     // The claim may have taken any other slot's pages; a step's slot that read every cell is claimed through its

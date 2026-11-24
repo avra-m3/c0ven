@@ -105,6 +105,14 @@ class EngineClient:
             return 0
 
     @property
+    def probe_meta(self) -> protocol.ProbeMeta | None:
+        """Loaded streaming probe metadata from INFO, or None."""
+        try:
+            return protocol.ProbeMeta.from_facts(self.state.info)
+        except protocol.ProtocolError:
+            return None
+
+    @property
     def slots(self) -> int:
         return self.state.slots
 
@@ -312,6 +320,9 @@ class EngineClient:
         max_new: int,
         settings: protocol.Settings,
         images: Sequence[PromptImage] = (),
+        *,
+        probe_flags: int = 0,
+        probe_spans: Sequence[tuple[int, int]] = (),
     ) -> AsyncGenerator[protocol.Event]:
         """The request's events, ending with Done or Error. Leaving early (a client gone, a stop string) sends
         STOP and drains the request's lines in the background, so they never reach a later request."""
@@ -333,7 +344,9 @@ class EngineClient:
                     view = view[os.write(fd, view) :]
                 path = f"/proc/{os.getpid()}/fd/{fd}"
                 await self._send(protocol.Img(rid, im.first, im.grid_h, im.grid_w, path, im.frames).encode())
-            await self._send(protocol.Gen(rid, max_new, tuple(prompt), settings).encode())
+            await self._send(
+                protocol.Gen(rid, max_new, tuple(prompt), settings, probe_flags, tuple(probe_spans)).encode()
+            )
             while True:
                 event = await q.get()
                 if isinstance(event, protocol.Tokens):

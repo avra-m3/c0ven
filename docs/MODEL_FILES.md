@@ -11,6 +11,7 @@ check them, how to lay them out, and how to point the engine at them.
 | The DFlash 2 drafter | incoai's `model.safetensors` and `config.json`, in `dflash/` | 1.2 GB | drafting; the engine prefers it to the MTP layer |
 | The draft (MTP) layer | 31 tensors from Qwen's BF16 checkpoint, in `mtp/` | 5.2 GB | drafting without `dflash/`; with neither, the engine decodes one token a step |
 | The image encoder | `mmproj-Qwen3.8-Flash-Next-BF16.gguf` | 0.9 GB | images and video in requests |
+| The streaming probe | `model.safetensors` and `config.json`, in `singprobe/` | 10.4 MB | per-request `moderation` and `/v1/moderations` |
 
 At load the engine reads the model's sizes and trained context from the file
 ([ADR-0062](adr/0062-a-models-shape-comes-from-its-file.md)).
@@ -51,6 +52,7 @@ it can be mounted read-only.
 | The other shards | beside it, by name | - |
 | The drafter | `dflash/` beside the model when it holds `model.safetensors` and `config.json`, else `mtp/` when it holds `mtp-manifest.json`; a `dflash/` with only `dflash-manifest.json` is refused | `--engine-arg=--draft-dir=<dir>`; `--engine-arg=--no-draft` decodes without it |
 | The image encoder | the one `mmproj-*.gguf` beside the model; with two or more, none | `--engine-arg=--vision=<file>`; `--engine-arg=--no-vision` reads no images |
+| The streaming probe | `singprobe/` beside the model when it holds `config.json` and `model.safetensors` | `--engine-arg=--probe=<dir>`; `--engine-arg=--no-probe` skips loading it |
 | The tokenizer and chat template | the GGUF's metadata | `--tokenizer <tokenizer.json>`, `--chat-template <chat_template.jinja>` |
 
 Without `--tokenizer`, the front end builds the tokenizer from the GGUF's vocabulary, merges and token types, with
@@ -226,3 +228,21 @@ The engine takes the mask token (248,077) and the main model's layers it reads (
 `config.json`. Its kernels are built for the drafter's sizes (`core/models/qwen4exp/layout.h`): hidden size
 2,560, 32 query and 8 KV heads of 128, MLP 7,680, RMS norms with eps 1e-6 and no +1, RoPE base 10,000, a window of
 2,048, a block of 8 rows. The load checks each against `config.json` and stops when one differs.
+
+### The streaming probe
+
+A streaming hidden-state probe taps intermediate layers of Qwen3.8-Flash-Next during prefill and decode
+([ADR-0081](adr/0081-streaming-hidden-state-probes.md)). Put `config.json` and `model.safetensors` in `singprobe/`
+beside the model file, or pass `--engine-arg=--probe=<dir>`.
+
+Supported `model_type` values in `config.json`:
+
+- `sing_probe_attn`: single-layer causal sliding-window multi-query attention probe (such as
+  `inclusionAI/Qwen3.8-Flash-Next-singprobe`, tapping layers 15, 31 and 47 with a 2,048-token window and 512 KiB of
+  BF16 KV ring per slot).
+- `sing_probe_mlp`: two-layer SiLU MLP probe over the concatenated tapped hidden states.
+- `c0ven_probe_v1`: linear or span-drift (`scope: "drift"`) probe fitted offline with `python -m tools.probe_calibrate fit-linear`.
+
+An optional `calibration.json` in the probe directory overrides `model_name`, `roll_window`, per-label `thresholds`,
+Platt `scale` and `bias` (or `temperature`), and an optional `extra_alarms` path pointing to a `c0ven_probe_v1`
+sidecar that shares the same tapped layers. Generate `calibration.json` with `python -m tools.probe_calibrate calibrate`.

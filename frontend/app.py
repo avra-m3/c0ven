@@ -4,6 +4,7 @@
 | Endpoint | What |
 | --- | --- |
 | `POST /v1/chat/completions` | OpenAI Chat Completions |
+| `POST /v1/moderations` | OpenAI Moderations (streaming hidden-state probe, prefill only) |
 | `POST /v1/messages`, `/v1/messages/count_tokens` | Anthropic Messages |
 | `GET /v1/models`, `/models` | the loaded model |
 | `GET /health`, `/api/health` | the engine's status and context: 200 once it is READY, 503 while it loads or sleeps |
@@ -25,7 +26,7 @@ import json
 import logging
 import time
 from collections.abc import AsyncGenerator, AsyncIterator, Callable, Coroutine
-from contextlib import asynccontextmanager
+from contextlib import aclosing, asynccontextmanager
 from dataclasses import dataclass, field, replace
 from typing import Any, Protocol
 
@@ -34,8 +35,9 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
+import protocol
 from frontend import admin as admin_routes
-from frontend import anthropic_api, generate, openai_api
+from frontend import anthropic_api, generate, moderation, openai_api
 from frontend.admin import Admin
 from frontend.body import obj
 from frontend.engine_client import EngineUnavailable
@@ -43,6 +45,8 @@ from frontend.generate import BadRequest, Engine
 from frontend.metrics import derive, numbers
 from frontend.model import Model
 from frontend.output import Piece
+from frontend.template import Conversation, TemplateFailed
+from frontend.tokenizer import encode
 
 log = logging.getLogger("frontend")
 metrics_log = logging.getLogger("frontend.metrics")
@@ -231,6 +235,10 @@ def _log_metrics(event: str, data: JSONObject) -> None:
     metrics_log.info("%s", json.dumps({"event": event, **data}, separators=(",", ":")))
 
 
+class _ModerationEngineError(RuntimeError):
+    pass
+
+
 def create_app(
     model: Model,
     engine: ServedEngine,
@@ -274,11 +282,33 @@ def create_app(
         await engine.start()
         return await asyncio.to_thread(generate.render, model, req, engine.image_tokens_max)
 
+    def _probe_meta() -> protocol.ProbeMeta | None:
+        try:
+            return protocol.ProbeMeta.from_facts(engine.info)
+        except protocol.ProtocolError:
+            return None
+
+    async def apply_moderation(
+        mod_req: moderation.ModerationRequest | None, req: generate.Request, prompt: generate.Prompt
+    ) -> tuple[generate.Request, protocol.ProbeMeta | None]:
+        if mod_req is None:
+            return req, None
+        await engine.start()
+        probe_meta = moderation.validate(mod_req, _probe_meta(), len(prompt.ids))
+        spans = (
+            mod_req.untrusted_spans
+            if mod_req.untrusted_spans is not None
+            else moderation.detect_tool_spans(model, req.conversation, prompt)
+        )
+        return replace(req, probe_flags=mod_req.flags(), probe_spans=spans), probe_meta
+
     async def chat_completions(request: Request) -> Response:
         admitting()
         body = await _body(request)
         req, streaming = openai_api.parse(body, model.defaults, model.template.efforts)
+        mod_req = moderation.parse_request(body.get("moderation"))
         prompt = await render(req)
+        req, probe_meta = await apply_moderation(mod_req, req, prompt)
         req = replace(req, max_tokens=generate.budget(engine, prompt, req.max_tokens, default_max_tokens))
         pieces = recorded(generate.stream(model, engine, req, prompt), "openai")
         if not streaming:
@@ -288,20 +318,74 @@ def create_app(
             assert result.end is not None
             if result.end.error is not None:
                 return error(500, result.end.error, "server_error")
-            return JSONResponse(openai_api.response(result, model.name, openai_api.wants_json(body)))
+            return JSONResponse(
+                openai_api.response(result, model.name, openai_api.wants_json(body), probe_meta=probe_meta)
+            )
         usage = bool(obj(body.get("stream_options") or {}, "stream_options").get("include_usage"))
 
         async def events() -> AsyncGenerator[bytes]:
-            async for chunk in openai_api.stream_events(pieces, model.name, usage):
+            async for chunk in openai_api.stream_events(pieces, model.name, usage, probe_meta=probe_meta):
                 yield _sse(chunk)
 
         return StreamingResponse(_kept_alive(events()), media_type="text/event-stream")
+
+    async def _moderate_one(ids: list[int]) -> protocol.ProbeReport:
+        report: protocol.ProbeReport | None = None
+        async with aclosing(
+            engine.generate(ids, 0, model.defaults, probe_flags=protocol.PROBE_ENABLED | protocol.PROBE_ONLY)
+        ) as events:
+            async for event in events:
+                match event:
+                    case protocol.ProbeReport() as r:
+                        report = r
+                    case protocol.Error(message=message):
+                        raise _ModerationEngineError(message)
+                    case protocol.Done():
+                        break
+                    case _:
+                        pass
+        if report is None:
+            raise _ModerationEngineError("the engine returned no probe scores")
+        return report
+
+    async def moderations(request: Request) -> Response:
+        admitting()
+        body = await _body(request)
+        await engine.start()
+        texts, probe_meta = moderation.parse_moderations(body, _probe_meta())
+        prompts: list[list[int]] = []
+        for text in texts:
+            try:
+                rendered = model.template.render(
+                    Conversation([{"role": "user", "content": text}], enable_thinking=False)
+                )
+                ids = encode(model.tokenizer, rendered)
+            except TemplateFailed:
+                ids = encode(model.tokenizer, text)
+            if not ids:
+                raise BadRequest("input tokenized to zero tokens")
+            if len(ids) > engine.max_context:
+                raise BadRequest(f"input ({len(ids)} tokens) exceeds the context ({engine.max_context})")
+            prompts.append(ids)
+
+        async def _moderate_all() -> list[protocol.ProbeReport]:
+            return list(await asyncio.gather(*(_moderate_one(ids) for ids in prompts)))
+
+        try:
+            reports = await _unless_gone(request, _moderate_all())
+        except _ModerationEngineError as exc:
+            return error(500, str(exc), "server_error")
+        if reports is None:
+            return Response(status_code=499)
+        return JSONResponse(moderation.format_moderations_response(probe_meta, reports))
 
     async def messages(request: Request) -> Response:
         admitting()
         body = await _body(request)
         req, streaming = anthropic_api.parse(body, model.defaults, model.template.efforts)
+        mod_req = moderation.parse_request(body.get("moderation"))
         prompt = await render(req)
+        req, probe_meta = await apply_moderation(mod_req, req, prompt)
         req = replace(req, max_tokens=generate.budget(engine, prompt, req.max_tokens, default_max_tokens))
         pieces = recorded(generate.stream(model, engine, req, prompt), "anthropic")
         if not streaming:
@@ -311,10 +395,12 @@ def create_app(
             assert result.end is not None
             if result.end.error is not None:
                 return error(500, result.end.error, "api_error")
-            return JSONResponse(anthropic_api.response(result, model.name))
+            return JSONResponse(anthropic_api.response(result, model.name, probe_meta=probe_meta))
 
         async def events() -> AsyncGenerator[bytes]:
-            async for name, data in anthropic_api.stream_events(pieces, model.name, len(prompt.ids)):
+            async for name, data in anthropic_api.stream_events(
+                pieces, model.name, len(prompt.ids), probe_meta=probe_meta
+            ):
                 yield _sse(data, name)
 
         return StreamingResponse(_kept_alive(events()), media_type="text/event-stream")
@@ -358,6 +444,7 @@ def create_app(
                     "top_p": d.top_p,
                     "max_tokens": default_max_tokens or None,
                 },
+                "probe": moderation.props_summary(_probe_meta()),
                 "engine": engine.info,
             }
         )
@@ -401,6 +488,7 @@ def create_app(
 
     routes = [
         Route("/v1/chat/completions", guarded(chat_completions), methods=["POST"]),
+        Route("/v1/moderations", guarded(moderations), methods=["POST"]),
         Route("/v1/messages", guarded(messages), methods=["POST"]),
         Route("/v1/messages/count_tokens", guarded(count_tokens), methods=["POST"]),
         Route("/v1/models", models),

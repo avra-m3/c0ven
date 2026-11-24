@@ -399,10 +399,10 @@ std::unique_ptr<ze::List> Model::prompt_copies(Card &card, const Staging &st, ui
   return list;
 }
 
-// The list for chunks of up to T rows in up to `runs` runs (1 or PROMPT_MAX_RUNS).
-ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
+// The list for chunks of up to T rows in up to `runs` runs (1 or PROMPT_MAX_RUNS); probe adds tapped projections.
+ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs, bool probe) {
   PromptCard &P = *card.pc;
-  const uint32_t key = runs << 16 | T;
+  const uint32_t key = (probe ? (1u << 24) : 0u) | runs << 16 | T;
   auto it = P.lists.find(key);
   if (it != P.lists.end()) return *it->second;
   auto list = std::make_unique<ze::List>(*rt_, card.c, ze::List::regular);
@@ -674,6 +674,26 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
       L.launch(kernel(c, "qwen4exp_dflash", "p_df_feat"), {P.R, runs_p, k, f0, f1, pfeat_}, shape_.embd / 64,
                STEP_MAX_RUN, runs, 64);
     }
+    if (probe && (c == 0 || split)) {
+      const auto &sp = probe_weights_.spec;
+      const uint32_t do_norm = sp.rms_norm_taps ? 1u : 0u;
+      const uint32_t pr0 = split ? c * (T / 2) : 0;
+      const uint32_t pmrows = split ? T / 2 : T;
+      const uint32_t *pnown = split ? &prows_[c] : &pplan_->n;
+      // Use this card's own slice of P.xb so the next layer's P2P p_hc_mix from the peer card never overlaps it.
+      uint16_t *pxb = P.xb + (size_t)pr0 * shape_.embd;
+      for (uint32_t k = 0; k < sp.n_taps(); k++) {
+        if (l != sp.layer_ids[k]) continue;
+        ProbeCard &Pr = *card.probe;
+        L.launch(kernel(c, "qwen4exp_probe", "p_probe_tap"), {P.R, pr0, pnown, sp.norm_eps, do_norm, pxb}, pmrows, 1,
+                 1, 256);
+        gemm(true, Pr.proj_tap[k], probe_proj_stride_, shape_.embd, pxb, shape_.embd, Pr.ptmp, probe_proj_stride_,
+             false, 0, one, nullptr, 8, 2, nullptr, 4, pnown, pmrows);
+        const uint32_t add = k > 0 ? 1u : 0u;
+        L.launch(kernel(c, "qwen4exp_probe", "probe_accum"), {Pr.pqkv, Pr.ptmp, pnown, probe_proj_stride_, add},
+                 (pmrows * probe_proj_stride_ + 255) / 256, 1, 1, 256);
+      }
+    }
   }
   if (split) {  // each run's rows the head and the draft layer read, on both cards
     L.launch(q4("p_hc_share"), {P.R, runs_p, r0, r1, peer->R}, shape_.hc_dim() / 64, STEP_MAX_RUN, runs, 64, 1, 1,
@@ -726,10 +746,13 @@ std::vector<std::vector<Candidate>> Model::prompt_runs(const PromptRun *runs, ui
   }
   const uint32_t T = bucket(n, tmax_), R = nruns > 1 ? PROMPT_MAX_RUNS : 1;
   const bool fetch = T <= kFetchRows && cards_[0]->pc->stage_cpu;
+  const bool use_probe = probe_on_ && probe_active_;
+  plast_split_ = ncards_ > 1 && T >= kHcSplitRows;
   std::vector<ze::List *> lists;
   for (auto &card : cards_) {
-    lists.push_back(&prompt_list(*card, T, R));
-    card->pc->last = R << 16 | T;
+    const bool cp = use_probe && (card->c == 0 || plast_split_);
+    lists.push_back(&prompt_list(*card, T, R, cp));
+    card->pc->last = (cp ? (1u << 24) : 0u) | R << 16 | T;
   }
 
   ++plan_->step;

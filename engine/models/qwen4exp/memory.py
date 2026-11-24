@@ -15,6 +15,7 @@ from engine.models.qwen4exp.draft import (
     kv_per_slot,
     read_shapes,
 )
+from engine.models.qwen4exp.probe import ProbeBudget
 from engine.models.qwen4exp.split import bytes_per_card, split_of
 from engine.models.qwen4exp.tensors import Category, LayerKind, TensorTable
 
@@ -84,13 +85,17 @@ def _int(table: TensorTable, key: str) -> int:
 
 
 def model_memory(
-    table: TensorTable, cards: int = 2, draft_shapes: dict[str, tuple[int, ...]] | None = None
+    table: TensorTable,
+    cards: int = 2,
+    draft_shapes: dict[str, tuple[int, ...]] | None = None,
+    probe: ProbeBudget | None = None,
 ) -> ModelMemory:
     """The sizes on one card or each of two: one card holds every weight and every head whole. draft_shapes: the
     drafter's tensor shapes (draft.read_shapes), empty for no drafter; None: the committed MTP layer's, for the mock
-    and the reference."""
+    and the reference. probe: streaming hidden-state probe device and per-slot KV ring sizes, or None."""
     if cards not in (1, 2):
         raise ValueError(f"the engine runs on one or two cards, not {cards}")
+    pb = probe if probe is not None else ProbeBudget()
     expert_total = table.bytes_of(Category.EXPERTS)
     experts = table.layers * table.experts_per_layer
     kinds = table.layer_kinds()
@@ -120,6 +125,7 @@ def model_memory(
             by_context
             + by_pool
             + drafter
+            + o.slots * pb.slot_kv_bytes
             - o.slots * draft_kv_planned
             - indexer_cell // cards * (o.slots * o.context - pool)
         )
@@ -127,7 +133,7 @@ def model_memory(
     return ModelMemory(
         cards=cards,
         staging_per_uncached=STAGED_LAYERS * max(_stage_bytes(table, layer, cards) for layer in range(table.layers)),
-        weights_per_card=sum(bytes_per_card(t, cards) for t in table.tensors),
+        weights_per_card=sum(bytes_per_card(t, cards) for t in table.tensors) + pb.fixed_bytes,
         draft_per_card=draft_per_card(shapes, cards),
         working_per_card=CORE_RESERVE + WORKING_BY_CARDS[cards],
         layers=table.layers,
@@ -140,7 +146,7 @@ def model_memory(
         resident_cells=numbers.RESIDENT_CELLS,
         kv_cell_host=kv_cell,
         draft_kv_host=draft_kv,
-        checkpoint_bytes=state,
+        checkpoint_bytes=state + pb.slot_kv_bytes,
         max_context=numbers.MAX_YARN_SCALE * table.context_length,
         trained_context=table.context_length,
         ngram_bytes=sum(t.nbytes for t in table.tensors if split_of(t.name) is SplitKind.FILE),

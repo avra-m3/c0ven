@@ -23,7 +23,7 @@ extern "C" {
 #define ENGINE_API
 #endif
 
-#define ENGINE_API_VERSION 23
+#define ENGINE_API_VERSION 24
 
 typedef enum {
   ENGINE_OK = 0,
@@ -63,6 +63,8 @@ typedef struct {
                                   own memory; without it the row cache, as many rows as they hold, when that is more
                                   than the default 1,048,576. If they cannot be mapped, the log says so and the table
                                   is read from the file with the default cache. 0: none */
+  const char *probe_path;      /* directory holding a streaming hidden-state probe (config.json, model.safetensors,
+                                  optional calibration.json); null or empty: no probe */
 } engine_config;
 
 #define ENGINE_CONFIG_EXPERTS_SET 1u  /* experts_per_layer is meaningful, 0 included */
@@ -115,12 +117,34 @@ typedef struct {
                                   beside writers; 0: decode does not count */
   uint64_t ngram_cache_rows;   /* rows the n-gram table's cache holds */
   uint64_t ngram_huge_bytes;   /* the n-gram table's or its cache's bytes in reserved huge pages */
+  uint32_t probe_labels;       /* number of labels the loaded streaming probe reports; 0: no probe loaded */
+  uint32_t probe_reserved;
 } engine_info;
 
 /* A request's sampling and stopping, copied once by admit. The core samples in llama.cpp's order: penalties, top-k,
  * top-p, min-p, temperature (docs/spec/MODEL_IO.md, section 2.4). A sampled token depends only on the seed, its
  * position and the tokens before it, never on how the work was split into steps. */
 #define ENGINE_MAX_STOP 8
+#define ENGINE_MAX_PROBE_LABELS 32
+#define ENGINE_MAX_PROBE_NAME 48
+#define ENGINE_MAX_PROBE_SPANS 16
+
+#define ENGINE_PROBE_ENABLED 1u      /* run loaded streaming probe on this slot */
+#define ENGINE_PROBE_BLOCK_INPUT 2u  /* end with ENGINE_DONE_CONTENT_FILTER if input probe flags */
+#define ENGINE_PROBE_BLOCK_OUTPUT 4u /* end with ENGINE_DONE_CONTENT_FILTER if output probe flags */
+#define ENGINE_PROBE_ONLY 8u         /* read prompt, evaluate input probe, and stop with no generated token */
+
+#define ENGINE_PROBE_SCOPE_INPUT 0u
+#define ENGINE_PROBE_SCOPE_OUTPUT 1u
+#define ENGINE_PROBE_SCOPE_BOTH 2u
+#define ENGINE_PROBE_SCOPE_DRIFT 3u  /* untrusted span before/after drift alarm (TaskTracker style) */
+#define ENGINE_PROBE_FLAG_SAFE 1u    /* benign indicator (e.g. safe); high score does not set flagged */
+
+typedef struct {
+  uint32_t start;              /* inclusive prompt token index */
+  uint32_t end;                /* exclusive prompt token index */
+} engine_token_span;
+
 typedef struct {
   float temperature;           /* 0: greedy */
   uint32_t top_k;              /* 0 or above the engine's candidates (64): 64 */
@@ -135,6 +159,9 @@ typedef struct {
   float penalty_repeat;        /* a counted token's logit divided by it (multiplied when <= 0); 1: off */
   float penalty_freq;          /* subtracted from a counted token's logit once per occurrence; 0: off */
   float penalty_present;       /* subtracted from a counted token's logit once; 0: off */
+  uint32_t probe_flags;        /* ENGINE_PROBE_*; 0: probing off for this slot */
+  uint32_t n_probe_spans;      /* untrusted prompt token spans for drift alarms, at most ENGINE_MAX_PROBE_SPANS */
+  engine_token_span probe_spans[ENGINE_MAX_PROBE_SPANS];
 } engine_settings;
 
 /* The KV cache is paged, and the caller keeps the page table (docs/DESIGN.md, section 4). A page is 4 cells: logical
@@ -194,9 +221,10 @@ typedef enum {
   ENGINE_EVENT_STALLED = 6     /* slot waits for a page; value: the position it needs. Once until pages are mapped */
 } engine_event_kind;
 
-#define ENGINE_DONE_STOP 1     /* a stop token */
-#define ENGINE_DONE_LENGTH 2   /* max_tokens */
-#define ENGINE_DONE_CONTEXT 3  /* the slot's context is full */
+#define ENGINE_DONE_STOP 1           /* a stop token */
+#define ENGINE_DONE_LENGTH 2         /* max_tokens */
+#define ENGINE_DONE_CONTEXT 3        /* the slot's context is full */
+#define ENGINE_DONE_CONTENT_FILTER 4 /* blocked by a streaming probe policy */
 
 typedef struct {
   uint32_t kind;
@@ -305,6 +333,36 @@ typedef struct {
   uint64_t lookup_accepted;
 } engine_slot_stats;
 
+/* One label of the loaded streaming hidden-state probe. */
+typedef struct {
+  char name[ENGINE_MAX_PROBE_NAME];
+  float threshold;             /* probability threshold in [0, 1] */
+  uint32_t scope;              /* ENGINE_PROBE_SCOPE_* */
+  uint32_t flags;              /* ENGINE_PROBE_FLAG_* */
+  uint32_t reserved;
+} engine_probe_label;
+
+/* Metadata for the streaming hidden-state probe loaded at engine_open. */
+typedef struct {
+  char model_name[ENGINE_MAX_PROBE_NAME];
+  char kind[ENGINE_MAX_PROBE_NAME];
+  uint32_t n_labels;
+  uint32_t window;             /* sliding attention window in tokens; 0 for stateless probes */
+  uint32_t roll_window;        /* rolling-mean span in tokens */
+  uint32_t reserved;
+  engine_probe_label labels[ENGINE_MAX_PROBE_LABELS];
+} engine_probe_info;
+
+/* Accumulated probe scores for an admitted slot with ENGINE_PROBE_ENABLED. */
+typedef struct {
+  uint32_t n_labels;
+  uint32_t input_flagged;      /* 1 if any non-safe input/both/drift label met its threshold */
+  uint32_t output_flagged;     /* 1 if any non-safe output/both label met its threshold */
+  uint32_t reserved;
+  float input_scores[ENGINE_MAX_PROBE_LABELS];
+  float output_scores[ENGINE_MAX_PROBE_LABELS];
+} engine_slot_probe;
+
 /* Loads the model and allocates everything. Blocks until ready. */
 ENGINE_API engine_status engine_open(const engine_config *config, engine_info *info, engine_ctx **out);
 
@@ -367,6 +425,12 @@ ENGINE_API engine_status engine_read_stats(engine_ctx *e, engine_stats *out);
 
 /* Copies an admitted slot's counters into *out; ENGINE_BAD_ARGUMENT for a slot not admitted. */
 ENGINE_API engine_status engine_read_slot_stats(engine_ctx *e, uint32_t slot, engine_slot_stats *out);
+
+/* Copies the loaded streaming probe's metadata into *out; ENGINE_BAD_ARGUMENT when no probe is loaded. */
+ENGINE_API engine_status engine_read_probe_info(engine_ctx *e, engine_probe_info *out);
+
+/* Copies an admitted probed slot's accumulated scores into *out; ENGINE_BAD_ARGUMENT if not admitted or not probed. */
+ENGINE_API engine_status engine_read_slot_probe(engine_ctx *e, uint32_t slot, engine_slot_probe *out);
 
 /* Sleep (ADR-0032): frees everything the engine holds on the cards, the image encoder's included, and the
  * checkpoints, and keeps the host's copy of the experts the cards do not cache and of the encoder's weights, so a

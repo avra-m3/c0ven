@@ -16,7 +16,7 @@ from collections.abc import AsyncIterator, Mapping
 from typing import Any, cast
 
 import protocol
-from frontend import video
+from frontend import moderation, video
 from frontend.body import array, boolean, number, obj, settings
 from frontend.generate import BadRequest, End, Finish, Request, Result
 from frontend.images import ImageError, from_data_url
@@ -35,6 +35,7 @@ _FINISH = {
     Finish.LENGTH: "length",
     Finish.TOOL_CALLS: "tool_calls",
     Finish.CANCEL: "stop",
+    Finish.CONTENT_FILTER: "content_filter",
     Finish.ERROR: "error",
 }
 
@@ -239,7 +240,9 @@ def _usage(end: End) -> JSONObject:
     }
 
 
-def response(result: Result, model: str, check_json: bool) -> JSONObject:
+def response(
+    result: Result, model: str, check_json: bool, *, probe_meta: protocol.ProbeMeta | None = None
+) -> JSONObject:
     end = result.end
     assert end is not None
     content = "".join(result.content)
@@ -253,7 +256,7 @@ def response(result: Result, model: str, check_json: bool) -> JSONObject:
         message["reasoning_content"] = "".join(result.reasoning)
     if result.calls:
         message["tool_calls"] = [_call_json(c, i) for i, c in enumerate(result.calls)]
-    return {
+    out: JSONObject = {
         "id": f"chatcmpl-{uuid.uuid4().hex}",
         "object": "chat.completion",
         "created": int(time.time()),
@@ -261,10 +264,18 @@ def response(result: Result, model: str, check_json: bool) -> JSONObject:
         "choices": [{"index": 0, "message": message, "finish_reason": _FINISH[end.finish]}],
         "usage": _usage(end),
     }
+    if probe_meta is not None and end.probe_report is not None:
+        include_output = end.completion_tokens > 0 or end.finish is not Finish.CONTENT_FILTER
+        out["moderation"] = moderation.format_chat(probe_meta, end.probe_report, include_output=include_output)
+    return out
 
 
 async def stream_events(
-    pieces: AsyncIterator[Piece | End], model: str, include_usage: bool
+    pieces: AsyncIterator[Piece | End],
+    model: str,
+    include_usage: bool,
+    *,
+    probe_meta: protocol.ProbeMeta | None = None,
 ) -> AsyncIterator[JSONObject | None]:
     """Chunks for server-sent events; None marks the end (`data: [DONE]`)."""
     rid = f"chatcmpl-{uuid.uuid4().hex}"
@@ -303,13 +314,21 @@ async def stream_events(
                 if piece.error is not None:
                     yield {"error": {"message": piece.error, "type": "server_error"}}
                 yield chunk({}, _FINISH[piece.finish])
-                if include_usage:
-                    yield {
+                mod: JSONObject | None = None
+                if probe_meta is not None and piece.probe_report is not None:
+                    include_output = piece.completion_tokens > 0 or piece.finish is not Finish.CONTENT_FILTER
+                    mod = moderation.format_chat(probe_meta, piece.probe_report, include_output=include_output)
+                if include_usage or mod is not None:
+                    tail: JSONObject = {
                         "id": rid,
                         "object": "chat.completion.chunk",
                         "created": created,
                         "model": model,
                         "choices": [],
-                        "usage": _usage(piece),
                     }
+                    if include_usage:
+                        tail["usage"] = _usage(piece)
+                    if mod is not None:
+                        tail["moderation"] = mod
+                    yield tail
     yield None
