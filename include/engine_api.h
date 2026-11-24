@@ -23,7 +23,7 @@ extern "C" {
 #define ENGINE_API
 #endif
 
-#define ENGINE_API_VERSION 23
+#define ENGINE_API_VERSION 24
 
 typedef enum {
   ENGINE_OK = 0,
@@ -358,6 +358,27 @@ ENGINE_API engine_status engine_restore(engine_ctx *e, uint32_t slot, uint32_t i
 
 /* Empties checkpoint id. */
 ENGINE_API engine_status engine_drop(engine_ctx *e, uint32_t id);
+
+/* The disk tier (docs/CACHING.md): files of KV pages and of checkpoints, which the caller names, keeps and removes. A
+ * file starts with the layout it was written for (the ABI, the cards, the bytes a page or a checkpoint holds), and a
+ * load of a file of another layout fails with ENGINE_BAD_ARGUMENT. Each call waits for the queued plans, and fails
+ * with ENGINE_ERROR when the file cannot be written or read; a file a save could not finish is removed. */
+
+/* Writes the KV of pages[0..n) to the file at path, replacing it: every cell of each page, as the plans queued before
+ * it left them. */
+ENGINE_API engine_status engine_save_pages(engine_ctx *e, const uint32_t *pages, uint32_t n, const char *path);
+
+/* Reads a file engine_save_pages wrote into pages[0..n), n the file's count: the file's i-th page into pages[i],
+ * which must be of the class of the page it was saved from (p % cards). The caller holds the pages, and no queued
+ * plan writes them. */
+ENGINE_API engine_status engine_load_pages(engine_ctx *e, const uint32_t *pages, uint32_t n, const char *path);
+
+/* Writes checkpoint id, which must hold a state and no image, to the file at path: its fixed state and its tokens. */
+ENGINE_API engine_status engine_save_checkpoint(engine_ctx *e, uint32_t id, const char *path);
+
+/* Reads a file engine_save_checkpoint wrote into checkpoint id. It then holds that state and those tokens, as if
+ * engine_checkpoint had taken it; the caller keeps the KV pages of its positions (engine_load_pages). */
+ENGINE_API engine_status engine_load_checkpoint(engine_ctx *e, uint32_t id, const char *path);
 
 /* Moves up to cap timing records into buf, oldest first; *n receives how many. A full ring drops the oldest. */
 ENGINE_API engine_status engine_read_timing(engine_ctx *e, engine_timing *buf, uint32_t cap, uint32_t *n);

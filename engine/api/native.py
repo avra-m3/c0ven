@@ -143,6 +143,10 @@ def load_library(path: Path | None = None) -> ctypes.CDLL:
         "engine_checkpoint": ([_ctx, _u32, _u32], ctypes.c_int),
         "engine_restore": ([_ctx, _u32, _u32], ctypes.c_int),
         "engine_drop": ([_ctx, _u32], ctypes.c_int),
+        "engine_save_pages": ([_ctx, _p_u32, _u32, ctypes.c_char_p], ctypes.c_int),
+        "engine_load_pages": ([_ctx, _p_u32, _u32, ctypes.c_char_p], ctypes.c_int),
+        "engine_save_checkpoint": ([_ctx, _u32, ctypes.c_char_p], ctypes.c_int),
+        "engine_load_checkpoint": ([_ctx, _u32, ctypes.c_char_p], ctypes.c_int),
         "engine_read_timing": ([_ctx, ctypes.POINTER(abi.CTiming), _u32, _p_u32], ctypes.c_int),
         "engine_read_stats": ([_ctx, ctypes.POINTER(abi.CStats)], ctypes.c_int),
         "engine_read_slot_stats": ([_ctx, _u32, ctypes.POINTER(abi.CSlotStats)], ctypes.c_int),
@@ -211,6 +215,10 @@ class Core(Protocol):
     def checkpoint(self, slot: int, checkpoint_id: int) -> None: ...
     def restore(self, slot: int, checkpoint_id: int) -> None: ...
     def drop(self, checkpoint_id: int) -> None: ...
+    def save_pages(self, pages: Sequence[int], path: str) -> None: ...
+    def load_pages(self, pages: Sequence[int], path: str) -> None: ...
+    def save_checkpoint(self, checkpoint_id: int, path: str) -> None: ...
+    def load_checkpoint(self, checkpoint_id: int, path: str) -> None: ...
     def read_timing(self, cap: int) -> list[abi.CTiming]: ...
     def read_stats(self) -> abi.CStats: ...
     def slot_stats(self, slot: int) -> abi.CSlotStats:
@@ -293,6 +301,20 @@ class CtypesCore:
 
     def drop(self, checkpoint_id: int) -> None:
         self._check(self._lib.engine_drop(self._ctx, checkpoint_id), "drop")
+
+    def save_pages(self, pages: Sequence[int], path: str) -> None:
+        ids = (_u32 * len(pages))(*pages)
+        self._check(self._lib.engine_save_pages(self._ctx, ids, len(pages), path.encode()), "save_pages")
+
+    def load_pages(self, pages: Sequence[int], path: str) -> None:
+        ids = (_u32 * len(pages))(*pages)
+        self._check(self._lib.engine_load_pages(self._ctx, ids, len(pages), path.encode()), "load_pages")
+
+    def save_checkpoint(self, checkpoint_id: int, path: str) -> None:
+        self._check(self._lib.engine_save_checkpoint(self._ctx, checkpoint_id, path.encode()), "save_checkpoint")
+
+    def load_checkpoint(self, checkpoint_id: int, path: str) -> None:
+        self._check(self._lib.engine_load_checkpoint(self._ctx, checkpoint_id, path.encode()), "load_checkpoint")
 
     def read_timing(self, cap: int) -> list[abi.CTiming]:
         n = _u32()
@@ -572,6 +594,20 @@ class NativeEngine:
     def drop(self, checkpoint_id: int) -> None:
         self._core.drop(checkpoint_id)
         self._checkpoint_len.pop(checkpoint_id, None)
+
+    def save_pages(self, pages: Sequence[int], path: Path) -> None:
+        self._core.save_pages(pages, str(path))
+
+    def load_pages(self, pages: Sequence[int], path: Path) -> None:
+        self._core.load_pages(pages, str(path))
+
+    def save_checkpoint(self, checkpoint_id: int, path: Path) -> None:
+        self._core.save_checkpoint(checkpoint_id, str(path))
+
+    def load_checkpoint(self, checkpoint_id: int, path: Path, tokens: int) -> None:
+        self._checkpoint_len.pop(checkpoint_id, None)
+        self._core.load_checkpoint(checkpoint_id, str(path))
+        self._checkpoint_len[checkpoint_id] = tokens
 
     def poll(self, max_events: int = 256) -> list[Event]:
         self._collect()

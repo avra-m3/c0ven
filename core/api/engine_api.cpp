@@ -6,6 +6,7 @@
 #include "engine_api.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -22,6 +23,9 @@
 #include <thread>
 #include <utility>
 #include <vector>
+
+#include <fcntl.h>
+#include <unistd.h>
 
 #include "api/draft_gate.h"
 #include "api/lookup.h"
@@ -199,6 +203,8 @@ struct engine_ctx {
   bool stop = false;
   bool asleep = false;
   uint64_t checkpoint_bytes = 0;
+  uint8_t *bounce = nullptr;  // pinned: a group of pages on their way to or from a file (engine_save_pages)
+  uint64_t bounce_bytes = 0;
   std::string error;
   std::thread thread;
 
@@ -1468,6 +1474,21 @@ struct engine_ctx {
       if (ck.data) model->free_pinned(ck.data);
       ck = Checkpoint{};
     }
+    if (bounce) model->free_pinned(bounce);
+    bounce = nullptr;
+    bounce_bytes = 0;
+  }
+
+  // The bounce buffer, at least `bytes`. Under mu, drained.
+  uint8_t *bounce_for(uint64_t bytes) {
+    if (bounce_bytes < bytes) {
+      if (bounce) model->free_pinned(bounce);
+      bounce = nullptr;
+      bounce_bytes = 0;
+      bounce = static_cast<uint8_t *>(model->alloc_pinned(bytes));
+      bounce_bytes = bytes;
+    }
+    return bounce;
   }
 };
 
@@ -1759,6 +1780,226 @@ engine_status engine_drop(engine_ctx *e, uint32_t id) {
   e->checkpoints[id].full = false;
   e->checkpoints[id].tokens.clear();
   e->checkpoints[id].images.clear();
+  return ENGINE_OK;
+}
+
+namespace {
+
+// The disk tier's files (include/engine_api.h). A page file: PageFileHead, the n pages' classes (one byte each), then
+// the pages in groups of `group`, each group as Model::read_pages lays it out. A checkpoint file: CheckpointFileHead,
+// the tokens, then the fixed state.
+constexpr uint64_t kPageMagic = 0x3147504b4e455643ull;        // "CVENKPG1"
+constexpr uint64_t kCheckpointMagic = 0x3154504b4e455643ull;  // "CVENKPT1"
+constexpr uint64_t kGroupBytes = 32ull << 20;                 // a group's bytes at most: the bounce buffer
+
+struct PageFileHead {
+  uint64_t magic;
+  uint32_t abi, cards;
+  uint64_t page_bytes;
+  uint32_t n, group;
+};
+
+struct CheckpointFileHead {
+  uint64_t magic;
+  uint32_t abi, cards;
+  uint64_t state_bytes;
+  uint32_t ntokens, reserved;
+};
+
+// A file written or read whole, out of the page cache: the tier's files are read once, long after they are
+// written, and the host's memory is the experts' and the KV's.
+class File {
+ public:
+  File(const std::string &path, bool write) : path_(path), write_(write) {
+    fd_ = write ? ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644)
+                : ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd_ < 0) throw std::runtime_error(path + ": " + std::strerror(errno));
+#ifdef POSIX_FADV_SEQUENTIAL
+    if (!write) ::posix_fadvise(fd_, 0, 0, POSIX_FADV_SEQUENTIAL);
+#endif
+  }
+  File(const File &) = delete;
+  File &operator=(const File &) = delete;
+  ~File() {
+    if (fd_ < 0) return;
+    ::close(fd_);
+    if (write_ && !done_) ::unlink(path_.c_str());
+  }
+  void put(const void *p, uint64_t n) {
+    for (auto *b = static_cast<const uint8_t *>(p); n;) {
+      const ssize_t k = ::write(fd_, b, n);
+      if (k < 0 && errno == EINTR) continue;
+      if (k <= 0) throw std::runtime_error(path_ + ": " + (k < 0 ? std::strerror(errno) : "short write"));
+      b += k, n -= (uint64_t)k;
+    }
+  }
+  void get(void *p, uint64_t n) {
+    for (auto *b = static_cast<uint8_t *>(p); n;) {
+      const ssize_t k = ::read(fd_, b, n);
+      if (k < 0 && errno == EINTR) continue;
+      if (k <= 0) throw std::runtime_error(path_ + ": " + (k < 0 ? std::strerror(errno) : "the file is short"));
+      b += k, n -= (uint64_t)k;
+    }
+  }
+  // A write is kept only once its last byte is on the disk; either way the file's pages leave the cache.
+  void finish() {
+#ifdef __linux__
+    if (write_ && ::fdatasync(fd_) != 0) throw std::runtime_error(path_ + ": " + std::strerror(errno));
+#endif
+#ifdef POSIX_FADV_DONTNEED
+    ::posix_fadvise(fd_, 0, 0, POSIX_FADV_DONTNEED);
+#endif
+    done_ = true;
+  }
+
+ private:
+  std::string path_;
+  bool write_;
+  bool done_ = false;
+  int fd_ = -1;
+};
+
+}  // namespace
+
+engine_status engine_save_pages(engine_ctx *e, const uint32_t *pages, uint32_t n, const char *path) {
+  if (!e || !path || (n && !pages)) return ENGINE_BAD_ARGUMENT;
+  std::unique_lock<std::mutex> lk(e->mu);
+  if (e->sleeping()) return ENGINE_ERROR;
+  const uint32_t P = e->model->kv_pages(), C = e->info.cards ? e->info.cards : 1;
+  for (uint32_t i = 0; i < n; i++)
+    if (pages[i] >= P) return ENGINE_BAD_ARGUMENT;
+  e->drain(lk);
+  try {
+    const uint64_t pb = e->model->kv_page_bytes();
+    const uint32_t group = (uint32_t)std::max<uint64_t>(1, kGroupBytes / pb);
+    uint8_t *buf = e->bounce_for(std::min<uint64_t>(group, std::max<uint32_t>(n, 1)) * pb);
+    File f(path, true);
+    const PageFileHead head{kPageMagic, ENGINE_API_VERSION, C, pb, n, group};
+    f.put(&head, sizeof head);
+    std::vector<uint8_t> cls(n);
+    for (uint32_t i = 0; i < n; i++) cls[i] = (uint8_t)(pages[i] % C);
+    f.put(cls.data(), n);
+    for (uint32_t i = 0; i < n; i += group) {
+      const uint32_t g = std::min(group, n - i);
+      e->model->read_pages(pages + i, g, buf);
+      f.put(buf, g * pb);
+    }
+    f.finish();
+  } catch (const std::exception &ex) {
+    e->error = ex.what();
+    return ENGINE_ERROR;
+  }
+  return ENGINE_OK;
+}
+
+engine_status engine_load_pages(engine_ctx *e, const uint32_t *pages, uint32_t n, const char *path) {
+  if (!e || !path || (n && !pages)) return ENGINE_BAD_ARGUMENT;
+  std::unique_lock<std::mutex> lk(e->mu);
+  if (e->sleeping()) return ENGINE_ERROR;
+  const uint32_t P = e->model->kv_pages(), C = e->info.cards ? e->info.cards : 1;
+  for (uint32_t i = 0; i < n; i++)
+    if (pages[i] >= P) return ENGINE_BAD_ARGUMENT;
+  e->drain(lk);
+  try {
+    const uint64_t pb = e->model->kv_page_bytes();
+    File f(path, false);
+    PageFileHead head{};
+    f.get(&head, sizeof head);
+    if (head.magic != kPageMagic || head.abi != ENGINE_API_VERSION || head.cards != C || head.page_bytes != pb ||
+        head.n != n || head.group == 0) {
+      e->error = std::string(path) + ": a page file of another layout or count";
+      return ENGINE_BAD_ARGUMENT;
+    }
+    std::vector<uint8_t> cls(n);
+    f.get(cls.data(), n);
+    for (uint32_t i = 0; i < n; i++)
+      if (cls[i] != pages[i] % C) {
+        e->error = std::string(path) + ": page " + std::to_string(i) + " was saved from a page of another card";
+        return ENGINE_BAD_ARGUMENT;
+      }
+    uint8_t *buf = e->bounce_for(std::min<uint64_t>(head.group, std::max<uint32_t>(n, 1)) * pb);
+    for (uint32_t i = 0; i < n; i += head.group) {
+      const uint32_t g = std::min(head.group, n - i);
+      f.get(buf, g * pb);
+      e->model->write_pages(pages + i, g, buf);
+    }
+    f.finish();
+  } catch (const std::exception &ex) {
+    e->error = ex.what();
+    return ENGINE_ERROR;
+  }
+  return ENGINE_OK;
+}
+
+engine_status engine_save_checkpoint(engine_ctx *e, uint32_t id, const char *path) {
+  if (!e || !path) return ENGINE_BAD_ARGUMENT;
+  std::unique_lock<std::mutex> lk(e->mu);
+  if (id >= e->checkpoints.size()) return ENGINE_BAD_ARGUMENT;
+  if (e->sleeping()) return ENGINE_ERROR;
+  const Checkpoint &ck = e->checkpoints[id];
+  if (!ck.full || !ck.images.empty()) {
+    e->error = "checkpoint " + std::to_string(id) + (ck.full ? " holds images" : " is empty");
+    return ENGINE_BAD_ARGUMENT;
+  }
+  // Only the caller's calls touch a checkpoint, so the write needs no lock: the engine thread goes on meanwhile.
+  const CheckpointFileHead head{kCheckpointMagic, ENGINE_API_VERSION, e->info.cards, ck.bytes,
+                                (uint32_t)ck.tokens.size(), 0};
+  lk.unlock();
+  std::string error;
+  try {
+    File f(path, true);
+    f.put(&head, sizeof head);
+    f.put(ck.tokens.data(), ck.tokens.size() * sizeof(int32_t));
+    f.put(ck.data, ck.bytes);
+    f.finish();
+  } catch (const std::exception &ex) {
+    error = ex.what();
+  }
+  if (error.empty()) return ENGINE_OK;
+  lk.lock();
+  e->error = error;
+  return ENGINE_ERROR;
+}
+
+engine_status engine_load_checkpoint(engine_ctx *e, uint32_t id, const char *path) {
+  if (!e || !path) return ENGINE_BAD_ARGUMENT;
+  std::unique_lock<std::mutex> lk(e->mu);
+  if (id >= e->checkpoints.size()) return ENGINE_BAD_ARGUMENT;
+  if (e->sleeping()) return ENGINE_ERROR;
+  Checkpoint &ck = e->checkpoints[id];
+  ck.full = false;  // until the whole state is in
+  ck.tokens.clear();
+  ck.images.clear();
+  const uint32_t cards = e->info.cards, max_ctx = e->info.max_ctx;
+  lk.unlock();  // as engine_save_checkpoint
+  engine_status status = ENGINE_OK;
+  std::string error;
+  std::vector<int32_t> tokens;
+  try {
+    File f(path, false);
+    CheckpointFileHead head{};
+    f.get(&head, sizeof head);
+    if (head.magic != kCheckpointMagic || head.abi != ENGINE_API_VERSION || head.cards != cards ||
+        head.state_bytes != ck.bytes || head.ntokens == 0 || head.ntokens > max_ctx) {
+      error = std::string(path) + ": a checkpoint file of another layout";
+      status = ENGINE_BAD_ARGUMENT;
+    } else {
+      tokens.assign(head.ntokens, 0);
+      f.get(tokens.data(), (uint64_t)head.ntokens * sizeof(int32_t));
+      f.get(ck.data, ck.bytes);
+      f.finish();
+    }
+  } catch (const std::exception &ex) {
+    error = ex.what();
+    status = ENGINE_ERROR;
+  }
+  lk.lock();
+  if (status != ENGINE_OK) {
+    e->error = error;
+    return status;
+  }
+  ck.tokens = std::move(tokens);
+  ck.full = true;
   return ENGINE_OK;
 }
 

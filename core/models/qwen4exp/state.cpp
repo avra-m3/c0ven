@@ -1,7 +1,8 @@
 // A slot's fixed state as one block of bytes, for checkpoints (docs/DESIGN.md, section 4): per card, the DeltaNet
 // layers' convolution rings and states, and the PLE history. The KV stays in its pages, which the caller keeps for
 // the checkpoint and maps into the slot it restores to; the caller also keeps the token history. Then the writes to
-// the page table, and copies between pages.
+// the page table, copies between pages, and whole pages to and from host memory for the disk tier.
+#include <algorithm>
 #include <cstring>
 #include <stdexcept>
 #include <string>
@@ -95,6 +96,87 @@ void Model::copy_cells(uint32_t from, uint32_t to, uint32_t cells) {
       if (from % C == card->c)
         card->up->copy(L.raw + kv_cell(to / C, 0) * ikb, L.raw + kv_cell(from / C, 0) * ikb, cells * ikb);
     }
+    card->up->synchronize();
+  }
+}
+
+// Calls f(pointer, bytes) for each run of pages of the pool on a card, in the order of a page file's group
+// (engine_save_pages): per attention layer, K then V of every page, then the raw and pooled indexer keys of the
+// card's own pages (p % C == c, at local page p / C). A run is pages that follow each other in the pool's buffers.
+// Streamed, K and V are the host copies, which hold every page.
+template <class F>
+static void for_page_runs(Model::Card &card, const Shape &shape, uint32_t C, bool streamed, const uint32_t *pages,
+                          uint32_t n, F &&f) {
+  const uint64_t kvb = (uint64_t)KV_PAGE_CELLS * card.nkv * shape.kv_head_bytes();
+  const uint64_t rawb = (uint64_t)KV_PAGE_CELLS * shape.idx_key_bytes(), poolb = (uint64_t)shape.idx_d * 4;
+  std::vector<uint32_t> own;
+  for (uint32_t i = 0; i < n; i++)
+    if (pages[i] % C == card.c) own.push_back(pages[i] / C);
+  // f over runs of ids in ids[0..m), each id a unit of `unit` bytes at base.
+  auto runs = [&](uint8_t *base, uint64_t unit, const uint32_t *ids, size_t m) {
+    for (size_t i = 0; i < m;) {
+      size_t j = i + 1;
+      while (j < m && ids[j] == ids[j - 1] + 1) j++;
+      f(base + ids[i] * unit, (j - i) * unit);
+      i = j;
+    }
+  };
+  for (auto &L : card.layers) {
+    if (!L.attn) continue;
+    runs(streamed ? L.khost : L.kc, kvb, pages, n);
+    runs(streamed ? L.vhost : L.vc, kvb, pages, n);
+    runs(L.raw, rawb, own.data(), own.size());
+    runs(reinterpret_cast<uint8_t *>(L.pooled), poolb, own.data(), own.size());
+  }
+}
+
+uint64_t Model::kv_page_bytes() const {
+  uint64_t n = 0;
+  for (auto &card : cards_)
+    for (auto &L : card->layers)
+      if (L.attn) n += 2ull * KV_PAGE_CELLS * card->nkv * shape_.kv_head_bytes();
+  // Each page's indexer keys are on one card.
+  return n + (uint64_t)shape_.attn_layers() * (KV_PAGE_CELLS * shape_.idx_key_bytes() + shape_.idx_d * 4ull);
+}
+
+void Model::read_pages(const uint32_t *pages, uint32_t n, uint8_t *dst) {
+  for (uint32_t i = 0; i < n; i++)
+    if (pages[i] >= kv_pages_) throw std::runtime_error("page " + std::to_string(pages[i]) + " out of the pool");
+  wait_commit();
+  for (auto &card : cards_) {
+    for_page_runs(*card, shape_, ncards_, kv_res_ != 0, pages, n, [&](uint8_t *p, uint64_t b) {
+      card->up->copy(dst, p, b);
+      dst += b;
+    });
+    card->up->synchronize();
+  }
+}
+
+void Model::write_pages(const uint32_t *pages, uint32_t n, const uint8_t *src) {
+  uint32_t top = 0;
+  for (uint32_t i = 0; i < n; i++) {
+    if (pages[i] >= kv_pages_) throw std::runtime_error("page " + std::to_string(pages[i]) + " out of the pool");
+    top = std::max(top, pages[i] + 1);
+  }
+  wait_commit();
+  if (share_) kv_need(std::max(kv_want_, top), ring_want_);
+  if (kv_res_) std::fill(kvs_to_.begin(), kvs_to_.end(), 0);  // the pages lose their resident copies
+  const std::vector<uint32_t> none(n, KV_NO_PAGE);
+  for (auto &card : cards_) {
+    for_page_runs(*card, shape_, ncards_, kv_res_ != 0, pages, n, [&](uint8_t *p, uint64_t b) {
+      card->up->copy(p, src, b);
+      src += b;
+    });
+    if (kv_res_)
+      for (auto &L : card->layers) {
+        if (!L.attn) continue;
+        for (uint32_t i = 0; i < n;) {
+          uint32_t j = i + 1;
+          while (j < n && pages[j] == pages[j - 1] + 1) j++;
+          card->up->copy(L.where + pages[i], none.data(), (size_t)(j - i) * 4);
+          i = j;
+        }
+      }
     card->up->synchronize();
   }
 }

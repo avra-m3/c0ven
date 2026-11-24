@@ -117,6 +117,9 @@ class FakeModel : public Model {
   void kv_need(uint32_t, uint32_t) override { In in(*this, "kv", 0); }
   void kv_ahead() override { In in(*this, "kv", 0); }
   void kvs_drop(uint32_t slot, uint32_t) override { In in(*this, "kv", slot); }
+  uint64_t kv_page_bytes() const override { return 8; }
+  void read_pages(const uint32_t *, uint32_t, uint8_t *) override { In in(*this, "read pages", 0); }
+  void write_pages(const uint32_t *, uint32_t, const uint8_t *) override { In in(*this, "write pages", 0); }
 
   void note_prompt_routing(bool) override {}
   uint32_t swap_round(uint32_t, bool) override { return 0; }

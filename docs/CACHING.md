@@ -190,6 +190,33 @@ Real traffic is less regular: a chat that answers quickly reuses its checkpoint 
 holds, though: once more conversations are active than the checkpoints can cover, the ones that pause longest read
 their whole prompt again.
 
+## The disk tier
+
+With `--kv-disk DIR`, a checkpoint the server would drop is written to that folder first, and a later prompt that
+starts with it reads it back from there instead of reading its conversation again. It is written when the token cache
+needs its room, when the count of checkpoints is full, and before a sleep or an exit. While no request runs, the
+server also writes the checkpoints not yet on disk, one at a time, so that a drop under load usually finds its
+checkpoint written already ([ADR-0082](adr/0082-checkpoints-go-to-disk-instead-of-being-dropped.md)).
+
+A checkpoint on disk is its running state, 118 MB, and its part of the token cache, 14,688 bytes a token, in files.
+The token cache's part is cut into blocks of 1,024 tokens, each named by the tokens up to its end, so the checkpoints
+of one conversation share the blocks of the beginning they share, and each block is written once. A 100K-token
+checkpoint is about 1.6 GB on disk, and reading it back takes about as long as the drive needs for that, where
+reading the conversation again takes about a minute (*estimate*: 102,400 tokens at the 1,713 tokens a second
+[measured](measurements/MEASUREMENTS.md#2026-10-20-kv-pool-and-expert-cache-share) for a 179,969-token prompt).
+
+A request reads a checkpoint back when it is longer than any checkpoint in memory that starts its prompt. It takes a
+checkpoint and room in the token cache for it, made as for a request, and then starts from it as from any
+checkpoint. The running state cannot be wound back, so a checkpoint on disk serves only a prompt that starts with all
+of it, as in memory. Checkpoints shorter than 1,024 tokens, and those with an image before their end, stay off disk.
+
+The folder keeps its checkpoints across restarts of the server, for the same model file, version and number of cards.
+It holds `--kv-disk-gib` GiB at most, 64 by default, and the checkpoints used longest ago go first. One server uses a
+folder at a time. The STATS line counts what it holds and its writes and reads (`kv_disk_*`).
+
+A write or a read holds the cards while it runs: a drop under load whose checkpoint is not on disk yet waits for its
+write, and the running answers wait with it.
+
 ## What this means for settings
 
 `max_tokens` and `--default-max-tokens` limit how long an answer may run. They hold no room, so a large limit does
@@ -200,4 +227,5 @@ the cards always keep enough memory free to give the whole token cache back, so 
 that the cards hold for certain.
 
 More checkpoints help when many conversations take turns, as in the second example. Each one costs 118 MB of main
-memory, and they still need room in the token cache.
+memory, and they still need room in the token cache. `--kv-disk` keeps the ones that do not fit, and the ones a sleep
+or a restart would drop.

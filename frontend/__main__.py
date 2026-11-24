@@ -54,6 +54,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="the KV pool the slots share, in tokens (512k = 524,288), at least --context; default: slots x context",
     )
     p.add_argument(
+        "--kv-disk",
+        type=Path,
+        help="a folder on a fast drive for checkpoints the cards have no room for (docs/CACHING.md); default: none",
+    )
+    p.add_argument("--kv-disk-gib", type=float, default=64.0, help="GiB the --kv-disk folder holds at most")
+    p.add_argument(
         "--default-max-tokens",
         type=protocol.tokens,
         default=0,
@@ -99,6 +105,7 @@ def engine_argv(args: argparse.Namespace, arch: str = "", table_cache: Path | No
         "--context",
         str(args.context),
         *(["--kv-tokens", str(args.kv_tokens)] if args.kv_tokens else []),
+        *(["--kv-disk", str(args.kv_disk), "--kv-disk-gib", f"{args.kv_disk_gib:g}"] if args.kv_disk else []),
         "--log-level",
         args.log_level,
     ]

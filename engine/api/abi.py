@@ -28,7 +28,7 @@ import ctypes
 from dataclasses import dataclass
 from enum import IntEnum
 
-ABI_VERSION = 23
+ABI_VERSION = 24
 
 MAX_STOP = 8
 MAX_STEP_SLOTS = 8

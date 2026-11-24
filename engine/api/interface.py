@@ -15,8 +15,10 @@ A plan carries only changes.
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import IntEnum
+from pathlib import Path
 from typing import Protocol
 
 import numpy as np
@@ -481,6 +483,26 @@ class Engine(Protocol):
     def checkpoint(self, slot: int, checkpoint_id: int) -> None: ...
     def restore(self, slot: int, checkpoint_id: int) -> None: ...
     def drop(self, checkpoint_id: int) -> None: ...
+    def save_pages(self, pages: Sequence[int], path: Path) -> None:
+        """Writes the KV of `pages`, in order, to the file `path`, as the plans submitted before it leave them. Waits
+        for them. Raises EngineError when the file cannot be written; a file it could not finish is removed."""
+        ...
+
+    def load_pages(self, pages: Sequence[int], path: Path) -> None:
+        """Reads a file `save_pages` wrote into `pages`, as many as it holds, each of the class (page % cards) of the
+        one saved in its place. The caller holds them and no submitted plan writes them. Raises EngineError for a file
+        of another layout or count, or one that cannot be read."""
+        ...
+
+    def save_checkpoint(self, checkpoint_id: int, path: Path) -> None:
+        """Writes a checkpoint the core has answered, of no image, to the file `path`: its state and tokens."""
+        ...
+
+    def load_checkpoint(self, checkpoint_id: int, path: Path, tokens: int) -> None:
+        """Reads a file `save_checkpoint` wrote, of `tokens` tokens, into the checkpoint, which may then be restored
+        as one the core has answered. Raises EngineError as `load_pages`."""
+        ...
+
     def read_timing(self, max_records: int = 4096) -> TimingRecords: ...
     def stats(self) -> EngineStats:
         """The counters since open, awake or asleep."""

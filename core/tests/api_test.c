@@ -332,8 +332,47 @@ int main(int argc, char **argv) {
   CHECK(n == 32, "one token after a restore: %d tokens", n);
   CHECK(out[0] == expect[0], "one token after a restore: %d, expected llama.cpp's %d", out[0], expect[0]);
   for (int i = 0; i < 32; i++) CHECK(out[i] == ref[i], "one token after a restore, token %d: %d, expected %d", i, out[i], ref[i]);
-  CHECK(engine_drop(e, 0) == ENGINE_OK, "drop");
   printf("a checkpoint of the prompt but its last token, that token read as a window of one: the 32 tokens\n");
+
+  /* The same checkpoint through the disk tier's files: its state and slot 0's 9 pages saved, checkpoint 0 dropped,
+   * then read into checkpoint 1 and into pages slot 1's run never wrote (from its logical page 128), and restored
+   * into slot 1: the 32 tokens again. */
+  {
+    char dir[] = "/tmp/engine-api-test-XXXXXX";
+    CHECK(mkdtemp(dir) != NULL, "mkdtemp");
+    char pages_file[64], ck_file[64];
+    snprintf(pages_file, sizeof pages_file, "%s/pages", dir);
+    snprintf(ck_file, sizeof ck_file, "%s/checkpoint", dir);
+    uint32_t src[9], dst[9], wrong[9];
+    for (uint32_t i = 0; i < 9; i++) src[i] = i, dst[i] = npp + 128 + i, wrong[i] = npp + 129 + i;
+    CHECK(engine_save_pages(e, src, 9, pages_file) == ENGINE_OK, "save pages: %s", engine_last_error(e));
+    CHECK(engine_save_checkpoint(e, 0, ck_file) == ENGINE_OK, "save checkpoint: %s", engine_last_error(e));
+    CHECK(engine_drop(e, 0) == ENGINE_OK, "drop");
+    CHECK(engine_save_checkpoint(e, 0, ck_file) == ENGINE_BAD_ARGUMENT, "an empty checkpoint is not saved");
+    CHECK(engine_load_pages(e, dst, 8, pages_file) == ENGINE_BAD_ARGUMENT, "a page file of another count");
+    CHECK(info.cards == 1 || engine_load_pages(e, wrong, 9, pages_file) == ENGINE_BAD_ARGUMENT,
+          "pages of the other card");
+    CHECK(engine_load_checkpoint(e, 1, pages_file) == ENGINE_BAD_ARGUMENT, "a page file is no checkpoint file");
+    CHECK(engine_release(e, 0) == ENGINE_OK && engine_release(e, 1) == ENGINE_OK, "release both");
+    CHECK(engine_load_pages(e, dst, 9, pages_file) == ENGINE_OK, "load pages: %s", engine_last_error(e));
+    CHECK(engine_load_checkpoint(e, 1, ck_file) == ENGINE_OK, "load checkpoint: %s", engine_last_error(e));
+    CHECK(engine_admit(e, 1, &s, prompt, np) == ENGINE_OK, "admit slot 1");
+    CHECK(engine_restore(e, 1, 1) == ENGINE_OK, "restore from the file: %s", engine_last_error(e));
+    engine_page_change c[9];
+    for (uint32_t i = 0; i < 8; i++) c[i] = (engine_page_change){1, i, dst[i], 0, 0};
+    c[8] = (engine_page_change){1, 8, npp + 8, dst[8], 3};
+    submit_pages(e, c, 9);
+    own_pages(e, 1, 9);
+    n = run_with(e, 1, 1, out, 64);
+    CHECK(n == 32, "after a restore from files: %d tokens", n);
+    for (int i = 0; i < 32; i++) CHECK(out[i] == ref[i], "after a restore from files, token %d: %d, expected %d", i, out[i], ref[i]);
+    CHECK(engine_drop(e, 1) == ENGINE_OK, "drop");
+    unlink(pages_file);
+    unlink(ck_file);
+    rmdir(dir);
+    CHECK(admit(e, 0, &s, prompt, np) == ENGINE_OK, "admit slot 0 again");
+  }
+  printf("that checkpoint and its pages through files, read into other pages and restored: the 32 tokens\n");
 
   engine_timing tr[256];
   uint32_t nt = 0;

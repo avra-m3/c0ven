@@ -191,6 +191,7 @@ against the built library.
 | `engine_submit` | Queues a step plan: page changes, prompt pieces, decode slots. Does not wait |
 | `engine_poll`, `engine_wait` | Takes out events: tokens, prompt progress, finished requests and plans, stalls, errors. `wait` blocks until one is ready, without holding Python's GIL |
 | `engine_checkpoint`, `engine_restore`, `engine_drop` | Copies a slot's fixed state to or from a checkpoint (section 4) |
+| `engine_save_pages`, `engine_load_pages`, `engine_save_checkpoint`, `engine_load_checkpoint` | Writes KV pages or a checkpoint to a file the caller names, or reads one back, for the disk tier ([CACHING.md](CACHING.md#the-disk-tier)) |
 | `engine_read_timing` | Takes out timing records (section 7) |
 | `engine_sleep`, `engine_wake` | Frees, then loads again, everything the engine holds on the cards |
 | `engine_last_error`, `engine_close`, `engine_abi_layout` | The last error's text; freeing everything; the layout table the ABI test reads |

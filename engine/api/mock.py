@@ -5,7 +5,8 @@ It runs the control plane's plans as the core would, and checks them:
 - every prompt row and decode token is written into the cell its slot's page table names, and at the end of each
   prompt span and at each finish the slot's whole history is read back through the page table;
 - a restored checkpoint must hold a prefix of the slot's prompt;
-- prompt spans must follow each other without gaps.
+- prompt spans must follow each other without gaps;
+- a page or checkpoint file it reads back must be one it wrote, of the same count.
 
 A broken plan gives an ERROR event, as the core would. The "state" of a slot is a hash of every token it has
 processed, so a sequence resumed from a checkpoint produces the same tokens as one computed from the start.
@@ -13,10 +14,13 @@ processed, so a sequence resumed from a checkpoint produces the same tokens as o
 
 from __future__ import annotations
 
+import json
 import time
 from collections import deque
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
+from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -218,6 +222,58 @@ class MockEngine:
     def drop(self, checkpoint_id: int) -> None:
         self._check_checkpoint_id(checkpoint_id)
         self._queue.append(_Op("drop", 0, checkpoint_id))
+
+    def _drain(self) -> None:
+        """Run the queued plans and operations, as the core waits for them before a call on its caller's thread."""
+        while self._queue:
+            self._advance()
+
+    def save_pages(self, pages: Sequence[int], path: Path) -> None:
+        _ = self.config
+        self._drain()
+        cells = [self._pages.get(p, [None] * PAGE_CELLS) for p in pages]
+        self._write_file(path, {"kind": "pages", "cells": cells})
+
+    def load_pages(self, pages: Sequence[int], path: Path) -> None:
+        _ = self.config
+        self._drain()
+        data = self._read_file(path, "pages")
+        if len(data["cells"]) != len(pages):
+            raise EngineError(ErrorCode.INVALID_ARGUMENT, f"{path} holds {len(data['cells'])} pages, not {len(pages)}")
+        for p, page in zip(pages, data["cells"], strict=True):
+            self._pages[p] = list(page)
+
+    def save_checkpoint(self, checkpoint_id: int, path: Path) -> None:
+        self._check_checkpoint_id(checkpoint_id)
+        self._drain()
+        ck = self._checkpoints.get(checkpoint_id)
+        if ck is None:
+            raise EngineError(ErrorCode.INVALID_ARGUMENT, f"checkpoint {checkpoint_id} is empty")
+        self._write_file(path, {"kind": "checkpoint", "state": ck.state, "tokens": list(ck.tokens)})
+
+    def load_checkpoint(self, checkpoint_id: int, path: Path, tokens: int) -> None:
+        self._check_checkpoint_id(checkpoint_id)
+        self._drain()
+        data = self._read_file(path, "checkpoint")
+        if len(data["tokens"]) != tokens:
+            raise EngineError(ErrorCode.INVALID_ARGUMENT, f"{path} holds {len(data['tokens'])} tokens, not {tokens}")
+        self._checkpoints[checkpoint_id] = _Checkpoint(int(data["state"]), tuple(data["tokens"]))
+
+    def _write_file(self, path: Path, data: dict[str, object]) -> None:
+        try:
+            path.write_text(json.dumps({"layout": "mock", **data}))
+        except OSError as exc:
+            path.unlink(missing_ok=True)
+            raise EngineError(ErrorCode.IO, f"{path}: {exc}") from None
+
+    def _read_file(self, path: Path, kind: str) -> dict[str, Any]:
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, ValueError) as exc:
+            raise EngineError(ErrorCode.IO, f"{path}: {exc}") from None
+        if data.get("layout") != "mock" or data.get("kind") != kind:
+            raise EngineError(ErrorCode.INVALID_ARGUMENT, f"{path}: a {kind} file of another layout")
+        return data
 
     def _check_checkpoint_id(self, checkpoint_id: int) -> None:
         if not 0 <= checkpoint_id < self.config.checkpoints:
