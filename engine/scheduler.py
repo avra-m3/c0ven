@@ -334,7 +334,7 @@ class Scheduler:
             best = self.state.checkpoints.longest_prefix(r.key)
             have = len(best.tokens) if best else 0
             entry = None
-            if self.disk is not None and len(r.key) > have + 1:
+            if self.disk is not None and self.state.free_slots and len(r.key) > have + 1:
                 if r.chain is None:
                     r.chain = chain_of(r.key)
                 entry = self.disk.longest_prefix(r.key, r.chain)
