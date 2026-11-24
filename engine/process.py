@@ -434,7 +434,7 @@ def serve(
                             images.setdefault(rid, []).append(read_image(command))
                         except (OSError, ValueError) as exc:
                             bad_images.setdefault(rid, f"image {len(images.get(rid, []))}: {exc}")
-                    case protocol.Gen(rid=rid) if state is not State.AWAKE:
+                    case protocol.Gen(rid=rid) | protocol.Decide(rid=rid) if state is not State.AWAKE:
                         images.pop(rid, None)
                         bad_images.pop(rid, None)
                         why = "asleep" if state is State.ASLEEP else "going to sleep"
@@ -445,6 +445,13 @@ def serve(
                             events.put(protocol.Error(rid, problem))
                         else:
                             for e in scheduler.add(command, images=ims):
+                                events.put(e)
+                    case protocol.Decide(rid=rid):
+                        ims = tuple(images.pop(rid, ()))
+                        if (problem := bad_images.pop(rid, None)) is not None:
+                            events.put(protocol.Error(rid, problem))
+                        else:
+                            for e in scheduler.add_decide(command, images=ims):
                                 events.put(e)
                     case protocol.Stop(rid=rid):
                         for e in scheduler.cancel(rid):
@@ -474,7 +481,7 @@ def serve(
                                 events.put(protocol.Ready(facts.max_context, facts.slots))
                     case protocol.Quit():
                         quit_now = True
-                wait = gather and isinstance(command, protocol.Gen)
+                wait = gather and isinstance(command, (protocol.Gen, protocol.Decide))
                 try:
                     command = commands.get(timeout=GATHER_S) if wait else commands.get_nowait()
                 except queue.Empty:

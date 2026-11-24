@@ -44,6 +44,7 @@ class _Slot:
     stalled: bool = False
     steps: int = 0
     """Decode steps that fed it one of its own tokens."""
+    scores: abi.CSlotScores | None = None
 
 
 @dataclass
@@ -217,7 +218,20 @@ class FakeCore:
             self.timing.append(abi.CTiming(abi.CTimingKind.PROMPT, self.seq, n, 0, 0, 1000 * n))
             self._emit(abi.CEventKind.PROMPT, slot, -1, len(s.tokens))
             if len(s.tokens) == len(s.prompt):
-                self._produce(slot, s)
+                if s.settings.n_score_tokens:
+                    hist = self._read(slot, len(s.tokens))
+                    sc = abi.CSlotScores()
+                    sc.n = s.settings.n_score_tokens
+                    for i in range(sc.n):
+                        tok = s.settings.score_tokens[i]
+                        sc.logits[i] = float((next_token([*hist, tok]) % 200) - 100) / 5.0
+                    sc.logsumexp = 25.0
+                    s.scores = sc
+                if s.settings.flags & abi.SettingsFlag.SCORE_ONLY:
+                    s.done = True
+                    self._emit(abi.CEventKind.DONE, slot, -1, abi.CDone.STOP)
+                else:
+                    self._produce(slot, s)
         rows = 0
         for slot in plan.slots[: plan.nslots]:
             s = self.slots.get(slot)
@@ -286,6 +300,12 @@ class FakeCore:
         if s is None:
             raise EngineError(ErrorCode.INVALID_ARGUMENT, "slot_stats: the slot is not admitted")
         return abi.CSlotStats(steps=s.steps)
+
+    def slot_scores(self, slot: int) -> abi.CSlotScores:
+        s = self.slots.get(slot)
+        if s is None or s.scores is None:
+            raise EngineError(ErrorCode.INVALID_ARGUMENT, "slot_scores: no scores ready")
+        return s.scores
 
     def sleep(self) -> None:
         assert not self.slots, "asleep with a slot admitted"
@@ -645,3 +665,34 @@ def test_cpu_level_takes_the_first_level_the_cpu_has(tmp_path: Path) -> None:
     assert native.cpu_level(tmp_path, frozenset(["fpu", "sse4_2", "avx", "avx2", "avx_vnni"])) == "haswell"
     assert native.cpu_level(tmp_path, frozenset({"fpu"})) == "x64"
     assert native.cpu_level(tmp_path / "missing", frozenset({"fpu"})) is None
+
+
+def test_decide_reuses_checkpoint_without_decoding_or_taking_a_checkpoint():
+    def at_64(prompt: tuple[int, ...]) -> list[tuple[int, bool]]:
+        return [(64, False)] if len(prompt) > 64 else []
+
+    run = make(rule=at_64)
+    prefix = prompt_of(64, 9)
+    session = [*prefix, *prompt_of(12, 10)]
+    run.add(1, session, 6)
+    run.until_idle()
+    checkpoints_before = dict(run.core.checkpoints)
+    decode_before = run.core.decode_steps
+
+    check_prompt = (*prefix, *prompt_of(10, 11))
+    run.events += run.scheduler.add_decide(protocol.Decide(2, (5, 17, 999), check_prompt))
+    run.until_idle()
+
+    assert run.core.checkpoints == checkpoints_before, "DECIDE must not create or evict checkpoints"
+    assert run.core.decode_steps == decode_before, "DECIDE must run zero decode steps"
+    assert run.tokens(2) == []
+    (scores,) = [e for e in run.events if isinstance(e, protocol.Scores) and e.rid == 2]
+    assert len(scores.logits) == 3
+    assert run.done(2).reused == 64
+    assert run.done(2).generated == 0
+    # Next turn on the main session gets identical tokens to a fresh run.
+    next_turn = [*prefix, *prompt_of(8, 12)]
+    run.add(3, next_turn, 6)
+    run.until_idle()
+    assert run.tokens(3) == expected(next_turn, 6)
+    assert run.done(3).reused == 64

@@ -761,3 +761,55 @@ def test_a_reading_slot_stopped_for_a_stalled_writer_does_not_take_its_pages_bac
     assert run.errors() == []
     for rid in reqs:
         assert run.tokens(rid) == alone.tokens(rid)
+
+
+def test_decide_reads_only_check_suffix_and_leaves_bookmarks_untouched():
+    """A check on a checkpointed session reads only the short suffix, never takes a new checkpoint even across a mark,
+    returns identical logits to a fresh read, and leaves the main session's bookmark and next-turn output unchanged."""
+    shared = prompt(64, start=10)
+    suffix = prompt(12, start=400)
+    next_tail = prompt(8, start=700)
+
+    fresh = make(open_config(slots=2, checkpoints=2), rule=marks_at(64, 70))
+    fresh.events += fresh.scheduler.add_decide(protocol.Decide(1, (10, 20, 30), shared + suffix))
+    fresh.until_idle()
+    (fresh_scores,) = [e for e in fresh.events if isinstance(e, protocol.Scores) and e.rid == 1]
+
+    fresh_turn = make(open_config(slots=2, checkpoints=2), rule=marks_at(64))
+    fresh_turn.add(1, shared + next_tail, 6, temperature=0.0)
+    fresh_turn.until_idle()
+
+    run = make(open_config(slots=2, checkpoints=2), rule=marks_at(64, 70))
+    run.add(1, (*shared, 5, 6), 3)
+    run.until_idle()
+    prompt_rows_before = run.engine.stats().prompt_rows
+    ck_ids_before = sorted(ck.id for ck in run.scheduler.state.checkpoints)
+    free_before = run.scheduler.state.pool.free
+
+    run.events += run.scheduler.add_decide(protocol.Decide(2, (10, 20, 30), shared + suffix))
+    run.until_idle()
+
+    assert run.errors() == []
+    assert run.engine.stats().prompt_rows - prompt_rows_before == len(suffix), "only the short suffix was read"
+    (scores,) = [e for e in run.events if isinstance(e, protocol.Scores) and e.rid == 2]
+    assert scores.logits == pytest.approx(fresh_scores.logits)
+    assert run.done(2).reused == len(shared)
+    assert sorted(ck.id for ck in run.scheduler.state.checkpoints) == ck_ids_before, "no checkpoint added or evicted"
+    assert run.scheduler.state.pool.free == free_before, "temporary check slot freed all its pages"
+
+    # Two parallel swapped-order checks off the same bookmark pack into the same plan.
+    suffix_b = prompt(12, start=500)
+    plans_before = len(run.engine.plans)
+    run.events += run.scheduler.add_decide(protocol.Decide(3, (10, 20), shared + suffix))
+    run.events += run.scheduler.add_decide(protocol.Decide(4, (10, 20), shared + suffix_b))
+    run.until_idle()
+    new_plans = [p for p in run.engine.plans[plans_before:] if p.prompt]
+    assert len(new_plans) == 1, "both swapped-order checks packed into one plan"
+    assert len(new_plans[0].prompt) == 2, "both swapped-order checks packed into one plan"
+    assert sorted(ck.id for ck in run.scheduler.state.checkpoints) == ck_ids_before
+
+    # Main session continues identically from its untouched bookmark.
+    run.add(5, shared + next_tail, 6, temperature=0.0)
+    run.until_idle()
+    assert run.done(5).reused == len(shared)
+    assert run.tokens(5) == fresh_turn.tokens(1)

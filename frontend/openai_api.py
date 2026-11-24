@@ -156,8 +156,10 @@ def _tool_schemas(tools: list[JSONObject]) -> dict[str, Mapping[str, Any]]:
     return schemas
 
 
-def parse(body: JSONObject, defaults: protocol.Settings, efforts: Efforts) -> tuple[Request, bool]:
-    """The request, and whether it streams. `efforts`: the reasoning efforts the model's template accepts."""
+def conversation_from(
+    body: JSONObject, efforts: Efforts
+) -> tuple[Conversation, list[JSONObject], tuple[bytes, ...], tuple[bytes, ...]]:
+    """Parse messages, tools, template kwargs and media from an OpenAI-shaped request body."""
     images: list[bytes] = []
     videos: list[bytes] = []
     messages = _messages(array(body.get("messages"), "messages"), images, videos)
@@ -183,6 +185,12 @@ def parse(body: JSONObject, defaults: protocol.Settings, efforts: Efforts) -> tu
         reasoning_effort=efforts.given(effort),
         preserve_thinking=boolean(kwargs.get("preserve_thinking")),
     )
+    return conversation, tools, tuple(images), tuple(videos)
+
+
+def parse(body: JSONObject, defaults: protocol.Settings, efforts: Efforts) -> tuple[Request, bool]:
+    """The request, and whether it streams. `efforts`: the reasoning efforts the model's template accepts."""
+    conversation, tools, images, videos = conversation_from(body, efforts)
     stop = body.get("stop")
     stops = (stop,) if isinstance(stop, str) else tuple(str(s) for s in array(stop or [], "stop"))
     max_tokens = number(body, "max_completion_tokens", int) or number(body, "max_tokens", int)
@@ -192,8 +200,8 @@ def parse(body: JSONObject, defaults: protocol.Settings, efforts: Efforts) -> tu
         int(max_tokens) if max_tokens is not None else None,
         stops,
         _tool_schemas(tools) if tools else None,
-        tuple(images),
-        tuple(videos),
+        images,
+        videos,
     )
     return request, bool(body.get("stream"))
 

@@ -41,6 +41,7 @@ using engine::NgramStats;
 using engine::Options;
 using engine::StepIn;
 using engine::StepStats;
+using engine::TokenScores;
 using engine::TraceRow;
 
 // Whether a step of n rows fits the KV pool (Model::step_fits): 1 to STEP_MAX_RUN rows always, as the ring's fixed
@@ -137,6 +138,8 @@ class Model final : public engine::Model {
   std::vector<float> df_hidden();
   // For tests: the last decode step's logits of row `row`, all the vocabulary's, from every card's share of the head.
   std::vector<float> logits(uint32_t row);
+  // Raw logits for n caller-chosen tokens at row of the last step or prompt_runs pass, and full-vocab log-sum-exp.
+  TokenScores read_logits(uint32_t row, const int32_t *tokens, uint32_t n) override;
 
   // n prompt tokens of a sequence, from position pos0, in one pass (prompt.cpp); p1 and p2 are the two tokens
   // before pos0 (kNoToken when absent). n is at most prompt_chunk(). Returns the last token's largest logits. next:
@@ -423,6 +426,10 @@ class Model final : public engine::Model {
   uint32_t *top_idx_ = nullptr;  // [card][candidates]
   float *top_val_ = nullptr;
   uint32_t *top_n_ = nullptr;
+  static constexpr uint32_t kMaxScoreTokens = 16;
+  int32_t *score_tok_ = nullptr;   // [kMaxScoreTokens] caller-chosen ids for read_logits
+  float *score_val_ = nullptr;     // [card][kMaxScoreTokens]
+  float *score_lse_ = nullptr;     // [card][2]: each card's (max, sum_exp)
   uint32_t *icand_ = nullptr;  // [attention layer][card][row][Shape::idx_cand()]: the indexer's candidates
   std::vector<float> use_;  // [layer][expert] decayed routing counts, with Options::adapt_swaps
   uint64_t swaps_ = 0;

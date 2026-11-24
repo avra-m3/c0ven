@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
+#include <cmath>
 #include <immintrin.h>
 #include <chrono>
 #include <cstdio>
@@ -203,6 +204,9 @@ Model::Model(const std::string &path, const Options &opt) : opt_(opt), gguf_(pat
   top_idx_ = static_cast<uint32_t *>(rt_->alloc_host((size_t)ncards_ * STEP_MAX_ROWS * opt_.candidates * 4));
   top_val_ = static_cast<float *>(rt_->alloc_host((size_t)ncards_ * STEP_MAX_ROWS * opt_.candidates * 4));
   top_n_ = static_cast<uint32_t *>(rt_->alloc_host(ncards_ * STEP_MAX_ROWS * 4));
+  score_tok_ = static_cast<int32_t *>(rt_->alloc_host(kMaxScoreTokens * 4));
+  score_val_ = static_cast<float *>(rt_->alloc_host((size_t)ncards_ * kMaxScoreTokens * 4));
+  score_lse_ = static_cast<float *>(rt_->alloc_host((size_t)ncards_ * 2 * 4));
   head_plan_ = static_cast<StepPlan *>(rt_->alloc_host(sizeof(StepPlan)));
   std::memset(head_plan_, 0, sizeof(StepPlan));
   head_plan_->nrows = 1;
@@ -1518,6 +1522,43 @@ std::vector<float> Model::logits(uint32_t row) {
                                            (size_t)card->vocab_n * 4);
   for (auto &card : cards_) card->up->synchronize();
   return v;
+}
+
+TokenScores Model::read_logits(uint32_t row, const int32_t *tokens, uint32_t n) {
+  if (row >= STEP_MAX_ROWS) throw std::runtime_error("no such row");
+  if (n == 0 || n > kMaxScoreTokens) throw std::runtime_error("score token count out of range");
+  for (uint32_t i = 0; i < n; i++)
+    if (tokens[i] < 0 || (uint32_t)tokens[i] >= shape_.vocab)
+      throw std::runtime_error("score token out of range");
+  std::memcpy(score_tok_, tokens, (size_t)n * 4);
+  for (auto &card : cards_) {
+    auto k = kernel(card->c, "common", "gather_logits");
+    card->up->launch(k, {card->logits, card->vocab_n, row, card->vocab_n, card->vocab0, score_tok_, n,
+                         score_val_ + (size_t)card->c * kMaxScoreTokens, score_lse_ + (size_t)card->c * 2},
+                     1, 1, 1, 256);
+  }
+  for (auto &card : cards_) card->up->synchronize();
+  TokenScores out;
+  out.logits.resize(n, 0.0f);
+  double mx = -INFINITY;
+  for (uint32_t c = 0; c < ncards_; c++) mx = std::max(mx, (double)score_lse_[2 * c]);
+  double sum = 0.0;
+  if (std::isfinite(mx)) {
+    for (uint32_t c = 0; c < ncards_; c++) {
+      const double cm = score_lse_[2 * c], cs = score_lse_[2 * c + 1];
+      if (std::isfinite(cm) && cs > 0.0) sum += cs * std::exp(cm - mx);
+    }
+  }
+  out.logsumexp = sum > 0.0 ? mx + std::log(sum) : mx;
+  for (uint32_t i = 0; i < n; i++) {
+    const uint32_t tok = (uint32_t)tokens[i];
+    for (auto &card : cards_)
+      if (tok >= card->vocab0 && tok < card->vocab0 + card->vocab_n) {
+        out.logits[i] = score_val_[(size_t)card->c * kMaxScoreTokens + i];
+        break;
+      }
+  }
+  return out;
 }
 
 void Model::reset_slot(uint32_t slot) {

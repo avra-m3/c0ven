@@ -13,6 +13,7 @@ processed, so a sequence resumed from a checkpoint produces the same tokens as o
 
 from __future__ import annotations
 
+import math
 import time
 from collections import deque
 from collections.abc import Callable, Sequence
@@ -21,6 +22,7 @@ from dataclasses import dataclass, field, replace
 import numpy as np
 
 from engine.api.interface import (
+    MAX_SCORE_TOKENS,
     NO_SLOT,
     PAGE_CELLS,
     PROMPT_RUNS,
@@ -36,6 +38,7 @@ from engine.api.interface import (
     Image,
     OpenConfig,
     PageOp,
+    SlotScores,
     SlotSettings,
     SlotStats,
     StepPlan,
@@ -44,6 +47,8 @@ from engine.api.interface import (
 
 type Script = Callable[[Sequence[int]], int]
 """Given a slot's tokens so far (prompt and generated), the next token."""
+type ScoreScript = Callable[[Sequence[int], Sequence[int]], tuple[Sequence[float], float]]
+"""Given a slot's tokens so far and its requested choice token ids, (raw logits, full-vocab log-sum-exp)."""
 
 _MASK = (1 << 64) - 1
 
@@ -84,6 +89,7 @@ class _Slot:
     generated: int = 0
     steps: int = 0
     """Decode steps that processed one of its own tokens."""
+    scores: SlotScores | None = None
 
 
 @dataclass(slots=True)
@@ -110,6 +116,7 @@ class MockEngine:
         realtime: bool = False,
         fetch_rows: int = 0,
         long_chunk_ms: float | None = None,
+        score_script: ScoreScript | None = None,
     ) -> None:
         """`prompt_row_ms` and `decode_step_ms` are the step times it reports (estimates from stand-in kernels:
         docs/measurements/MEASUREMENTS.md#2026-10-13-design-inputs), and `prompt_chunk_ms` the fixed time of a
@@ -117,6 +124,7 @@ class MockEngine:
         share one. A chunk of more than `fetch_rows` rows, when it is not 0, has `long_chunk_ms` instead, if given; the
         facts report `fetch_rows`. With `realtime`, it also sleeps for them."""
         self._script = script
+        self._score_script = score_script
         self._row_ms = prompt_row_ms
         self._chunk_ms = prompt_chunk_ms
         self._fetch_rows = fetch_rows
@@ -194,6 +202,12 @@ class MockEngine:
             raise EngineError(ErrorCode.INVALID_ARGUMENT, "prompt and max_new exceed the context")
         if any(not 0 <= t < config.vocab_size for t in prompt):
             raise EngineError(ErrorCode.INVALID_ARGUMENT, "token id out of the vocabulary")
+        if len(settings.score_tokens) > MAX_SCORE_TOKENS:
+            raise EngineError(ErrorCode.INVALID_ARGUMENT, f"more than {MAX_SCORE_TOKENS} score tokens")
+        if settings.score_only and not settings.score_tokens:
+            raise EngineError(ErrorCode.INVALID_ARGUMENT, "score_only requires at least one score token")
+        if any(not 0 <= t < config.vocab_size for t in settings.score_tokens):
+            raise EngineError(ErrorCode.INVALID_ARGUMENT, "score token id out of the vocabulary")
         self._slots[slot] = _Slot(settings, prompt)
 
     def release(self, slot: int) -> None:
@@ -244,6 +258,10 @@ class MockEngine:
     def slot_stats(self, slot: int) -> SlotStats:
         s = self._slots.get(slot)
         return SlotStats() if s is None else SlotStats(steps=s.steps)
+
+    def slot_scores(self, slot: int) -> SlotScores:
+        s = self._slots.get(slot)
+        return SlotScores() if s is None or s.scores is None else s.scores
 
     def read_timing(self, max_records: int = 4096) -> TimingRecords:
         rows = self._timing[:max_records]
@@ -448,6 +466,16 @@ class MockEngine:
         self._timing.append((time.monotonic_ns(), t_ns, self._step, rows))
         self._emit(EventKind.STEP_DONE, NO_SLOT, decoded, rows, t_ns, c=chunks)
 
+    def _score(self, s: _Slot) -> SlotScores:
+        if self._score_script is not None:
+            logits, lse = self._score_script([*s.tokens], s.settings.score_tokens)
+            return SlotScores(tuple(float(v) for v in logits), float(lse))
+        # Deterministic raw logits derived from the slot's state hash so checkpoint restore matches a fresh read.
+        logits = tuple(((mix(s.state, t) % 20_000) / 1000.0) - 10.0 for t in s.settings.score_tokens)
+        mx = max(logits)
+        lse = mx + math.log(sum(math.exp(v - mx) for v in logits) + 0.05)
+        return SlotScores(logits, lse)
+
     def _run_span(self, slot: int, first: int, count: int, last: bool) -> int:
         s = self._slot(slot)
         if s.decoding or s.finished:
@@ -464,5 +492,10 @@ class MockEngine:
         self._verify(slot, s)
         self._emit(EventKind.PROMPT_DONE, slot, len(s.tokens), count)
         if last:
-            self._emit_token(slot, s)
+            if s.settings.score_tokens:
+                s.scores = self._score(s)
+            if s.settings.score_only:
+                self._finish(slot, s, FinishReason.EOS)
+            else:
+                self._emit_token(slot, s)
         return count

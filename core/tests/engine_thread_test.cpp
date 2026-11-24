@@ -68,7 +68,24 @@ class FakeModel : public Model {
 
   std::vector<std::vector<Candidate>> step(const StepIn *rows, uint32_t n, bool, bool) override {
     In in(*this, "step", rows[0].slot, 300);
+    {
+      std::lock_guard<std::mutex> lk(mu_);
+      last_rows_.assign(rows, rows + n);
+      step_sizes_.push_back(n);
+    }
     return std::vector<std::vector<Candidate>>(n, std::vector<Candidate>{Candidate{7, 1.0f}});
+  }
+  TokenScores read_logits(uint32_t row, const int32_t *tokens, uint32_t n) override {
+    In in(*this, "read_logits", row, 50);
+    std::lock_guard<std::mutex> lk(mu_);
+    EXPECT(row < last_rows_.size(), "read_logits row %u out of range (%zu)", row, last_rows_.size());
+    const StepIn r = last_rows_[row];
+    TokenScores out;
+    out.logits.resize(n);
+    // Deterministic fake logits that depend on the last row's position and token, including low values outside top-k.
+    for (uint32_t i = 0; i < n; i++) out.logits[i] = -10.0f + (float)tokens[i] + 0.25f * (float)r.pos;
+    out.logsumexp = 8.5 + 0.25 * (double)r.pos;
+    return out;
   }
   void commit(uint32_t, uint32_t, uint32_t) override { In in(*this, "commit", 0); }
   void commit_runs(const CommitRun *, uint32_t) override { In in(*this, "commit", 0); }
@@ -97,9 +114,14 @@ class FakeModel : public Model {
   std::vector<std::vector<Candidate>> prompt_runs(const PromptRun *, uint32_t, const int32_t *, uint32_t) override {
     throw std::logic_error("no prompt path");
   }
-  uint32_t prompt_chunk() const override { return 0; }  // a prompt is read a token a step
+  uint32_t prompt_chunk() const override { return prompt_chunk_val_; }
   uint32_t fetch_rows() const override { return 0; }
   uint32_t decode_weight() const override { return 0; }
+  std::vector<uint32_t> step_sizes() {
+    std::lock_guard<std::mutex> lk(mu_);
+    return step_sizes_;
+  }
+  uint32_t prompt_chunk_val_ = 0;
 
   uint64_t slot_state_bytes() override { return 16; }
   void save_slot(uint32_t slot, uint8_t *) override { In in(*this, "save", slot); }
@@ -149,6 +171,8 @@ class FakeModel : public Model {
   std::atomic<int> inside_{0};
   std::mutex mu_;
   std::vector<Call> calls_;
+  std::vector<StepIn> last_rows_;
+  std::vector<uint32_t> step_sizes_;
 };
 
 FakeModel *fake = nullptr;
@@ -316,6 +340,86 @@ void test_restore_sets_up_first() {
   engine_close(e);
 }
 
+// Score-only admit reads exact choice logits at prompt end, emits no token, validates choice ids, and batches
+// concurrent short score-only pieces into multi-slot windows.
+void test_score_only_and_batched_windows() {
+  engine_ctx *e = open_test_engine(2, 64, 0);
+  // Validation: score-only needs at least one token, and every token id must be in vocab [0, 16).
+  engine_settings bad{};
+  bad.flags = ENGINE_SETTINGS_SCORE_ONLY;
+  const int32_t p[] = {1, 2, 3};
+  EXPECT(engine_admit(e, 0, &bad, p, 3) == ENGINE_BAD_ARGUMENT, "score-only with 0 tokens accepted");
+  bad.n_score_tokens = 1;
+  bad.score_tokens[0] = 16;
+  EXPECT(engine_admit(e, 0, &bad, p, 3) == ENGINE_BAD_ARGUMENT, "out-of-vocab score token accepted");
+  bad.score_tokens[0] = 2;
+  bad.flags = 99u;
+  EXPECT(engine_admit(e, 0, &bad, p, 3) == ENGINE_BAD_ARGUMENT, "unknown settings flag accepted");
+
+  // Single score-only slot through decode() path (prompt_chunk == 0).
+  engine_settings s{};
+  s.flags = ENGINE_SETTINGS_SCORE_ONLY;
+  s.n_score_tokens = 3;
+  s.score_tokens[0] = 1;
+  s.score_tokens[1] = 4;
+  s.score_tokens[2] = 15;
+  EXPECT(engine_admit(e, 0, &s, p, 3) == ENGINE_OK, "admit score-only");
+  engine_slot_scores out{};
+  EXPECT(engine_read_slot_scores(e, 0, &out) == ENGINE_BAD_ARGUMENT, "scores ready before prompt finished");
+  submit(e, 0, 1);
+  submit(e, 0);
+  submit(e, 0);
+  EXPECT(wait_plans(e, 3) == 0, "score-only decode failed: %s", engine_last_error(e));
+  EXPECT(engine_read_slot_scores(e, 0, &out) == ENGINE_OK, "read_slot_scores failed");
+  EXPECT(out.n == 3, "got %u scores, want 3", out.n);
+  EXPECT(out.logits[0] == -8.5f && out.logits[1] == -5.5f && out.logits[2] == 5.5f, "unexpected logits");
+  EXPECT(out.logsumexp == 9.0, "unexpected logsumexp %f", out.logsumexp);
+  EXPECT(engine_release(e, 0) == ENGINE_OK, "release");
+
+  // Two short score-only pieces in one plan batch together in prompt_score_windows (up to STEP_MAX_ROWS = 16).
+  fake->prompt_chunk_val_ = 64;
+  // Re-open with prompt_chunk enabled via FakeModel.
+  engine_close(e);
+  auto open_with_chunk = [](const std::string &, const Options &opt) -> std::unique_ptr<Model> {
+    auto m = std::make_unique<FakeModel>(opt);
+    m->prompt_chunk_val_ = 64;
+    fake = m.get();
+    return m;
+  };
+  engine_config cfg{};
+  cfg.model_path = "fake";
+  cfg.slots = 2;
+  cfg.max_ctx = 64;
+  carried_ended = carried_errors = 0;
+  EXPECT(open_engine(&cfg, nullptr, &e, open_with_chunk) == ENGINE_OK, "open chunked");
+  const std::vector<int32_t> p0 = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+  const std::vector<int32_t> p1 = {1, 2, 3, 4, 5, 6, 7, 8, 11, 12};
+  EXPECT(engine_admit(e, 0, &s, p0.data(), (uint32_t)p0.size()) == ENGINE_OK, "admit 0");
+  EXPECT(engine_admit(e, 1, &s, p1.data(), (uint32_t)p1.size()) == ENGINE_OK, "admit 1");
+  std::vector<engine_page_change> pages;
+  for (uint32_t i = 0; i < 3; i++) pages.push_back({0, i, i, 0, 0});
+  for (uint32_t i = 0; i < 3; i++) pages.push_back({1, i, 3 + i, 0, 0});
+  engine_step_plan sp{};
+  sp.npieces = 2;
+  sp.pieces[0] = {0, 10};
+  sp.pieces[1] = {1, 10};
+  sp.npages = (uint32_t)pages.size();
+  sp.pages = pages.data();
+  sp.window_rows = 64;
+  EXPECT(engine_submit(e, &sp) == ENGINE_OK, "submit batched score windows");
+  EXPECT(wait_plans(e, 1) == 0, "batched score windows failed: %s", engine_last_error(e));
+  const auto sizes = fake->step_sizes();
+  EXPECT(sizes.size() == 2 && sizes[0] == 16 && sizes[1] == 4, "expected 16 then 4 batched rows, got %zu steps",
+         sizes.size());
+  engine_slot_scores out0{}, out1{};
+  EXPECT(engine_read_slot_scores(e, 0, &out0) == ENGINE_OK && engine_read_slot_scores(e, 1, &out1) == ENGINE_OK,
+         "read batched scores");
+  EXPECT(out0.n == 3 && out1.n == 3, "batched score count");
+  EXPECT(out0.logits[0] == -10.0f + 1.0f + 0.25f * 9.0f, "slot 0 logit at pos 9");
+  EXPECT(out1.logits[2] == -10.0f + 15.0f + 0.25f * 9.0f, "slot 1 logit at pos 9");
+  engine_close(e);
+}
+
 }  // namespace
 
 int main() {
@@ -327,6 +431,7 @@ int main() {
   test_reset_error_is_an_event();
   test_admits_beside_plans();
   test_restore_sets_up_first();
+  test_score_only_and_batched_windows();
   std::printf("engine_thread_test: ok\n");
   return 0;
 }

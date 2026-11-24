@@ -26,6 +26,7 @@ PAGE_CELLS = 4
 """Cells per KV page: one indexer block (DESIGN.md, section 4). Also in the layout header the core and kernels share."""
 
 MAX_SLOTS = 16
+MAX_SCORE_TOKENS = 16
 MAX_PROMPT_SPANS = 8
 WINDOW_ROWS = 64
 """The default of StepPlan.window_rows (the core's kWindowPrompt): a prompt piece of at most that many rows is read as
@@ -268,6 +269,16 @@ class SlotSettings:
     penalty_present: float
     seed: int
     max_new: int
+    score_tokens: tuple[int, ...] = ()
+    score_only: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class SlotScores:
+    """Raw logits for a slot's requested choice tokens at its prompt's last position, and full-vocab log-sum-exp."""
+
+    logits: tuple[float, ...] = ()
+    logsumexp: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -488,6 +499,10 @@ class Engine(Protocol):
 
     def slot_stats(self, slot: int) -> SlotStats:
         """An admitted slot's counters; zeros for one that is not."""
+        ...
+
+    def slot_scores(self, slot: int) -> SlotScores:
+        """An admitted slot's prompt-end choice logits; empty when none were requested or ready."""
         ...
 
     def sleep(self) -> None:

@@ -23,7 +23,7 @@ extern "C" {
 #define ENGINE_API
 #endif
 
-#define ENGINE_API_VERSION 23
+#define ENGINE_API_VERSION 24
 
 typedef enum {
   ENGINE_OK = 0,
@@ -121,6 +121,8 @@ typedef struct {
  * top-p, min-p, temperature (docs/spec/MODEL_IO.md, section 2.4). A sampled token depends only on the seed, its
  * position and the tokens before it, never on how the work was split into steps. */
 #define ENGINE_MAX_STOP 8
+#define ENGINE_MAX_SCORE_TOKENS 16
+#define ENGINE_SETTINGS_SCORE_ONLY 1u /* read prompt, record score_tokens logits, and stop with no generated token */
 typedef struct {
   float temperature;           /* 0: greedy */
   uint32_t top_k;              /* 0 or above the engine's candidates (64): 64 */
@@ -135,6 +137,9 @@ typedef struct {
   float penalty_repeat;        /* a counted token's logit divided by it (multiplied when <= 0); 1: off */
   float penalty_freq;          /* subtracted from a counted token's logit once per occurrence; 0: off */
   float penalty_present;       /* subtracted from a counted token's logit once; 0: off */
+  uint32_t flags;              /* ENGINE_SETTINGS_* */
+  uint32_t n_score_tokens;     /* caller-chosen token ids to score at prompt end, at most ENGINE_MAX_SCORE_TOKENS */
+  int32_t score_tokens[ENGINE_MAX_SCORE_TOKENS];
 } engine_settings;
 
 /* The KV cache is paged, and the caller keeps the page table (docs/DESIGN.md, section 4). A page is 4 cells: logical
@@ -305,6 +310,14 @@ typedef struct {
   uint64_t lookup_accepted;
 } engine_slot_stats;
 
+/* Raw logits for a slot's score_tokens at its prompt's last position, and the full vocabulary's log-sum-exp there. */
+typedef struct {
+  uint32_t n;
+  uint32_t reserved;
+  float logits[ENGINE_MAX_SCORE_TOKENS];
+  double logsumexp;
+} engine_slot_scores;
+
 /* Loads the model and allocates everything. Blocks until ready. */
 ENGINE_API engine_status engine_open(const engine_config *config, engine_info *info, engine_ctx **out);
 
@@ -367,6 +380,9 @@ ENGINE_API engine_status engine_read_stats(engine_ctx *e, engine_stats *out);
 
 /* Copies an admitted slot's counters into *out; ENGINE_BAD_ARGUMENT for a slot not admitted. */
 ENGINE_API engine_status engine_read_slot_stats(engine_ctx *e, uint32_t slot, engine_slot_stats *out);
+
+/* Copies an admitted slot's prompt-end choice scores into *out; ENGINE_BAD_ARGUMENT if not admitted or none ready. */
+ENGINE_API engine_status engine_read_slot_scores(engine_ctx *e, uint32_t slot, engine_slot_scores *out);
 
 /* Sleep (ADR-0032): frees everything the engine holds on the cards, the image encoder's included, and the
  * checkpoints, and keeps the host's copy of the experts the cards do not cache and of the encoder's weights, so a

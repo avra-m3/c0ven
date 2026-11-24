@@ -35,7 +35,7 @@ from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
 from frontend import admin as admin_routes
-from frontend import anthropic_api, generate, openai_api
+from frontend import anthropic_api, decide_api, generate, openai_api
 from frontend.admin import Admin
 from frontend.body import obj
 from frontend.engine_client import EngineUnavailable
@@ -266,13 +266,22 @@ def create_app(
                     _log_metrics("request", entry)
             yield piece
 
-    async def render(req: generate.Request) -> generate.Prompt:
+    async def render(
+        req: generate.Request, *, close_thinking: bool = False, assistant_prefix: str = ""
+    ) -> generate.Prompt:
         """The prompt; images and videos are decoded and resized on a thread of their own, to the running engine's
         limit."""
         if not req.images and not req.videos:
-            return generate.render(model, req)
+            return generate.render(model, req, close_thinking=close_thinking, assistant_prefix=assistant_prefix)
         await engine.start()
-        return await asyncio.to_thread(generate.render, model, req, engine.image_tokens_max)
+        return await asyncio.to_thread(
+            generate.render,
+            model,
+            req,
+            engine.image_tokens_max,
+            close_thinking=close_thinking,
+            assistant_prefix=assistant_prefix,
+        )
 
     async def chat_completions(request: Request) -> Response:
         admitting()
@@ -318,6 +327,22 @@ def create_app(
                 yield _sse(data, name)
 
         return StreamingResponse(_kept_alive(events()), media_type="text/event-stream")
+
+    async def decide(request: Request) -> Response:
+        admitting()
+        body = await _body(request)
+        req = decide_api.parse(body, model.tokenizer, model.template.efforts)
+        t0 = time.monotonic()
+        outcome = await _unless_gone(request, decide_api.execute(model, engine, req, render))
+        if outcome is None:
+            return Response(status_code=499)
+        payload, end = outcome
+        entry = counters.record(end, "decide", time.monotonic() - t0)
+        if metrics_log_s > 0:
+            _log_metrics("request", entry)
+        if payload is None or end.error is not None:
+            return error(500, end.error or "decision failed", "server_error")
+        return JSONResponse(payload)
 
     async def count_tokens(request: Request) -> Response:
         body = await _body(request)
@@ -401,6 +426,7 @@ def create_app(
 
     routes = [
         Route("/v1/chat/completions", guarded(chat_completions), methods=["POST"]),
+        Route("/v1/decide", guarded(decide), methods=["POST"]),
         Route("/v1/messages", guarded(messages), methods=["POST"]),
         Route("/v1/messages/count_tokens", guarded(count_tokens), methods=["POST"]),
         Route("/v1/models", models),
