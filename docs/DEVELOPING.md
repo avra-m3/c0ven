@@ -110,6 +110,9 @@ huge pages (`--hugepages`, [server options](OPTIONS.md#reserved-huge-pages)) are
 
 `ZE_AFFINITY_MASK=0` limits a run to card 0. The model then runs whole on one card, with fewer experts cached.
 
+`ENGINE_NO_P2P=1` disables card-to-card peer access on a two-card host and routes every cross-card exchange through
+pinned host memory ([ADR-0080](adr/0080-peer-exchanges-fall-back-to-host-memory.md)).
+
 
 ## How a step runs
 
