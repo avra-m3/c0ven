@@ -6,6 +6,7 @@
 #include <memory>
 
 #include "test_util.h"
+#include "ze/library.h"
 #include "ze/ze.h"
 
 using namespace engine;
@@ -64,6 +65,15 @@ int main() {
     }
     rt.free(src);
     rt.free(back);
+  }
+  if (rt.ncards() > 1) {
+    ze::Library lib(rt);
+    const uint64_t h0 = rt.host_bytes(), d0 = rt.device_bytes(0), d1 = rt.device_bytes(1);
+    std::string why;
+    const bool ok = rt.peer_access(0, 1, &lib, &why);
+    EXPECT(rt.host_bytes() == h0 && rt.device_bytes(0) == d0 && rt.device_bytes(1) == d1,
+           "peer_access leaked memory");
+    std::printf("peer access 0 <-> 1: %s\n", ok ? "yes" : why.c_str());
   }
   if (const char *e = std::getenv("ENGINE_EXPECT_GPUS"))
     EXPECT(rt.ncards() == (uint32_t)std::atoi(e), "%u cards ran, ENGINE_EXPECT_GPUS=%s", rt.ncards(), e);

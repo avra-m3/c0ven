@@ -132,10 +132,12 @@ larger arm's range, which suits only scenarios that repeat closely, such as a 25
 
 | Configuration | Flags |
 | --- | --- |
-| deployed | `--slots 4 --context 262144 --kv-tokens 524288 --default-max-tokens 32768` |
-| one-slot | `--slots 1 --context 262144` |
+| deployed | `--slots 4 --context 262144 --kv-tokens 524288 --default-max-tokens 32768 --engine-arg=--hugepages` |
+| one-slot | `--slots 1 --context 262144 --engine-arg=--hugepages` |
 | one-card | one-slot, with `ZE_AFFINITY_MASK=0` |
 | same-tokens | deployed, with `--engine-arg=--deterministic --engine-arg=--checkpoints=0` |
+
+Every configuration puts the expert arena in the host's reserved huge pages (`--hugepages`, [OPTIONS.md](OPTIONS.md#reserved-huge-pages)), so the memory plan counts the free ones as room for it. Without them, a one-card load's arena does not fit beside the rest of the host's memory and the plan refuses it. A host with no reserved huge pages keeps the arena in ordinary memory.
 
 | Scenario | Configuration | Requests, 512 tokens out each unless named |
 | --- | --- | --- |
@@ -145,7 +147,12 @@ larger arm's range, which suits only scenarios that repeat closely, such as a 25
 | long | one-slot | one 255k-token prompt alone, 256 tokens out |
 | long-two | deployed | two prompts of about 255k tokens at once |
 | one-card | one-card | gpqa-1 alone, then gpqa-1 and edit-py at once |
-| same-tokens | same-tokens | gpqa-1 and edit-py alone, then edit-py once gpqa-1 has its first token, then both at once; each prompt's text must be the same every time |
+| same-tokens | same-tokens | gpqa-1 and edit-py alone, then edit-py once gpqa-1 has its first token, then both at once; a prompt's text that differs between them is noted, not failed (below) |
+
+Same-tokens' texts may differ for now, and the check notes the difference instead of failing. Which experts the
+cards hold depends on the request running beside a prompt. An expert run on a card and one run on the CPU round
+differently, so a greedy answer can take another token once the two runs hold different experts, and the rest of
+the answer follows from it. A change that moves rounding is judged by `kl_test --ab` (step 4) instead.
 
 The prompts are from `reference/messages.jsonl`, each first message tagged with its scenario's name so no scenario
 shares a prefix with another. Long and long-two read `$FLASH_REF_DIR/check/long-255k.json` and

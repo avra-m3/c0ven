@@ -550,6 +550,118 @@ void List::execute() {
 // engine's long-running queues, so an unbounded wait hangs the process. No list the engine records runs this long.
 constexpr uint64_t kListWaitNs = 60'000'000'000ull;
 
+static std::string hex_result(ze_result_t r) {
+  char buf[32];
+  std::snprintf(buf, sizeof buf, "0x%x", (unsigned)r);
+  return buf;
+}
+
+bool Runtime::peer_access(uint32_t a, uint32_t b, Library *lib, std::string *why) {
+  (void)cards_.at(a);
+  (void)cards_.at(b);
+  if (a == b) return true;
+  auto fail = [&](const std::string &msg) {
+    if (why) *why = msg;
+    return false;
+  };
+  for (int dir = 0; dir < 2; dir++) {
+    const uint32_t s = dir ? b : a, d = dir ? a : b;
+    const ze_device_handle_t ds = cards_[s].device, dd = cards_[d].device;
+    ze_bool_t can = 0;
+    ze_result_t r = zeDeviceCanAccessPeer(ds, dd, &can);
+    if (r != ZE_RESULT_SUCCESS) return fail("zeDeviceCanAccessPeer returned " + hex_result(r));
+    if (!can) return fail("zeDeviceCanAccessPeer is false for card " + std::to_string(s) + " -> " + std::to_string(d));
+    ze_device_p2p_properties_t p = {ZE_STRUCTURE_TYPE_DEVICE_P2P_PROPERTIES};
+    r = zeDeviceGetP2PProperties(ds, dd, &p);
+    if (r != ZE_RESULT_SUCCESS) return fail("zeDeviceGetP2PProperties returned " + hex_result(r));
+    if (!(p.flags & ZE_DEVICE_P2P_PROPERTY_FLAG_ACCESS))
+      return fail("zeDeviceGetP2PProperties has no access flag for card " + std::to_string(s) + " -> " +
+                  std::to_string(d));
+  }
+  // A small copy and (when lib is given) a kernel's 64-byte stores each way on a regular list catch a kernel refusal
+  // (ZE_RESULT_ERROR_OUT_OF_DEVICE_MEMORY) and a bridge that drops peer writes and reads back wrong bytes.
+  constexpr size_t kBytes = 4096;
+  constexpr uint32_t kWords = kBytes / sizeof(uint32_t);
+  static_assert(kWords % 64 == 0);
+  struct Guard {
+    Runtime *rt;
+    void *p[4] = {};
+    ~Guard() {
+      if (stuck) return;
+      for (void *x : p)
+        if (x) rt->free(x);
+    }
+  } guard{this};
+  auto *hsrc = static_cast<uint8_t *>(guard.p[0] = alloc_host(kBytes));
+  auto *hdst = static_cast<uint8_t *>(guard.p[1] = alloc_host(kBytes));
+  void *pa = guard.p[2] = alloc_device(a, kBytes);
+  void *pb = guard.p[3] = alloc_device(b, kBytes);
+  for (size_t i = 0; i < kBytes; i++) hsrc[i] = static_cast<uint8_t>(i * 131u + 0x5au);
+  const uint8_t sentinel = 0x33;
+  auto run_list = [&](List &peer, const std::string &tag) -> bool {
+    ze_result_t r = zeCommandListClose(peer.list_);
+    if (r != ZE_RESULT_SUCCESS) return fail(tag + "zeCommandListClose returned " + hex_result(r));
+    r = zeCommandQueueExecuteCommandLists(peer.queue_, 1, &peer.list_, peer.fence_);
+    if (r != ZE_RESULT_SUCCESS) return fail(tag + "zeCommandQueueExecuteCommandLists returned " + hex_result(r));
+    peer.submitted_ = true;
+    r = zeFenceHostSynchronize(peer.fence_, kListWaitNs);
+    if (r == ZE_RESULT_NOT_READY) {
+      stuck = true;
+      throw std::runtime_error(tag + "did not finish in " + std::to_string(kListWaitNs / 1'000'000'000ull) + " s");
+    }
+    if (r != ZE_RESULT_SUCCESS) return fail(tag + "zeFenceHostSynchronize returned " + hex_result(r));
+    return true;
+  };
+  for (int dir = 0; dir < 2; dir++) {
+    const uint32_t s = dir ? b : a, d = dir ? a : b;
+    void *ps = dir ? pb : pa, *pd = dir ? pa : pb;
+    const std::string tag = "peer copy card " + std::to_string(s) + " -> " + std::to_string(d) + ": ";
+    List up_s(*this, s, List::immediate), up_d(*this, d, List::immediate);
+    up_s.copy(ps, hsrc, kBytes);
+    up_s.synchronize();
+    up_d.fill(pd, &sentinel, 1, kBytes);
+    up_d.synchronize();
+    List peer(*this, s, List::regular);
+    const ze_result_t r = zeCommandListAppendMemoryCopy(peer.list_, pd, ps, kBytes, nullptr, 0, nullptr);
+    if (r != ZE_RESULT_SUCCESS) return fail(tag + "zeCommandListAppendMemoryCopy returned " + hex_result(r));
+    if (!run_list(peer, tag)) return false;
+    std::memset(hdst, 0xee, kBytes);
+    up_d.copy(hdst, pd, kBytes);
+    up_d.synchronize();
+    if (std::memcmp(hsrc, hdst, kBytes) != 0) return fail(tag + "read back wrong bytes");
+  }
+  if (lib) {
+    for (int dir = 0; dir < 2; dir++) {
+      const uint32_t s = dir ? b : a, d = dir ? a : b;
+      void *pd = dir ? pa : pb;
+      const std::string tag = "peer kernel write card " + std::to_string(s) + " -> " + std::to_string(d) + ": ";
+      List up_d(*this, d, List::immediate);
+      up_d.fill(pd, &sentinel, 1, kBytes);
+      up_d.synchronize();
+      const ze_kernel_handle_t k = lib->get(s, "smoke", "smoke");
+      const uint32_t bias = 0x5a0000u + (dir ? 0x1000u : 0u);
+      ze_result_t r = zeKernelSetArgumentValue(k, 0, sizeof(pd), &pd);
+      if (r != ZE_RESULT_SUCCESS) return fail(tag + "zeKernelSetArgumentValue(0) returned " + hex_result(r));
+      r = zeKernelSetArgumentValue(k, 1, sizeof(bias), &bias);
+      if (r != ZE_RESULT_SUCCESS) return fail(tag + "zeKernelSetArgumentValue(1) returned " + hex_result(r));
+      r = zeKernelSetGroupSize(k, 64, 1, 1);
+      if (r != ZE_RESULT_SUCCESS) return fail(tag + "zeKernelSetGroupSize returned " + hex_result(r));
+      List peer(*this, s, List::regular);
+      const ze_group_count_t g = {kWords / 64, 1, 1};
+      r = zeCommandListAppendLaunchKernel(peer.list_, k, &g, nullptr, 0, nullptr);
+      if (r != ZE_RESULT_SUCCESS) return fail(tag + "zeCommandListAppendLaunchKernel returned " + hex_result(r));
+      if (!run_list(peer, tag)) return false;
+      std::memset(hdst, 0xee, kBytes);
+      up_d.copy(hdst, pd, kBytes);
+      up_d.synchronize();
+      const auto *got = reinterpret_cast<const uint32_t *>(hdst);
+      for (uint32_t i = 0; i < kWords; i++)
+        if (got[i] != i + bias) return fail(tag + "read back wrong values");
+    }
+  }
+  return true;
+}
+
 void List::synchronize() {
   ONE_USER;
   if (kind_ != immediate && !submitted_) return;

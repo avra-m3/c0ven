@@ -26,7 +26,7 @@ parts in the OpenAI API, `image` and `video` blocks in the Anthropic API. The de
 ## Choice scoring
 
 `POST /v1/decide` evaluates a short multiple-choice check against a conversation prefix without generating text or
-saving new checkpoints ([ADR-0080](adr/0080-cached-prefix-choice-scoring.md)). It accepts OpenAI-shaped `messages`,
+saving new checkpoints ([ADR-0083](adr/0083-cached-prefix-choice-scoring.md)). It accepts OpenAI-shaped `messages`,
 optional `tools`, `chat_template_kwargs`, and `reasoning_effort`, plus `choices` (1 to 16 single-token strings, labels
 paired with `check_prompt`, or objects with `label` and `token` or `token_id`).
 

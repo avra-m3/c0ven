@@ -1,4 +1,4 @@
-# ADR-0080: exact choice-token scoring on temporary slots from cached prefixes
+# ADR-0083: exact choice-token scoring on temporary slots from cached prefixes
 
 **Status:** draft, 2026-11-20; not accepted.
 **Revisit when:** requests need full per-token logprobs across generated text, or choice scoring needs more than 16
