@@ -293,6 +293,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         p.error("the native backend needs --model")
     if args.model is None and args.arch is None:
         p.error("give --model or --arch")
+    if args.kv_disk_gib <= 0:
+        p.error("--kv-disk-gib must be positive")
     return args
 
 
@@ -438,8 +440,9 @@ def serve(
     swap_watch.start()
     try:
         while True:
+            idle_wait = scheduler.idle and not (state is State.AWAKE and scheduler.can_write_ahead)
             try:
-                command = commands.get(timeout=0.5) if scheduler.idle else commands.get_nowait()
+                command = commands.get(timeout=0.5) if idle_wait else commands.get_nowait()
             except queue.Empty:
                 command = None
             quit_now = False
@@ -677,7 +680,13 @@ def main(argv: list[str] | None = None) -> int:
         else None,
         cost_file=cost,
         disk=(
-            (lambda facts: DiskTier(args.kv_disk, disk_identity(args.model, facts), round(args.kv_disk_gib * GIB)))
+            (
+                lambda facts: DiskTier(
+                    args.kv_disk,
+                    disk_identity(args.model if native else None, facts),
+                    round(args.kv_disk_gib * GIB),
+                )
+            )
             if args.kv_disk is not None
             else None
         ),
@@ -700,13 +709,14 @@ def write_all(scheduler: Scheduler) -> None:
 
 
 def disk_identity(model: Path | None, facts: EngineFacts) -> str:
-    """The disk tier's subfolder for a load: its files hold the KV and state of this model file, engine version and
-    count of cards only."""
+    """The disk tier's subfolder for a load: its files hold the KV and state of this model file, engine version,
+    count of cards and context length only."""
     if model is None:
-        return f"{facts.version}-{facts.cards}"
-    st = model.stat()
-    key = f"{model.resolve()}|{st.st_size}|{st.st_mtime_ns}|{facts.version}|{facts.cards}"
-    return f"{model.stem}-{hashlib.blake2b(key.encode(), digest_size=8).hexdigest()}"
+        return f"{facts.version}-{facts.cards}-{facts.max_context}"
+    first = first_shard(model)
+    st = first.stat()
+    key = f"{first.resolve()}|{st.st_size}|{st.st_mtime_ns}|{facts.version}|{facts.cards}|{facts.max_context}"
+    return f"{first.stem}-{hashlib.blake2b(key.encode(), digest_size=8).hexdigest()}"
 
 
 def cache_dir() -> str | None:

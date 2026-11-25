@@ -261,7 +261,7 @@ class MockEngine:
 
     def _write_file(self, path: Path, data: dict[str, object]) -> None:
         try:
-            path.write_text(json.dumps({"layout": "mock", **data}))
+            path.write_text(json.dumps({"layout": "mock", "context": self.config.max_context, **data}))
         except OSError as exc:
             path.unlink(missing_ok=True)
             raise EngineError(ErrorCode.IO, f"{path}: {exc}") from None
@@ -271,8 +271,8 @@ class MockEngine:
             data = json.loads(path.read_text())
         except (OSError, ValueError) as exc:
             raise EngineError(ErrorCode.IO, f"{path}: {exc}") from None
-        if data.get("layout") != "mock" or data.get("kind") != kind:
-            raise EngineError(ErrorCode.INVALID_ARGUMENT, f"{path}: a {kind} file of another layout")
+        if data.get("layout") != "mock" or data.get("kind") != kind or data.get("context") != self.config.max_context:
+            raise EngineError(ErrorCode.INVALID_ARGUMENT, f"{path}: a {kind} file of another layout or context")
         return data
 
     def _check_checkpoint_id(self, checkpoint_id: int) -> None:

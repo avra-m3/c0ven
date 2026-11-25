@@ -55,7 +55,7 @@ from engine.api.interface import (
     prefix_key,
 )
 from engine.seqstate.checkpoints import Checkpoint
-from engine.seqstate.disk import Chain, DiskTier, Entry, chain_of, storable
+from engine.seqstate.disk import BLOCK, BLOCK_PAGES, MIN_TOKENS, Chain, DiskTier, Entry, chain_of, storable
 from engine.seqstate.manager import SeqState, pages_for
 from engine.timing import STRETCH, CostModel, short_rows, whole_rows
 
@@ -202,6 +202,12 @@ class Scheduler:
     def idle(self) -> bool:
         return not self.by_rid
 
+    @property
+    def can_write_ahead(self) -> bool:
+        return self.disk is not None and any(
+            ck.ready and not ck.on_disk and storable(ck.tokens) for ck in self.state.checkpoints
+        )
+
     def report(self) -> dict[str, str]:
         """The STATS line: the engine's counters, field for field, then the scheduler's: the requests waiting for a
         slot, reading their prompts and writing, and the cost model's parts in milliseconds; the checkpoints evicted
@@ -334,7 +340,7 @@ class Scheduler:
             best = self.state.checkpoints.longest_prefix(r.key)
             have = len(best.tokens) if best else 0
             entry = None
-            if self.disk is not None and self.state.free_slots and len(r.key) > have + 1:
+            if self.disk is not None and self.state.free_slots and len(r.key) > max(MIN_TOKENS, have + 1):
                 if r.chain is None:
                     r.chain = chain_of(r.key)
                 entry = self.disk.longest_prefix(r.key, r.chain)
@@ -345,13 +351,17 @@ class Scheduler:
                 r.waiting_for = producer
                 continue
             r.waiting_for = None
-            if entry is not None:
-                self._read_back(entry, r.key[: entry.length], best)
             o = self.options
-            admission = self.state.plan_admission(r.key, r.left, o.decode_lookahead + o.decode_batch)
+            ahead = o.decode_lookahead + o.decode_batch
+            if entry is not None:
+                loaded = self._read_back(entry, r.key[: entry.length], best, len(r.key) + min(ahead, r.left))
+                if loaded is None and (producer := self._producer_for(r, have)) is not None:
+                    r.waiting_for = producer
+                    continue
+            admission = self.state.plan_admission(r.key, r.left, ahead)
+            self._flush_drops()
             if admission is None:
                 break
-            self._flush_drops()
             seq = self.state.admit(admission, r.key, r.left)
             s = r.settings
             try:
@@ -409,15 +419,22 @@ class Scheduler:
         if self.disk is not None and ck.ready and storable(ck.tokens):
             self.disk.save(self.engine, ck.id, ck.tokens, ck.pages)
 
-    def _read_back(self, entry: Entry, tokens: tuple[int, ...], keep: Checkpoint | None) -> Checkpoint | None:
-        """Read a disk entry into a checkpoint, with pages for its positions, which admission then restores. None
-        if the pools have no room for it or a file is refused."""
+    def _read_back(
+        self,
+        entry: Entry,
+        tokens: tuple[int, ...],
+        keep: Checkpoint | None,
+        total_cells: int,
+    ) -> Checkpoint | None:
+        """Read a disk entry into a checkpoint, with pages for its unshared positions, when the full request of
+        `total_cells` fits; admission then restores it. None if the pools have no room or a file is refused."""
         assert self.disk is not None
-        ck = self.state.take_pages_for(tokens, keep)
+        shared_blocks = len(keep.tokens) // BLOCK if keep is not None else 0
+        ck = self.state.take_pages_for(tokens, keep, total_cells, shared_blocks * BLOCK_PAGES)
+        self._flush_drops()  # an evicted checkpoint's id may be this one's, or room-making dropped one
         if ck is None:
             return None
-        self._flush_drops()  # an evicted checkpoint's id may be this one's
-        if not self.disk.load(self.engine, entry, ck.id, ck.pages):
+        if not self.disk.load(self.engine, entry, ck.id, ck.pages, shared_blocks):
             self.state.discard(ck)
             self._flush_drops()
             return None
@@ -429,14 +446,16 @@ class Scheduler:
         finds them there and writes nothing. For idle time. Returns how many it wrote."""
         if self.disk is None:
             return 0
-        n = 0
+        tried = saved = 0
         for ck in sorted(self.state.checkpoints, key=lambda c: c.used):
-            if n >= limit:
+            if tried >= limit:
                 break
             if ck.ready and not ck.on_disk and storable(ck.tokens):
-                ck.on_disk = self.disk.save(self.engine, ck.id, ck.tokens, ck.pages)
-                n += 1
-        return n
+                ck.on_disk = True
+                tried += 1
+                if self.disk.save(self.engine, ck.id, ck.tokens, ck.pages):
+                    saved += 1
+        return saved
 
     def write_all(self) -> int:
         """Write every checkpoint not on disk yet: before a sleep or an exit, which drop them all."""
@@ -683,6 +702,7 @@ class Scheduler:
         self._free_slot(r)
         r.prompt = r.prompt[: r.given] + tuple(r.written)
         r.key = prefix_key(r.prompt, r.images)
+        r.chain = None
         r.phase = Phase.WAITING
         r.slot = -1
         r.next_pos = r.done_pos = r.passes = r.generated = 0

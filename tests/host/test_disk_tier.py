@@ -9,7 +9,7 @@ from pathlib import Path
 
 import protocol
 from engine.api.mock import MockEngine
-from engine.scheduler import CheckpointRule, Scheduler
+from engine.scheduler import CheckpointRule, Scheduler, SchedulerOptions
 from engine.seqstate.disk import BLOCK, MIN_TOKENS, DiskTier, chain_of, storable
 from tests.helpers import open_config
 
@@ -59,14 +59,16 @@ def make(
     *,
     rule: CheckpointRule,
     slots: int = 1,
+    context: int = 8192,
     pages: int | None = None,
     checkpoints: int = 4,
     cap: int = 2**30,
+    options: SchedulerOptions | None = None,
 ) -> Run:
     engine = MockEngine(history)
-    facts = engine.open(open_config(slots=slots, context=8192, pages=pages, checkpoints=checkpoints))
+    facts = engine.open(open_config(slots=slots, context=context, pages=pages, checkpoints=checkpoints))
     disk = DiskTier(tmp, "t", cap) if tmp is not None else None
-    return Run(engine, Scheduler(engine, facts, checkpoint_rule=rule, disk=disk))
+    return Run(engine, Scheduler(engine, facts, options=options, checkpoint_rule=rule, disk=disk))
 
 
 A = prompt(1300, start=50)
@@ -213,3 +215,109 @@ def test_a_chain_names_each_block_by_every_token_before_its_end():
     assert ca[1] != cb[1]
     assert ca[2] != cb[2]
     assert chain_of(a, 2) == ca[:2]
+
+
+def test_spread_evictions_within_a_long_prompt_do_not_spill_to_disk(tmp_path: Path):
+    run = make(tmp_path, rule=marks_at(1100, 1400, 1700), checkpoints=2)
+    run.add(1, prompt(2000), 1)
+    run.until_idle()
+    assert run.errors() == []
+    assert run.scheduler.disk is not None
+    assert run.scheduler.disk.stats().saved == 0
+
+
+def test_read_back_waits_until_the_whole_request_fits(tmp_path: Path):
+    seed = make(tmp_path, rule=marks_at(1200))
+    seed.add(1, A, 1)
+    seed.until_idle()
+    assert seed.scheduler.write_all() == 1
+
+    long_prompt = (*A[:1200], *prompt(1000, start=50))
+    ref = make(None, rule=marks_at())
+    ref.add(9, long_prompt, 20)
+    ref.until_idle()
+
+    again = make(tmp_path, rule=marks_at(1200), slots=2, pages=700)
+    again.add(2, prompt(800, start=10), 100)  # holds 225 of 700 pages, leaving 475 (> 300, < 555)
+    again.add(3, long_prompt, 20)  # needs 555 pages total; disk entry is 300 pages
+    again.until_idle()
+    assert again.errors() == []
+    assert again.done(3).reused == 1200
+    assert again.tokens(3) == ref.tokens(9)
+    assert again.scheduler.disk is not None
+    assert again.scheduler.disk.stats().loaded == 1
+
+
+def test_read_back_shares_whole_blocks_with_an_in_memory_checkpoint(tmp_path: Path):
+    p2200 = prompt(2300, start=70)
+    follow = (*p2200[:2200], 5, 6, 7)
+    ref = make(None, rule=marks_at())
+    ref.add(9, follow, 10)
+    ref.until_idle()
+
+    run = make(tmp_path, rule=marks_at(1200, 2200), pages=600)
+    run.add(1, p2200, 1)
+    run.until_idle()
+    assert run.scheduler.write_all() == 2
+    run.add(2, prompt(100, start=400), 1000)  # evicts the 2,200 checkpoint for pages while 1,200 stays
+    run.until_idle()
+    assert [len(ck.tokens) for ck in run.scheduler.state.checkpoints] == [1200]
+    (best,) = list(run.scheduler.state.checkpoints)
+    block0 = tmp_path / "t" / f"b-{chain_of(p2200)[0].hex()}.kv"
+    block0.unlink()  # proves read-back shares block 0 with `best` instead of reading it from disk
+    run.add(3, follow, 10)
+    run.until_idle()
+    assert run.errors() == []
+    assert run.done(3).reused == 2200
+    assert run.tokens(3) == ref.tokens(9)
+    ck_2200 = run.scheduler.state.checkpoints.find(p2200[:2200])
+    assert ck_2200 is not None
+    assert ck_2200.pages[:256] == best.pages[:256]
+
+
+def test_a_preempted_short_request_refreshes_its_chain_and_finds_disk_entries(tmp_path: Path):
+    short_prompt = prompt(900, start=50)
+    ref = make(None, rule=marks_at())
+    ref.add(1, short_prompt, 400)
+    ref.until_idle()
+    expected_tokens = ref.tokens(1)
+
+    full = (*short_prompt, *expected_tokens[:310])
+    seed = make(tmp_path, rule=marks_at(1200))
+    seed.add(1, full, 1)
+    seed.until_idle()
+    assert seed.scheduler.write_all() == 1
+
+    small = SchedulerOptions(decode_lookahead=8, decode_batch=32)
+    again = make(tmp_path, rule=marks_at(1200), slots=2, pages=420, options=small)
+    again.scheduler.add(protocol.Gen(2, 400, short_prompt, protocol.Settings(temperature=0.0)), priority=0)
+    again.scheduler.add(protocol.Gen(3, 500, prompt(10, start=900), protocol.Settings(temperature=0.0)), priority=1)
+    again.until_idle()
+    assert again.errors() == []
+    assert again.tokens(2) == expected_tokens
+    assert again.scheduler.disk is not None
+    assert again.scheduler.disk.stats().loaded == 1
+
+
+def test_a_file_of_another_context_is_refused(tmp_path: Path):
+    run = make(tmp_path, rule=marks_at(1200), context=8192)
+    run.add(1, A, 1)
+    run.until_idle()
+    assert run.scheduler.write_all() == 1
+    again = make(tmp_path, rule=marks_at(1200), context=16384)
+    again.add(3, follow_up(), 20)
+    again.until_idle()
+    assert again.errors() == []
+    assert again.done(3).reused == 0
+    assert again.tokens(3) == fresh_tokens()
+    assert again.scheduler.disk is not None
+    assert len(again.scheduler.disk) == 0
+
+
+def test_write_ahead_tries_an_oversized_checkpoint_once(tmp_path: Path):
+    run = make(tmp_path, rule=marks_at(1200), cap=10)
+    run.add(1, A, 1)
+    run.until_idle()
+    assert run.scheduler.can_write_ahead
+    assert run.scheduler.write_ahead() == 0
+    assert not run.scheduler.can_write_ahead

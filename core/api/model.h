@@ -277,10 +277,11 @@ class Model {
   virtual void kv_need(uint32_t in_use, uint32_t resident = UINT32_MAX) = 0;
   virtual void kv_ahead() = 0;
   virtual void kvs_drop(uint32_t slot, uint32_t pages) = 0;
-  // The disk tier (engine_save_pages): kv_page_bytes is what one page holds on all the cards together. read_pages
-  // copies whole pages into dst, n * kv_page_bytes() bytes of host memory every card reaches (alloc_pinned), in an
-  // order write_pages reads back from src for pages of the same classes (p % cards); write_pages backs the pages
-  // first. Between steps.
+  // The disk tier (engine_save_pages): kv_page_bytes is what one page holds on all the cards together. kv_back backs
+  // pages [0, pages) in the pool without changing the streamed resident ring. read_pages copies whole pages into dst,
+  // n * kv_page_bytes() bytes of host memory every card reaches (alloc_pinned), in an order write_pages reads back from
+  // src for pages of the same classes (p % cards); write_pages backs the pages first. Between steps.
+  virtual void kv_back(uint32_t pages) { (void)pages; }
   virtual uint64_t kv_page_bytes() const = 0;
   virtual void read_pages(const uint32_t *pages, uint32_t n, uint8_t *dst) = 0;
   virtual void write_pages(const uint32_t *pages, uint32_t n, const uint8_t *src) = 0;

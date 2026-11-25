@@ -7,10 +7,10 @@ hash of every token up to the block's end, so the checkpoints of one conversatio
 prefix they share, and a block is written once. The running state cannot be wound back, so an entry is restored at
 its own length only, never at a prefix of it.
 
-The files are under root/<identity>, the identity naming the model file, the engine's version and the cards, so no
-load reads a file another wrote. Entries outlive the process: at open, the folder's entries are read back, and when
-the folder passes its cap the entries used longest ago go first. A file the core refuses or cannot read takes its
-entry with it. One server uses a folder at a time.
+The files are under root/<identity>, the identity naming the model file, the engine's version, the cards and the
+context length, so no load reads a file another wrote. Entries outlive the process: at open, the folder's entries are
+read back, and when the folder passes its cap the entries used longest ago go first. A file the core refuses or cannot
+read takes its entry with it. One server uses a folder at a time.
 """
 
 from __future__ import annotations
@@ -20,10 +20,12 @@ import hashlib
 import json
 import logging
 import os
+import sys
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, cast
 
 import numpy as np
 
@@ -39,6 +41,24 @@ MIN_TOKENS = 1024
 
 type Chain = list[bytes]
 """The hashes of a prompt's whole blocks: chain[b] stands for its tokens 0 .. (b + 1) * BLOCK - 1."""
+
+
+def _sync_written(data_files: Sequence[Path], record_file: Path) -> None:
+    """Flush dirty pages of a checkpoint's newly written files together, then drop them from the page cache."""
+    if sys.platform != "linux":
+        return
+    for path in data_files:
+        fd = os.open(path, os.O_RDWR)
+        try:
+            os.fdatasync(fd)
+            os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+        finally:
+            os.close(fd)
+    fd = os.open(record_file, os.O_RDWR)
+    try:
+        os.fdatasync(fd)
+    finally:
+        os.close(fd)
 
 
 def chain_of(tokens: Sequence[int], blocks: int | None = None) -> Chain:
@@ -123,9 +143,44 @@ class DiskTier:
         for record in self.dir.glob("c-*.json"):
             name = record.stem.removeprefix("c-")
             try:
-                d = json.loads(record.read_text())
-                blocks = tuple(bytes.fromhex(h) for h in d["blocks"])
-                entry = Entry(name, int(d["length"]), blocks, tuple(d["tail"]), int(d["tail_pages"]), 0, 0.0)
+                raw: Any = json.loads(record.read_text())
+                if not isinstance(raw, dict):
+                    raise ValueError("invalid entry record")
+                d = cast("dict[str, Any]", raw)
+                raw_blocks = d.get("blocks")
+                raw_tail = d.get("tail")
+                raw_length = d.get("length")
+                raw_tail_pages = d.get("tail_pages")
+                if (
+                    not isinstance(raw_blocks, list)
+                    or not isinstance(raw_tail, list)
+                    or not isinstance(raw_length, int)
+                    or isinstance(raw_length, bool)
+                    or not isinstance(raw_tail_pages, int)
+                    or isinstance(raw_tail_pages, bool)
+                ):
+                    raise ValueError("invalid entry record")
+                block_strs = cast("list[Any]", raw_blocks)
+                tail_ints = cast("list[Any]", raw_tail)
+                if any(not isinstance(h, str) for h in block_strs) or any(
+                    not isinstance(t, int) or isinstance(t, bool) for t in tail_ints
+                ):
+                    raise ValueError("invalid entry record")
+                length = raw_length
+                blocks = tuple(bytes.fromhex(h) for h in cast("list[str]", block_strs))
+                tail = tuple(cast("list[int]", tail_ints))
+                tail_pages = raw_tail_pages
+                nb = length // BLOCK
+                if (
+                    length < MIN_TOKENS
+                    or len(blocks) != nb
+                    or any(len(h) != 16 for h in blocks)
+                    or len(tail) != length - nb * BLOCK
+                    or any(t < 0 for t in tail)
+                    or tail_pages != -(-length // PAGE_CELLS) - nb * BLOCK_PAGES
+                ):
+                    raise ValueError("invalid entry record")
+                entry = Entry(name, length, blocks, tail, tail_pages, 0, 0.0)
                 files = [self._state(name), record] + ([self._tail(name)] if entry.tail_pages else [])
                 entry.bytes = sum(f.stat().st_size for f in files)
                 entry.used = record.stat().st_mtime
@@ -199,25 +254,47 @@ class DiskTier:
         chain = chain_of(tokens)
         nb = len(chain)
         tail_pages = len(pages) - nb * BLOCK_PAGES
+        pending: list[tuple[Path, Path, bytes | None]] = []
         written: list[Path] = []
+        json_tmp = self._record(name).with_suffix(".json.tmp")
         try:
             for b, h in enumerate(chain):
                 if h in self._blocks:
                     continue
                 block = pages[b * BLOCK_PAGES : (b + 1) * BLOCK_PAGES]
-                self._write(lambda path, block=block: engine.save_pages(block, path), self._block(h))
-                written.append(self._block(h))
-                self._blocks[h] = self._block(h).stat().st_size
+                final = self._block(h)
+                tmp = final.with_name(final.name + ".tmp")
+                engine.save_pages(block, tmp)
+                pending.append((tmp, final, h))
             if tail_pages:
                 tail = pages[nb * BLOCK_PAGES :]
-                self._write(lambda path: engine.save_pages(tail, path), self._tail(name))
-            self._write(lambda path: engine.save_checkpoint(checkpoint_id, path), self._state(name))
-            record = {"length": len(tokens), "blocks": [h.hex() for h in chain], "tail": list(tokens[nb * BLOCK :])}
-            tmp = self._record(name).with_suffix(".json.tmp")
-            tmp.write_text(json.dumps({**record, "tail_pages": tail_pages}))
-            tmp.replace(self._record(name))
+                final = self._tail(name)
+                tmp = final.with_name(final.name + ".tmp")
+                engine.save_pages(tail, tmp)
+                pending.append((tmp, final, None))
+            state_final = self._state(name)
+            state_tmp = state_final.with_name(state_final.name + ".tmp")
+            engine.save_checkpoint(checkpoint_id, state_tmp)
+            pending.append((state_tmp, state_final, None))
+            record = {
+                "length": len(tokens),
+                "blocks": [h.hex() for h in chain],
+                "tail": list(tokens[nb * BLOCK :]),
+                "tail_pages": tail_pages,
+            }
+            json_tmp.write_text(json.dumps(record))
+            _sync_written([tmp for tmp, _, _ in reversed(pending)], json_tmp)
+            for tmp, final, h in pending:
+                tmp.replace(final)
+                if h is not None:
+                    written.append(final)
+                    self._blocks[h] = final.stat().st_size
+            json_tmp.replace(self._record(name))
         except (EngineError, OSError) as exc:
             log.warning("disk tier: checkpoint of %d tokens not written: %s", len(tokens), exc)
+            json_tmp.unlink(missing_ok=True)
+            for tmp, _, _ in pending:
+                tmp.unlink(missing_ok=True)
             self._unlink_entry(name)
             for f in written:
                 f.unlink(missing_ok=True)
@@ -241,23 +318,34 @@ class DiskTier:
         self._fit(keep=name)
         return name in self._entries
 
-    @staticmethod
-    def _write(save: Callable[[Path], None], path: Path) -> None:
-        """`save` to a temporary name, then rename it: a file is whole or absent."""
-        tmp = path.with_name(path.name + ".tmp")
-        save(tmp)
-        tmp.replace(path)
-
-    def load(self, engine: Engine, entry: Entry, checkpoint_id: int, pages: Sequence[int]) -> bool:
-        """Read an entry into a checkpoint and its pages (logical order, as many as its positions take). False, with
-        the entry removed, if a file is missing or refused."""
+    def load(
+        self,
+        engine: Engine,
+        entry: Entry,
+        checkpoint_id: int,
+        pages: Sequence[int],
+        shared_blocks: int = 0,
+    ) -> bool:
+        """Read an entry into a checkpoint and its pages (logical order, as many as its positions take), skipping
+        its first `shared_blocks` blocks when already in memory. False, with the entry removed, if a file is missing
+        or refused."""
         t0 = time.monotonic()
         nb = len(entry.blocks)
+        slices: list[tuple[Sequence[int], Path]] = [
+            (pages[b * BLOCK_PAGES : (b + 1) * BLOCK_PAGES], self._block(h))
+            for b, h in enumerate(entry.blocks)
+            if b >= shared_blocks
+        ]
+        if entry.tail_pages:
+            slices.append((pages[nb * BLOCK_PAGES :], self._tail(entry.name)))
         try:
-            for b, h in enumerate(entry.blocks):
-                engine.load_pages(pages[b * BLOCK_PAGES : (b + 1) * BLOCK_PAGES], self._block(h))
-            if entry.tail_pages:
-                engine.load_pages(pages[nb * BLOCK_PAGES :], self._tail(entry.name))
+            if slices:
+                # Load the slice with the highest physical page first so the core sizes the KV/cache split once.
+                first = max(range(len(slices)), key=lambda i: max(slices[i][0]))
+                engine.load_pages(*slices[first])
+                for i, item in enumerate(slices):
+                    if i != first:
+                        engine.load_pages(*item)
             engine.load_checkpoint(checkpoint_id, self._state(entry.name), entry.length)
         except EngineError as exc:
             log.warning("disk tier: checkpoint of %d tokens not read, and removed: %s", entry.length, exc)

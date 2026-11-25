@@ -37,7 +37,7 @@ class Checkpoint:
     parent: Checkpoint | None = None
     """The longest other checkpoint whose tokens are a strict prefix of these."""
     on_disk: bool = False
-    """The disk tier holds it (engine/seqstate/disk.py)."""
+    """The disk tier holds it, or write_ahead has tried it (engine/seqstate/disk.py)."""
 
 
 def extends(longer: tuple[int, ...], shorter: tuple[int, ...]) -> bool:
@@ -96,7 +96,8 @@ class CheckpointPool:
         before_evict: Callable[[Checkpoint], None] | None = None,
     ) -> tuple[Checkpoint, list[int]]:
         """A new checkpoint holding a reference on each of `pages`, and the ids of any evicted to make room, each
-        passed to `before_evict` while it still holds its pages."""
+        passed to `before_evict` while it still holds its pages unless a longer checkpoint in the pool or `tokens`
+        already extends it."""
         evicted: list[int] = []
         if kept and sum(ck.kept for ck in self._by_id.values()) >= self.max_kept:
             kept_now = [ck for ck in self._by_id.values() if ck.kept]
@@ -107,7 +108,10 @@ class CheckpointPool:
                 raise RuntimeError("every checkpoint is in use: call has_room first")
             evicted.append(victim.id)
             log.info("checkpoint %d of %d tokens evicted: the checkpoint pool is full", victim.id, len(victim.tokens))
-            if before_evict is not None:
+            extended = extends(tokens, victim.tokens) or any(
+                extends(other.tokens, victim.tokens) for other in self._by_id.values()
+            )
+            if before_evict is not None and not extended:
                 before_evict(victim)
             self.remove(victim.id)
         ck = Checkpoint(self._free.pop(), tokens, pages, kept)

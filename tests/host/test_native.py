@@ -276,20 +276,25 @@ class FakeCore:
 
     def save_pages(self, pages: Sequence[int], path: str) -> None:
         self._drain()
-        Path(path).write_text(json.dumps([self.cells.get(p) for p in pages]))
+        Path(path).write_text(json.dumps({"max_ctx": self.max_ctx, "cells": [self.cells.get(p) for p in pages]}))
 
     def load_pages(self, pages: Sequence[int], path: str) -> None:
         self._drain()
         saved = json.loads(Path(path).read_text())
-        assert len(saved) == len(pages)
-        for p, cells in zip(pages, saved, strict=True):
+        if saved["max_ctx"] != self.max_ctx:
+            raise EngineError(ErrorCode.INVALID_ARGUMENT, f"{path}: a page file of another context")
+        assert len(saved["cells"]) == len(pages)
+        for p, cells in zip(pages, saved["cells"], strict=True):
             self.cells[p] = cells
 
     def save_checkpoint(self, checkpoint_id: int, path: str) -> None:
-        Path(path).write_text(json.dumps(self.checkpoints[checkpoint_id]))
+        Path(path).write_text(json.dumps({"max_ctx": self.max_ctx, "tokens": self.checkpoints[checkpoint_id]}))
 
     def load_checkpoint(self, checkpoint_id: int, path: str) -> None:
-        self.checkpoints[checkpoint_id] = json.loads(Path(path).read_text())
+        saved = json.loads(Path(path).read_text())
+        if saved["max_ctx"] != self.max_ctx:
+            raise EngineError(ErrorCode.INVALID_ARGUMENT, f"{path}: a checkpoint file of another context")
+        self.checkpoints[checkpoint_id] = saved["tokens"]
 
     def read_timing(self, cap: int) -> list[abi.CTiming]:
         out: list[abi.CTiming] = []
@@ -485,6 +490,14 @@ def test_a_checkpoint_read_back_from_disk_restores_its_length(tmp_path: Path):
     again.until_idle()
     assert again.tokens(2) == expected(b, 6)
     assert again.done(2).reused == n
+
+    wrong_ctx = make(open_config(context=4096), rule=at_n, disk=DiskTier(tmp_path, "t", 2**30))
+    wrong_ctx.add(3, b, 6)
+    wrong_ctx.until_idle()
+    assert wrong_ctx.tokens(3) == expected(b, 6)
+    assert wrong_ctx.done(3).reused == 0
+    assert wrong_ctx.scheduler.disk is not None
+    assert len(wrong_ctx.scheduler.disk) == 0
 
 
 def test_a_prefix_ending_inside_a_page_shares_the_full_pages_and_copies_the_last():

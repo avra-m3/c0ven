@@ -100,10 +100,9 @@ void Model::copy_cells(uint32_t from, uint32_t to, uint32_t cells) {
   }
 }
 
-// Calls f(pointer, bytes) for each run of pages of the pool on a card, in the order of a page file's group
+// Calls f(pointer, bytes, host) for each run of pages of the pool on a card, in the order of a page file's group
 // (engine_save_pages): per attention layer, K then V of every page, then the raw and pooled indexer keys of the
-// card's own pages (p % C == c, at local page p / C). A run is pages that follow each other in the pool's buffers.
-// Streamed, K and V are the host copies, which hold every page.
+// card's own pages (p % C == c, at local page p / C). `host` is true when the run lives in host memory (streamed K/V).
 template <class F>
 static void for_page_runs(Model::Card &card, const Shape &shape, uint32_t C, bool streamed, const uint32_t *pages,
                           uint32_t n, F &&f) {
@@ -113,21 +112,25 @@ static void for_page_runs(Model::Card &card, const Shape &shape, uint32_t C, boo
   for (uint32_t i = 0; i < n; i++)
     if (pages[i] % C == card.c) own.push_back(pages[i] / C);
   // f over runs of ids in ids[0..m), each id a unit of `unit` bytes at base.
-  auto runs = [&](uint8_t *base, uint64_t unit, const uint32_t *ids, size_t m) {
+  auto runs = [&](uint8_t *base, uint64_t unit, const uint32_t *ids, size_t m, bool host) {
     for (size_t i = 0; i < m;) {
       size_t j = i + 1;
       while (j < m && ids[j] == ids[j - 1] + 1) j++;
-      f(base + ids[i] * unit, (j - i) * unit);
+      f(base + ids[i] * unit, (j - i) * unit, host);
       i = j;
     }
   };
   for (auto &L : card.layers) {
     if (!L.attn) continue;
-    runs(streamed ? L.khost : L.kc, kvb, pages, n);
-    runs(streamed ? L.vhost : L.vc, kvb, pages, n);
-    runs(L.raw, rawb, own.data(), own.size());
-    runs(reinterpret_cast<uint8_t *>(L.pooled), poolb, own.data(), own.size());
+    runs(streamed ? L.khost : L.kc, kvb, pages, n, streamed);
+    runs(streamed ? L.vhost : L.vc, kvb, pages, n, streamed);
+    runs(L.raw, rawb, own.data(), own.size(), false);
+    runs(reinterpret_cast<uint8_t *>(L.pooled), poolb, own.data(), own.size(), false);
   }
+}
+
+void Model::kv_back(uint32_t pages) {
+  if (share_ && pages > kv_want_) kv_need(pages, ring_want_);
 }
 
 uint64_t Model::kv_page_bytes() const {
@@ -142,14 +145,29 @@ uint64_t Model::kv_page_bytes() const {
 void Model::read_pages(const uint32_t *pages, uint32_t n, uint8_t *dst) {
   for (uint32_t i = 0; i < n; i++)
     if (pages[i] >= kv_pages_) throw std::runtime_error("page " + std::to_string(pages[i]) + " out of the pool");
+  if (n == 0) return;
   wait_commit();
-  for (auto &card : cards_) {
-    for_page_runs(*card, shape_, ncards_, kv_res_ != 0, pages, n, [&](uint8_t *p, uint64_t b) {
-      card->up->copy(dst, p, b);
+  std::vector<bool> queued(cards_.size(), false);
+  for (size_t c = 0; c < cards_.size(); c++) {
+    Card &card = *cards_[c];
+    ze::List &list = *card.page_copy;
+    list.reset_list();
+    for_page_runs(card, shape_, ncards_, kv_res_ != 0, pages, n, [&](uint8_t *p, uint64_t b, bool host) {
+      if (host) {
+        std::memcpy(dst, p, b);
+      } else {
+        list.copy(dst, p, b);
+        queued[c] = true;
+      }
       dst += b;
     });
-    card->up->synchronize();
+    if (queued[c]) {
+      list.close();
+      list.execute();
+    }
   }
+  for (size_t c = 0; c < cards_.size(); c++)
+    if (queued[c]) cards_[c]->page_copy->synchronize();
 }
 
 void Model::write_pages(const uint32_t *pages, uint32_t n, const uint8_t *src) {
@@ -158,27 +176,44 @@ void Model::write_pages(const uint32_t *pages, uint32_t n, const uint8_t *src) {
     if (pages[i] >= kv_pages_) throw std::runtime_error("page " + std::to_string(pages[i]) + " out of the pool");
     top = std::max(top, pages[i] + 1);
   }
+  if (n == 0) return;
   wait_commit();
-  if (share_) kv_need(std::max(kv_want_, top), ring_want_);
+  kv_back(top);
   if (kv_res_) std::fill(kvs_to_.begin(), kvs_to_.end(), 0);  // the pages lose their resident copies
-  const std::vector<uint32_t> none(n, KV_NO_PAGE);
-  for (auto &card : cards_) {
-    for_page_runs(*card, shape_, ncards_, kv_res_ != 0, pages, n, [&](uint8_t *p, uint64_t b) {
-      card->up->copy(p, src, b);
+  static_assert(KV_NO_PAGE == 0xffffffffu);
+  const uint8_t none = 0xff;
+  std::vector<bool> queued(cards_.size(), false);
+  for (size_t c = 0; c < cards_.size(); c++) {
+    Card &card = *cards_[c];
+    ze::List &list = *card.page_copy;
+    list.reset_list();
+    for_page_runs(card, shape_, ncards_, kv_res_ != 0, pages, n, [&](uint8_t *p, uint64_t b, bool host) {
+      if (host) {
+        std::memcpy(p, src, b);
+      } else {
+        list.copy(p, src, b);
+        queued[c] = true;
+      }
       src += b;
     });
     if (kv_res_)
-      for (auto &L : card->layers) {
+      for (auto &L : card.layers) {
         if (!L.attn) continue;
         for (uint32_t i = 0; i < n;) {
           uint32_t j = i + 1;
           while (j < n && pages[j] == pages[j - 1] + 1) j++;
-          card->up->copy(L.where + pages[i], none.data(), (size_t)(j - i) * 4);
+          list.fill(L.where + pages[i], &none, 1, (size_t)(j - i) * 4);
+          queued[c] = true;
           i = j;
         }
       }
-    card->up->synchronize();
+    if (queued[c]) {
+      list.close();
+      list.execute();
+    }
   }
+  for (size_t c = 0; c < cards_.size(); c++)
+    if (queued[c]) cards_[c]->page_copy->synchronize();
 }
 
 }  // namespace engine::qwen4exp

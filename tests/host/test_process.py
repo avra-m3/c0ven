@@ -638,3 +638,23 @@ def test_hugepages_gives_the_hosts_free_reserved_pages_or_none():
     assert hugetlb_pool(True, a_host(8 * 2**30)) == 8 * 2**30
     assert hugetlb_pool(True, a_host(None)) == 0
     assert hugetlb_pool(True, None) == 0
+
+
+def test_disk_identity_depends_on_context_and_first_shard(tmp_path: Path):
+    from engine.process import disk_identity, parse_args  # noqa: PLC0415
+
+    f_a = MockEngine().open(open_config(context=8192))
+    f_b = MockEngine().open(open_config(context=16384))
+    assert disk_identity(None, f_a) != disk_identity(None, f_b)
+
+    s1 = tmp_path / "m-00001-of-00003.gguf"
+    s3 = tmp_path / "m-00003-of-00003.gguf"
+    write_gguf(s1, "qwen4exp")
+    s3.write_bytes(b"")
+    assert disk_identity(s1, f_a) == disk_identity(s3, f_a)
+    assert disk_identity(s1, f_a) != disk_identity(s1, f_b)
+
+    with pytest.raises(SystemExit):
+        parse_args(["--arch", "qwen4exp", "--kv-disk-gib", "0"])
+    with pytest.raises(SystemExit):
+        parse_args(["--arch", "qwen4exp", "--kv-disk-gib", "-2"])

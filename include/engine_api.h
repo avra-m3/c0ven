@@ -360,9 +360,11 @@ ENGINE_API engine_status engine_restore(engine_ctx *e, uint32_t slot, uint32_t i
 ENGINE_API engine_status engine_drop(engine_ctx *e, uint32_t id);
 
 /* The disk tier (docs/CACHING.md): files of KV pages and of checkpoints, which the caller names, keeps and removes. A
- * file starts with the layout it was written for (the ABI, the cards, the bytes a page or a checkpoint holds), and a
- * load of a file of another layout fails with ENGINE_BAD_ARGUMENT. Each call waits for the queued plans, and fails
- * with ENGINE_ERROR when the file cannot be written or read; a file a save could not finish is removed. */
+ * file starts with the layout it was written for (the ABI, the cards, max_ctx, and the bytes a page or a checkpoint
+ * holds), and a load of a file of another layout fails with ENGINE_BAD_ARGUMENT. Page calls wait for queued plans.
+ * Save and load checkpoint calls run without blocking queued plans and return ENGINE_BUSY if another call is already
+ * reading or writing that checkpoint. Calls fail with ENGINE_ERROR when a file cannot be written or read; a file a save
+ * could not finish is removed. */
 
 /* Writes the KV of pages[0..n) to the file at path, replacing it: every cell of each page, as the plans queued before
  * it left them. */

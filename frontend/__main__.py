@@ -88,7 +88,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=0.0,
         help="seconds between JSON log lines of the /metrics counters, which also logs each request's record; 0: none",
     )
-    return p.parse_args(argv)
+    args = p.parse_args(argv)
+    if args.kv_disk_gib <= 0:
+        p.error("--kv-disk-gib must be positive")
+    return args
 
 
 def engine_argv(args: argparse.Namespace, arch: str = "", table_cache: Path | None = None) -> list[str]:
@@ -105,7 +108,7 @@ def engine_argv(args: argparse.Namespace, arch: str = "", table_cache: Path | No
         "--context",
         str(args.context),
         *(["--kv-tokens", str(args.kv_tokens)] if args.kv_tokens else []),
-        *(["--kv-disk", str(args.kv_disk), "--kv-disk-gib", f"{args.kv_disk_gib:g}"] if args.kv_disk else []),
+        *(["--kv-disk", str(args.kv_disk), "--kv-disk-gib", str(args.kv_disk_gib)] if args.kv_disk else []),
         "--log-level",
         args.log_level,
     ]

@@ -225,16 +225,31 @@ class SeqState:
         self.evicted_for_room += len(evicted)
         return ck
 
-    def take_pages_for(self, tokens: tuple[int, ...], keep: Checkpoint | None = None) -> Checkpoint | None:
-        """A checkpoint of `tokens` with fresh pages for all of its positions, not ready, for the disk tier to read
-        into: room is made as for an admission, never by evicting `keep`. None if it does not fit. The caller marks it
-        ready once it is read, or `discard`s it."""
+    def take_pages_for(
+        self,
+        tokens: tuple[int, ...],
+        keep: Checkpoint | None = None,
+        total_cells: int = 0,
+        shared_pages: int = 0,
+    ) -> Checkpoint | None:
+        """A checkpoint of `tokens` with fresh pages for its unshared positions, not ready, for the disk tier to read
+        into: room is made as for an admission of `total_cells` cells, never by evicting `keep`. Shares `shared_pages`
+        of `keep` when given. None if it does not fit. The caller marks it ready once it is read, or `discard`s it."""
         n = pages_for(len(tokens))
-        need = self.pool.split(0, n)
-        if not self.checkpoints.has_room() or not self._make_room(list(need), keep=keep):
+        shared = min(shared_pages, len(keep.pages) if keep is not None else 0, n)
+        full = len(tokens) // PAGE_CELLS
+        end = pages_for(max(len(tokens), total_cells))
+        ck_need = self.pool.split(shared, n)
+        seq_need = self.pool.split(full, end)
+        room_need = [a + b for a, b in zip(ck_need, seq_need, strict=True)]
+        if not self.checkpoints.has_room() or not self._make_room(room_need, keep=keep):
             return None
-        self.pool.reserve(need)
-        pages = tuple(self.pool.take(logical) for logical in range(n))
+        self.pool.reserve(ck_need)
+        prefix = keep.pages[:shared] if keep is not None else ()
+        for page in prefix:  # hold before checkpoints.add, which may evict `keep` itself
+            self.pool.incref(page)
+        fresh = tuple(self.pool.take(logical) for logical in range(shared, n))
+        pages = (*prefix, *fresh)
         ck, evicted = self.checkpoints.add(tokens, pages, False, self.spill)
         for page in pages:  # the checkpoint holds its own reference
             self.pool.decref(page)

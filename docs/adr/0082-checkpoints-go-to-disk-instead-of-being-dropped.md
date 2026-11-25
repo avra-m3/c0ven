@@ -13,8 +13,9 @@ reads they save, or the KV's bytes per token change enough to move the shortest 
   all. Its conversation then reads its whole prompt again: a 100K-token prompt is about a minute of reading
   (*estimate*: 102,400 tokens at the 1,713 tokens a second
   [measured](../measurements/MEASUREMENTS.md#2026-10-20-kv-pool-and-expert-cache-share) for a 179,969-token prompt).
-- The KV takes 14,688 bytes a token ([DESIGN.md](../DESIGN.md), section 6), so a 100K-token checkpoint is about
-  1.5 GB of KV and its state. A drive that reads 2 GB a second reads it back in under a second (*estimate*).
+- The KV pages hold 64,896 bytes per four-token page (16,224 bytes a token: K, V, and raw and pooled indexer keys),
+  so a 100K-token checkpoint is about 1.8 GB of KV and its state (*estimate*: 102,400 tokens at 16,224 bytes a token
+  plus 118 MB). A drive that reads 2 GB a second reads it back in about a second (*estimate*).
 - The running state cannot be wound back: a checkpoint serves its own length only, never a prefix of it. A shorter
   checkpoint of the same conversation shares every KV page of its prefix with the longer one.
 - Strata's public successor, [mw00/project-maya](https://github.com/mw00/project-maya) at `cfc825f`, keeps
@@ -26,23 +27,26 @@ reads they save, or the KV's bytes per token change enough to move the shortest 
 ## Decision
 
 1. With `--kv-disk DIR`, a checkpoint the server would drop is written to disk first: when the KV pool needs its
-   pages, when the checkpoint pool needs its place, and before a sleep or an exit. It is then dropped as before.
+   pages, when the checkpoint pool needs its place and no longer checkpoint in the pool or the incoming one extends it
+   (`spread_victim`, [ADR-0051](0051-checkpoints-stay-spread-back-from-each-conversations-end.md)), and before a sleep
+   or an exit. It is then dropped as before.
 2. An entry on disk is one checkpoint: a file of its running state and tokens, the KV of each whole block of 1,024
    tokens in a block file, and the pages after its last whole block in a tail file. A block file is named by a hash
    of every token up to the block's end, so the checkpoints of one conversation share the block files of the
    prefix they share, and a block is written once.
 3. A request whose prompt starts with an entry longer than any checkpoint in memory reads it back before its
-   admission: the entry takes a checkpoint and fresh pages for its positions, room made for them as for an
-   admission, and the admission restores it as any checkpoint.
+   admission once the whole request fits. The entry takes a checkpoint and fresh pages for its unshared blocks, shares
+   any whole blocks already held by an in-memory checkpoint, and makes room for the whole request; the admission
+   restores it as any checkpoint.
 4. While no request runs, the server writes one checkpoint not yet on disk at a time, used longest ago first, so
    an eviction under load finds it there and writes nothing.
 5. The folder holds `--kv-disk-gib` GiB at most, 64 by default; the entries used longest ago go first. A file is
    written under a temporary name and renamed, and kept only once it is on the drive. The tier's files bypass the
    page cache.
 6. Checkpoints shorter than 1,024 tokens, and those with an image in their prefix, stay off disk.
-7. Entries outlive the process. They sit in a subfolder named by the model file, the engine's version and the
-   number of cards, and each file starts with the layout it was written for; the core refuses a file of another
-   layout, and the entry is then removed.
+7. Entries outlive the process. They sit in a subfolder named by the model file, the engine's version, the number of
+   cards and `--context`, and each file starts with the layout and `--context` it was written for; the core refuses a
+   file of another layout or context, and the entry is then removed.
 8. The core writes and reads the files: `engine_save_pages`, `engine_load_pages`, `engine_save_checkpoint` and
    `engine_load_checkpoint`. Python names the files and decides what goes where. ABI version 24.
 
@@ -56,7 +60,7 @@ conversation's checkpoints are taken during its turn and dropped during a later 
 ## Options not chosen
 
 - **One file a checkpoint, with all of its KV.** Each of a conversation's checkpoints, 16K tokens apart, would
-  write the whole prefix again: eight checkpoints of one 128K-token conversation would write about 9 GB of KV
+  write the whole prefix again: eight checkpoints of one 128K-token conversation would write about 10 GB of KV
   in place of 2 (*estimate*).
 - **Pages to disk one at a time, as they go stale.** A page alone is of no use: the running state at a
   checkpoint's position is needed to go on from it, so a checkpoint is the unit that goes and comes back.

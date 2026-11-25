@@ -2,11 +2,19 @@
 // thread makes each call and whether two calls overlap, which the model's lists do not allow
 // (docs/adr/0077-one-thread-uses-the-cards.md). It skips on a CPU that lacks a feature of the tests' ggml build, as
 // open_engine refuses one (cpu_features_test).
+#include <fcntl.h>
+#include <poll.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -101,10 +109,13 @@ class FakeModel : public Model {
   uint32_t fetch_rows() const override { return 0; }
   uint32_t decode_weight() const override { return 0; }
 
-  uint64_t slot_state_bytes() override { return 16; }
-  void save_slot(uint32_t slot, uint8_t *) override { In in(*this, "save", slot); }
+  uint64_t slot_state_bytes() override { return state_bytes; }
+  void save_slot(uint32_t slot, uint8_t *dst) override {
+    In in(*this, "save", slot);
+    std::memset(dst, (int)(slot + 1), state_bytes);
+  }
   void load_slot(uint32_t slot, const uint8_t *) override { In in(*this, "load", slot); }
-  void *alloc_pinned(size_t bytes) override { return new uint8_t[bytes]; }
+  void *alloc_pinned(size_t bytes) override { return new uint8_t[bytes](); }
   void free_pinned(void *p) override { delete[] static_cast<uint8_t *>(p); }
 
   void sleep() override { In in(*this, "sleep", 0); }
@@ -117,9 +128,32 @@ class FakeModel : public Model {
   void kv_need(uint32_t, uint32_t) override { In in(*this, "kv", 0); }
   void kv_ahead() override { In in(*this, "kv", 0); }
   void kvs_drop(uint32_t slot, uint32_t) override { In in(*this, "kv", slot); }
+  void kv_back(uint32_t pages) override {
+    In in(*this, "kv", 0);
+    backed = std::max(backed, pages);
+  }
   uint64_t kv_page_bytes() const override { return 8; }
-  void read_pages(const uint32_t *, uint32_t, uint8_t *) override { In in(*this, "read pages", 0); }
-  void write_pages(const uint32_t *, uint32_t, const uint8_t *) override { In in(*this, "write pages", 0); }
+  void read_pages(const uint32_t *pages, uint32_t n, uint8_t *dst) override {
+    In in(*this, "read pages", 0);
+    for (uint32_t i = 0; i < n; i++) {
+      auto it = page_data.find(pages[i]);
+      if (it != page_data.end())
+        std::memcpy(dst + (size_t)i * 8, it->second.data(), 8);
+      else
+        std::memset(dst + (size_t)i * 8, (int)(pages[i] + 1), 8);
+    }
+  }
+  void write_pages(const uint32_t *pages, uint32_t n, const uint8_t *src) override {
+    In in(*this, "write pages", 0);
+    for (uint32_t i = 0; i < n; i++) {
+      auto &buf = page_data[pages[i]];
+      buf.assign(src + (size_t)i * 8, src + (size_t)(i + 1) * 8);
+    }
+  }
+
+  uint64_t state_bytes = 16;
+  uint32_t backed = 0;
+  std::map<uint32_t, std::vector<uint8_t>> page_data;
 
   void note_prompt_routing(bool) override {}
   uint32_t swap_round(uint32_t, bool) override { return 0; }
@@ -155,9 +189,11 @@ class FakeModel : public Model {
 };
 
 FakeModel *fake = nullptr;
+uint64_t next_state_bytes = 16;
 
 std::unique_ptr<Model> open_fake(const std::string &, const Options &opt) {
   auto m = std::make_unique<FakeModel>(opt);
+  m->state_bytes = next_state_bytes;
   fake = m.get();
   return m;
 }
@@ -319,6 +355,97 @@ void test_restore_sets_up_first() {
   engine_close(e);
 }
 
+// Page and checkpoint files carry max_ctx, so a load under another --context fails with ENGINE_BAD_ARGUMENT.
+void test_disk_files_check_context() {
+  char dir[] = "/tmp/engine-thread-test-XXXXXX";
+  EXPECT(mkdtemp(dir) != nullptr, "mkdtemp");
+  const std::string pages_file = std::string(dir) + "/pages";
+  const std::string ck_file = std::string(dir) + "/checkpoint";
+
+  {
+    engine_ctx *e = open_test_engine(1, 64, 1);
+    admit(e, 0, {1, 2, 3, 4, 5}, 1);
+    submit(e, 0, 2);
+    EXPECT(wait_plans(e, 1) == 0, "plan failed: %s", engine_last_error(e));
+    EXPECT(engine_checkpoint(e, 0, 0) == ENGINE_OK, "checkpoint: %s", engine_last_error(e));
+    const uint32_t src[2] = {0, 1};
+    EXPECT(engine_save_pages(e, src, 2, pages_file.c_str()) == ENGINE_OK, "save pages: %s", engine_last_error(e));
+    EXPECT(engine_save_checkpoint(e, 0, ck_file.c_str()) == ENGINE_OK, "save ck: %s", engine_last_error(e));
+    engine_close(e);
+  }
+  {
+    engine_ctx *e = open_test_engine(1, 64, 1);
+    const uint32_t dst[2] = {2, 3};
+    EXPECT(engine_load_pages(e, dst, 2, pages_file.c_str()) == ENGINE_OK, "load pages: %s", engine_last_error(e));
+    EXPECT(fake->backed == 4, "kv_back saw top 4, got %u", fake->backed);
+    EXPECT(fake->page_data[2] == std::vector<uint8_t>(8, 1) && fake->page_data[3] == std::vector<uint8_t>(8, 2),
+           "loaded page bytes differ");
+    EXPECT(engine_load_checkpoint(e, 0, ck_file.c_str()) == ENGINE_OK, "load ck: %s", engine_last_error(e));
+    engine_close(e);
+  }
+  {
+    engine_ctx *e = open_test_engine(1, 128, 1);
+    const uint32_t dst[2] = {2, 3};
+    EXPECT(engine_load_pages(e, dst, 2, pages_file.c_str()) == ENGINE_BAD_ARGUMENT, "page file of another context");
+    EXPECT(engine_load_checkpoint(e, 0, ck_file.c_str()) == ENGINE_BAD_ARGUMENT, "checkpoint file of another context");
+    engine_close(e);
+  }
+  ::unlink(pages_file.c_str());
+  ::unlink(ck_file.c_str());
+  ::rmdir(dir);
+}
+
+// While engine_save_checkpoint writes unlocked, drop, checkpoint and sleep return ENGINE_BUSY without racing.
+void test_checkpoint_busy_blocks_drop_and_sleep() {
+  char dir[] = "/tmp/engine-thread-fifo-XXXXXX";
+  EXPECT(mkdtemp(dir) != nullptr, "mkdtemp");
+  const std::string fifo = std::string(dir) + "/ck.fifo";
+  EXPECT(::mkfifo(fifo.c_str(), 0600) == 0, "mkfifo");
+
+  next_state_bytes = 2ull << 20;
+  engine_ctx *e = open_test_engine(1, 64, 1);
+  next_state_bytes = 16;
+  admit(e, 0, {1, 2, 3, 4}, 1);
+  submit(e, 0, 1);
+  EXPECT(wait_plans(e, 1) == 0, "plan failed: %s", engine_last_error(e));
+  EXPECT(engine_checkpoint(e, 0, 0) == ENGINE_OK, "checkpoint: %s", engine_last_error(e));
+  EXPECT(engine_release(e, 0) == ENGINE_OK, "release");
+
+  const int rfd = ::open(fifo.c_str(), O_RDONLY | O_NONBLOCK);
+  EXPECT(rfd >= 0, "open fifo read");
+  engine_status save_status = ENGINE_ERROR;
+  std::thread writer([&] { save_status = engine_save_checkpoint(e, 0, fifo.c_str()); });
+
+  bool started = false;
+  for (int i = 0; i < 500; i++) {
+    struct pollfd pfd{rfd, POLLIN, 0};
+    if (::poll(&pfd, 1, 10) > 0 && (pfd.revents & POLLIN)) {
+      started = true;
+      break;
+    }
+  }
+  EXPECT(started, "writer did not open the fifo");
+  EXPECT(engine_drop(e, 0) == ENGINE_BUSY, "drop while saving");
+  EXPECT(engine_sleep(e) == ENGINE_BUSY, "sleep while saving");
+
+  std::vector<uint8_t> sink(65536);
+  for (;;) {
+    struct pollfd pfd{rfd, POLLIN, 0};
+    EXPECT(::poll(&pfd, 1, 5000) > 0, "fifo reader timed out");
+    const ssize_t k = ::read(rfd, sink.data(), sink.size());
+    if (k == 0) break;
+    EXPECT(k > 0 || errno == EAGAIN, "fifo read failed");
+  }
+  writer.join();
+  ::close(rfd);
+  EXPECT(save_status == ENGINE_OK, "save_checkpoint: %s", engine_last_error(e));
+  EXPECT(engine_drop(e, 0) == ENGINE_OK, "drop after save: %s", engine_last_error(e));
+  EXPECT(engine_sleep(e) == ENGINE_OK, "sleep after save: %s", engine_last_error(e));
+  engine_close(e);
+  ::unlink(fifo.c_str());
+  ::rmdir(dir);
+}
+
 }  // namespace
 
 int main() {
@@ -330,6 +457,8 @@ int main() {
   test_reset_error_is_an_event();
   test_admits_beside_plans();
   test_restore_sets_up_first();
+  test_disk_files_check_context();
+  test_checkpoint_busy_blocks_drop_and_sleep();
   std::printf("engine_thread_test: ok\n");
   return 0;
 }
