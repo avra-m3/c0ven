@@ -237,3 +237,85 @@ REQD_SG __kernel void moe_down_t(__global const uchar *base, ulong slot_bytes, u
   else
     down_tile(t, D, rows, bpr, b0, Hin, K, Y, MT GRID_ARG);
 }
+
+// The 32 values of unit s of block k as dequant_f16 writes them: 16 pairs of fp16, b[0] the first 8.
+static inline void dense_pairs(__global const uchar *W, ulong n, ulong k, uint s, int8 b[2] GRID_PARAM) {
+  uint w[8];
+  float lo, hi, mn, mh;
+  decode_unit(W, n, k, s, w, &lo, &hi, &mn, &mh GRID_ARG);
+  uint p[16];
+  for (uint j = 0; j < 16; j++) {
+    float sc = j < 8 ? lo : hi, m = j < 8 ? mn : mh;
+    float v0 = sc * (float)(char)((w[j / 2] >> (16 * (j & 1))) & 0xff) - m;
+    float v1 = sc * (float)(char)((w[j / 2] >> (16 * (j & 1) + 8)) & 0xff) - m;
+    p[j] = (uint)as_ushort(convert_half(v0)) | ((uint)as_ushort(convert_half(v1)) << 16);
+  }
+  b[0] = as_int8(vload8(0, p));
+  b[1] = as_int8(vload8(1, p));
+}
+
+// dense_t for one sub-group's 16 rows and nt dpas tiles of 8 tokens from t0.
+static inline void dense_tile(__global const uchar *W, uint rows, uint bpr, __global const ushort *X, uint K, uint ldx,
+                              uint T, uint t0, __global float *Y, uint ldy, uint yhalf, const uint nt GRID_PARAM) {
+  const uint lane = sg_lane();
+  const uint r0 = (get_group_id(0) * QG_SG + sg_id()) * 16, r = r0 + lane;
+  const uint rr = min(r, rows - 1);
+  const ulong n = (ulong)rows * bpr;
+  float8 acc[MT];
+  for (uint i = 0; i < nt; i++) acc[i] = (float8)0.0f;
+  const uint units = K / 32;
+  for (uint u = 0; u < units; u++) {
+    ushort a[2][8 * MT];
+    for (uint h = 0; h < 2; h++)
+      for (uint c = 0; c < nt / 4; c++) sg_load_rows32(X, K * 2, T, ldx * 2, 32 * u + 16 * h, t0 + 32 * c, a[h] + 32 * c);
+    int8 b[2];
+    dense_pairs(W, n, (ulong)rr * bpr + u / UNITS_PER_BLOCK, u % UNITS_PER_BLOCK, b GRID_ARG);
+    for (uint h = 0; h < 2; h++)
+      for (uint i = 0; i < nt; i++) acc[i] = dpas_f16(as_short8(vload8(i, a[h])), b[h], acc[i]);
+  }
+  const uint esize = yhalf ? 2 : 4;
+  const bool block2d = ((ldy * esize) % 64) == 0 && (((ulong)Y) % 64) == 0;
+  for (uint i = 0; i < nt; i++) {
+    float v[8];
+    vstore8(acc[i], 0, v);
+    ushort h[8];
+    if (yhalf)
+      for (uint m = 0; m < 8; m++) h[m] = as_ushort(convert_half(v[m]));
+    if (block2d) {
+      int2 at = (int2)(r0, t0 + 8 * i);
+      if (yhalf) {
+        sg_store_rows8((__global ushort *)Y, rows * 2, T, ldy * 2, at.x, at.y, h);
+      } else {
+        uint w[8];
+        for (uint m = 0; m < 8; m++) w[m] = as_uint(v[m]);
+        intel_sub_group_2d_block_write_32b_8r16x1c((__global void *)Y, rows * 4, T, ldy * 4, at, w);
+      }
+    } else {
+      for (uint m = 0; m < 8; m++) {
+        const uint t = t0 + 8 * i + m;
+        if (t < T && r < rows) {
+          if (yhalf)
+            vstore_half(v[m], (ulong)t * ldy + r, (__global half *)Y);
+          else
+            Y[(ulong)t * ldy + r] = v[m];
+        }
+      }
+    }
+  }
+}
+
+// Work-groups (ceil(rows / 64), ceil(max tokens / MOE_TILE)), 64 work-items. Y[t][r] = sum_k X[t][k] W[r][k] for
+// t < *ntok, the weights decoded on the fly as dequant_f16 decodes them and the products summed in gemm_f16's order,
+// so Y has dequant_f16 and gemm_f16's bits. W rows x K, bpr blocks a row; X fp16, rows ldx apart, 64-byte aligned; Y
+// f32, or fp16 if yhalf, rows ldy apart. Each token tile decodes the weights again, so this is for few tokens.
+REQD_SG __kernel void dense_t(__global const uchar *W, uint rows, uint bpr, __global const ushort *X, uint K, uint ldx,
+                              __global const uint *ntok, __global float *Y, uint ldy, uint yhalf,
+                              __global const uchar *grids) {
+  const uint T = *ntok, t0 = get_group_id(1) * MOE_TILE;
+  if (t0 >= T) return;  // before the grid's barrier: the whole work-group leaves
+  LOAD_GRID(grids)
+  if (T - t0 <= MOE_TILE / 2)
+    dense_tile(W, rows, bpr, X, K, ldx, T, t0, Y, ldy, yhalf, MT / 2 GRID_ARG);
+  else
+    dense_tile(W, rows, bpr, X, K, ldx, T, t0, Y, ldy, yhalf, MT GRID_ARG);
+}

@@ -35,6 +35,10 @@ uint32_t bucket(uint32_t n, uint32_t tmax) {
 // p_kv16's groups along the positions, each taking every kKv16Groups-th one.
 constexpr uint32_t kKv16Groups = 4096;
 
+// The widest chunk list whose dense products decode their weights on the fly (dense_t): past it, each tile of tokens
+// decoding the weights again costs more than dequant_f16 once and gemm_f16.
+constexpr uint32_t kDenseOnTheFlyRows = 128;
+
 // The most tiles the experts' assignments can take: every expert's last tile may be partial.
 uint32_t max_tiles(uint32_t T, uint32_t used, uint32_t experts) {
   return (T * used + MOE_TILE - 1) / MOE_TILE + experts;
@@ -449,6 +453,15 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
     std::string mod = std::string("qgemm_") + ggml_type_label(m.type);
     for (auto &ch : mod) ch = (char)std::tolower(ch);
     const uint32_t units = m.K / 32;
+    // A short chunk's product decodes the weights in its own tiles: one launch, no fp16 copy of the weights. Not for
+    // a product that also writes the other card's copy, whose stores of 16 rows are slower than gemm's.
+    if (T <= kDenseOnTheFlyRows && !y2) {
+      if (opt_.trace) L.label("dense_t " + std::to_string(m.rows) + "x" + std::to_string(m.K));
+      L.launch(kernel(c, mod, "dense_t"), {m.p, m.rows, m.bpr, x, m.K, ldx, &pplan_->n, y, ldy, yhalf ? 1u : 0u,
+                                           card.grids},
+               (m.rows + 63) / 64, (T + MOE_TILE - 1) / MOE_TILE, 1, 64, 1, 1, sig);
+      return;
+    }
     L.launch(kernel(c, mod, "dequant_f16"), {m.p, m.rows, m.bpr, zero, units, P.w16, m.K, card.grids},
              (m.rows * units + 63) / 64, 1, 1, 64);
     gemm(false, P.w16, m.rows, m.K, x, ldx, y, ldy, yhalf, 0, 1.0f, sig, 8, 2, y2);
