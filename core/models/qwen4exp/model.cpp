@@ -206,6 +206,7 @@ Model::Model(const std::string &path, const Options &opt) : opt_(opt), gguf_(pat
   head_plan_ = static_cast<StepPlan *>(rt_->alloc_host(sizeof(StepPlan)));
   std::memset(head_plan_, 0, sizeof(StepPlan));
   head_plan_->nrows = 1;
+  head_plan_->nhead = 1;
   cplan_ = static_cast<CommitPlan *>(rt_->alloc_host(sizeof(CommitPlan)));
   std::memset(cplan_, 0, sizeof(CommitPlan));
   yarn_fs_ = opt_.max_ctx > shape_.context ? (float)shape_.context / (float)opt_.max_ctx : 1.0f;
@@ -1482,8 +1483,9 @@ void Model::wait_commit() {
   commit_pending_ = false;
 }
 
-// The final mixer and this card's share of the head (MODEL_IO.md, section 2), from the residuals in card.R: each
-// row's 64 largest logits into the host's candidate buffers. plan gives the rows.
+// The final mixer and this card's share of the head (MODEL_IO.md, section 2), from the residuals in card.R: the 64
+// largest logits of each of the plan's last nhead rows into the host's candidate buffers, from row 0. plan gives the
+// rows.
 void Model::record_head(ze::List &L, Card &card, const StepPlan *plan, uint32_t W) {
   const uint32_t c = card.c;
   auto common = [&](const char *name) { return kernel(c, rows_module("common", W), name); };
@@ -1503,12 +1505,13 @@ void Model::record_head(ze::List &L, Card &card, const StepPlan *plan, uint32_t 
   }
   L.launch(q4("hc_mix"), {card.n, card.a, plan, card.x}, shape_.embd / 64, W, 1, 64);
   uint32_t units = shape_.embd / 32 * W;
-  L.launch(common("quantize_a8"), {card.x, gs, gs, W, card.xa8}, (units + 3) / 4, 1, 1, 64);
-  matvec(L, card, card.head, card.xa8, card.logits, W, &plan->nrows);
+  L.launch(common("quantize_a8_last"), {card.x, gs, gs, &plan->nrows, &plan->nhead, card.xa8}, (units + 3) / 4, 1, 1,
+           64);
+  matvec(L, card, card.head, card.xa8, card.logits, W, &plan->nhead);
   uint32_t *ti = top_idx_ + (size_t)c * STEP_MAX_ROWS * opt_.candidates;
   float *tv = top_val_ + (size_t)c * STEP_MAX_ROWS * opt_.candidates;
-  L.launch(common("topk_rows"), {card.logits, card.vocab_n, card.vocab_n, opt_.candidates, card.vocab0, &plan->nrows, ti, tv,
-                                 top_n_ + (size_t)c * STEP_MAX_ROWS}, W, 1, 1, 1024);
+  L.launch(common("topk_rows"), {card.logits, card.vocab_n, card.vocab_n, opt_.candidates, card.vocab0, &plan->nhead, ti,
+                                 tv, top_n_ + (size_t)c * STEP_MAX_ROWS}, W, 1, 1, 1024);
 }
 
 std::vector<float> Model::logits(uint32_t row) {
@@ -1588,13 +1591,14 @@ std::vector<std::vector<Candidate>> Model::step(const StepIn *rows, uint32_t n, 
   const uint32_t key = kv_res_ && !kvs ? W + kKvsSkipList : W;
   last_width_ = key;
   plan_->nrows = n;
+  plan_->nhead = prompt ? 1 : n;
   plan_->window = window ? 1 : 0;
   plan_->step++;
   const GgufTensor &te = gguf_.tensor("token_embd.weight");
   auto to_float = ggml_get_type_traits((ggml_type)te.type)->to_float;
   const uint32_t E = shape_.embd;  // a local: the plan's writes below may alias a member
   for (uint32_t r = 0; r < n; r++) {
-    plan_->rows[r] = {rows[r].slot, rows[r].pos, (uint32_t)rows[r].token, STEP_ROW_LOGITS};
+    plan_->rows[r] = {rows[r].slot, rows[r].pos, (uint32_t)rows[r].token, r + plan_->nhead >= n ? STEP_ROW_LOGITS : 0};
     to_float(te.data + (uint64_t)rows[r].token * te.row_bytes(), embed_ + (size_t)r * E, E);
     bool first = true;  // the slot's first row of the step sets its rotation
     for (uint32_t q = 0; q < r; q++) first = first && rows[q].slot != rows[r].slot;
@@ -1654,11 +1658,13 @@ std::vector<std::vector<Candidate>> Model::step(const StepIn *rows, uint32_t n, 
   }
 
   std::vector<std::vector<Candidate>> out(n);
-  for (uint32_t r = 0; r < n; r++) {
+  const uint32_t h0 = n - plan_->nhead;  // the head's first row
+  for (uint32_t r = h0; r < n; r++) {
     auto &o = out[r];
     for (uint32_t c = 0; c < ncards_; c++) {
-      size_t base = ((size_t)c * STEP_MAX_ROWS + r) * opt_.candidates;
-      for (uint32_t i = 0; i < top_n_[c * STEP_MAX_ROWS + r]; i++) o.push_back({(int32_t)top_idx_[base + i], top_val_[base + i]});
+      size_t base = ((size_t)c * STEP_MAX_ROWS + r - h0) * opt_.candidates;
+      for (uint32_t i = 0; i < top_n_[c * STEP_MAX_ROWS + r - h0]; i++)
+        o.push_back({(int32_t)top_idx_[base + i], top_val_[base + i]});
     }
     std::sort(o.begin(), o.end(), [](const Candidate &a, const Candidate &b) {
       return a.logit != b.logit ? a.logit > b.logit : a.token < b.token;
