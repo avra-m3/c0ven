@@ -173,7 +173,7 @@ Model::Model(const std::string &path, const Options &opt) : opt_(opt), gguf_(pat
   // Sharing moves experts in and out of the cache, so it needs the swaps, and a cache the engine sizes.
   share_ = opt_.share_kv && opt_.adapt_swaps && opt_.experts_per_layer < 0;
   if (share_) blk_ = rt_->vm_block(0);
-  pool_ = std::make_unique<Pool>(opt_.cpu_threads > 1 ? opt_.cpu_threads - 1 : 0);
+  pool_ = std::make_unique<Pool>(opt_.cpu_threads > 1 ? opt_.cpu_threads - 1 : 0, true);
   cpu_ = std::make_unique<CpuExperts>(*pool_);
   info_.loader_threads = loader_threads();
   ngram_ = std::make_unique<Ngram>(gguf_, 1u << 20, 128, opt_.ngram_in_ram, info_.loader_threads,

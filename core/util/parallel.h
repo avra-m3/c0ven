@@ -14,7 +14,9 @@ namespace engine {
 
 class Pool {
  public:
-  explicit Pool(unsigned workers);
+  // pin: each worker on a physical core of its own, the first CPU of each core the process may use from the second
+  // core on, so no two workers share a core's execution units; unpinned when there are too few cores.
+  explicit Pool(unsigned workers, bool pin = false);
   ~Pool();
   Pool(const Pool &) = delete;
   Pool &operator=(const Pool &) = delete;
@@ -33,7 +35,7 @@ class Pool {
     alignas(64) std::atomic<uint64_t> next{0};
     alignas(64) std::atomic<uint64_t> done{0};
   };
-  void work();
+  void work(int cpu);
   static void drain(Job &job);
 
   std::vector<std::thread> threads_;
