@@ -15,6 +15,9 @@ protocol lines. The rules, from ADR-0017:
 - One producer per shared prefix: a request whose prompt starts with a prefix another request will checkpoint waits
   for that checkpoint, holding no slot and no pages, unless it has the higher priority.
 - Checkpoints are taken where the model's rule puts them; a prompt span ends at each one.
+- With a disk tier, an evicted checkpoint is written to disk before its pages go, idle time writes the others ahead,
+  and a request whose prompt starts with a checkpoint on disk longer than any in memory reads it back first
+  (engine/seqstate/disk.py).
 - A slot holds KV pages for what it has read and written and a block ahead (`SeqState.grow`). When a writing slot
   stalls and evicting checkpoints frees no page for it, the newest slot of the lowest priority is stopped and its
   request goes back to the queue with its tokens so far added to its prompt. Nothing is admitted while a slot waits
@@ -26,6 +29,7 @@ The core keeps decoding between plans, so a plan is built only when something ch
 from __future__ import annotations
 
 import dataclasses
+import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -50,8 +54,12 @@ from engine.api.interface import (
     StepPlan,
     prefix_key,
 )
+from engine.seqstate.checkpoints import Checkpoint
+from engine.seqstate.disk import BLOCK, BLOCK_PAGES, MIN_TOKENS, Chain, DiskTier, Entry, chain_of, storable
 from engine.seqstate.manager import SeqState, pages_for
 from engine.timing import STRETCH, CostModel, short_rows, whole_rows
+
+log = logging.getLogger("engine.scheduler")
 
 type CheckpointRule = Callable[[tuple[int, ...]], list[tuple[int, bool]]]
 """Where to checkpoint a prompt: (position, kept) pairs. The model's rule is in models/<arch>/."""
@@ -137,6 +145,8 @@ class Request:
     """The position the slot waits at for a page, from its STALLED event until it has the page."""
     preempting: bool = False
     """It is stopped to free its pages, and goes back to the queue when it finishes."""
+    chain: Chain | None = None
+    """The block hashes of `key`, for the disk tier; computed once."""
 
     @property
     def left(self) -> int:
@@ -161,6 +171,7 @@ class Scheduler:
         clock: Callable[[], float] = time.monotonic,
         *,
         cost: CostModel | None = None,
+        disk: DiskTier | None = None,
     ) -> None:
         self.engine = engine
         self.facts = facts
@@ -168,6 +179,9 @@ class Scheduler:
         self.rule = checkpoint_rule
         self.clock = clock
         self.state = SeqState(facts.slots, facts.pages, facts.checkpoints, classes=max(1, facts.cards))
+        self.disk = disk if facts.checkpoints else None
+        if self.disk is not None:
+            self.state.spill = self._spill
         self.cost = cost or CostModel.initial()
         self.cost.short_rows = short_rows(facts.fetch_rows)
         self.whole_rows = whole_rows(facts.fetch_rows)
@@ -187,6 +201,12 @@ class Scheduler:
     @property
     def idle(self) -> bool:
         return not self.by_rid
+
+    @property
+    def can_write_ahead(self) -> bool:
+        return self.disk is not None and any(
+            ck.ready and not ck.on_disk and storable(ck.tokens) for ck in self.state.checkpoints
+        )
 
     def report(self) -> dict[str, str]:
         """The STATS line: the engine's counters, field for field, then the scheduler's: the requests waiting for a
@@ -211,6 +231,15 @@ class Scheduler:
         out["kv_pages_used"] = str(in_use)
         out["kv_pages_slots"] = str(slots)
         out["kv_pages_checkpoints"] = str(only)
+        if self.disk is not None:
+            d = self.disk.stats()
+            out["kv_disk_checkpoints"] = str(d.entries)
+            out["kv_disk_bytes"] = str(d.bytes)
+            out["kv_disk_saved"] = str(d.saved)
+            out["kv_disk_loaded"] = str(d.loaded)
+            out["kv_disk_save_ms"] = f"{d.save_s * 1e3:.1f}"
+            out["kv_disk_load_ms"] = f"{d.load_s * 1e3:.1f}"
+            out["kv_disk_evicted"] = str(d.evicted)
         return out
 
     # Commands.
@@ -309,16 +338,30 @@ class Scheduler:
         self.waiting.sort(key=lambda r: (-r.priority, r.arrived))
         for r in list(self.waiting):
             best = self.state.checkpoints.longest_prefix(r.key)
-            producer = self._producer_for(r, len(best.tokens) if best else 0)
+            have = len(best.tokens) if best else 0
+            entry = None
+            if self.disk is not None and self.state.free_slots and len(r.key) > max(MIN_TOKENS, have + 1):
+                if r.chain is None:
+                    r.chain = chain_of(r.key)
+                entry = self.disk.longest_prefix(r.key, r.chain)
+                if entry is not None and entry.length <= have:
+                    entry = None
+            producer = self._producer_for(r, entry.length if entry is not None else have)
             if producer is not None:
                 r.waiting_for = producer
                 continue
             r.waiting_for = None
             o = self.options
-            admission = self.state.plan_admission(r.key, r.left, o.decode_lookahead + o.decode_batch)
+            ahead = o.decode_lookahead + o.decode_batch
+            if entry is not None:
+                loaded = self._read_back(entry, r.key[: entry.length], best, len(r.key) + min(ahead, r.left))
+                if loaded is None and (producer := self._producer_for(r, have)) is not None:
+                    r.waiting_for = producer
+                    continue
+            admission = self.state.plan_admission(r.key, r.left, ahead)
+            self._flush_drops()
             if admission is None:
                 break
-            self._flush_drops()
             seq = self.state.admit(admission, r.key, r.left)
             s = r.settings
             try:
@@ -368,6 +411,55 @@ class Scheduler:
                 self.engine.restore(seq.slot, admission.checkpoint.id)
                 if not again:
                     out.append(protocol.Resume(r.rid, seq.start))
+
+    # The disk tier.
+
+    def _spill(self, ck: Checkpoint) -> None:
+        """Write an evicted checkpoint to disk, if the core has answered it and it can go there."""
+        if self.disk is not None and ck.ready and storable(ck.tokens):
+            self.disk.save(self.engine, ck.id, ck.tokens, ck.pages)
+
+    def _read_back(
+        self,
+        entry: Entry,
+        tokens: tuple[int, ...],
+        keep: Checkpoint | None,
+        total_cells: int,
+    ) -> Checkpoint | None:
+        """Read a disk entry into a checkpoint, with pages for its unshared positions, when the full request of
+        `total_cells` fits; admission then restores it. None if the pools have no room or a file is refused."""
+        assert self.disk is not None
+        shared_blocks = len(keep.tokens) // BLOCK if keep is not None else 0
+        ck = self.state.take_pages_for(tokens, keep, total_cells, shared_blocks * BLOCK_PAGES)
+        self._flush_drops()  # an evicted checkpoint's id may be this one's, or room-making dropped one
+        if ck is None:
+            return None
+        if not self.disk.load(self.engine, entry, ck.id, ck.pages, shared_blocks):
+            self.state.discard(ck)
+            self._flush_drops()
+            return None
+        ck.ready = ck.on_disk = True
+        return ck
+
+    def write_ahead(self, limit: int = 1) -> int:
+        """Write up to `limit` checkpoints not on disk yet, used longest ago first, so that an eviction under load
+        finds them there and writes nothing. For idle time. Returns how many it wrote."""
+        if self.disk is None:
+            return 0
+        tried = saved = 0
+        for ck in sorted(self.state.checkpoints, key=lambda c: c.used):
+            if tried >= limit:
+                break
+            if ck.ready and not ck.on_disk and storable(ck.tokens):
+                ck.on_disk = True
+                tried += 1
+                if self.disk.save(self.engine, ck.id, ck.tokens, ck.pages):
+                    saved += 1
+        return saved
+
+    def write_all(self) -> int:
+        """Write every checkpoint not on disk yet: before a sleep or an exit, which drop them all."""
+        return self.write_ahead(len(self.state.checkpoints))
 
     def _flush_drops(self) -> None:
         for checkpoint_id in self.state.drops:
@@ -610,6 +702,7 @@ class Scheduler:
         self._free_slot(r)
         r.prompt = r.prompt[: r.given] + tuple(r.written)
         r.key = prefix_key(r.prompt, r.images)
+        r.chain = None
         r.phase = Phase.WAITING
         r.slot = -1
         r.next_pos = r.done_pos = r.passes = r.generated = 0

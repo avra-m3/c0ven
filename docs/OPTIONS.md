@@ -10,6 +10,8 @@ The arguments after the image name in `docker run` are the server's options. The
 | `--context` | the model file's | Context length in tokens, up to 4 times the file's `context_length` and a multiple of 4. Above the file's `context_length` every request on the server is scaled by YaRN, short ones too. |
 | `--default-max-tokens` | the rest of the context | What a request without `max_tokens` may write, in tokens (`32k` is 32,768). |
 | `--kv-tokens` | slots x context | The KV cache the slots share, in tokens (`512k` is 524,288), at least `--context`. The tokens the requests do not hold lend their VRAM to the expert cache; with `--deterministic`, each token of it takes VRAM that would otherwise cache experts. See below. |
+| `--kv-disk` | | A folder on a fast drive for checkpoints the server would otherwise drop: it writes them there and reads them back when a prompt starts with one. In a container, a mounted volume. Without it, none. See [CACHING.md](CACHING.md#the-disk-tier). |
+| `--kv-disk-gib` | `64` | GiB the `--kv-disk` folder holds at most; the checkpoints used longest ago go first. |
 | `--host` | `127.0.0.1` | Address to listen on. |
 | `--port` | `8080` | Port to listen on. |
 | `--name` | | The model's name in the APIs. |

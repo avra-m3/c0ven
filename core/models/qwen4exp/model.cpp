@@ -276,6 +276,7 @@ void Model::load_cards(bool first) {
     card->c = c;
     card->C = ncards_;
     card->up = std::make_unique<ze::List>(*rt_, c, ze::List::immediate);
+    card->page_copy = std::make_unique<ze::List>(*rt_, c, ze::List::regular, true);
     cards_.push_back(std::move(card));
   }
   std::fill(kvs_to_.begin(), kvs_to_.end(), 0);  // the ring starts empty

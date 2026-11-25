@@ -8,11 +8,15 @@ partial page p // 4 (its first p % 4 cells), since it will write the cells after
 
 On two cards logical page i must be a page of class i % 2 (`PagePool`), so reservations are counted per class.
 Admission reserves the prompt and a first block of cells after it; `grow` reserves the rest a block at a time.
+
+Every evicted checkpoint goes to `spill` first, while it still holds its pages, so the disk tier can keep it
+(engine/seqstate/disk.py). `take_pages_for` gives a checkpoint read back from there its id and pages.
 """
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from engine.api.interface import PAGE_CELLS, PageChange, PageOp
@@ -67,6 +71,8 @@ class SeqState:
         """Checkpoints evicted because the KV pool could not give the pages an admission or a slot's growth wanted."""
         self.evicted_for_room = 0
         """Checkpoints evicted because the checkpoint pool was full when a new one was taken."""
+        self.spill: Callable[[Checkpoint], None] | None = None
+        """Given each checkpoint about to be evicted, while it holds its pages."""
 
     @property
     def free_slots(self) -> int:
@@ -150,6 +156,8 @@ class SeqState:
 
     def _evict_for_pages(self, victim: Checkpoint) -> None:
         log.info("checkpoint %d of %d tokens evicted: the KV pool is short of pages", victim.id, len(victim.tokens))
+        if self.spill is not None:
+            self.spill(victim)
         self.checkpoints.remove(victim.id)
         self.drops.append(victim.id)
         self.evicted_for_pages += 1
@@ -212,10 +220,47 @@ class SeqState:
             return None
         if not self.checkpoints.has_room():
             return None
-        ck, evicted = self.checkpoints.add(tokens, tuple(seq.pages[: pages_for(position)]), kept)
+        ck, evicted = self.checkpoints.add(tokens, tuple(seq.pages[: pages_for(position)]), kept, self.spill)
         self.drops.extend(evicted)
         self.evicted_for_room += len(evicted)
         return ck
+
+    def take_pages_for(
+        self,
+        tokens: tuple[int, ...],
+        keep: Checkpoint | None = None,
+        total_cells: int = 0,
+        shared_pages: int = 0,
+    ) -> Checkpoint | None:
+        """A checkpoint of `tokens` with fresh pages for its unshared positions, not ready, for the disk tier to read
+        into: room is made as for an admission of `total_cells` cells, never by evicting `keep`. Shares `shared_pages`
+        of `keep` when given. None if it does not fit. The caller marks it ready once it is read, or `discard`s it."""
+        n = pages_for(len(tokens))
+        shared = min(shared_pages, len(keep.pages) if keep is not None else 0, n)
+        full = len(tokens) // PAGE_CELLS
+        end = pages_for(max(len(tokens), total_cells))
+        ck_need = self.pool.split(shared, n)
+        seq_need = self.pool.split(full, end)
+        room_need = [a + b for a, b in zip(ck_need, seq_need, strict=True)]
+        if not self.checkpoints.has_room() or not self._make_room(room_need, keep=keep):
+            return None
+        self.pool.reserve(ck_need)
+        prefix = keep.pages[:shared] if keep is not None else ()
+        for page in prefix:  # hold before checkpoints.add, which may evict `keep` itself
+            self.pool.incref(page)
+        fresh = tuple(self.pool.take(logical) for logical in range(shared, n))
+        pages = (*prefix, *fresh)
+        ck, evicted = self.checkpoints.add(tokens, pages, False, self.spill)
+        for page in pages:  # the checkpoint holds its own reference
+            self.pool.decref(page)
+        self.drops.extend(evicted)
+        self.evicted_for_room += len(evicted)
+        return ck
+
+    def discard(self, ck: Checkpoint) -> None:
+        """Remove a checkpoint `take_pages_for` gave that could not be read."""
+        self.checkpoints.remove(ck.id)
+        self.drops.append(ck.id)
 
     def release(self, slot: int) -> None:
         seq = self.sequences.pop(slot)

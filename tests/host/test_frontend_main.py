@@ -78,3 +78,14 @@ def test_the_model_is_read_from_the_first_shard_given_any(tmp_path: Path):
     model = load(tmp_path / "m-00003-of-00003.gguf")
     assert model.arch == "testarch"
     assert model.path == str(tmp_path / "m-00003-of-00003.gguf")
+
+
+def test_kv_disk_flags_reach_the_engine_and_reject_non_positive_cap(tmp_path: Path):
+    args = parse_args(["--engine-backend", "mock", "--kv-disk", str(tmp_path), "--kv-disk-gib", "12.5"])
+    argv = engine_argv(args)
+    assert argv[argv.index("--kv-disk") + 1] == str(tmp_path)
+    assert argv[argv.index("--kv-disk-gib") + 1] == "12.5"
+    with pytest.raises(SystemExit):
+        parse_args(["--kv-disk-gib", "0"])
+    with pytest.raises(SystemExit):
+        parse_args(["--kv-disk-gib", "-1"])

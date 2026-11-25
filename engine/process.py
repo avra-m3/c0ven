@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import hashlib
 import importlib
 import json
 import logging
@@ -46,6 +47,7 @@ from engine.memory_plan import (
 )
 from engine.models import ModelSetup
 from engine.scheduler import CheckpointRule, Scheduler, SchedulerOptions
+from engine.seqstate.disk import DiskTier
 from engine.timing import CostModel
 
 log = logging.getLogger("engine")
@@ -218,6 +220,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="slot checkpoints in pinned host memory, each a slot's running state; 0: none, every prompt is read whole",
     )
     p.add_argument(
+        "--kv-disk",
+        type=Path,
+        help="a folder on a fast drive for the disk tier: a checkpoint the KV pool or the checkpoint pool has no room"
+        " for is written there instead of dropped, and a prompt that starts with one reads it back; it is kept"
+        " across restarts. Default: none",
+    )
+    p.add_argument(
+        "--kv-disk-gib",
+        type=float,
+        default=64.0,
+        help="GiB the disk tier's folder holds at most; the checkpoints used longest ago go first",
+    )
+    p.add_argument(
         "--kv-tokens",
         type=protocol.tokens,
         default=0,
@@ -278,6 +293,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         p.error("the native backend needs --model")
     if args.model is None and args.arch is None:
         p.error("give --model or --arch")
+    if args.kv_disk_gib <= 0:
+        p.error("--kv-disk-gib must be positive")
     return args
 
 
@@ -356,7 +373,9 @@ def serve(
     fit_report: Callable[[EngineFacts], tuple[list[fit.Row], list[str]]] | None = None,
     cost_file: Path | None = None,
     swap_watch: SwapWatch | None = None,
+    disk: Callable[[EngineFacts], DiskTier] | None = None,
 ) -> int:
+    """`disk` makes the disk tier for the loaded engine; it outlives each sleep's scheduler."""
     swap_watch = swap_watch or SwapWatch()
     events: queue.Queue[protocol.Event | None] = queue.Queue()
     commands: queue.Queue[protocol.Command] = queue.Queue()
@@ -407,7 +426,8 @@ def serve(
         return 1
     reader = threading.Thread(target=_reader, args=(stdin, commands), name="protocol-reader", daemon=True)
     reader.start()
-    scheduler = Scheduler(engine, facts, options, rule, cost=read_cost(cost_file))
+    tier = disk(facts) if disk is not None else None
+    scheduler = Scheduler(engine, facts, options, rule, cost=read_cost(cost_file), disk=tier)
     images: dict[int, list[Image]] = {}
     """Each request's images from its IMG lines, until its GEN."""
     bad_images: dict[int, str] = {}
@@ -420,8 +440,9 @@ def serve(
     swap_watch.start()
     try:
         while True:
+            idle_wait = scheduler.idle and not (state is State.AWAKE and scheduler.can_write_ahead)
             try:
-                command = commands.get(timeout=0.5) if scheduler.idle else commands.get_nowait()
+                command = commands.get(timeout=0.5) if idle_wait else commands.get_nowait()
             except queue.Empty:
                 command = None
             quit_now = False
@@ -480,6 +501,8 @@ def serve(
                 except queue.Empty:
                     command = None
             if quit_now:
+                if state is State.AWAKE:
+                    write_all(scheduler)
                 break
             if state is State.DRAINING:
                 if not scheduler.idle and not cancelled and time.monotonic() >= deadline:
@@ -488,6 +511,7 @@ def serve(
                         for e in scheduler.cancel(rid):
                             events.put(e)
                 if scheduler.idle:
+                    write_all(scheduler)
                     engine.sleep()
                     write_cost(cost_file, scheduler.cost)
                     state = State.ASLEEP
@@ -498,11 +522,13 @@ def serve(
                 facts = engine.wake()
                 if (failure := loaded(facts, load)) is not None:
                     raise RuntimeError(failure)
-                scheduler = Scheduler(engine, facts, options, rule, cost=read_cost(cost_file))
+                scheduler = Scheduler(engine, facts, options, rule, cost=read_cost(cost_file), disk=tier)
                 state = State.AWAKE
             if not scheduler.idle:
                 for e in scheduler.tick(0.002):
                     events.put(e)
+            elif state is State.AWAKE and commands.empty():
+                scheduler.write_ahead()  # one checkpoint at a time, so a request that comes waits for one at most
     except Exception as exc:  # every failure ends the process with ERR -, so the front end restarts it
         log.exception("engine failed")
         events.put(protocol.Error(None, str(exc)))
@@ -653,6 +679,17 @@ def main(argv: list[str] | None = None) -> int:
         if the_host is not None
         else None,
         cost_file=cost,
+        disk=(
+            (
+                lambda facts: DiskTier(
+                    args.kv_disk,
+                    disk_identity(args.model if native else None, facts),
+                    round(args.kv_disk_gib * GIB),
+                )
+            )
+            if args.kv_disk is not None
+            else None
+        ),
     )
     # A stuck queue makes the driver's teardown at a normal exit wait forever, so the process skips it. serve has
     # flushed the protocol's lines by now. Otherwise the process exits normally: the teardown stops the driver's loop on
@@ -662,6 +699,24 @@ def main(argv: list[str] | None = None) -> int:
     if engine.queue_stuck():
         os._exit(status)
     return status
+
+
+def write_all(scheduler: Scheduler) -> None:
+    """Before a sleep or an exit, which drop the checkpoints: every one not on disk yet goes there."""
+    t0 = time.monotonic()
+    if n := scheduler.write_all():
+        log.info("disk tier: %d checkpoints written in %.1f s", n, time.monotonic() - t0)
+
+
+def disk_identity(model: Path | None, facts: EngineFacts) -> str:
+    """The disk tier's subfolder for a load: its files hold the KV and state of this model file, engine version,
+    count of cards and context length only."""
+    if model is None:
+        return f"{facts.version}-{facts.cards}-{facts.max_context}"
+    first = first_shard(model)
+    st = first.stat()
+    key = f"{first.resolve()}|{st.st_size}|{st.st_mtime_ns}|{facts.version}|{facts.cards}|{facts.max_context}"
+    return f"{first.stem}-{hashlib.blake2b(key.encode(), digest_size=8).hexdigest()}"
 
 
 def cache_dir() -> str | None:

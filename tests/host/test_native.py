@@ -6,6 +6,7 @@ table, so a wrong table gives wrong tokens; a slot past its pages stalls."""
 
 from __future__ import annotations
 
+import json
 from collections import deque
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
@@ -18,6 +19,7 @@ from engine.api import abi, native
 from engine.api.interface import EngineError, ErrorCode, EventKind, Image, OpenConfig, SlotSettings
 from engine.api.native import NativeEngine
 from engine.scheduler import CheckpointRule, Scheduler, SchedulerOptions, every_16k
+from engine.seqstate.disk import MIN_TOKENS, DiskTier
 from tests.helpers import open_config
 
 VOCAB = 1000
@@ -272,6 +274,28 @@ class FakeCore:
     def drop(self, checkpoint_id: int) -> None:
         self.checkpoints.pop(checkpoint_id, None)
 
+    def save_pages(self, pages: Sequence[int], path: str) -> None:
+        self._drain()
+        Path(path).write_text(json.dumps({"max_ctx": self.max_ctx, "cells": [self.cells.get(p) for p in pages]}))
+
+    def load_pages(self, pages: Sequence[int], path: str) -> None:
+        self._drain()
+        saved = json.loads(Path(path).read_text())
+        if saved["max_ctx"] != self.max_ctx:
+            raise EngineError(ErrorCode.INVALID_ARGUMENT, f"{path}: a page file of another context")
+        assert len(saved["cells"]) == len(pages)
+        for p, cells in zip(pages, saved["cells"], strict=True):
+            self.cells[p] = cells
+
+    def save_checkpoint(self, checkpoint_id: int, path: str) -> None:
+        Path(path).write_text(json.dumps({"max_ctx": self.max_ctx, "tokens": self.checkpoints[checkpoint_id]}))
+
+    def load_checkpoint(self, checkpoint_id: int, path: str) -> None:
+        saved = json.loads(Path(path).read_text())
+        if saved["max_ctx"] != self.max_ctx:
+            raise EngineError(ErrorCode.INVALID_ARGUMENT, f"{path}: a checkpoint file of another context")
+        self.checkpoints[checkpoint_id] = saved["tokens"]
+
     def read_timing(self, cap: int) -> list[abi.CTiming]:
         out: list[abi.CTiming] = []
         while self.timing and len(out) < cap:
@@ -354,12 +378,13 @@ def make(
     prompt_chunk: int = 64,
     queue_limit: int = 64,
     options: SchedulerOptions | None = None,
+    disk: DiskTier | None = None,
 ) -> Run:
     fake = FakeCore(prompt_chunk=prompt_chunk, queue_limit=queue_limit)
     engine = NativeEngine(core=fake)
     config = replace(config or open_config(), shard_paths=("model.gguf",))
     facts = engine.open(config)
-    return Run(fake, engine, Scheduler(engine, facts, options, rule))
+    return Run(fake, engine, Scheduler(engine, facts, options, rule, disk=disk))
 
 
 def prompt_of(n: int, seed: int = 0) -> list[int]:
@@ -446,6 +471,33 @@ def test_a_shared_prefix_is_restored_from_a_checkpoint():
     assert run.tokens(1) == expected(a, 6)
     assert run.tokens(2) == expected(b, 6)
     assert run.done(2).reused == 64
+
+
+def test_a_checkpoint_read_back_from_disk_restores_its_length(tmp_path: Path):
+    n = MIN_TOKENS + 6
+
+    def at_n(prompt: tuple[int, ...]) -> list[tuple[int, bool]]:
+        return [(n, False)] if len(prompt) > n else []
+
+    prefix = prompt_of(n, 5)
+    a, b = [*prefix, *prompt_of(10, 6)], [*prefix, *prompt_of(7, 7)]
+    run = make(open_config(context=2048), rule=at_n, disk=DiskTier(tmp_path, "t", 2**30))
+    run.add(1, a, 6)
+    run.until_idle()
+    assert run.scheduler.write_all() == 1
+    again = make(open_config(context=2048), rule=at_n, disk=DiskTier(tmp_path, "t", 2**30))
+    again.add(2, b, 6)
+    again.until_idle()
+    assert again.tokens(2) == expected(b, 6)
+    assert again.done(2).reused == n
+
+    wrong_ctx = make(open_config(context=4096), rule=at_n, disk=DiskTier(tmp_path, "t", 2**30))
+    wrong_ctx.add(3, b, 6)
+    wrong_ctx.until_idle()
+    assert wrong_ctx.tokens(3) == expected(b, 6)
+    assert wrong_ctx.done(3).reused == 0
+    assert wrong_ctx.scheduler.disk is not None
+    assert len(wrong_ctx.scheduler.disk) == 0
 
 
 def test_a_prefix_ending_inside_a_page_shares_the_full_pages_and_copies_the_last():

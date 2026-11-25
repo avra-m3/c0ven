@@ -186,6 +186,11 @@ class Model final : public engine::Model {
   void kv_need(uint32_t in_use, uint32_t resident = UINT32_MAX) override;
   void kv_ahead() override;
   void kvs_drop(uint32_t slot, uint32_t pages) override;
+  // Whole pages to and from host memory for the disk tier (state.cpp): K and V from the host copies when streamed.
+  void kv_back(uint32_t pages) override;
+  uint64_t kv_page_bytes() const override;
+  void read_pages(const uint32_t *pages, uint32_t n, uint8_t *dst) override;
+  void write_pages(const uint32_t *pages, uint32_t n, const uint8_t *src) override;
 
   // Adaptive swaps (swap.cpp): a round makes the clearest swaps first.
   void note_prompt_routing(bool add) override;
