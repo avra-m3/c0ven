@@ -1,8 +1,8 @@
 // Level 3 (docs/TESTING.md): the prompt path's quantised products of kernels/quant/qgemm.cl, on random blocks of
 // every type the engine reads and on real weights of the file, against ggml's CPU dequantisation of the same blocks
-// multiplied in double precision by the same fp16 activations. dequant_f16; moe_gate_up_t and moe_down_t in the runs
-// layout (cached experts) and the file's (streamed experts), for card 1's half of an expert, so the slices start
-// mid-row. Tolerance 2e-3 of the largest |reference| (TESTING.md, "Tolerances": fp16 products).
+// multiplied in double precision by the same fp16 activations. dequant_f16; dense_t; moe_gate_up_t and moe_down_t in
+// the runs layout (cached experts) and the file's (streamed experts), for card 1's half of an expert, so the slices
+// start mid-row. Tolerance 2e-3 of the largest |reference| (TESTING.md, "Tolerances": fp16 products).
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -31,10 +31,15 @@ uint64_t align256(uint64_t x) { return (x + 255) & ~255ull; }
 struct Checker {
   int failures = 0;
   void check(const char *what, const std::vector<double> &ref, const uint16_t *got) {
+    std::vector<float> f(ref.size());
+    for (size_t i = 0; i < ref.size(); i++) f[i] = ggml_fp16_to_fp32(got[i]);
+    check(what, ref, f.data());
+  }
+  void check(const char *what, const std::vector<double> &ref, const float *got) {
     double maxerr = 0, maxref = 0;
     for (size_t i = 0; i < ref.size(); i++) {
       maxref = std::max(maxref, std::fabs(ref[i]));
-      double e = std::fabs(ref[i] - ggml_fp16_to_fp32(got[i]));
+      double e = std::fabs(ref[i] - got[i]);
       maxerr = std::isnan(e) ? INFINITY : std::max(maxerr, e);
     }
     // A reference past fp16's range would come back inf from a right kernel: the test's data is wrong.
@@ -80,6 +85,50 @@ int main() {
     ck.check(what.c_str(), ref, dO);
     rt.free(dW);
     rt.free(dO);
+  };
+
+  // dense_t on the same rows x K against 75 rows of fp16 activations (two token tiles, the second partial): fp16 out
+  // with rows a multiple of 32 apart (the block stores) and f32 out with rows rows apart (the single stores).
+  auto dense_t = [&](uint32_t type, const std::string &name, const uint8_t *blocks, uint32_t rows, uint32_t K) {
+    const uint32_t bpr = K / quant_block_values(type), T = 75;
+    std::vector<uint8_t> runs(runs_bytes(type, (uint64_t)rows * bpr));
+    to_runs(type, {{blocks, (uint64_t)bpr * quant_block_bytes(type), 0, rows, 0, bpr}}, runs.data());
+    std::vector<float> wf((size_t)rows * K);
+    ggml_get_type_traits((ggml_type)type)->to_float(blocks, wf.data(), (int64_t)wf.size());
+    std::vector<uint16_t> x((size_t)T * K);
+    for (auto &v : x) v = ggml_fp32_to_fp16(normal(rng));
+    std::vector<double> ref((size_t)T * rows);
+    for (uint32_t t = 0; t < T; t++)
+      for (uint32_t r = 0; r < rows; r++) {
+        double s = 0;
+        for (uint32_t k = 0; k < K; k++) s += (double)ggml_fp16_to_fp32(x[(size_t)t * K + k]) * wf[(size_t)r * K + k];
+        ref[(size_t)t * rows + r] = s;
+      }
+    auto *dW = static_cast<uint8_t *>(rt.alloc_device(card, runs.size()));
+    auto *dx = static_cast<uint16_t *>(rt.alloc_device(card, x.size() * 2));
+    auto *dn = static_cast<uint32_t *>(rt.alloc_host(4));
+    *dn = T;
+    L.copy(dW, runs.data(), runs.size());
+    L.copy(dx, x.data(), x.size() * 2);
+    const auto k = lib.get(card, "qgemm_" + lower(ggml_type_label(type)), "dense_t");
+    for (uint32_t yhalf : {1u, 0u}) {
+      const uint32_t ldy = yhalf ? (rows + 31) / 32 * 32 : rows;
+      auto *dY = static_cast<uint8_t *>(rt.alloc_host((size_t)T * ldy * 4));
+      L.launch(k, {dW, rows, bpr, dx, K, K, dn, dY, ldy, yhalf, grids}, (rows + 63) / 64, (T + MOE_TILE - 1) / MOE_TILE,
+               1, 64);
+      L.synchronize();
+      std::vector<float> got((size_t)T * rows);
+      for (uint32_t t = 0; t < T; t++)
+        for (uint32_t r = 0; r < rows; r++)
+          got[(size_t)t * rows + r] = yhalf ? ggml_fp16_to_fp32(reinterpret_cast<uint16_t *>(dY)[(size_t)t * ldy + r])
+                                            : reinterpret_cast<float *>(dY)[(size_t)t * ldy + r];
+      std::string what = std::string("dense_t ") + (yhalf ? "fp16 " : "f32 ") + ggml_type_label(type) + " " + name;
+      ck.check(what.c_str(), ref, got.data());
+      rt.free(dY);
+    }
+    rt.free(dW);
+    rt.free(dx);
+    rt.free(dn);
   };
 
   // The expert products: card 1's half of an expert of F rows (gate and up) or F values a row (down), so the slices
@@ -217,6 +266,7 @@ int main() {
     const uint32_t qk = quant_block_values(type), F = 1024;
     std::vector<uint8_t> dense = test::random_blocks(type, 200 * E / qk, rng);
     dequant(type, "random blocks", dense.data(), 200, E);
+    dense_t(type, "random blocks", dense.data(), 200, E);
     std::vector<uint8_t> g = test::random_blocks(type, F * E / qk, rng), u = test::random_blocks(type, F * E / qk, rng);
     std::vector<uint8_t> d = test::random_blocks(type, E * F / qk, rng);
     for (bool file : {false, true}) {
@@ -230,7 +280,7 @@ int main() {
     std::printf("model not found under FLASH_MODEL_DIR: the file's weights not checked\n");
   } else {
     GgufModel model(path);
-    // dequant_f16 on the first 200 rows of a dense tensor of each quantised type the file has.
+    // dequant_f16 and dense_t on the first 200 rows of a dense tensor of each quantised type the file has.
     std::set<uint32_t> dense_types;
     for (auto &[name, ti] : model.tensors())
       if (quant_block_values(ti.type) > 1 && name.find("exps") == std::string::npos &&
@@ -245,6 +295,7 @@ int main() {
         }
       EXPECT(t, "no dense tensor of type %s", ggml_type_label(type));
       dequant(type, t->name, t->data, 200, (uint32_t)t->shape[0]);
+      dense_t(type, t->name, t->data, 200, (uint32_t)t->shape[0]);
     }
 
     // Expert 7 of one layer per gate type, and of one per down type: card 1's half of 640.
