@@ -694,14 +694,15 @@ so it holds no VRAM of its own ([ADR-0031](adr/0031-images-through-the-prompt-pa
 
 ### The CPU side
 
-One thread per core the process can keep busy computes the misses: the engine thread and the workers, 16 on the
-test machine's 7945HX. The count is the CPUs the process may run on (`sched_getaffinity`), cut to the cgroup's
-`cpu.max` and to the physical cores among them (`engine/host.py`); `ENGINE_CPU_WORKERS` overrides it. The threads are
-not pinned to cores. At the first load the workers read up to 4 GiB of the arena once, and the fit report gives the
-rate. ggml is built for nine x86-64 levels, from the reference build's flags (AVX-512 with VBMI, VNNI and BF16) down
-to plain x86-64, each in a library of its own, and the control plane loads the first level the CPU has
-([ADR-0059](adr/0059-a-library-for-each-cpu-level.md)). A library refuses to open on a CPU without a feature its
-level uses.
+One thread per core the process can keep busy computes the misses: the engine thread and the workers, 16 on the test
+machine's 7945HX. The count is the CPUs the process may run on (`sched_getaffinity`), cut to the cgroup's `cpu.max` and
+to the physical cores among them (`engine/host.py`); `ENGINE_CPU_WORKERS` overrides it. Each worker is pinned to a
+physical core of its own, from the second core on, when there are more cores than workers; the engine thread is not
+pinned. At the first load the workers read up to 4 GiB of the arena once, and the fit report gives the rate. ggml is
+built for nine x86-64 levels, from the reference build's flags (AVX-512 with VBMI, VNNI and BF16) down to plain x86-64,
+each in a library of its own, and the control plane loads the first level the CPU has
+([ADR-0059](adr/0059-a-library-for-each-cpu-level.md)). A library refuses to open on a CPU without a feature its level
+uses.
 
 A job is one layer's misses for all the step's rows, and each missed expert's weights are read once for all of them.
 The workers compute each missed expert whole, from its place in the arena, with ggml's kernels for its type
