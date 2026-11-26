@@ -278,6 +278,51 @@ void iq4_nl(int n, const void *vx, const void *const *vy, float *s) {
   for (int r = 0; r < R; r++) s[r] = hsum_float_8(_mm256_add_ps(accum1[r], accum2[r]));
 }
 
+// Q2_0's codes are 0 to 3 for -1 to 2: each 32 of them dot their q8_0 block as sum(q * y) - sum(y), exact in
+// integers. The floats then add as ggml's scalar vec_dot adds them, block by block.
+template <int R>
+void q2_0(int n, const void *vx, const void *const *vy, float *s) {
+  const block_q2_0 *x = (const block_q2_0 *)vx;
+  const block_q8_0 *y[R];
+  for (int r = 0; r < R; r++) y[r] = (const block_q8_0 *)vy[r];
+  const int nb = n / QK2_0;
+  // A dword's byte b shifted by 2s holds code 4b + s in its low bits; the shuffle puts code 4b + s at byte 4b + s.
+  const __m256i shifts = _mm256_set_epi32(6, 4, 2, 0, 6, 4, 2, 0);
+  const __m256i m3 = _mm256_set1_epi8(3);
+  const __m256i order = _mm256_setr_epi8(0, 4, 8, 12, 1, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15, 0, 4, 8, 12, 1, 5, 9, 13, 2,
+                                         6, 10, 14, 3, 7, 11, 15);
+  const __m256i ones8 = _mm256_set1_epi8(1), ones16 = _mm256_set1_epi16(1);
+  float sumf[R];
+  for (int r = 0; r < R; r++) sumf[r] = 0.0f;
+  for (int i = 0; i < nb; ++i) {
+    const float d0 = fp16_to_fp32(x[i].d);
+    uint32_t w[4];
+    std::memcpy(w, x[i].qs, 16);
+    __m256i q[2];
+    for (int k = 0; k < 2; k++) {
+      const __m256i v = _mm256_set_epi32(w[2 * k + 1], w[2 * k + 1], w[2 * k + 1], w[2 * k + 1], w[2 * k], w[2 * k], w[2 * k],
+                                         w[2 * k]);
+      q[k] = _mm256_shuffle_epi8(_mm256_and_si256(_mm256_srlv_epi32(v, shifts), m3), order);
+    }
+    for (int r = 0; r < R; r++) {
+      __m256i a[2];
+      for (int k = 0; k < 2; k++) {
+        const __m256i y8 = _mm256_loadu_si256((const __m256i *)y[r][2 * i + k].qs);
+        const __m256i p = _mm256_sub_epi16(_mm256_maddubs_epi16(q[k], y8), _mm256_maddubs_epi16(ones8, y8));
+        a[k] = _mm256_madd_epi16(p, ones16);
+      }
+      __m256i t = _mm256_hadd_epi32(a[0], a[1]);
+      t = _mm256_hadd_epi32(t, t);
+      const __m128i u = _mm_add_epi32(_mm256_castsi256_si128(t), _mm256_extracti128_si256(t, 1));
+      float sumi = 0.0f;
+      sumi += fp16_to_fp32(y[r][2 * i].d) * (float)_mm_cvtsi128_si32(u);
+      sumi += fp16_to_fp32(y[r][2 * i + 1].d) * (float)_mm_extract_epi32(u, 1);
+      sumf[r] += d0 * sumi;
+    }
+  }
+  for (int r = 0; r < R; r++) s[r] = sumf[r];
+}
+
 // Rows in groups of up to 4: past 4 the accumulators no longer fit the registers.
 template <void (*F1)(int, const void *, const void *const *, float *), void (*F2)(int, const void *, const void *const *, float *),
           void (*F3)(int, const void *, const void *const *, float *), void (*F4)(int, const void *, const void *const *, float *)>
@@ -299,6 +344,7 @@ DotRows dot_rows_for(uint32_t type) {
     case GGML_TYPE_IQ3_XXS: return rows<iq3_xxs<1>, iq3_xxs<2>, iq3_xxs<3>, iq3_xxs<4>>;
     case GGML_TYPE_IQ3_S: return rows<iq3_s<1>, iq3_s<2>, iq3_s<3>, iq3_s<4>>;
     case GGML_TYPE_IQ4_NL: return rows<iq4_nl<1>, iq4_nl<2>, iq4_nl<3>, iq4_nl<4>>;
+    case GGML_TYPE_Q2_0: return rows<q2_0<1>, q2_0<2>, q2_0<3>, q2_0<4>>;
     default: return nullptr;
   }
 }

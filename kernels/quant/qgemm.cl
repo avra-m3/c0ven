@@ -89,8 +89,8 @@ REQD_SG __kernel void moe_gate_up_t(__global const uchar *base, ulong slot_bytes
                                     __global const uint *ntiles, uint rows, uint bpr, ulong up_off,
                                     __global const ushort *X, uint K, uint ldx, __global half *H, uint hsigma,
                                     __global const uchar *grids) {
+  if (get_group_id(1) >= *ntiles) return;  // before the grid's barrier: the whole work-group leaves
   LOAD_GRID(grids)
-  if (get_group_id(1) >= *ntiles) return;
   MoeTile t = tiles[get_group_id(1)];
   const uint lane = sg_lane();
   const uint r = (get_group_id(0) * QG_SG + sg_id()) * 16 + lane;
@@ -228,8 +228,8 @@ REQD_SG __kernel void moe_down_t(__global const uchar *base, ulong slot_bytes, u
                                  __global const MoeTile *tiles, __global const uint *ntiles, uint rows, uint bpr,
                                  uint b0, __global const ushort *Hin, uint K, __global half *Y,
                                  __global const uchar *grids) {
+  if (get_group_id(1) >= *ntiles) return;  // before the grid's barrier: the whole work-group leaves
   LOAD_GRID(grids)
-  if (get_group_id(1) >= *ntiles) return;
   MoeTile t = tiles[get_group_id(1)];
   __global const uchar *D = tile_base(base, slot_bytes, t) + down_off;
   if (t.count <= MOE_TILE / 2)

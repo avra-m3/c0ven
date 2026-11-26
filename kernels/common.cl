@@ -14,6 +14,18 @@ REQD_SG __kernel void quantize_a8(__global const float *x, uint K, uint x_stride
   a8_store(vload2(sg_lane(), x + (ulong)t * x_stride + 32 * u), out + (ulong)t * (K + K / 8), K, u);
 }
 
+// quantize_a8 of the last *nhead of *nrows rows of x (x_stride apart), into rows 0 .. *nhead - 1 of out: the rows a
+// head reads. Groups ceil(K / 32 width / 4), 64.
+REQD_SG __kernel void quantize_a8_last(__global const float *x, uint K, uint x_stride, __global const uint *nrows,
+                                       __global const uint *nhead, __global uchar *out) {
+  uint units = K / 32;
+  uint g = get_group_id(0) * 4 + sg_id();
+  const uint nh = *nhead;
+  if (g >= units * nh) return;
+  uint t = g / units, u = g % units;
+  a8_store(vload2(sg_lane(), x + (ulong)(*nrows - nh + t) * x_stride + 32 * u), out + (ulong)t * (K + K / 8), K, u);
+}
+
 #include "topk.h"
 
 static inline float silu(float x) { return x / (1.0f + exp(-x)); }

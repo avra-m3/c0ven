@@ -20,12 +20,12 @@ int main() {
   if (!dot_rows_for(GGML_TYPE_IQ2_S)) return test::skip("no AVX2, FMA or F16C");
   std::mt19937 rng(7);
   std::normal_distribution<float> normal(0.0f, 1.0f);
-  // Gate and up types are rows of 2,560 values; down's IQ4_NL is 320 or 640, a card's half of K or all of it.
+  // Gate and up types are rows of 2,560 values; down's IQ4_NL and Q2_0 are 320 or 640, a card's half of K or all of it.
   const struct {
     ggml_type type;
     int K;
   } cases[] = {{GGML_TYPE_IQ2_S, 2560}, {GGML_TYPE_IQ3_XXS, 2560}, {GGML_TYPE_IQ3_S, 2560},
-               {GGML_TYPE_IQ4_NL, 320},  {GGML_TYPE_IQ4_NL, 640}};
+               {GGML_TYPE_IQ4_NL, 320},  {GGML_TYPE_IQ4_NL, 640}, {GGML_TYPE_Q2_0, 320}, {GGML_TYPE_Q2_0, 640}};
   for (const auto &c : cases) {
     const auto *tr = ggml_get_type_traits_cpu(c.type);
     const auto *qt = ggml_get_type_traits_cpu(tr->vec_dot_type);

@@ -232,8 +232,8 @@ REQD_SG __kernel void moe_gate_up_g(__global const uchar *cache, ulong slot_byte
                                     __global const uchar *act, uint K, uint act_stride, uint per_tok,
                                     __global float *h, __global const uchar *grids, __global uchar *ha) {
   __local float hs[A][MOE_WG_ROWS];
+  if (get_group_id(1) >= *ngroups) return;  // before the grid's barrier: the whole work-group leaves
   LOAD_GRID(grids)
-  if (get_group_id(1) >= *ngroups) return;
   __global const MoeGroup *gp = groups + get_group_id(1);
   const uint na = A == 1 ? 1 : gp->n;
   uint asg[A];
@@ -417,8 +417,8 @@ REQD_SG __kernel void moe_down_g(__global const uchar *cache, ulong slot_bytes, 
                                  __global const uint *ngroups, uint rows, uint bpr, ulong down_off,
                                  __global const uchar *act, uint K, uint act_stride, __global float *y,
                                  __global const uchar *grids) {
+  if (get_group_id(1) >= *ngroups) return;  // before the grid's barrier: the whole work-group leaves
   LOAD_GRID(grids)
-  if (get_group_id(1) >= *ngroups) return;
   __global const MoeGroup *gp = groups + get_group_id(1);
   const uint na = A == 1 ? 1 : gp->n;
   uint asg[A];
