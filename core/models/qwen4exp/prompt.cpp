@@ -736,6 +736,7 @@ std::vector<std::vector<Candidate>> Model::prompt_runs(const PromptRun *runs, ui
   pplan_[0] = {n, runs[0].pos0, runs[0].slot, 0};
   prows_[0] = std::min(n, T / 2), prows_[1] = n - prows_[0];  // each card's rows when they split (prompt_list)
   head_plan_->nrows = nruns;
+  head_plan_->nhead = nruns;
   const GgufTensor &te = gguf_.tensor("token_embd.weight");
   auto to_float = ggml_get_type_traits((ggml_type)te.type)->to_float;
   std::vector<uint32_t> row0(nruns);
