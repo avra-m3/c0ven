@@ -54,14 +54,18 @@ typedef struct {
   u32 row0;  // the block's first row in the pass (a block pass)
   u32 n;     // the block's rows (a block pass)
   u32 lo;    // the first position the row attends to (a block pass)
-  u32 pad[3];
+  u32 head;  // the row's place among the rows the head reads, or DRAFT_NO_HEAD for a block's first (a block pass)
+  u32 pad[2];
 } DraftRow;
 
 typedef struct {
   u32 nrows;
-  u32 pad[3];
+  u32 nhead;  // the rows the head reads: each block's rows after its first (a block pass)
+  u32 pad[2];
   DraftRow rows[STEP_MAX_ROWS];
 } DraftPlan;
+
+#define DRAFT_NO_HEAD 0xffffffffu
 
 SHARED_ASSERT(sizeof(DraftRow) == 32, "DraftRow layout");
 SHARED_ASSERT(sizeof(DraftPlan) == 16 + 32 * STEP_MAX_ROWS, "DraftPlan layout");

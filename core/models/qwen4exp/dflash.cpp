@@ -211,12 +211,18 @@ void Model::load_dflash(Card &card) {
     Ly.post_norm = devf(tensor(p + "post_attention_layernorm.weight", E));
     Ly.qn = devf(tensor(p + "self_attn.q_norm.weight", DF_D));
     Ly.kn = devf(tensor(p + "self_attn.k_norm.weight", DF_D));
-    Ly.q = dev16(rows(tensor(p + "self_attn.q_proj.weight", (size_t)DF_H * DF_D * E), E, c * qd, qd));
-    Ly.k = dev16(rows(tensor(p + "self_attn.k_proj.weight", (size_t)DF_KV * DF_D * E), E, c * kd, kd));
-    Ly.v = dev16(rows(tensor(p + "self_attn.v_proj.weight", (size_t)DF_KV * DF_D * E), E, c * kd, kd));
+    // q, k and v as one product's rows, and gate and up: a row's sums do not depend on the rows beside it.
+    auto join = [](std::vector<std::vector<uint16_t>> parts) {
+      std::vector<uint16_t> v;
+      for (auto &p : parts) v.insert(v.end(), p.begin(), p.end());
+      return v;
+    };
+    Ly.qkv = dev16(join({rows(tensor(p + "self_attn.q_proj.weight", (size_t)DF_H * DF_D * E), E, c * qd, qd),
+                         rows(tensor(p + "self_attn.k_proj.weight", (size_t)DF_KV * DF_D * E), E, c * kd, kd),
+                         rows(tensor(p + "self_attn.v_proj.weight", (size_t)DF_KV * DF_D * E), E, c * kd, kd)}));
     Ly.o = dev16(cols(tensor(p + "self_attn.o_proj.weight", (size_t)E * DF_H * DF_D), E, DF_H * DF_D, c * qd, qd));
-    Ly.gate = dev16(rows(tensor(p + "mlp.gate_proj.weight", (size_t)DF_FF * E), E, (size_t)c * D.ff, D.ff));
-    Ly.up = dev16(rows(tensor(p + "mlp.up_proj.weight", (size_t)DF_FF * E), E, (size_t)c * D.ff, D.ff));
+    Ly.gu = dev16(join({rows(tensor(p + "mlp.gate_proj.weight", (size_t)DF_FF * E), E, (size_t)c * D.ff, D.ff),
+                        rows(tensor(p + "mlp.up_proj.weight", (size_t)DF_FF * E), E, (size_t)c * D.ff, D.ff)}));
     Ly.down = dev16(cols(tensor(p + "mlp.down_proj.weight", (size_t)E * DF_FF), E, DF_FF, (size_t)c * D.ff, D.ff));
     Ly.abase = devf(tensor(p + "attention_conv.base_kernel", 4 * E));
     Ly.akp = dev16(tensor(p + "attention_conv.kernel_projection.weight", (size_t)DF_KP * E));
@@ -242,24 +248,23 @@ void Model::load_dflash(Card &card) {
   D.xc = fbuf(E);
   D.xcb = bbuf(E);
   D.dyn = fbuf(DF_KP);
+  D.qkv = fbuf(qd + 2 * kd);
   D.q = fbuf(qd);
-  D.k = fbuf(kd);
-  D.v = fbuf(kd);
   // df_attn's splits: [row][query head][DF_SPLITS][DF_D + 2] (kernels/models/qwen4exp/dflash.cl).
   constexpr size_t splits = (DF_WINDOW + STEP_MAX_RUN + 63) / 64;
   D.part = fbuf(qd / DF_D * splits * (DF_D + 2));
   D.o = fbuf(qd);
   D.ob = bbuf(qd);
-  D.g = fbuf(D.ff);
-  D.u = fbuf(D.ff);
+  D.gu = fbuf(2 * D.ff);
   D.gub = bbuf(D.ff);
   D.hn = fbuf(E);
   D.cplan = upload<DraftPlan>(card, nullptr, sizeof(DraftPlan));
   D.bplan = upload<DraftPlan>(card, nullptr, sizeof(DraftPlan));
 }
 
-// A context pass of W rows (the last decode step's features into each slot's ring) or, with block, a block pass.
-void Model::record_df(Card &card, uint32_t W, bool block) {
+// A context pass of W rows (the last decode step's features into each slot's ring) or, with block, a block pass of W
+// rows whose head reads Wh of them (each block's rows after its first; the first's logits are the decode step's).
+void Model::record_df(Card &card, uint32_t W, bool block, uint32_t Wh) {
   DfCard &D = *card.df;
   auto list = std::make_unique<ze::List>(*rt_, card.c, ze::List::regular);
   ze::List &L = *list;
@@ -286,34 +291,50 @@ void Model::record_df(Card &card, uint32_t W, bool block) {
     float *no_out = nullptr;
     L.launch(df("df_norm"), {D.ctx, D.hnorm, pl, no_out, D.ctxb}, W, 1, 1, 256);
     const float *no_q = nullptr;
+    float *no_qout = nullptr;
+    const uint32_t kvd = 2 * kd;
     for (uint32_t l = 0; l < DF_LAYERS; l++) {
       DfCard::Layer &Ly = D.layers[l];
-      bf16mv(Ly.k, kd, E, D.ctxb, D.k);
-      bf16mv(Ly.v, kd, E, D.ctxb, D.v);
-      L.launch(df("df_prep"), {no_q, D.k, D.v, Ly.qn, Ly.kn, zero, nkv, Ly.rk, Ly.rv, pl}, nkv, W, 1, DF_D);
+      bf16mv(Ly.qkv + (size_t)qd * E, kvd, E, D.ctxb, D.qkv);  // k and v
+      L.launch(df("df_prep"), {no_q, D.qkv, D.qkv + kd, kvd, no_qout, Ly.qn, Ly.kn, zero, nkv, Ly.rk, Ly.rv, pl}, nkv,
+               W, 1, DF_D);
     }
     L.signal((*devents_)[2 * DF_LAYERS * C + c]);
     L.close();
     D.ctx_lists[W] = std::move(list);
     return;
   }
+  const uint32_t key = df_key(W, Wh);
   if (opt_.trace) {
-    D.trace[W] = static_cast<uint64_t *>(rt_->alloc_host(8192 * 8));
-    L.trace(D.trace[W], 8192);
+    D.trace[key] = static_cast<uint64_t *>(rt_->alloc_host(8192 * 8));
+    L.trace(D.trace[key], 8192);
   }
   L.wait({(*devents_)[2 * DF_LAYERS * C + c]});  // the ring holds the context's keys and values
   L.copy(D.h, dfembed_, (size_t)W * E * 4);
   // Exchange x, as the draft layer's: each card's product writes its partial sums into its block of dfex_ in host
-  // memory and signals; each card waits for the other's, then adds both.
+  // memory and signals; each card waits for the other's, then adds both. With peer access, from 2 rows, as the decode
+  // step's: the product writes into the card's block of xp (two exchanges' worth, used in turn), which is copied to
+  // the same block of the other card's.
   uint32_t x = 0;
-  auto partial = [&](uint32_t ex, uint32_t from) { return dfex_ + ((size_t)ex * C + from) * STEP_MAX_ROWS * E; };
-  auto event = [&]() { return C > 1 ? (*devents_)[x * C + c] : nullptr; };
+  const bool peer = p2p_ && W > 1;
+  auto partial = [&](uint32_t ex, uint32_t from) {
+    if (peer) return cards_[c]->xp + ((size_t)(ex % 2) * C + from) * STEP_MAX_ROWS * E;
+    return dfex_ + ((size_t)ex * C + from) * STEP_MAX_ROWS * E;
+  };
+  auto event = [&]() { return C > 1 && !peer ? (*devents_)[x * C + c] : nullptr; };
+  auto send = [&]() {
+    if (!peer) return;
+    float *to = cards_[1 - c]->xp + ((size_t)(x % 2) * C + c) * STEP_MAX_ROWS * E;
+    L.copy(to, partial(x, c), (size_t)W * E * 4, (*devents_)[x * C + c]);
+  };
   auto exchange = [&](const float *base) {
+    send();
     if (C > 1) L.wait({(*devents_)[x * C + (1 - c)]});
     L.launch(df("df_finish"), {partial(x, 0), C, D.dyn, base, pl, D.h}, E / 64, W, 1, 64);
     x++;
   };
   constexpr uint32_t splits = (DF_WINDOW + STEP_MAX_RUN + 63) / 64;
+  const uint32_t qkvd = qd + 2 * kd;
   for (uint32_t l = 0; l < DF_LAYERS; l++) {
     DfCard::Layer &Ly = D.layers[l];
     // Attention: the norm, the convolution before it, q k v, the queries and keys normed and turned, the block's
@@ -321,10 +342,9 @@ void Model::record_df(Card &card, uint32_t W, bool block) {
     L.launch(df("df_norm"), {D.h, Ly.in_norm, pl, D.x, D.xb}, W, 1, 1, 256);
     bf16mv(Ly.akp, DF_KP, E, D.xb, D.dyn);
     L.launch(df("df_conv"), {D.x, D.dyn, Ly.abase, pl, D.xc, D.xcb}, E / 64, W, 1, 64);
-    bf16mv(Ly.q, qd, E, D.xcb, D.q);
-    bf16mv(Ly.k, kd, E, D.xcb, D.k);
-    bf16mv(Ly.v, kd, E, D.xcb, D.v);
-    L.launch(df("df_prep"), {D.q, D.k, D.v, Ly.qn, Ly.kn, nq, nkv, Ly.rk, Ly.rv, pl}, nq + nkv, W, 1, DF_D);
+    bf16mv(Ly.qkv, qkvd, E, D.xcb, D.qkv);
+    L.launch(df("df_prep"), {D.qkv, D.qkv + qd, D.qkv + qd + kd, qkvd, D.q, Ly.qn, Ly.kn, nq, nkv, Ly.rk, Ly.rv, pl},
+             nq + nkv, W, 1, DF_D);
     L.launch(df("df_attn"), {D.q, Ly.rk, Ly.rv, nq, nkv, pl, D.part}, nkv, W, splits, DF_D);
     L.launch(df("df_merge"), {nq, pl, D.part, D.o, D.ob}, nq, W, 1, DF_D);
     bf16mv(Ly.o, E, qd, D.ob, partial(x, c), event());
@@ -333,25 +353,25 @@ void Model::record_df(Card &card, uint32_t W, bool block) {
     L.launch(df("df_norm"), {D.h, Ly.post_norm, pl, D.x, D.xb}, W, 1, 1, 256);
     bf16mv(Ly.mkp, DF_KP, E, D.xb, D.dyn);
     L.launch(df("df_conv"), {D.x, D.dyn, Ly.mbase, pl, D.xc, D.xcb}, E / 64, W, 1, 64);
-    bf16mv(Ly.gate, D.ff, E, D.xcb, D.g);
-    bf16mv(Ly.up, D.ff, E, D.xcb, D.u);
-    L.launch(df("df_swiglu"), {D.g, D.u, D.ff, pl, D.gub}, (D.ff + 63) / 64, W, 1, 64);
+    bf16mv(Ly.gu, 2 * D.ff, E, D.xcb, D.gu);
+    L.launch(df("df_swiglu"), {D.gu, D.ff, pl, D.gub}, (D.ff + 63) / 64, W, 1, 64);
     bf16mv(Ly.down, E, D.ff, D.gub, partial(x, c), event());
     exchange(Ly.mbase);
   }
-  // The final norm, then the main model's head and its largest logits per row.
-  uint16_t *no_b = nullptr;
-  L.launch(df("df_norm"), {D.h, D.norm, pl, D.hn, no_b}, W, 1, 1, 256);
-  const uint32_t units = E / 32 * W, gs = E;
-  L.launch(common("quantize_a8"), {D.hn, gs, gs, W, card.xa8}, (units + 3) / 4, 1, 1, 64);
-  matvec(L, card, card.head, card.xa8, card.logits, W, nrows);
+  // The final norm of the rows the head reads, packed from row 0; then the main model's head and their largest logits.
+  const uint32_t *nhead = &pl->nhead;
+  auto head = [&](const char *name) { return kernel(c, rows_module("common", Wh), name); };
+  L.launch(df("df_norm_head"), {D.h, D.norm, pl, D.hn}, W, 1, 1, 256);
+  const uint32_t units = E / 32 * Wh, gs = E;
+  L.launch(head("quantize_a8"), {D.hn, gs, gs, Wh, card.xa8}, (units + 3) / 4, 1, 1, 64);
+  matvec(L, card, card.head, card.xa8, card.logits, Wh, nhead);
   uint32_t *ti = dtop_idx_ + (size_t)c * STEP_MAX_ROWS * opt_.candidates;
   float *tv = dtop_val_ + (size_t)c * STEP_MAX_ROWS * opt_.candidates;
-  L.launch(common("topk_rows"), {card.logits, card.vocab_n, card.vocab_n, opt_.candidates, card.vocab0, nrows, ti, tv,
-                                 dtop_n_ + (size_t)c * STEP_MAX_ROWS},
-           W, 1, 1, 1024);
+  L.launch(head("topk_rows"), {card.logits, card.vocab_n, card.vocab_n, opt_.candidates, card.vocab0, nhead, ti, tv,
+                               dtop_n_ + (size_t)c * STEP_MAX_ROWS},
+           Wh, 1, 1, 1024);
   L.close();
-  D.block_lists[W] = std::move(list);
+  D.block_lists[key] = std::move(list);
 }
 
 std::vector<std::vector<std::vector<Candidate>>> Model::df_pass(const StepIn *ctx, uint32_t nctx,
@@ -376,25 +396,26 @@ std::vector<std::vector<std::vector<Candidate>>> Model::df_pass(const StepIn *ct
     dfcplan_->nrows = nctx;
     for (uint32_t r = 0; r < nctx; r++) {
       if (ctx[r].slot >= opt_.slots) throw std::runtime_error("slot out of range");
-      dfcplan_->rows[r] = {ctx[r].slot, ctx[r].pos, 0, 0, 0, {0, 0, 0}};
+      dfcplan_->rows[r] = {ctx[r].slot, ctx[r].pos, 0, 0, 0, DRAFT_NO_HEAD, {0, 0}};
     }
   }
   if (nb) {
     const GgufTensor &te = gguf_.tensor("token_embd.weight");
     auto to_float = ggml_get_type_traits((ggml_type)te.type)->to_float;
-    uint32_t r = 0;
+    uint32_t r = 0, h = 0;
     for (uint32_t b = 0; b < nblocks; b++) {
       const DraftBlock &bk = blocks[b];
       for (uint32_t j = 0; j < bk.n; j++, r++) {
         const uint32_t pos = bk.pos + j;
         uint32_t lo = std::max(dffirst_[bk.slot], pos + 1 > DF_WINDOW ? pos + 1 - DF_WINDOW : 0u);
         lo = std::min(lo, bk.pos);
-        dfbplan_->rows[r] = {bk.slot, pos, r - j, bk.n, lo, {0, 0, 0}};
+        dfbplan_->rows[r] = {bk.slot, pos, r - j, bk.n, lo, j == 0 ? DRAFT_NO_HEAD : h++, {0, 0}};
         const int32_t tok = j == 0 ? bk.token : dfc_.mask_token;
         to_float(te.data + (uint64_t)tok * te.row_bytes(), dfembed_ + (size_t)r * DF_EMBD, DF_EMBD);
       }
     }
     dfbplan_->nrows = nb;
+    dfbplan_->nhead = nb - nblocks;
   }
   for (uint32_t i = 0; i < devents_->size(); i++) ZE_CHECK(zeEventHostReset((*devents_)[i]));
   if (!nctx)
@@ -402,21 +423,20 @@ std::vector<std::vector<std::vector<Candidate>>> Model::df_pass(const StepIn *ct
   for (uint32_t c = ncards_; c-- > 0;) {
     DfCard &D = *cards_[c]->df;
     if (nctx) D.ctx_lists.at(width(nctx))->execute();
-    if (nb) D.block_lists.at(D.last = width(nb))->execute();
+    if (nb) D.block_lists.at(D.last = df_key(width(nb), width(std::max(nb - nblocks, 1u))))->execute();
   }
   for (uint32_t c = 0; c < ncards_; c++) {
     DfCard &D = *cards_[c]->df;
     if (nb)
-      D.block_lists.at(width(nb))->synchronize();
+      D.block_lists.at(D.last)->synchronize();
     else if (nctx)
       D.ctx_lists.at(width(nctx))->synchronize();
   }
   std::vector<std::vector<std::vector<Candidate>>> out(nblocks);
-  uint32_t r = 0;
+  uint32_t r = 0;  // the head's rows
   for (uint32_t b = 0; b < nblocks; b++) {
     out[b].resize(blocks[b].n - 1);
-    for (uint32_t j = 0; j < blocks[b].n; j++, r++) {
-      if (j == 0) continue;
+    for (uint32_t j = 1; j < blocks[b].n; j++, r++) {
       auto &o = out[b][j - 1];
       for (uint32_t c = 0; c < ncards_; c++) {
         size_t base = ((size_t)c * STEP_MAX_ROWS + r) * opt_.candidates;
