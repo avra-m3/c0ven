@@ -314,7 +314,7 @@ void Model::load_cards(bool first) {
     if (df_on_)
       for (uint32_t W = 1; W <= STEP_MAX_ROWS; W *= 2) {
         record_df(*card, W, false);
-        record_df(*card, W, true);
+        for (uint32_t Wh = 1; Wh <= W; Wh *= 2) record_df(*card, W, true, Wh);
       }
   }
   if (tmax_) {
