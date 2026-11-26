@@ -41,6 +41,8 @@ typedef struct {
   u32 window;  // 1: the rows are windows of consecutive positions, one run of rows per sequence, and the recurrent
                // state is not committed; a commit (CommitPlan) then writes the accepted rows' state
   u32 pad;
+  u32 nhead;  // the head reads the step's last nhead rows: a prompt's window wants only its last row's logits
+  u32 pad2[3];
   StepRow rows[STEP_MAX_ROWS];
 } StepPlan;
 
@@ -54,14 +56,18 @@ typedef struct {
   u32 row0;  // the block's first row in the pass (a block pass)
   u32 n;     // the block's rows (a block pass)
   u32 lo;    // the first position the row attends to (a block pass)
-  u32 pad[3];
+  u32 head;  // the row's place among the rows the head reads, or DRAFT_NO_HEAD for a block's first (a block pass)
+  u32 pad[2];
 } DraftRow;
 
 typedef struct {
   u32 nrows;
-  u32 pad[3];
+  u32 nhead;  // the rows the head reads: each block's rows after its first (a block pass)
+  u32 pad[2];
   DraftRow rows[STEP_MAX_ROWS];
 } DraftPlan;
+
+#define DRAFT_NO_HEAD 0xffffffffu
 
 SHARED_ASSERT(sizeof(DraftRow) == 32, "DraftRow layout");
 SHARED_ASSERT(sizeof(DraftPlan) == 16 + 32 * STEP_MAX_ROWS, "DraftPlan layout");
@@ -106,7 +112,7 @@ typedef struct {
 SHARED_ASSERT(sizeof(PromptPlan) == 16, "PromptPlan layout");
 
 SHARED_ASSERT(sizeof(StepRow) == 16, "StepRow layout");
-SHARED_ASSERT(sizeof(StepPlan) == 16 + 16 * STEP_MAX_ROWS, "StepPlan layout");
+SHARED_ASSERT(sizeof(StepPlan) == 32 + 16 * STEP_MAX_ROWS, "StepPlan layout");
 
 // The KV cache's page, for every model: a row of the page table maps a sequence's cells this many at a time
 // (include/engine_api.h, docs/DESIGN.md section 4).

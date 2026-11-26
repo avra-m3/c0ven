@@ -132,7 +132,7 @@ class Model final : public engine::Model {
   uint32_t draft_max_default() const override { return df_on_ ? kDraftMaxCap : kDraftMaxLayer; }
   uint32_t draft_max_cap() const override { return kDraftMaxCap; }
   // For tests: card 0's features of the last decode step's row r (DF_FEAT bf16 values), and the last block pass's
-  // final normed rows (STEP_MAX_ROWS x DF_EMBD).
+  // final normed rows the head read, each block's after its first (STEP_MAX_ROWS x DF_EMBD).
   std::vector<uint16_t> df_features(uint32_t row);
   std::vector<float> df_hidden();
   // For tests: the last decode step's logits of row `row`, all the vocabulary's, from every card's share of the head.
@@ -246,7 +246,9 @@ class Model final : public engine::Model {
                                               const uint32_t *from);
   bool init_dflash();  // DFlash 2's host buffers, when Options::mtp_dir holds its files
   void load_dflash(Card &card);
-  void record_df(Card &card, uint32_t width, bool block);
+  void record_df(Card &card, uint32_t width, bool block, uint32_t head_width = 0);
+  // A block list's key: its width and its head's.
+  static uint32_t df_key(uint32_t width, uint32_t head_width) { return width * 64 + head_width; }
   void load_prompt(Card &card);
   // The image encoder: first, its host side (the weights' stages, pixels, encoding); always, each card's side.
   void load_vision(bool first);

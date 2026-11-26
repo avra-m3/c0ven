@@ -174,7 +174,8 @@ class Model {
   // One step of n rows (1 to STEP_MAX_ROWS) of several sequences, or consecutive positions of one, in order. Returns
   // each row's largest logits, highest first. window: one run of positions a sequence, whose state waits for commit to
   // keep the run's first rows (the accepted drafts and the row before them); the rest's KV is overwritten later.
-  // prompt: the rows are prompt tokens, counted for adaptive swaps as the prompt path counts them.
+  // prompt: the rows are prompt tokens, counted for adaptive swaps as the prompt path counts them, and only the last
+  // row's logits are wanted: the others come back empty.
   virtual std::vector<std::vector<Candidate>> step(const StepIn *rows, uint32_t n, bool window = false,
                                                    bool prompt = false) = 0;
   // Whether step takes these rows now. A step of up to STEP_MAX_RUN rows always fits; a wider one may need more of the

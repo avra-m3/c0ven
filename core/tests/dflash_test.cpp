@@ -282,10 +282,11 @@ int main(int argc, char **argv) {
   }
   auto ref = reference(dir, feat, emb, N, B);
   int failures = 0;
-  for (uint32_t t = 0; t < B; t++) {
+  // The head reads the block's rows after its first, so they are the ones normed.
+  for (uint32_t t = 1; t < B; t++) {
     double d2 = 0, r2 = 0;
     for (uint32_t i = 0; i < E; i++) {
-      const double d = hid[(size_t)t * E + i] - ref[(size_t)t * E + i];
+      const double d = hid[(size_t)(t - 1) * E + i] - ref[(size_t)t * E + i];
       d2 += d * d;
       r2 += (double)ref[(size_t)t * E + i] * ref[(size_t)t * E + i];
     }

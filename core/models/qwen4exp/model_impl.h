@@ -197,8 +197,8 @@ struct Model::DfCard {
   float *hnorm = nullptr, *norm = nullptr;
   struct Layer {
     float *in_norm = nullptr, *post_norm = nullptr, *qn = nullptr, *kn = nullptr;
-    uint16_t *q = nullptr, *k = nullptr, *v = nullptr, *o = nullptr, *gate = nullptr, *up = nullptr,
-             *down = nullptr;
+    // qkv: q's rows, then k's and v's; gu: gate's, then up's.
+    uint16_t *qkv = nullptr, *o = nullptr, *gu = nullptr, *down = nullptr;
     float *abase = nullptr, *mbase = nullptr;  // the convolutions' fixed taps, [set][tap][DF_EMBD]
     uint16_t *akp = nullptr, *mkp = nullptr;   // their dynamic taps' projections, DF_KP rows
     float *rk = nullptr, *rv = nullptr;        // the ring: [slot][DF_RING][nkv][DF_D], a cell at position % DF_RING
@@ -207,13 +207,14 @@ struct Model::DfCard {
   // The decode step's features of its rows, bf16 [STEP_MAX_ROWS][DF_FEAT] (Model::record writes them).
   uint16_t *feat = nullptr;
   // Buffers, STEP_MAX_ROWS rows; the bf16 ones are read by mv_xmx_bf16 in whole tiles of 8 rows.
-  float *ctx = nullptr, *h = nullptr, *x = nullptr, *xc = nullptr, *dyn = nullptr, *q = nullptr, *k = nullptr,
-        *v = nullptr, *part = nullptr, *o = nullptr, *g = nullptr, *u = nullptr, *hn = nullptr;
+  float *ctx = nullptr, *h = nullptr, *x = nullptr, *xc = nullptr, *dyn = nullptr, *qkv = nullptr, *q = nullptr,
+        *part = nullptr, *o = nullptr, *gu = nullptr, *hn = nullptr;
   uint16_t *ctxb = nullptr, *xb = nullptr, *xcb = nullptr, *ob = nullptr, *gub = nullptr;
   DraftPlan *cplan = nullptr, *bplan = nullptr;  // copied from host memory by each list's first command
-  std::map<uint32_t, std::unique_ptr<ze::List>> ctx_lists, block_lists;  // per width
-  std::map<uint32_t, uint64_t *> trace;                                    // the block lists' kernel times
-  uint32_t last = 0;                                                       // the last block pass's width
+  std::map<uint32_t, std::unique_ptr<ze::List>> ctx_lists;    // per width
+  std::map<uint32_t, std::unique_ptr<ze::List>> block_lists;  // per width and head width (Model::df_key)
+  std::map<uint32_t, uint64_t *> trace;                         // the block lists' kernel times
+  uint32_t last = 0;                                            // the last block pass's key
 };
 
 struct Model::Card {
