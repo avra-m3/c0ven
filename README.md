@@ -6,23 +6,23 @@
 <p align="center"><a href="https://github.com/avra-m3/c0ven/actions/workflows/ci.yml?query=branch%3Amain"><img src="https://github.com/avra-m3/c0ven/actions/workflows/ci.yml/badge.svg?branch=main" alt="ci"></a> <a href="VERSION"><img src="https://img.shields.io/badge/dynamic/regex?url=https%3A%2F%2Fraw.githubusercontent.com%2Favra-m3%2Fc0ven%2Fmain%2FVERSION&search=%5B0-9.%5D%2B&label=version&color=8b5cf6" alt="version"></a></p>
 
 A fast inference engine for one architecture, [Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next),
-designed to run well on Intel Battlemage cards. It runs on one or two cards today, and support for more than two is
-[planned](https://github.com/avra-m3/c0ven/issues/26). It is built for one user running a few threads on one machine, and it is fast for that case.
+designed to run well on Intel Battlemage and Alchemist cards. It runs on one or two cards today, and support for more
+than two is [planned](https://github.com/avra-m3/c0ven/issues/26). It is built for one user running a few threads on one
+machine, and it is fast for that case.
 
-Just like witches, GPUs work better together in a coven. C0ven splits inference between the CPU and one or more
-Battlemage GPUs through Intel's Level Zero API. It slots into your existing setup through its OpenAI and Anthropic
-APIs.
+Just like witches, GPUs work better together in a coven. C0ven splits inference between the CPU and one or more Intel
+Arc GPUs through Intel's Level Zero API. It slots into your existing setup through its OpenAI and Anthropic APIs.
 
 ## Is this for you?
 
 Use C0ven if you have:
 
-- one (or more) Intel Battlemage cards with at least 10 GB of VRAM between them, in one Linux machine, with the `xe` kernel
-  driver. The engine is tested on Arc Pro B60 cards (24 GB each) and runs on one Arc Pro B65 (32 GB), where it reads
-  [prompts at about 917 tokens/s and decodes about 33
+- one (or more) Intel Battlemage or Alchemist cards with at least 10 GB of VRAM between them, in one Linux machine,
+  with the `xe` kernel driver. The engine is tested on Arc Pro B60 cards (24 GB each) and runs on one Arc Pro B65
+  (32 GB), where it reads [prompts at about 917 tokens/s and decodes about 33
   tokens/s](docs/measurements/MEASUREMENTS.md#2026-11-12-arc-pro-b65). That machine runs the card on a PCIe 3.0 x8
-  link with a 6-core CPU from 2017, so a newer CPU or a full x16 link may be faster. Other Battlemage cards likely work
-  but are untested
+  link with a 6-core CPU from 2017, so a newer CPU or a full x16 link may be faster. Other Battlemage and Alchemist
+  cards build ahead of time (`acm-g10`, `acm-g11`, `acm-g12`)
   ([help test them](https://github.com/avra-m3/c0ven/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22)),
 - an x86-64 CPU, which computes the experts the cards do not hold; the engine loads the build of its CPU code that
   uses the most of the CPU's features (AVX-512 down to plain x86-64),
@@ -228,7 +228,7 @@ and the prompt path write theirs straight into the other card's memory. The CPU'
 that a kernel on the card spins on. The command lists are recorded in advance.
 
 The front end handles text and starts the engine as its child process. Inside the engine, Python decides what to run
-each step, and the C++ core runs it on both cards. The kernels are written for Battlemage's XMX units.
+each step, and the C++ core runs it on both cards. The kernels are written for Battlemage and Alchemist XMX units.
 [DESIGN.md](docs/DESIGN.md) has the details.
 
 ## Building from source

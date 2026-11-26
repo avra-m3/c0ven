@@ -42,10 +42,20 @@ struct Card {
   uint32_t device_id = 0;
   uint32_t ip_version = 0;        // ze_device_ip_version_ext_t: architecture << 22 | release << 14 | revision
   std::string ip() const;         // "20.1.0", as ocloc names it; "" when not reported
+  bool is_hpg() const { return (ip_version >> 22) == 12; }  // Xe-HPG (Alchemist) architecture major 12
   uint32_t xe_cores = 0;          // slices x subslices per slice
   int32_t pcie_gen = -1, pcie_width = -1;  // the link's most, as the driver reports it; -1: unknown
   int64_t pcie_bytes_per_s = -1;
+  // Runtime capabilities derived from ip_version and environment overrides.
+  bool host_flag_polling = true;   // EU polling of host-written completion flags during decode
+  bool writeback_mapping = false;  // mapped device allocations require cache-line flushes
+  bool copy_2d_arena = true;       // copy_rows supports host arena strides above 256 KiB
 };
+
+// Flushes CPU cache lines covering [p, p + bytes) and orders them before later stores or PCIe readbacks.
+void flush_cpu_writes(const void *p, size_t bytes);
+// Issues a memory fence (flushing the line first when writeback is true) and reads one mapped byte over PCIe.
+uint8_t readback_mapped_byte(const void *p, bool writeback);
 
 class Library;
 
@@ -82,8 +92,8 @@ class Runtime {
   uint64_t device_bytes(uint32_t card) const { return device_bytes_.at(card); }
   uint64_t host_bytes() const { return host_bytes_; }
   // Whether cards a and b transfer device memory directly both ways: checks zeDeviceCanAccessPeer and
-  // zeDeviceGetP2PProperties, verifies a small copy each way on a regular list, and with lib verifies a kernel's
-  // writes into the other card's memory each way. Sets *why on false.
+  // zeDeviceGetP2PProperties, verifies a kernel's 64-byte stores into the other card's memory each way before a
+  // small copy each way on a regular list (constructing a local Library when lib is null). Sets *why on false.
   bool peer_access(uint32_t a, uint32_t b, Library *lib = nullptr, std::string *why = nullptr);
 
   // Virtual memory (docs/measurements/LEVEL_ZERO.md, row 32): a reserved range of addresses whose blocks are mapped to device
@@ -151,6 +161,25 @@ class EventPool {
   std::vector<ze_event_handle_t> events_;
 };
 
+// A command queue on one card, shared when recording a regular list in parts (List::split).
+class Queue {
+ public:
+  Queue(Runtime &rt, uint32_t card, bool copy_engine = false, bool in_order = true);
+  ~Queue();
+  Queue(const Queue &) = delete;
+  Queue &operator=(const Queue &) = delete;
+  ze_command_queue_handle_t handle() const { return queue_; }
+  uint32_t card() const { return card_; }
+  uint32_t ordinal() const { return ordinal_; }
+  bool in_order() const { return in_order_; }
+
+ private:
+  uint32_t card_;
+  uint32_t ordinal_;
+  bool in_order_;
+  ze_command_queue_handle_t queue_ = nullptr;
+};
+
 // A command list on one card, either immediate (runs as appended) or regular (recorded, then executed as many times
 // as wanted on the card's queue). Each command waits for the ones before it, but in a list made with in_order false
 // the launches recorded between together(true) and together(false) may run at the same time, and the next command
@@ -162,6 +191,7 @@ class List {
  public:
   enum Kind { immediate, regular };
   List(Runtime &rt, uint32_t card, Kind kind, bool copy_engine = false, bool in_order = true);
+  List(Runtime &rt, Queue &queue, bool trace = false);
   ~List();
   List(const List &) = delete;
   List &operator=(const List &) = delete;
@@ -189,16 +219,25 @@ class List {
   void label(std::string name) { label_ = std::move(name); }  // names the next launch in the trace instead
   const std::vector<std::string> &trace_names() const { return trace_names_; }
 
-  void close();         // regular lists: end recording
-  void execute();       // regular lists: submit on the card's queue (does not wait)
-  void synchronize();   // waits for everything submitted so far
-  void reset_list();    // regular lists: empty it for recording again
+  void split();                       // regular lists: close the current part and start another on the same queue
+  void close();                       // regular lists: end recording
+  void execute();                     // regular lists: submit on the card's queue (does not wait)
+  void execute_part(uint32_t part);   // regular lists: submit one part of a split list
+  void synchronize();                 // waits for everything submitted so far
+  void synchronize_part(uint32_t part);  // waits for one submitted part of a split list
+  void reset_list();                  // regular lists: empty it for recording again
+  uint32_t nparts() const { return (uint32_t)parts_.size(); }
 
   uint32_t card() const { return card_; }
   Kind kind() const { return kind_; }
 
  private:
   friend class Runtime;
+  struct Part {
+    ze_command_list_handle_t list = nullptr;
+    ze_fence_handle_t fence = nullptr;
+    bool submitted = false;
+  };
   // Marks the thread inside the list's calls (ENGINE_CHECK_LISTS): another thread's call throws, and the same
   // thread's nested calls pass.
   struct OneUser {
@@ -211,12 +250,14 @@ class List {
 
   Runtime &rt_;
   uint32_t card_;
+  uint32_t ordinal_;
   Kind kind_;
-  bool in_order_, together_ = false;
+  bool in_order_, together_ = false, owns_queue_ = true;
   ze_command_list_handle_t list_ = nullptr;
   ze_command_queue_handle_t queue_ = nullptr;
   ze_fence_handle_t fence_ = nullptr;
   bool submitted_ = false;
+  std::vector<Part> parts_;
   uint64_t *trace_ = nullptr;
   size_t trace_cap_ = 0;
   std::vector<std::string> trace_names_;

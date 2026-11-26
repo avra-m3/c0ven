@@ -11,18 +11,24 @@ if(NOT ENGINE_PREBUILT_KERNELS)
     message(FATAL_ERROR "ocloc not found: install intel-ocloc, pinned in docs/adr/0002-pin-the-toolchain.md")
   endif()
 endif()
-set(ENGINE_AOT_DEVICES "bmg-g21;bmg-g31" CACHE STRING "ocloc -device values, one binary set each (ADR-0002, ADR-0057)")
+set(ENGINE_AOT_DEVICES "bmg-g21;bmg-g31;acm-g10;acm-g11;acm-g12"
+    CACHE STRING "ocloc -device values, one binary set each (ADR-0002, ADR-0057, ADR-0082)")
 set(ENGINE_KERNEL_DIR "${CMAKE_BINARY_DIR}/kernels" CACHE INTERNAL "")
 file(MAKE_DIRECTORY ${ENGINE_KERNEL_DIR})
 
 # Known device-to-IP mappings let ENGINE_PREBUILT_KERNELS configure without invoking ocloc.
 set(_engine_ip_bmg-g21 "20.1.0")
 set(_engine_ip_bmg-g31 "20.2.0")
+set(_engine_ip_acm-g10 "12.55.8")
+set(_engine_ip_acm-g11 "12.56.5")
+set(_engine_ip_acm-g12 "12.57.0")
 
-# Each device's IP version, as `ocloc ids` gives it and Level Zero reports it: "20.1.0" for bmg-g21. The first device of
-# each IP major holds the SPIR-V shared across chips in that family.
+# Each device's IP version, as `ocloc ids` gives it and Level Zero reports it: "20.1.0" for bmg-g21, "12.55.8" for
+# acm-g10. The first device of each IP major holds the SPIR-V shared across chips in that family.
 set(ENGINE_KERNEL_IPS "")
 set(ENGINE_KERNEL_MAJORS "")
+set(ENGINE_KERNEL_SPIRV_IP "")
+set(ENGINE_KERNEL_HPG_SPIRV_IP "")
 foreach(device ${ENGINE_AOT_DEVICES})
   if(ENGINE_PREBUILT_KERNELS AND DEFINED _engine_ip_${device})
     set(ip "${_engine_ip_${device}}")
@@ -44,9 +50,22 @@ foreach(device ${ENGINE_AOT_DEVICES})
     set(_spv_dev_${major} ${device})
     set(_spv_ip_${major} ${ip})
   endif()
+  if(major STREQUAL "12")
+    if(NOT ENGINE_KERNEL_HPG_SPIRV_IP)
+      set(ENGINE_KERNEL_HPG_SPIRV_IP ${ip})
+    endif()
+  elseif(NOT ENGINE_KERNEL_SPIRV_IP)
+    set(ENGINE_KERNEL_SPIRV_IP ${ip})
+  endif()
 endforeach()
-list(GET ENGINE_KERNEL_IPS 0 ENGINE_KERNEL_SPIRV_IP)
+if(NOT ENGINE_KERNEL_SPIRV_IP)
+  list(GET ENGINE_KERNEL_IPS 0 ENGINE_KERNEL_SPIRV_IP)
+endif()
+if(NOT ENGINE_KERNEL_HPG_SPIRV_IP)
+  set(ENGINE_KERNEL_HPG_SPIRV_IP ${ENGINE_KERNEL_SPIRV_IP})
+endif()
 set(ENGINE_KERNEL_SPIRV_DIR "${ENGINE_KERNEL_DIR}/${ENGINE_KERNEL_SPIRV_IP}" CACHE INTERNAL "")
+set(ENGINE_KERNEL_HPG_SPIRV_DIR "${ENGINE_KERNEL_DIR}/${ENGINE_KERNEL_HPG_SPIRV_IP}" CACHE INTERNAL "")
 
 if(NOT ENGINE_PREBUILT_KERNELS)
   file(GLOB_RECURSE ENGINE_KERNEL_HEADERS CONFIGURE_DEPENDS
@@ -58,12 +77,12 @@ if(NOT ENGINE_PREBUILT_KERNELS)
        ${CMAKE_SOURCE_DIR}/core/models/*/yarn.h)
 endif()
 
-# engine_add_kernel_module(<name> SOURCE <file.cl> [OPTIONS <build options>...])
+# engine_add_kernel_module(<name> SOURCE <file.cl> [SOURCE_HPG <hpg.cl>] [OPTIONS <build options>...])
 # Writes <ip>/<name>.spv once per chip family, <ip>/<name>.bin for each device, and <name>.options: the -cl- options a
 # build from the SPIR-V needs. A variant is another module of the same source with other -D options. Every header under
 # kernels/, shared/ and the model size headers is a dependency, and kernels/include and shared are on the include path.
 function(engine_add_kernel_module name)
-  cmake_parse_arguments(K "" "SOURCE" "OPTIONS" ${ARGN})
+  cmake_parse_arguments(K "" "SOURCE;SOURCE_HPG" "OPTIONS" ${ARGN})
   set(native "-cl-fp32-correctly-rounded-divide-sqrt")
   foreach(o ${K_OPTIONS})
     if(o MATCHES "^-cl-")
@@ -71,9 +90,14 @@ function(engine_add_kernel_module name)
     endif()
   endforeach()
   if(ENGINE_PREBUILT_KERNELS)
-    if(NOT EXISTS ${ENGINE_KERNEL_DIR}/${name}.options OR NOT EXISTS ${ENGINE_KERNEL_SPIRV_DIR}/${name}.spv)
-      message(FATAL_ERROR "ENGINE_PREBUILT_KERNELS=ON missing ${name}.options or SPIR-V in ${ENGINE_KERNEL_DIR}")
+    if(NOT EXISTS ${ENGINE_KERNEL_DIR}/${name}.options)
+      message(FATAL_ERROR "ENGINE_PREBUILT_KERNELS=ON missing ${name}.options in ${ENGINE_KERNEL_DIR}")
     endif()
+    foreach(major ${ENGINE_KERNEL_MAJORS})
+      if(NOT EXISTS ${ENGINE_KERNEL_DIR}/${_spv_ip_${major}}/${name}.spv)
+        message(FATAL_ERROR "ENGINE_PREBUILT_KERNELS=ON missing ${ENGINE_KERNEL_DIR}/${_spv_ip_${major}}/${name}.spv")
+      endif()
+    endforeach()
     foreach(ip ${ENGINE_KERNEL_IPS})
       if(NOT EXISTS ${ENGINE_KERNEL_DIR}/${ip}/${name}.bin)
         message(FATAL_ERROR "ENGINE_PREBUILT_KERNELS=ON missing ${ENGINE_KERNEL_DIR}/${ip}/${name}.bin")
@@ -84,18 +108,30 @@ function(engine_add_kernel_module name)
     return()
   endif()
 
-  set(src ${CMAKE_SOURCE_DIR}/${K_SOURCE})
   list(JOIN K_OPTIONS " " opts)
   file(WRITE ${ENGINE_KERNEL_DIR}/${name}.options "${native}")
   foreach(major ${ENGINE_KERNEL_MAJORS})
     set(spv_out ${ENGINE_KERNEL_DIR}/${_spv_ip_${major}})
+    set(src_rel ${K_SOURCE})
+    set(dev_opts "${opts}")
+    if(major STREQUAL "12")
+      if(K_SOURCE_HPG)
+        set(src_rel ${K_SOURCE_HPG})
+      endif()
+      if(dev_opts)
+        string(APPEND dev_opts " -DENGINE_HPG")
+      else()
+        set(dev_opts "-DENGINE_HPG")
+      endif()
+    endif()
+    set(src ${CMAKE_SOURCE_DIR}/${src_rel})
     add_custom_command(
       OUTPUT ${spv_out}/${name}.spv
       COMMAND ${ENGINE_OCLOC} compile -q -spv_only -file ${src} -device ${_spv_dev_${major}}
-              -options "-cl-std=CL3.0 -cl-fp32-correctly-rounded-divide-sqrt -I${CMAKE_SOURCE_DIR}/kernels/include -I${CMAKE_SOURCE_DIR}/shared ${opts}"
+              -options "-cl-std=CL3.0 -cl-fp32-correctly-rounded-divide-sqrt -I${CMAKE_SOURCE_DIR}/kernels/include -I${CMAKE_SOURCE_DIR}/shared ${dev_opts}"
               -out_dir ${spv_out} -output ${name} -output_no_suffix
       DEPENDS ${src} ${ENGINE_KERNEL_HEADERS}
-      COMMENT "ocloc ${K_SOURCE} -> ${_spv_ip_${major}}/${name}.spv"
+      COMMENT "ocloc ${src_rel} -> ${_spv_ip_${major}}/${name}.spv"
       VERBATIM)
   endforeach()
   set(outputs "")

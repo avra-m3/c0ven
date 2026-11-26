@@ -9,6 +9,7 @@
 #include "moe_tile.h"
 #include "step.h"
 #include "topk.h"
+#include "xmx.h"
 
 #define RT_SG SG_SIZE
 #include "route.h"
@@ -119,27 +120,24 @@ __kernel void hc_mix(__global const float *n, __global const float *a, __global 
 
 // The up projection and hc_mix in one, on the XMX units: dpas up projection of lrb (bf16 rows of Q_HC_LR, in tiles of
 // 8 rows up to the tile that holds the plan's last row, whose rows past it come as zeros as in mv_xmx_bf16;
-// to_bf16_rows), 16 of W's value-major rows a sub-group (4 values' a for the 4 streams), then hc_mix's sum in stream
-// order. A work-group's 8 sub-groups write 32 values of x, also as bf16 into xb (rows Q_EMBD apart) and as a8 into xa
-// (a8.h; rows Q_EMBD + Q_EMBD / 8 bytes apart, sub-group m storing rows m, m + 8, ...). Groups (Q_HC_DIM / 128), 128.
-#define UPM_SGS 8
-REQD_SG __kernel void hc_up_mix_xmx(__global const ushort *W, __global const ushort *lrb, __global const float *n,
-                                    __global const StepPlan *plan, __global float *x, __global uchar *xa,
-                                    __global ushort *xb) {
+// to_bf16_rows), 16 or 8 of W's value-major rows a sub-group (4 values' a for the 4 streams), then hc_mix's sum in
+// stream order. A work-group's sub-groups write 32 values of x, also as bf16 into xb (rows Q_EMBD apart) and as a8
+// into xa (rows Q_EMBD + Q_EMBD / 8 bytes apart). Groups (Q_HC_DIM / 128), 128.
+#define UPM_SGS (128 / XMX_LANES)
+REQD_XMX_SG __kernel void hc_up_mix_xmx(__global const ushort *W, __global const ushort *lrb, __global const float *n,
+                                        __global const StepPlan *plan, __global float *x, __global uchar *xa,
+                                        __global ushort *xb) {
   __local float xs[STEP_ROWS][32];
-  const uint lane = sg_lane(), n0 = (get_group_id(0) * UPM_SGS + sg_id()) * 16, ntok = plan->nrows;
+  const uint lane = sg_lane(), n0 = (get_group_id(0) * UPM_SGS + sg_id()) * XMX_LANES, ntok = plan->nrows;
   const uint tiles = (ntok + 7) / 8;
   float8 acc[STEP_ROWS / 8];
   __attribute__((opencl_unroll_hint)) for (uint t = 0; t < STEP_ROWS / 8; t++) acc[t] = (float8)0.0f;
   for (uint k = 0; k < Q_HC_LR; k += 16) {
-    uint b[8];
-    sg_load_cols16(W, Q_HC_LR * 2, Q_HC_DIM, Q_HC_LR * 2, k / 2, n0, b);
+    const int8 b = xmx_load_b(W, Q_HC_LR, Q_HC_DIM, Q_HC_LR, k, n0);
     __attribute__((opencl_unroll_hint)) for (uint t = 0; t < STEP_ROWS / 8; t++) {
       if (t < tiles) {
-        ushort a[8];
-        intel_sub_group_2d_block_read_16b_8r16x1c((__global void *)lrb, Q_HC_LR * 2, ntok, Q_HC_LR * 2,
-                                                  (int2)(k, 8 * t), a);
-        acc[t] = dpas_bf16(as_short8(vload8(0, a)), as_int8(vload8(0, b)), acc[t]);
+        const xmx_a_t a = xmx_load_a8(lrb, Q_HC_LR, ntok, k, 8 * t);
+        acc[t] = xmx_dpas_bf16(a, b, acc[t]);
       }
     }
   }
@@ -164,7 +162,7 @@ REQD_SG __kernel void hc_up_mix_xmx(__global const ushort *W, __global const ush
   }
   barrier(CLK_LOCAL_MEM_FENCE);
   for (uint m = sg_id(); m < ntok; m += UPM_SGS)
-    a8_store(vload2(lane, xs[m]), xa + (ulong)m * (Q_EMBD + Q_EMBD / 8), Q_EMBD, get_group_id(0));
+    xmx_a8_store(xs[m], xa + (ulong)m * (Q_EMBD + Q_EMBD / 8), Q_EMBD, get_group_id(0));
 }
 
 // After an exchange (1.2): y = the cards' partial sums added in card order, R_s += 2 sigma(inject_s / 4) y. P holds
@@ -540,9 +538,9 @@ __kernel void idx_score(__global const float *iq, __global const float *pooled, 
 // their count: cand rows IDX_CAND words apart. Rows within the width take every cell and send none. Groups (width),
 // TOPK_WG.
 #define IDX_CAND (2 * (Q_IDX_BLOCKS + 1) + 2)
-__kernel void idx_cand(__global const float *scores, uint nb_max, __global const StepPlan *plan,
-                       __global uint *blocks_all, __global float *bscores_all, __global uint *cand_all, uint c,
-                       uint C) {
+REQD_SG __kernel void idx_cand(__global const float *scores, uint nb_max, __global const StepPlan *plan,
+                               __global uint *blocks_all, __global float *bscores_all, __global uint *cand_all, uint c,
+                               uint C) {
   __local uint hist[TOPK_HIST];
   __local uint scan[TOPK_WG];
   uint r = get_group_id(0), lid = get_local_id(0);
@@ -576,9 +574,9 @@ static inline uint idx_below(__local const uint *l, uint n, uint b) {
 // all cards: every cached position up to llama.cpp's 2,051; beyond, the tail after the last whole block, the 512 best
 // blocks and the first cells of the 513th, from the cards' candidates (cand: C blocks of width rows, IDX_CAND words a
 // row) merged in block order, so ties go to the lower block as on one card. Groups (width), TOPK_WG.
-__kernel void idx_merge(__global const uint *cand_all, uint C, uint width, __global const StepPlan *plan,
-                        __global float *merged_all, __global uint *blocks_all, __global float *bscores_all,
-                        __global uint *cells_all, __global uint *ncells) {
+REQD_SG __kernel void idx_merge(__global const uint *cand_all, uint C, uint width, __global const StepPlan *plan,
+                                __global float *merged_all, __global uint *blocks_all, __global float *bscores_all,
+                                __global uint *cells_all, __global uint *ncells) {
   __local uint hist[TOPK_HIST];
   __local uint scan[TOPK_WG];
   __local uint mb[2 * (Q_IDX_BLOCKS + 1)], lb[2][Q_IDX_BLOCKS + 1];
@@ -1184,10 +1182,10 @@ __kernel void mtp_cells(__global const uint *first, __global const StepPlan *pla
 // slot's pages are claimed through its position): by CLOCK, a slot read this step is never taken, one read the
 // step before gets a second chance, any other is taken. The missed pages' (page, slot) pairs go to miss;
 // kvs_gather copies them in. One work-group of 1024.
-__kernel void kvs_claim(__global const uint *pt, uint npp, uint npages, __global const uint *cells_all,
-                        __global const uint *ncells, __global const StepPlan *plan, __global uint *where,
-                        __global uint *spage, __global uint *ref, __global uint *mark, __global uint *kst,
-                        uint ahead, __global uint *miss, uint maxmiss) {
+REQD_SG __kernel void kvs_claim(__global const uint *pt, uint npp, uint npages, __global const uint *cells_all,
+                                __global const uint *ncells, __global const StepPlan *plan, __global uint *where,
+                                __global uint *spage, __global uint *ref, __global uint *mark, __global uint *kst,
+                                uint ahead, __global uint *miss, uint maxmiss) {
   __local uint nm;
   const uint lid = get_local_id(0), W = get_local_size(0), epoch = kst[1] + 1, R = kst[4];
   if (lid == 0) nm = 0;
@@ -1244,7 +1242,7 @@ __kernel void kvs_claim(__global const uint *pt, uint npp, uint npages, __global
 
 // The ring's size set to R: the slots from R up give up their pages, and the hand comes back inside. Between steps.
 // One work-group of 1024.
-__kernel void kvs_trim(__global uint *where, __global uint *spage, __global uint *ref, __global uint *kst, uint R) {
+REQD_SG __kernel void kvs_trim(__global uint *where, __global uint *spage, __global uint *ref, __global uint *kst, uint R) {
   const uint old = kst[4];
   for (uint s = R + get_local_id(0); s < old; s += get_local_size(0)) {
     const uint p = spage[s];

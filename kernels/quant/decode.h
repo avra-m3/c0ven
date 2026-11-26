@@ -9,6 +9,7 @@
 
 #include "builtins.h"
 #include "quant.h"
+#include "xmx.h"
 
 #define QK quant_block_values(QTYPE)
 #define UNITS_PER_BLOCK (QK / 32)
@@ -616,8 +617,8 @@ static inline void raw_pairs(uint8 r, uint p[16], half tbl GRID_PARAM) {
     uint x = r[i];
     __attribute__((opencl_unroll_hint)) for (uint hn = 0; hn < 2; hn++) {
       uint sh = 4 * hn;
-      half a0 = intel_sub_group_shuffle(tbl, (x >> sh) & 15), a2 = intel_sub_group_shuffle(tbl, (x >> (16 + sh)) & 15);
-      half a1 = intel_sub_group_shuffle(tbl, (x >> (8 + sh)) & 15), a3 = intel_sub_group_shuffle(tbl, (x >> (24 + sh)) & 15);
+      half a0 = XMX_IQ4_GET(tbl, grid, (x >> sh) & 15), a2 = XMX_IQ4_GET(tbl, grid, (x >> (16 + sh)) & 15);
+      half a1 = XMX_IQ4_GET(tbl, grid, (x >> (8 + sh)) & 15), a3 = XMX_IQ4_GET(tbl, grid, (x >> (24 + sh)) & 15);
       p[8 * hn + 2 * i] = as_uint((half2)(a0, a2) * d2);
       p[8 * hn + 2 * i + 1] = as_uint((half2)(a1, a3) * d2);
     }

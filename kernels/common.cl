@@ -3,6 +3,7 @@
 #include "builtins.h"
 #include "step.h"
 #include "swiglu.h"
+#include "xmx.h"
 
 // a8 activations (a8.h): x[t * x_stride + i] for i < K, t < ntok, into rows at out + t * (K + K / 8). One sub-group
 // per 32 values, two per lane: groups ceil(K / 32 ntok / 4), 64.
@@ -70,9 +71,9 @@ REQD_SG __kernel void matvec_bf16(__global const ushort *W, uint rows, uint K, _
 // memory; ntok <= BF_MAXT tokens share each weight read (x and y rows x_stride and y_stride apart). post and scale
 // apply to rows below post_rows only (the hyper-connections' down product carries their 4 inject rows after its
 // 320). Groups rows, 256.
-__kernel void matvec_bf16_ks(__global const ushort *W, uint rows, uint K, __global const float *x, uint x_stride,
-                             __global const uint *ntok_p, __global float *y, uint y_stride, uint mode, float scale,
-                             uint post_rows) {
+REQD_SG __kernel void matvec_bf16_ks(__global const ushort *W, uint rows, uint K, __global const float *x, uint x_stride,
+                                     __global const uint *ntok_p, __global float *y, uint y_stride, uint mode, float scale,
+                                     uint post_rows) {
   __local float red[BF_MAXT][16];
   const uint r = get_group_id(0), lid = get_local_id(0), ntok = *ntok_p;
   __global const ushort *w = W + (ulong)r * K;
@@ -121,42 +122,42 @@ __kernel void to_bf16_rows(__global const float *x, uint x_stride, uint K, __glo
 // height is *ntok, so the last tile's rows past it come as zeros without a read of memory
 // (docs/measurements/MEASUREMENTS.md#2026-11-11-products-read-the-steps-rows). W: N rows ldw apart. W, xb 64-byte
 // aligned; K, ldw multiples of 32. Groups ceil(N / 16), 16 ksplit (ksplit <= 64, K / ksplit a multiple of 16);
-// sub-group 0 adds the ksplit tiles in order. A tile's sums do not depend on the tiles after it.
+// ksplit sub-groups (or pairs on 8-lane XMX) reduce in order. A tile's sums do not depend on the tiles after it.
 #define MV_TILES (STEP_ROWS / 8)
-REQD_SG __kernel void mv_xmx_bf16(__global const ushort *W, uint N, uint K, uint ldw, __global const ushort *xb,
-                                  __global const uint *ntok_p, __global float *y, uint y_stride, uint mode,
-                                  float scale, uint post_rows, uint ksplit, __global ushort *yb) {
-  __local float red[64][8][SG_SIZE];
-  const uint lane = sg_lane(), s = sg_id(), n0 = get_group_id(0) * 16, ntok = *ntok_p, tiles = (ntok + 7) / 8;
-  const uint kc = K / ksplit, k0 = s * kc;
+#define MV_HALVES (16 / XMX_LANES)
+REQD_XMX_SG __kernel void mv_xmx_bf16(__global const ushort *W, uint N, uint K, uint ldw, __global const ushort *xb,
+                                      __global const uint *ntok_p, __global float *y, uint y_stride, uint mode,
+                                      float scale, uint post_rows, uint ksplit, __global ushort *yb) {
+  __local float red[64][8][16];
+  const uint lane = sg_lane(), s = sg_id(), kq = s / MV_HALVES, ch = s % MV_HALVES;
+  const uint n0 = get_group_id(0) * 16 + ch * XMX_LANES, ntok = *ntok_p, tiles = (ntok + 7) / 8;
+  const uint kc = K / ksplit, k0 = kq * kc;
   float8 acc[MV_TILES];
   __attribute__((opencl_unroll_hint)) for (uint t = 0; t < MV_TILES; t++) acc[t] = (float8)0.0f;
   for (uint k = k0; k < k0 + kc; k += 16) {
-    uint b[8];
-    sg_load_cols16(W, K * 2, N, ldw * 2, k / 2, n0, b);
+    const int8 b = xmx_load_b(W, K, N, ldw, k, n0);
     __attribute__((opencl_unroll_hint)) for (uint t = 0; t < MV_TILES; t++) {
       if (t < tiles) {
-        ushort a[8];
-        intel_sub_group_2d_block_read_16b_8r16x1c((__global void *)xb, K * 2, ntok, K * 2, (int2)(k, 8 * t), a);
-        acc[t] = dpas_bf16(as_short8(vload8(0, a)), as_int8(vload8(0, b)), acc[t]);
+        const xmx_a_t a = xmx_load_a8(xb, K, ntok, k, 8 * t);
+        acc[t] = xmx_dpas_bf16(a, b, acc[t]);
       }
     }
   }
-  const uint n = n0 + lane;
-  // After the last tile's sums are in red, only sub-group 0 has work left: the others leave, as their threads can
-  // then run other work-groups. Between tiles, red is read in full before the next tile's sums overwrite it.
+  const uint n = n0 + lane, col = ch * XMX_LANES + lane;
+  // After the last tile's sums are in red, only kq == 0 has work left: the others leave so their threads can run
+  // other work-groups. Between tiles, red is read in full before the next tile's sums overwrite it.
   __attribute__((opencl_unroll_hint)) for (uint t = 0; t < MV_TILES; t++) {
     if (t >= tiles) break;
     float r[8];
     vstore8(acc[t], 0, r);
-    for (uint m = 0; m < 8; m++) red[s][m][lane] = r[m];
+    for (uint m = 0; m < 8; m++) red[kq][m][col] = r[m];
     barrier(CLK_LOCAL_MEM_FENCE);
-    if (s != 0 && t + 1 == tiles) return;
-    if (s == 0)
+    if (kq != 0 && t + 1 == tiles) return;
+    if (kq == 0)
       for (uint m = 0; m < 8 && 8 * t + m < ntok; m++) {
         const uint row = 8 * t + m;
         float v = 0.0f;
-        for (uint q = 0; q < ksplit; q++) v += red[q][m][lane];
+        for (uint q = 0; q < ksplit; q++) v += red[q][m][col];
         if (n < post_rows) {
           v *= scale;
           if (mode == 1) v = silu(v);

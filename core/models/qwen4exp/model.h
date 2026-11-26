@@ -365,6 +365,9 @@ class Model final : public engine::Model {
   std::vector<std::unique_ptr<HostLayer>> host_layers_;
   uint32_t ncards_ = 1;
   bool p2p_ = false;       // cards 0 and 1 can copy device memory directly (ze::Runtime::peer_access)
+  bool host_poll_ = true;  // cards support EU polling of host-written decode completion flags
+  std::vector<uint32_t> miss_layers_;       // layers split on host events when !host_poll_
+  std::unique_ptr<ze::EventPool> miss_events_;
   uint32_t npp_ = 0;       // pages per slot's row of the table: the context's, rounded up to a multiple of the cards
   uint32_t kv_pages_ = 0;  // pages in the pool
   uint32_t kv_res_ = 0;    // streamed (Options::kv_resident): the ring of resident K and V pages a layer on each

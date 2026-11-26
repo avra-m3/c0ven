@@ -493,9 +493,9 @@ __kernel void p_idx_qsplit(__global const float *iq, __global half *qh, __global
 // Row t's candidates on this card: its best Q_IDX_BLOCKS + 1 blocks in block order as (block, score) pairs, after their
 // count; rows IDX_CAND words apart. Groups (T), TOPK_WG.
 #define IDX_CAND (2 * (Q_IDX_BLOCKS + 1) + 2)
-__kernel void p_idx_cand(__global const float *scores, uint nb_max, __global const PromptPlan *runs,
-                         __global uint *blocks_all, __global float *bscores_all, __global uint *cand_all, uint c,
-                         uint C) {
+REQD_SG __kernel void p_idx_cand(__global const float *scores, uint nb_max, __global const PromptPlan *runs,
+                                 __global uint *blocks_all, __global float *bscores_all, __global uint *cand_all, uint c,
+                                 uint C) {
   __local uint hist[TOPK_HIST];
   __local uint scan[TOPK_WG];
   uint t = get_group_id(0), lid = get_local_id(0);
@@ -523,9 +523,9 @@ __kernel void p_idx_cand(__global const float *scores, uint nb_max, __global con
 // layer.cl's idx_merge does, into cells[t] (Q_IDX_CELLS apart) and ncells[t]. The whole blocks come first, in block
 // order, each at a multiple of 4 (p_attn_xmx reads them as runs of 4); then the partial block's cells, then the tail.
 // merged, blocks and bscores are per-row scratch. Groups (T), TOPK_WG.
-__kernel void p_idx_merge(__global const uint *c0, __global const uint *c1, __global const PromptPlan *runs,
-                          __global float *merged_all, __global uint *blocks_all, __global float *bscores_all,
-                          __global uint *cells_all, __global uint *ncells) {
+REQD_SG __kernel void p_idx_merge(__global const uint *c0, __global const uint *c1, __global const PromptPlan *runs,
+                                  __global float *merged_all, __global uint *blocks_all, __global float *bscores_all,
+                                  __global uint *cells_all, __global uint *ncells) {
   __local uint hist[TOPK_HIST];
   __local uint scan[TOPK_WG];
   __local uint mb[2 * (Q_IDX_BLOCKS + 1)];

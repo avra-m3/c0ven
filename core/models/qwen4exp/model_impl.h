@@ -251,7 +251,8 @@ struct Model::Card {
   float *xp = nullptr;
   StepPlan *plan = nullptr;  // the step plan, copied from host memory by the decode step's first command
   std::unique_ptr<ze::List> up;
-  std::map<uint32_t, std::unique_ptr<ze::List>> lists;  // the decode step, per width (kStepWidths)
+  std::map<uint32_t, std::unique_ptr<ze::Queue>> queues;  // shared queues for split decode lists (!host_poll_)
+  std::map<uint32_t, std::unique_ptr<ze::List>> lists;    // the decode step, per width (kStepWidths)
   std::map<uint32_t, uint64_t *> trace;                 // their timestamps, with Options::trace
   std::unique_ptr<ze::List> commit;                     // a window's commit (CommitPlan)
   float *Sw = nullptr;                                  // a window's DeltaNet state past its first row

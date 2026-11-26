@@ -5,6 +5,10 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 
+#if defined(__x86_64__)
+#include <immintrin.h>
+#endif
+
 #include <atomic>
 #include <cerrno>
 #include <cstdio>
@@ -12,6 +16,7 @@
 #include <cstring>
 #include <fstream>
 #include <iterator>
+#include <memory>
 #include <stdexcept>
 
 namespace engine::ze {
@@ -33,6 +38,53 @@ std::vector<uint8_t> read_file(const std::string &path) {
   std::ifstream f(path, std::ios::binary);
   if (!f) throw std::runtime_error("cannot read " + path);
   return std::vector<uint8_t>((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+}
+
+static bool env_override(const char *name, bool current) {
+  const char *v = std::getenv(name);
+  if (!v || !*v) return current;
+  return std::strcmp(v, "0") != 0;
+}
+
+#if defined(__x86_64__)
+__attribute__((target("clflushopt"))) static void clflushopt_range(const char *p, size_t bytes) {
+  constexpr size_t kLine = 64;
+  uintptr_t cur = reinterpret_cast<uintptr_t>(p) & ~(kLine - 1);
+  const uintptr_t end = reinterpret_cast<uintptr_t>(p) + bytes;
+  for (; cur < end; cur += kLine) _mm_clflushopt(reinterpret_cast<void *>(cur));
+}
+
+static void clflush_range(const char *p, size_t bytes) {
+  constexpr size_t kLine = 64;
+  uintptr_t cur = reinterpret_cast<uintptr_t>(p) & ~(kLine - 1);
+  const uintptr_t end = reinterpret_cast<uintptr_t>(p) + bytes;
+  for (; cur < end; cur += kLine) _mm_clflush(reinterpret_cast<const void *>(cur));
+}
+#endif
+
+void flush_cpu_writes(const void *p, size_t bytes) {
+#if defined(__x86_64__)
+  if (!p || bytes == 0) return;
+  static const bool has_clflushopt = __builtin_cpu_supports("clflushopt");
+  if (has_clflushopt)
+    clflushopt_range(static_cast<const char *>(p), bytes);
+  else
+    clflush_range(static_cast<const char *>(p), bytes);
+  _mm_sfence();
+#else
+  (void)p;
+  (void)bytes;
+#endif
+}
+
+uint8_t readback_mapped_byte(const void *p, bool writeback) {
+#if defined(__x86_64__)
+  if (writeback) flush_cpu_writes(p, 1);
+  _mm_mfence();
+#else
+  (void)writeback;
+#endif
+  return *static_cast<volatile const uint8_t *>(p);
 }
 
 ze_result_t init() {
@@ -65,6 +117,9 @@ Runtime::Runtime(uint32_t min_cards) {
       c.max_alloc = p.maxMemAllocSize;
       c.device_id = p.deviceId;
       c.ip_version = ipv.ipVersion;
+      c.host_flag_polling = !env_override("ENGINE_NO_HOST_POLL", c.is_hpg());
+      c.writeback_mapping = env_override("ENGINE_STAGE_FLUSH", c.is_hpg());
+      c.copy_2d_arena = !env_override("ENGINE_1D_STAGE_COPY", c.is_hpg());
       c.xe_cores = p.numSlices * p.numSubslicesPerSlice;
       c.timer_hz = p.timerResolution;  // cycles per second, with the 1.2 properties
       c.timestamp_mask = p.timestampValidBits >= 64 ? ~0ull : ((1ull << p.timestampValidBits) - 1);
@@ -316,8 +371,11 @@ Module::Module(Runtime &rt, uint32_t card, const std::string &path, const std::s
   if (log) zeModuleBuildLogDestroy(log);
 }
 
-Library::Library(Runtime &rt, std::string dir, std::string spirv_dir)
-    : rt_(rt), dir_(std::move(dir)), spirv_dir_(std::move(spirv_dir)) {
+Library::Library(Runtime &rt, std::string dir, std::string spirv_dir, std::string hpg_spirv_dir)
+    : rt_(rt),
+      dir_(std::move(dir)),
+      spirv_dir_(std::move(spirv_dir)),
+      hpg_spirv_dir_(std::move(hpg_spirv_dir)) {
   const char *target = std::getenv("ENGINE_KERNEL_TARGET");
   const bool force = target && std::string(target) == "spirv";
   for (uint32_t c = 0; c < rt_.ncards(); c++) {
@@ -339,12 +397,14 @@ Library::Library(Runtime &rt, std::string dir, std::string spirv_dir)
 ze_kernel_handle_t Library::get(uint32_t card, const std::string &module, const std::string &name) {
   auto &m = modules_[{card, module}];
   if (!m) {
+    const Card &c = rt_.cards().at(card);
     if (spirv_.at(card)) {
       auto opts = read_file(dir_ + "/" + module + ".options");
       const std::string options(opts.begin(), opts.end());
-      m = std::make_unique<Module>(rt_, card, spirv_dir_ + "/" + module + ".spv", &options);
+      const std::string &spv_dir = c.is_hpg() ? hpg_spirv_dir_ : spirv_dir_;
+      m = std::make_unique<Module>(rt_, card, spv_dir + "/" + module + ".spv", &options);
     } else {
-      m = std::make_unique<Module>(rt_, card, dir_ + "/" + rt_.cards()[card].ip() + "/" + module + ".bin");
+      m = std::make_unique<Module>(rt_, card, dir_ + "/" + c.ip() + "/" + module + ".bin");
     }
   }
   return m->kernel(name);
@@ -391,12 +451,27 @@ EventPool::~EventPool() {
   if (pool_) zeEventPoolDestroy(pool_);
 }
 
+Queue::Queue(Runtime &rt, uint32_t card, bool copy_engine, bool in_order)
+    : card_(card), in_order_(in_order) {
+  const Card &c = rt.cards().at(card);
+  ordinal_ = copy_engine && c.copy_ordinal != UINT32_MAX ? c.copy_ordinal : c.compute_ordinal;
+  ze_command_queue_desc_t qd = {ZE_STRUCTURE_TYPE_COMMAND_QUEUE_DESC};
+  qd.ordinal = ordinal_;
+  qd.mode = ZE_COMMAND_QUEUE_MODE_ASYNCHRONOUS;
+  qd.flags = ZE_COMMAND_QUEUE_FLAG_IN_ORDER;
+  ZE_CHECK(zeCommandQueueCreate(rt.context(), c.device, &qd, &queue_));
+}
+
+Queue::~Queue() {
+  if (!stuck && queue_) zeCommandQueueDestroy(queue_);
+}
+
 List::List(Runtime &rt, uint32_t card, Kind kind, bool copy_engine, bool in_order)
     : rt_(rt), card_(card), kind_(kind), in_order_(in_order) {
   const Card &c = rt.cards().at(card);
-  uint32_t ordinal = copy_engine && c.copy_ordinal != UINT32_MAX ? c.copy_ordinal : c.compute_ordinal;
+  ordinal_ = copy_engine && c.copy_ordinal != UINT32_MAX ? c.copy_ordinal : c.compute_ordinal;
   ze_command_queue_desc_t qd = {ZE_STRUCTURE_TYPE_COMMAND_QUEUE_DESC};
-  qd.ordinal = ordinal;
+  qd.ordinal = ordinal_;
   qd.mode = ZE_COMMAND_QUEUE_MODE_ASYNCHRONOUS;
   qd.flags = in_order || kind == regular ? ZE_COMMAND_QUEUE_FLAG_IN_ORDER : 0;
   if (kind == immediate) {
@@ -404,12 +479,32 @@ List::List(Runtime &rt, uint32_t card, Kind kind, bool copy_engine, bool in_orde
   } else {
     ZE_CHECK(zeCommandQueueCreate(rt.context(), c.device, &qd, &queue_));
     ze_command_list_desc_t ld = {ZE_STRUCTURE_TYPE_COMMAND_LIST_DESC};
-    ld.commandQueueGroupOrdinal = ordinal;
+    ld.commandQueueGroupOrdinal = ordinal_;
     ld.flags = in_order ? ZE_COMMAND_LIST_FLAG_IN_ORDER : 0;
     ZE_CHECK(zeCommandListCreate(rt.context(), c.device, &ld, &list_));
     ze_fence_desc_t fd = {ZE_STRUCTURE_TYPE_FENCE_DESC};
     ZE_CHECK(zeFenceCreate(queue_, &fd, &fence_));
+    parts_.push_back({list_, fence_, false});
   }
+}
+
+List::List(Runtime &rt, Queue &queue, bool trace)
+    : rt_(rt),
+      card_(queue.card()),
+      ordinal_(queue.ordinal()),
+      kind_(regular),
+      in_order_(queue.in_order()),
+      owns_queue_(false),
+      queue_(queue.handle()) {
+  (void)trace;
+  const Card &c = rt.cards().at(card_);
+  ze_command_list_desc_t ld = {ZE_STRUCTURE_TYPE_COMMAND_LIST_DESC};
+  ld.commandQueueGroupOrdinal = ordinal_;
+  ld.flags = in_order_ ? ZE_COMMAND_LIST_FLAG_IN_ORDER : 0;
+  ZE_CHECK(zeCommandListCreate(rt.context(), c.device, &ld, &list_));
+  ze_fence_desc_t fd = {ZE_STRUCTURE_TYPE_FENCE_DESC};
+  ZE_CHECK(zeFenceCreate(queue_, &fd, &fence_));
+  parts_.push_back({list_, fence_, false});
 }
 
 #if defined(ENGINE_CHECK_LISTS) || !defined(NDEBUG)
@@ -433,9 +528,15 @@ List::OneUser::~OneUser() {
 
 List::~List() {
   if (stuck) return;
-  if (fence_) zeFenceDestroy(fence_);
-  if (list_) zeCommandListDestroy(list_);
-  if (queue_) zeCommandQueueDestroy(queue_);
+  if (kind_ == immediate) {
+    if (list_) zeCommandListDestroy(list_);
+  } else {
+    for (Part &p : parts_) {
+      if (p.fence) zeFenceDestroy(p.fence);
+      if (p.list) zeCommandListDestroy(p.list);
+    }
+  }
+  if (owns_queue_ && queue_) zeCommandQueueDestroy(queue_);
 }
 
 void List::launch(ze_kernel_handle_t k, std::initializer_list<Arg> args, uint32_t gx, uint32_t gy, uint32_t gz,
@@ -533,6 +634,20 @@ void List::timestamp(uint64_t *dst) {
   ZE_CHECK(zeCommandListAppendWriteGlobalTimestamp(list_, dst, nullptr, 0, nullptr));
 }
 
+void List::split() {
+  ONE_USER;
+  if (kind_ != regular) throw std::runtime_error("split() on an immediate list");
+  ZE_CHECK(zeCommandListClose(list_));
+  ze_command_list_desc_t ld = {ZE_STRUCTURE_TYPE_COMMAND_LIST_DESC};
+  ld.commandQueueGroupOrdinal = ordinal_;
+  ld.flags = in_order_ ? ZE_COMMAND_LIST_FLAG_IN_ORDER : 0;
+  ZE_CHECK(zeCommandListCreate(rt_.context(), rt_.cards().at(card_).device, &ld, &list_));
+  ze_fence_desc_t fd = {ZE_STRUCTURE_TYPE_FENCE_DESC};
+  ZE_CHECK(zeFenceCreate(queue_, &fd, &fence_));
+  parts_.push_back({list_, fence_, false});
+  together_ = false;
+}
+
 void List::close() {
   ONE_USER;
   if (kind_ == regular) ZE_CHECK(zeCommandListClose(list_));
@@ -541,9 +656,17 @@ void List::close() {
 void List::execute() {
   ONE_USER;
   if (kind_ != regular) throw std::runtime_error("execute() on an immediate list");
-  if (submitted_) ZE_CHECK(zeFenceReset(fence_));
-  ZE_CHECK(zeCommandQueueExecuteCommandLists(queue_, 1, &list_, fence_));
-  submitted_ = true;
+  execute_part(0);
+}
+
+void List::execute_part(uint32_t part) {
+  ONE_USER;
+  if (kind_ != regular) throw std::runtime_error("execute_part() on an immediate list");
+  Part &p = parts_.at(part);
+  if (p.submitted) ZE_CHECK(zeFenceReset(p.fence));
+  ZE_CHECK(zeCommandQueueExecuteCommandLists(queue_, 1, &p.list, p.fence));
+  p.submitted = true;
+  if (part == 0) submitted_ = true;
 }
 
 // A list on a queue whose engine the driver reset never finishes, and the driver's job timeout does not apply to the
@@ -578,8 +701,13 @@ bool Runtime::peer_access(uint32_t a, uint32_t b, Library *lib, std::string *why
       return fail("zeDeviceGetP2PProperties has no access flag for card " + std::to_string(s) + " -> " +
                   std::to_string(d));
   }
-  // A small copy and (when lib is given) a kernel's 64-byte stores each way on a regular list catch a kernel refusal
-  // (ZE_RESULT_ERROR_OUT_OF_DEVICE_MEMORY) and a bridge that drops peer writes and reads back wrong bytes.
+  // Test kernel peer stores before peer blitter copies: boards where peer EU stores are dropped fail cleanly here
+  // instead of triggering a copy-engine BAR-to-BAR DMA fault.
+  std::unique_ptr<Library> local_lib;
+  if (!lib) {
+    local_lib = std::make_unique<Library>(*this);
+    lib = local_lib.get();
+  }
   constexpr size_t kBytes = 4096;
   constexpr uint32_t kWords = kBytes / sizeof(uint32_t);
   static_assert(kWords % 64 == 0);
@@ -604,6 +732,7 @@ bool Runtime::peer_access(uint32_t a, uint32_t b, Library *lib, std::string *why
     r = zeCommandQueueExecuteCommandLists(peer.queue_, 1, &peer.list_, peer.fence_);
     if (r != ZE_RESULT_SUCCESS) return fail(tag + "zeCommandQueueExecuteCommandLists returned " + hex_result(r));
     peer.submitted_ = true;
+    peer.parts_[0].submitted = true;
     r = zeFenceHostSynchronize(peer.fence_, kListWaitNs);
     if (r == ZE_RESULT_NOT_READY) {
       stuck = true;
@@ -612,6 +741,33 @@ bool Runtime::peer_access(uint32_t a, uint32_t b, Library *lib, std::string *why
     if (r != ZE_RESULT_SUCCESS) return fail(tag + "zeFenceHostSynchronize returned " + hex_result(r));
     return true;
   };
+  for (int dir = 0; dir < 2; dir++) {
+    const uint32_t s = dir ? b : a, d = dir ? a : b;
+    void *pd = dir ? pa : pb;
+    const std::string tag = "peer kernel write card " + std::to_string(s) + " -> " + std::to_string(d) + ": ";
+    List up_d(*this, d, List::immediate);
+    up_d.fill(pd, &sentinel, 1, kBytes);
+    up_d.synchronize();
+    const ze_kernel_handle_t k = lib->get(s, "smoke", "smoke");
+    const uint32_t bias = 0x5a0000u + (dir ? 0x1000u : 0u);
+    ze_result_t r = zeKernelSetArgumentValue(k, 0, sizeof(pd), &pd);
+    if (r != ZE_RESULT_SUCCESS) return fail(tag + "zeKernelSetArgumentValue(0) returned " + hex_result(r));
+    r = zeKernelSetArgumentValue(k, 1, sizeof(bias), &bias);
+    if (r != ZE_RESULT_SUCCESS) return fail(tag + "zeKernelSetArgumentValue(1) returned " + hex_result(r));
+    r = zeKernelSetGroupSize(k, 64, 1, 1);
+    if (r != ZE_RESULT_SUCCESS) return fail(tag + "zeKernelSetGroupSize returned " + hex_result(r));
+    List peer(*this, s, List::regular);
+    const ze_group_count_t g = {kWords / 64, 1, 1};
+    r = zeCommandListAppendLaunchKernel(peer.list_, k, &g, nullptr, 0, nullptr);
+    if (r != ZE_RESULT_SUCCESS) return fail(tag + "zeCommandListAppendLaunchKernel returned " + hex_result(r));
+    if (!run_list(peer, tag)) return false;
+    std::memset(hdst, 0xee, kBytes);
+    up_d.copy(hdst, pd, kBytes);
+    up_d.synchronize();
+    const auto *got = reinterpret_cast<const uint32_t *>(hdst);
+    for (uint32_t i = 0; i < kWords; i++)
+      if (got[i] != i + bias) return fail(tag + "read back wrong values");
+  }
   for (int dir = 0; dir < 2; dir++) {
     const uint32_t s = dir ? b : a, d = dir ? a : b;
     void *ps = dir ? pb : pa, *pd = dir ? pa : pb;
@@ -630,55 +786,48 @@ bool Runtime::peer_access(uint32_t a, uint32_t b, Library *lib, std::string *why
     up_d.synchronize();
     if (std::memcmp(hsrc, hdst, kBytes) != 0) return fail(tag + "read back wrong bytes");
   }
-  if (lib) {
-    for (int dir = 0; dir < 2; dir++) {
-      const uint32_t s = dir ? b : a, d = dir ? a : b;
-      void *pd = dir ? pa : pb;
-      const std::string tag = "peer kernel write card " + std::to_string(s) + " -> " + std::to_string(d) + ": ";
-      List up_d(*this, d, List::immediate);
-      up_d.fill(pd, &sentinel, 1, kBytes);
-      up_d.synchronize();
-      const ze_kernel_handle_t k = lib->get(s, "smoke", "smoke");
-      const uint32_t bias = 0x5a0000u + (dir ? 0x1000u : 0u);
-      ze_result_t r = zeKernelSetArgumentValue(k, 0, sizeof(pd), &pd);
-      if (r != ZE_RESULT_SUCCESS) return fail(tag + "zeKernelSetArgumentValue(0) returned " + hex_result(r));
-      r = zeKernelSetArgumentValue(k, 1, sizeof(bias), &bias);
-      if (r != ZE_RESULT_SUCCESS) return fail(tag + "zeKernelSetArgumentValue(1) returned " + hex_result(r));
-      r = zeKernelSetGroupSize(k, 64, 1, 1);
-      if (r != ZE_RESULT_SUCCESS) return fail(tag + "zeKernelSetGroupSize returned " + hex_result(r));
-      List peer(*this, s, List::regular);
-      const ze_group_count_t g = {kWords / 64, 1, 1};
-      r = zeCommandListAppendLaunchKernel(peer.list_, k, &g, nullptr, 0, nullptr);
-      if (r != ZE_RESULT_SUCCESS) return fail(tag + "zeCommandListAppendLaunchKernel returned " + hex_result(r));
-      if (!run_list(peer, tag)) return false;
-      std::memset(hdst, 0xee, kBytes);
-      up_d.copy(hdst, pd, kBytes);
-      up_d.synchronize();
-      const auto *got = reinterpret_cast<const uint32_t *>(hdst);
-      for (uint32_t i = 0; i < kWords; i++)
-        if (got[i] != i + bias) return fail(tag + "read back wrong values");
-    }
-  }
   return true;
 }
 
 void List::synchronize() {
   ONE_USER;
-  if (kind_ != immediate && !submitted_) return;
-  const ze_result_t r = kind_ == immediate ? zeCommandListHostSynchronize(list_, kListWaitNs)
-                                           : zeFenceHostSynchronize(fence_, kListWaitNs);
+  if (kind_ == immediate) {
+    const ze_result_t r = zeCommandListHostSynchronize(list_, kListWaitNs);
+    if (r == ZE_RESULT_NOT_READY) {
+      stuck = true;
+      throw std::runtime_error("card " + std::to_string(card_) + " did not finish a list in " +
+                               std::to_string(kListWaitNs / 1'000'000'000ull) +
+                               " s; its engine may have been reset (the kernel log, /sys/class/devcoredump)");
+    }
+    check(r, "zeCommandListHostSynchronize");
+    return;
+  }
+  synchronize_part(0);
+}
+
+void List::synchronize_part(uint32_t part) {
+  ONE_USER;
+  Part &p = parts_.at(part);
+  if (!p.submitted) return;
+  const ze_result_t r = zeFenceHostSynchronize(p.fence, kListWaitNs);
   if (r == ZE_RESULT_NOT_READY) {
     stuck = true;
     throw std::runtime_error("card " + std::to_string(card_) + " did not finish a list in " +
                              std::to_string(kListWaitNs / 1'000'000'000ull) +
                              " s; its engine may have been reset (the kernel log, /sys/class/devcoredump)");
   }
-  check(r, kind_ == immediate ? "zeCommandListHostSynchronize" : "zeFenceHostSynchronize");
+  check(r, "zeFenceHostSynchronize");
 }
 
 void List::reset_list() {
   ONE_USER;
-  if (kind_ == regular) ZE_CHECK(zeCommandListReset(list_));
+  if (kind_ == regular) {
+    for (Part &p : parts_) {
+      ZE_CHECK(zeCommandListReset(p.list));
+      p.submitted = false;
+    }
+    submitted_ = false;
+  }
 }
 
 }  // namespace engine::ze
