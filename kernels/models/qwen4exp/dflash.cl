@@ -67,6 +67,21 @@ __kernel void df_norm(__global const float *x, __global const float *w, __global
   }
 }
 
+// The final norm of the rows the head reads, each into its place there (DraftRow.head). Groups (width), 256.
+__kernel void df_norm_head(__global const float *x, __global const float *w, __global const DraftPlan *plan,
+                           __global float *out) {
+  __local float red[64];
+  uint r = get_group_id(0);
+  if (r >= plan->nrows || plan->rows[r].head == DRAFT_NO_HEAD) return;
+  __global const float *xr = x + (ulong)r * Q_EMBD;
+  float ss = 0.0f;
+  for (uint i = get_local_id(0); i < Q_EMBD; i += get_local_size(0)) ss += xr[i] * xr[i];
+  ss = wg_sum(ss, red);
+  float rs = rsqrt(ss / (float)Q_EMBD + DF_EPS);
+  __global float *o = out + (ulong)plan->rows[r].head * Q_EMBD;
+  for (uint i = get_local_id(0); i < Q_EMBD; i += get_local_size(0)) o[i] = xr[i] * rs * w[i];
+}
+
 // One set of a convolution's taps over the block's rows: y_t = sum_o (base[set][o] + dyn_t[set][o][group]) x_{t-o},
 // where x_{t-1} is zero at a block's first row. dyn rows hold DF_KP weights, set-major, then tap, then group; base is
 // [set][tap][Q_EMBD]. A tap's rows of x are read whole, so out may not be x. Groups (Q_EMBD / 64, width), 64.
@@ -117,30 +132,30 @@ static inline float df_rope(__local const float *x, uint d, uint pos) {
   return d < DF_D / 2 ? x[i] * c - x[i + DF_D / 2] * s : x[i] * s + x[i + DF_D / 2] * c;
 }
 
-// Q rows hold nq heads, K and V rows nkv heads, of DF_D. Work-groups [0, nq) norm and rotate the queries in place;
-// [nq, nq + nkv) norm and rotate the keys and store keys and values in the slot's ring at the row's position.
-// Groups (nq + nkv, width), DF_D.
-__kernel void df_prep(__global float *Q, __global const float *K, __global const float *V, __global const float *qn,
-                      __global const float *kn, uint nq, uint nkv, __global float *rk, __global float *rv,
-                      __global const DraftPlan *plan) {
+// Q rows hold nq heads, K and V rows nkv heads, of DF_D, each row ld floats after the one before. Work-groups
+// [0, nq) norm and rotate the queries into Qout (rows of nq heads); [nq, nq + nkv) norm and rotate the keys and store
+// keys and values in the slot's ring at the row's position. Groups (nq + nkv, width), DF_D.
+__kernel void df_prep(__global const float *Q, __global const float *K, __global const float *V, uint ld,
+                      __global float *Qout, __global const float *qn, __global const float *kn, uint nq, uint nkv,
+                      __global float *rk, __global float *rv, __global const DraftPlan *plan) {
   __local float x[DF_D], red[64];
   uint g = get_group_id(0), r = get_group_id(1), d = get_local_id(0);
   if (r >= plan->nrows) return;
   const uint pos = plan->rows[r].pos;
   const bool is_q = g < nq;
-  float v = is_q ? Q[((ulong)r * nq + g) * DF_D + d] : K[((ulong)r * nkv + g - nq) * DF_D + d];
+  float v = is_q ? Q[(ulong)r * ld + g * DF_D + d] : K[(ulong)r * ld + (g - nq) * DF_D + d];
   float ss = wg_sum(v * v, red);
   x[d] = v * rsqrt(ss / (float)DF_D + DF_EPS) * (is_q ? qn[d] : kn[d]);
   barrier(CLK_LOCAL_MEM_FENCE);
   float y = df_rope(x, d, pos);
   if (is_q) {
-    Q[((ulong)r * nq + g) * DF_D + d] = y;
+    Qout[((ulong)r * nq + g) * DF_D + d] = y;
     return;
   }
   const uint c = g - nq;
   const ulong cell = ((ulong)plan->rows[r].slot * DF_RING + pos % DF_RING) * nkv + c;
   rk[cell * DF_D + d] = y;
-  rv[cell * DF_D + d] = V[((ulong)r * nkv + c) * DF_D + d];
+  rv[cell * DF_D + d] = V[(ulong)r * ld + c * DF_D + d];
 }
 
 // Attention, non-causal in the block: row r attends to its slot's positions lo_r .. its block's last. A block's rows
@@ -257,10 +272,9 @@ __kernel void df_merge(uint nq, __global const DraftPlan *plan, __global const f
   outb[((ulong)r * nq + lh) * DF_D + d] = f32_to_bf16(y);
 }
 
-// silu(g) u as bf16, rows of n. Groups (ceil(n / 64), width), 64.
-__kernel void df_swiglu(__global const float *g, __global const float *u, uint n, __global const DraftPlan *plan,
-                        __global ushort *outb) {
+// silu(g) u as bf16, rows of n; gu's rows hold g, then u. Groups (ceil(n / 64), width), 64.
+__kernel void df_swiglu(__global const float *gu, uint n, __global const DraftPlan *plan, __global ushort *outb) {
   uint i = get_global_id(0), t = get_group_id(1);
   if (t >= plan->nrows || i >= n) return;
-  outb[(ulong)t * n + i] = f32_to_bf16(silu(g[(ulong)t * n + i]) * u[(ulong)t * n + i]);
+  outb[(ulong)t * n + i] = f32_to_bf16(silu(gu[(ulong)t * 2 * n + i]) * gu[(ulong)t * 2 * n + n + i]);
 }

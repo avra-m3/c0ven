@@ -642,12 +642,13 @@ core's own windows of each width (`core/api/lookup.cpp`,
 
 The drafter is DFlash 2 when its files are present ([MODEL_FILES.md](MODEL_FILES.md#the-dflash-2-drafter)), else the
 model's MTP layer. DFlash 2 is five dense layers, split across the cards by heads and MLP rows, with two exchanges a
-layer. It reads the main model's hidden states after layers 5, 15, 25, 35 and 45, which each decode step and prompt
-chunk keep for their rows. A pass first adds the last step's rows to each slot's context: their hidden states become
-each layer's keys and values, in a ring of the slot's last 2,112 positions. Then each drafting slot's block, its token
-sampled last followed by mask tokens, attends to the ring and to itself, and the main model's head gives each row's
-candidates: one pass gives all of a slot's drafts. After a prompt the context is the prompt's last 8 rows
-(`core/models/qwen4exp/dflash.cpp`, [ADR-0050](adr/0050-dflash-2-drafts.md)).
+layer (card to card with peer access, else through host memory). It reads the main model's hidden states after layers 5,
+15, 25, 35 and 45, which each decode step and prompt chunk keep for their rows. A pass first adds the last step's rows
+to each slot's context: their hidden states become each layer's keys and values, in a ring of the slot's last 2,112
+positions. Then each drafting slot's block, its token sampled last followed by mask tokens, attends to the ring and to
+itself, and the main model's head gives the candidates of each row after the block's first: one pass gives all of a
+slot's drafts. After a prompt the context is the prompt's last 8 rows (`core/models/qwen4exp/dflash.cpp`,
+[ADR-0050](adr/0050-dflash-2-drafts.md)).
 
 The MTP layer is split across the cards as an attention layer is. All its 512 experts sit on the cards, so a draft
 never waits for the CPU, and each further draft is one more pass (`core/models/qwen4exp/mtp.cpp`).
