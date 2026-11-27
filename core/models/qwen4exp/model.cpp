@@ -22,6 +22,7 @@
 #include "ggml.h"
 #include "load/runs.h"
 #include "models/qwen4exp/layout.h"
+#include "models/qwen4exp/split_decode.h"
 #include "quant.h"
 #include "util/cache_dir.h"
 
@@ -1631,56 +1632,50 @@ std::vector<std::vector<Candidate>> Model::step(const StepIn *rows, uint32_t n, 
     if (first) set_rope(rows[r].slot, rows[r].pos, true);
   }
   for (uint32_t i = 0; i < events_->size(); i++) ZE_CHECK(zeEventHostReset((*events_)[i]));
-  const bool host_events = !host_poll_ && !miss_layers_.empty();
-  if (host_events) {
-    for (uint32_t i = 0; i < miss_events_->size(); i++) ZE_CHECK(zeEventHostReset((*miss_events_)[i]));
-    for (uint32_t c = ncards_; c-- > 0;) {
-      ze::List &L = *cards_[c]->lists.at(key);
-      L.execute_part(0);
-      L.execute_part(1);
-    }
-  } else {
-    for (uint32_t c = ncards_; c-- > 0;) cards_[c]->lists.at(key)->execute();
-  }
-  // The n-gram rows, all read at once while the cards run layer 0 (ADR-0015); they wait for the event before layer 1.
-  {
-    int32_t t[STEP_MAX_ROWS], p1[STEP_MAX_ROWS], p2[STEP_MAX_ROWS];
-    for (uint32_t r = 0; r < n; r++) t[r] = rows[r].token, p1[r] = rows[r].p1, p2[r] = rows[r].p2;
-    ngram_->gather_rows(t, p1, p2, n, ngram_u_);
-  }
-  ZE_CHECK(zeEventHostSignal((*events_)[ngram_ev()]));
-
   stats_ = {};
   std::vector<CpuExperts::Job> jobs;
   std::vector<float> xs((size_t)n * E);
   const uint32_t step = plan_->step;
+  auto gather_ngram = [&] {
+    // The n-gram rows, all read at once while the cards run layer 0 (ADR-0015); they wait for the event before layer 1.
+    int32_t t[STEP_MAX_ROWS], p1[STEP_MAX_ROWS], p2[STEP_MAX_ROWS];
+    for (uint32_t r = 0; r < n; r++) t[r] = rows[r].token, p1[r] = rows[r].p1, p2[r] = rows[r].p2;
+    ngram_->gather_rows(t, p1, p2, n, ngram_u_);
+    ZE_CHECK(zeEventHostSignal((*events_)[ngram_ev()]));
+  };
+  const bool host_events = !host_poll_ && !miss_layers_.empty();
   if (host_events) {
-    const size_t M = miss_layers_.size();
-    for (size_t mi = 0; mi < M; mi++) {
-      const uint32_t l = miss_layers_[mi];
-      cards_[0]->lists.at(key)->synchronize_part((uint32_t)mi);
-      if (mi + 1 < M)
-        for (uint32_t c = ncards_; c-- > 0;) cards_[c]->lists.at(key)->execute_part((uint32_t)(mi + 2));
-      jobs.clear();
-      HostLayer &hl = *host_layers_[l];
-      for (uint32_t r = 0; r < n; r++) {
-        MissJob &J = jobs_[(size_t)l * STEP_MAX_ROWS + r];
-        const uint32_t nm = J.nmiss;
-        if (opt_.adapt_swaps) note_routing(l, J.all, shape_.used, prompt ? kPromptRouting : 1.0f);
-        if (nm == 0) continue;
-        std::memcpy(xs.data() + (size_t)r * E, J.x, E * 4);
-        for (uint32_t k = 0; k < nm; k++) jobs.push_back({hl.weights[J.ids[k]], r, J.w[k]});
-      }
-      if (!jobs.empty()) {
-        stats_.misses += (uint32_t)jobs.size();
-        stats_.layers_missed++;
-        cpu_->compute_many(hl.shape, jobs, n, xs.data(), E, cpu_y_ + (size_t)l * STEP_MAX_ROWS * E, E);
-        _mm_sfence();
-      }
-      ZE_CHECK(zeEventHostSignal((*miss_events_)[(uint32_t)mi]));
-    }
-    for (auto &card : cards_) card->lists.at(key)->synchronize_part((uint32_t)M);
+    for (uint32_t i = 0; i < miss_events_->size(); i++) ZE_CHECK(zeEventHostReset((*miss_events_)[i]));
+    run_split_decode(
+        ncards_, miss_layers_.size(),
+        [&](uint32_t c, uint32_t part) { cards_[c]->lists.at(key)->execute_part(part); },
+        [&](uint32_t c, uint32_t part) { cards_[c]->lists.at(key)->synchronize_part(part); }, gather_ngram,
+        [&]() noexcept { return zeEventHostSignal((*events_)[ngram_ev()]) == ZE_RESULT_SUCCESS; },
+        [&](size_t mi) {
+          const uint32_t l = miss_layers_[mi];
+          jobs.clear();
+          HostLayer &hl = *host_layers_[l];
+          for (uint32_t r = 0; r < n; r++) {
+            MissJob &J = jobs_[(size_t)l * STEP_MAX_ROWS + r];
+            const uint32_t nm = J.nmiss;
+            if (opt_.adapt_swaps) note_routing(l, J.all, shape_.used, prompt ? kPromptRouting : 1.0f);
+            if (nm == 0) continue;
+            std::memcpy(xs.data() + (size_t)r * E, J.x, E * 4);
+            for (uint32_t k = 0; k < nm; k++) jobs.push_back({hl.weights[J.ids[k]], r, J.w[k]});
+          }
+          if (!jobs.empty()) {
+            stats_.misses += (uint32_t)jobs.size();
+            stats_.layers_missed++;
+            cpu_->compute_many(hl.shape, jobs, n, xs.data(), E, cpu_y_ + (size_t)l * STEP_MAX_ROWS * E, E);
+            _mm_sfence();
+          }
+        },
+        [&](size_t mi) { ZE_CHECK(zeEventHostSignal((*miss_events_)[(uint32_t)mi])); },
+        [&](size_t mi) noexcept { return zeEventHostSignal((*miss_events_)[(uint32_t)mi]) == ZE_RESULT_SUCCESS; },
+        []() noexcept { return ze::queue_stuck(); }, []() noexcept { ze::mark_stuck(); });
   } else {
+    for (uint32_t c = ncards_; c-- > 0;) cards_[c]->lists.at(key)->execute();
+    gather_ngram();
     for (uint32_t l = 0; l < shape_.layers; l++) {
       // The layer's records (ADR-0011): spin until card 0 publishes each row's for this step; then all the rows'
       // misses at once, each expert's weights read once.

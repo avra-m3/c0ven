@@ -24,9 +24,14 @@ void check(ze_result_t r, const char *what);
 // caller goes through this one.
 ze_result_t init();
 
-// True once a list has timed out in this process: the driver's calls, and its teardown at a normal exit, would wait on
-// the stuck queue.
+// True once a list has timed out or a device was lost in this process: the driver's calls, and its teardown at a
+// normal exit, would wait on the stuck queue.
 bool queue_stuck();
+// Marks queues stuck so destructors skip Level Zero teardown after partial submission or device loss.
+void mark_stuck();
+// Evaluates a peer-probe Level Zero result: returns true on success, marks stuck and throws on
+// ZE_RESULT_ERROR_DEVICE_LOST or a timed ZE_RESULT_NOT_READY, and records *why and returns false on other errors.
+bool check_peer_probe(ze_result_t r, const std::string &what, std::string *why, bool timed = false);
 
 struct Card {
   ze_device_handle_t device = nullptr;
@@ -42,7 +47,11 @@ struct Card {
   uint32_t device_id = 0;
   uint32_t ip_version = 0;        // ze_device_ip_version_ext_t: architecture << 22 | release << 14 | revision
   std::string ip() const;         // "20.1.0", as ocloc names it; "" when not reported
-  bool is_hpg() const { return (ip_version >> 22) == 12; }  // Xe-HPG (Alchemist) architecture major 12
+  bool is_hpg() const {
+    const uint32_t major = ip_version >> 22;
+    const uint32_t rel = (ip_version >> 14) & 0xff;
+    return major == 12 && rel >= 55 && rel <= 57;
+  }  // Alchemist (DG2 / Xe-HPG): 12.55.x, 12.56.x, 12.57.x
   uint32_t xe_cores = 0;          // slices x subslices per slice
   int32_t pcie_gen = -1, pcie_width = -1;  // the link's most, as the driver reports it; -1: unknown
   int64_t pcie_bytes_per_s = -1;
@@ -258,6 +267,8 @@ class List {
   ze_fence_handle_t fence_ = nullptr;
   bool submitted_ = false;
   std::vector<Part> parts_;
+  std::vector<ze_event_pool_handle_t> split_pools_;
+  std::vector<ze_event_handle_t> split_events_;
   uint64_t *trace_ = nullptr;
   size_t trace_cap_ = 0;
   std::vector<std::string> trace_names_;

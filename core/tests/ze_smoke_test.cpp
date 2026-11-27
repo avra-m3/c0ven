@@ -66,6 +66,51 @@ int main() {
     rt.free(src);
     rt.free(back);
   }
+  // Resubmitting one regular list after reset_list() must execute the second recording rather than seeing the old fence.
+  {
+    auto *out = static_cast<uint32_t *>(rt.alloc_host(n * sizeof(uint32_t)));
+    for (uint32_t i = 0; i < n; i++) out[i] = 0xffffffffu;
+    ze::List L(rt, 0, ze::List::regular);
+    uint32_t bias = 3000;
+    const ze_kernel_handle_t k = mods[0]->kernel("smoke");
+    L.launch(k, {out, bias}, n / 64, 1, 1, 64);
+    L.close();
+    L.execute();
+    L.synchronize();
+    uint32_t wrong = 0;
+    for (uint32_t i = 0; i < n; i++) wrong += out[i] != i + bias;
+    EXPECT(wrong == 0, "reset_list run 1: %u values wrong", wrong);
+
+    L.reset_list();
+    bias = 7000;
+    L.launch(k, {out, bias}, n / 64, 1, 1, 64);
+    L.close();
+    L.execute();
+    L.synchronize();
+    for (uint32_t i = 0; i < n; i++) wrong += out[i] != i + bias;
+    EXPECT(wrong == 0, "reset_list run 2: %u values wrong", wrong);
+    rt.free(out);
+  }
+  // A split regular list on a shared out-of-order queue must execute its parts in split order.
+  {
+    auto *out = static_cast<uint32_t *>(rt.alloc_host(n * sizeof(uint32_t)));
+    for (uint32_t i = 0; i < n; i++) out[i] = 0xffffffffu;
+    ze::Queue q(rt, 0, false, false);
+    ze::List L(rt, q);
+    const ze_kernel_handle_t k = mods[0]->kernel("smoke");
+    const uint32_t b0 = 4000, b1 = 9000;
+    L.launch(k, {out, b0}, n / 64, 1, 1, 64);
+    L.split();
+    L.launch(k, {out, b1}, n / 64, 1, 1, 64);
+    L.close();
+    L.execute_part(0);
+    L.execute_part(1);
+    L.synchronize_part(1);
+    uint32_t wrong = 0;
+    for (uint32_t i = 0; i < n; i++) wrong += out[i] != i + b1;
+    EXPECT(wrong == 0, "split list ordering: %u values wrong", wrong);
+    rt.free(out);
+  }
   if (rt.ncards() > 1) {
     ze::Library lib(rt);
     const uint64_t h0 = rt.host_bytes(), d0 = rt.device_bytes(0), d1 = rt.device_bytes(1);

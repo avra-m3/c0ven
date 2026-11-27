@@ -12,6 +12,9 @@
 
 namespace engine::ze {
 
+// Returns the SPIR-V directory for card, or throws when the build lacks SPIR-V for its chip family.
+std::string select_spirv_dir(const Card &card, const std::string &xe2_dir, const std::string &hpg_dir);
+
 class Library {
  public:
   Library(Runtime &rt, std::string dir = ENGINE_KERNEL_DIR, std::string spirv_dir = ENGINE_KERNEL_SPIRV_DIR,

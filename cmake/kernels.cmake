@@ -24,9 +24,10 @@ set(_engine_ip_acm-g11 "12.56.5")
 set(_engine_ip_acm-g12 "12.57.0")
 
 # Each device's IP version, as `ocloc ids` gives it and Level Zero reports it: "20.1.0" for bmg-g21, "12.55.8" for
-# acm-g10. The first device of each IP major holds the SPIR-V shared across chips in that family.
+# acm-g10. The first device of each chip family ("hpg" for Alchemist 12.55.x-12.57.x, else the IP major) holds the
+# SPIR-V shared across chips in that family.
 set(ENGINE_KERNEL_IPS "")
-set(ENGINE_KERNEL_MAJORS "")
+set(ENGINE_KERNEL_FAMILIES "")
 set(ENGINE_KERNEL_SPIRV_IP "")
 set(ENGINE_KERNEL_HPG_SPIRV_IP "")
 foreach(device ${ENGINE_AOT_DEVICES})
@@ -45,12 +46,17 @@ foreach(device ${ENGINE_AOT_DEVICES})
   list(APPEND ENGINE_KERNEL_IPS ${ip})
   file(MAKE_DIRECTORY ${ENGINE_KERNEL_DIR}/${ip})
   string(REGEX MATCH "^[0-9]+" major "${ip}")
-  if(NOT major IN_LIST ENGINE_KERNEL_MAJORS)
-    list(APPEND ENGINE_KERNEL_MAJORS ${major})
-    set(_spv_dev_${major} ${device})
-    set(_spv_ip_${major} ${ip})
+  if(ip MATCHES "^12\\.(55|56|57)\\.")
+    set(family "hpg")
+  else()
+    set(family "${major}")
   endif()
-  if(major STREQUAL "12")
+  if(NOT family IN_LIST ENGINE_KERNEL_FAMILIES)
+    list(APPEND ENGINE_KERNEL_FAMILIES ${family})
+    set(_spv_dev_${family} ${device})
+    set(_spv_ip_${family} ${ip})
+  endif()
+  if(family STREQUAL "hpg")
     if(NOT ENGINE_KERNEL_HPG_SPIRV_IP)
       set(ENGINE_KERNEL_HPG_SPIRV_IP ${ip})
     endif()
@@ -58,14 +64,16 @@ foreach(device ${ENGINE_AOT_DEVICES})
     set(ENGINE_KERNEL_SPIRV_IP ${ip})
   endif()
 endforeach()
-if(NOT ENGINE_KERNEL_SPIRV_IP)
-  list(GET ENGINE_KERNEL_IPS 0 ENGINE_KERNEL_SPIRV_IP)
+if(ENGINE_KERNEL_SPIRV_IP)
+  set(ENGINE_KERNEL_SPIRV_DIR "${ENGINE_KERNEL_DIR}/${ENGINE_KERNEL_SPIRV_IP}" CACHE INTERNAL "")
+else()
+  set(ENGINE_KERNEL_SPIRV_DIR "" CACHE INTERNAL "")
 endif()
-if(NOT ENGINE_KERNEL_HPG_SPIRV_IP)
-  set(ENGINE_KERNEL_HPG_SPIRV_IP ${ENGINE_KERNEL_SPIRV_IP})
+if(ENGINE_KERNEL_HPG_SPIRV_IP)
+  set(ENGINE_KERNEL_HPG_SPIRV_DIR "${ENGINE_KERNEL_DIR}/${ENGINE_KERNEL_HPG_SPIRV_IP}" CACHE INTERNAL "")
+else()
+  set(ENGINE_KERNEL_HPG_SPIRV_DIR "" CACHE INTERNAL "")
 endif()
-set(ENGINE_KERNEL_SPIRV_DIR "${ENGINE_KERNEL_DIR}/${ENGINE_KERNEL_SPIRV_IP}" CACHE INTERNAL "")
-set(ENGINE_KERNEL_HPG_SPIRV_DIR "${ENGINE_KERNEL_DIR}/${ENGINE_KERNEL_HPG_SPIRV_IP}" CACHE INTERNAL "")
 
 if(NOT ENGINE_PREBUILT_KERNELS)
   file(GLOB_RECURSE ENGINE_KERNEL_HEADERS CONFIGURE_DEPENDS
@@ -93,9 +101,9 @@ function(engine_add_kernel_module name)
     if(NOT EXISTS ${ENGINE_KERNEL_DIR}/${name}.options)
       message(FATAL_ERROR "ENGINE_PREBUILT_KERNELS=ON missing ${name}.options in ${ENGINE_KERNEL_DIR}")
     endif()
-    foreach(major ${ENGINE_KERNEL_MAJORS})
-      if(NOT EXISTS ${ENGINE_KERNEL_DIR}/${_spv_ip_${major}}/${name}.spv)
-        message(FATAL_ERROR "ENGINE_PREBUILT_KERNELS=ON missing ${ENGINE_KERNEL_DIR}/${_spv_ip_${major}}/${name}.spv")
+    foreach(family ${ENGINE_KERNEL_FAMILIES})
+      if(NOT EXISTS ${ENGINE_KERNEL_DIR}/${_spv_ip_${family}}/${name}.spv)
+        message(FATAL_ERROR "ENGINE_PREBUILT_KERNELS=ON missing ${ENGINE_KERNEL_DIR}/${_spv_ip_${family}}/${name}.spv")
       endif()
     endforeach()
     foreach(ip ${ENGINE_KERNEL_IPS})
@@ -110,11 +118,11 @@ function(engine_add_kernel_module name)
 
   list(JOIN K_OPTIONS " " opts)
   file(WRITE ${ENGINE_KERNEL_DIR}/${name}.options "${native}")
-  foreach(major ${ENGINE_KERNEL_MAJORS})
-    set(spv_out ${ENGINE_KERNEL_DIR}/${_spv_ip_${major}})
+  foreach(family ${ENGINE_KERNEL_FAMILIES})
+    set(spv_out ${ENGINE_KERNEL_DIR}/${_spv_ip_${family}})
     set(src_rel ${K_SOURCE})
     set(dev_opts "${opts}")
-    if(major STREQUAL "12")
+    if(family STREQUAL "hpg")
       if(K_SOURCE_HPG)
         set(src_rel ${K_SOURCE_HPG})
       endif()
@@ -127,17 +135,22 @@ function(engine_add_kernel_module name)
     set(src ${CMAKE_SOURCE_DIR}/${src_rel})
     add_custom_command(
       OUTPUT ${spv_out}/${name}.spv
-      COMMAND ${ENGINE_OCLOC} compile -q -spv_only -file ${src} -device ${_spv_dev_${major}}
+      COMMAND ${ENGINE_OCLOC} compile -q -spv_only -file ${src} -device ${_spv_dev_${family}}
               -options "-cl-std=CL3.0 -cl-fp32-correctly-rounded-divide-sqrt -I${CMAKE_SOURCE_DIR}/kernels/include -I${CMAKE_SOURCE_DIR}/shared ${dev_opts}"
               -out_dir ${spv_out} -output ${name} -output_no_suffix
       DEPENDS ${src} ${ENGINE_KERNEL_HEADERS}
-      COMMENT "ocloc ${src_rel} -> ${_spv_ip_${major}}/${name}.spv"
+      COMMENT "ocloc ${src_rel} -> ${_spv_ip_${family}}/${name}.spv"
       VERBATIM)
   endforeach()
   set(outputs "")
   foreach(device ip IN ZIP_LISTS ENGINE_AOT_DEVICES ENGINE_KERNEL_IPS)
     string(REGEX MATCH "^[0-9]+" major "${ip}")
-    set(spv ${ENGINE_KERNEL_DIR}/${_spv_ip_${major}}/${name}.spv)
+    if(ip MATCHES "^12\\.(55|56|57)\\.")
+      set(family "hpg")
+    else()
+      set(family "${major}")
+    endif()
+    set(spv ${ENGINE_KERNEL_DIR}/${_spv_ip_${family}}/${name}.spv)
     set(out ${ENGINE_KERNEL_DIR}/${ip})
     add_custom_command(
       OUTPUT ${out}/${name}.bin
@@ -145,7 +158,7 @@ function(engine_add_kernel_module name)
               -options "${native}"
               -out_dir ${out} -output ${name} -output_no_suffix
       DEPENDS ${spv}
-      COMMENT "ocloc ${_spv_ip_${major}}/${name}.spv -> ${ip}/${name}.bin (${device})"
+      COMMENT "ocloc ${_spv_ip_${family}}/${name}.spv -> ${ip}/${name}.bin (${device})"
       VERBATIM)
     list(APPEND outputs ${out}/${name}.bin)
   endforeach()
