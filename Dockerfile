@@ -53,12 +53,24 @@ RUN set -e; \
     apt-get install -y --no-install-recommends ./*.deb; \
     rm -rf /var/lib/apt/lists/* /tmp/debs
 
-# ggml at the commit ADR-0012 pins, for builds without network access.
+# ggml at the commit ADR-0012 pins, for builds without network access. Prebuilt once per CPU level into /opt/ggml.
 RUN git init -q /opt/llama.cpp \
  && git -C /opt/llama.cpp fetch -q --depth 1 https://github.com/ggml-org/llama.cpp \
       3cf03257f219afbe7334045ff7c6a06ac68c627d \
  && git -C /opt/llama.cpp checkout -q FETCH_HEAD \
  && git config --system --add safe.directory /opt/llama.cpp
+COPY cmake/ggml.cmake /tmp/ggml/cmake/ggml.cmake
+COPY cmake/ggml-level /tmp/ggml/cmake/ggml-level
+RUN printf 'cmake_minimum_required(VERSION 3.25)\nproject(ggml_prebuilt C CXX)\ninclude(cmake/ggml.cmake)\n' \
+      > /tmp/ggml/CMakeLists.txt \
+ && cmake -S /tmp/ggml -B /tmp/ggml/build -G Ninja -DENGINE_GGML_PREBUILT_DIR= \
+ && ninja -C /tmp/ggml/build \
+ && for d in /tmp/ggml/build/ggml-*; do \
+      lvl=${d#/tmp/ggml/build/ggml-}; \
+      mkdir -p "/opt/ggml/$lvl"; \
+      cp -r "$d/lib" "/opt/ggml/$lvl/lib"; \
+    done \
+ && rm -rf /tmp/ggml
 
 # ADR-0002's environment row; the engine sets the debug keys itself. uv uses the pinned Python, never its own.
 ENV ZE_ENABLE_PCI_ID_DEVICE_ORDER=1 \
@@ -83,18 +95,32 @@ LABEL project=c0ven
 FROM engine AS serve
 USER root
 WORKDIR /opt/c0ven
-COPY CMakeLists.txt VERSION pyproject.toml uv.lock .python-version protocol.py ./
-COPY cmake cmake
-COPY include include
+COPY cmake/kernels.cmake cmake/kernels.cmake
 COPY shared shared
 COPY kernels kernels
+COPY core/models/qwen4exp/kernel_sizes.h core/models/qwen4exp/layout.h \
+     core/models/qwen4exp/vision_sizes.h core/models/qwen4exp/yarn.h \
+     core/models/qwen4exp/
+RUN printf 'cmake_minimum_required(VERSION 3.25)\nproject(kernels NONE)\ninclude(cmake/kernels.cmake)\nadd_subdirectory(kernels)\n' \
+      > CMakeLists.txt \
+ && cmake -S /opt/c0ven -B /tmp/kbuild -G Ninja \
+ && ninja -C /tmp/kbuild \
+ && mkdir -p /opt/c0ven/build \
+ && mv /tmp/kbuild/kernels /opt/c0ven/build/kernels \
+ && rm -rf /tmp/kbuild CMakeLists.txt
+
+COPY pyproject.toml uv.lock .python-version ./
+RUN UV_NO_CACHE=1 uv sync --locked --no-dev
+
+COPY CMakeLists.txt VERSION protocol.py ./
+COPY cmake cmake
+COPY include include
 COPY core core
 COPY tools tools
 COPY engine engine
 COPY frontend frontend
-RUN cmake -S /opt/c0ven -B /opt/c0ven/build -G Ninja \
- && ninja -C /opt/c0ven/build \
- && UV_NO_CACHE=1 uv sync --locked --no-dev
+RUN cmake -S /opt/c0ven -B /opt/c0ven/build -G Ninja -DENGINE_PREBUILT_KERNELS=ON \
+ && ninja -C /opt/c0ven/build
 
 # A new named volume mounted at /cache takes this owner, so the user can write the cache (ENGINE_CACHE_DIR).
 RUN mkdir /cache && chown ubuntu:ubuntu /cache

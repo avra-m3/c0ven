@@ -26,18 +26,20 @@ The build makes:
 
 | Output | What it is |
 | --- | --- |
-| `build/kernels/<ip>/*.bin`, `*.spv`, `build/kernels/*.options` | the kernel modules, compiled ahead of time by `ocloc` for each chip in `ENGINE_AOT_DEVICES` (`bmg-g21` and `bmg-g31` by default), in a directory named for the chip's IP version (`20.1.0`, `20.2.0`), with each module's SPIR-V and the build options a card without its own binaries compiles it with at load ([ADR-0003](adr/0003-kernel-language.md), [ADR-0057](adr/0057-the-engine-reads-the-host-it-runs-on.md)); one per `engine_add_kernel_module` in [`kernels/CMakeLists.txt`](../kernels/CMakeLists.txt) and the model's [`kernels/models/qwen4exp/CMakeLists.txt`](../kernels/models/qwen4exp/CMakeLists.txt): the decode step's `matvec_<type>_l<lanes>` and `moe_<type>_g<group>`, the prompt path's `gemm_*`, `qgemm_<type>[_file]` and `qwen4exp_prompt`/`_attn`/`_gdn`, the image encoder's `qwen4exp_vision*`, the model's own `qwen4exp`, `common` and `smoke`, and the `*_limit10` variants `swiglu_limit_test` uses |
+| `build/kernels/<ip>/*.bin`, `*.spv`, `build/kernels/*.options` | the kernel modules, compiled ahead of time by `ocloc` for each chip in `ENGINE_AOT_DEVICES` (`bmg-g21` and `bmg-g31` by default): one `.spv` per chip family in `ENGINE_KERNEL_SPIRV_DIR` (`20.1.0`), lowered via `-spirv_input` into a `<ip>` binary directory per chip (`20.1.0`, `20.2.0`), with the build options a card without its own binaries compiles it with at load ([ADR-0003](adr/0003-kernel-language.md), [ADR-0057](adr/0057-the-engine-reads-the-host-it-runs-on.md), [ADR-0081](adr/0081-cache-ggml-and-kernels-across-builds.md)); `-DENGINE_PREBUILT_KERNELS=ON` reuses binaries already in `build/kernels`; one per `engine_add_kernel_module` in [`kernels/CMakeLists.txt`](../kernels/CMakeLists.txt) and the model's [`kernels/models/qwen4exp/CMakeLists.txt`](../kernels/models/qwen4exp/CMakeLists.txt): the decode step's `matvec_<type>_l<lanes>` and `moe_<type>_g<group>`, the prompt path's `gemm_*`, `qgemm_<type>[_file]` and `qwen4exp_prompt`/`_attn`/`_gdn`, the image encoder's `qwen4exp_vision*`, the model's own `qwen4exp`, `common` and `smoke`, and the `*_limit10` variants `swiglu_limit_test` uses |
 | `build/core/libengine-<level>.so`, `build/core/libengine.so`, `build/core/cpu_levels.tsv` | the C ABI of [`include/engine_api.h`](../include/engine_api.h), one library for each CPU level, each with ggml built for that level. They export only the `engine_` symbols. `libengine.so` links to the first level's; given it, the control plane loads the first level in `cpu_levels.tsv` whose features the CPU has ([ADR-0059](adr/0059-a-library-for-each-cpu-level.md)). `ENGINE_LIBRARY` set to a `libengine-<level>.so` loads that level |
 | `build/core/libengine_core.a` | the core itself, which the tests link |
 | `build/core/tests/*` | the core's tests |
 | `build/tools/route_profile` | builds the routing profile the expert cache starts from, by running the reference prompts through the prompt path |
 
-ggml's CPU backend is built from `/opt/llama.cpp` once for each CPU level in `ENGINE_CPU_LEVELS`: `zen4` (the
-reference build's CPU flags), `icelake`, `cascadelake`, `skylakex`, `alderlake`, `haswell`, `sandybridge`, `sse42` and
-`x64` by default, with ggml's own flags for each ([cmake/ggml.cmake](../cmake/ggml.cmake)). The tests and tools link
-the first level's. `-DENGINE_CPU_LEVELS=zen4` builds one level, for a faster build. `-DENGINE_GGML_DIR=` points at
-another tree at the same commit. `-DENGINE_CHECK_LISTS=ON` makes a release build throw when two threads call one
-command list at once, as a build without `NDEBUG` always does ([ADR-0077](adr/0077-one-thread-uses-the-cards.md)).
+ggml's CPU backend uses nine x86-64 builds for `ENGINE_CPU_LEVELS`: `zen4` (the reference build's CPU flags),
+`icelake`, `cascadelake`, `skylakex`, `alderlake`, `haswell`, `sandybridge`, `sse42` and `x64` by default, with
+ggml's own flags for each ([cmake/ggml.cmake](../cmake/ggml.cmake)). The `engine` image prebuilds `/opt/ggml` for the
+pinned `/opt/llama.cpp` commit; `-DENGINE_GGML_DIR=` (pointing at another tree at the same commit) or
+`-DENGINE_GGML_PREBUILT_DIR=` builds those levels from source in a serialized Ninja `ggml` pool. The tests and tools
+link the first level's. `-DENGINE_CPU_LEVELS=zen4` builds one level, for a faster build. `-DENGINE_CHECK_LISTS=ON`
+makes a release build throw when two threads call one command list at once, as a build without `NDEBUG` always does
+([ADR-0077](adr/0077-one-thread-uses-the-cards.md)).
 
 ## Tests
 

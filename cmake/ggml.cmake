@@ -6,6 +6,8 @@ set(ENGINE_GGML_DIR "/opt/llama.cpp" CACHE PATH "llama.cpp tree at 3cf03257f219a
 if(NOT EXISTS ${ENGINE_GGML_DIR}/ggml/CMakeLists.txt)
   message(FATAL_ERROR "ggml not found in ENGINE_GGML_DIR=${ENGINE_GGML_DIR}: the image clones it (Dockerfile)")
 endif()
+set(ENGINE_GGML_PREBUILT_DIR "/opt/ggml" CACHE PATH
+    "Prebuilt ggml static libraries per CPU level, used when ENGINE_GGML_DIR is /opt/llama.cpp")
 
 # ggml is built once for each x86-64 level below, and each build goes into a library of its own,
 # core/libengine-<level>.so; the control plane loads the first level the CPU has (engine/api/native.py). The levels
@@ -51,8 +53,9 @@ set(_cpuinfo_AVX512_VNNI avx512_vnni)
 set(_cpuinfo_AVX512_BF16 avx512_bf16)
 
 # Static and position independent, so that each build links into its own shared library. No OpenMP: the engine
-# calls ggml's dot products from its own threads.
-include(ExternalProject)
+# calls ggml's dot products from its own threads. Prebuilt archives in ENGINE_GGML_PREBUILT_DIR are linked directly
+# when ENGINE_GGML_DIR is the image's pinned tree; source builds use Ninja and serialize via JOB_POOL ggml.
+set_property(GLOBAL APPEND PROPERTY JOB_POOLS ggml=1)
 set(_levels_text "")
 foreach(level ${ENGINE_CPU_LEVELS})
   if(NOT level IN_LIST ENGINE_CPU_LEVELS_ALL)
@@ -70,21 +73,31 @@ foreach(level ${ENGINE_CPU_LEVELS})
       list(APPEND args -DGGML_${opt}=OFF)
     endif()
   endforeach()
-  set(dir ${CMAKE_BINARY_DIR}/ggml-${level})
-  set(libs ${dir}/lib/libggml.a ${dir}/lib/libggml-cpu.a ${dir}/lib/libggml-base.a)
-  ExternalProject_Add(ggml_build_${level}
-    SOURCE_DIR ${CMAKE_CURRENT_LIST_DIR}/ggml-level
-    BINARY_DIR ${dir}
-    CMAKE_ARGS -DENGINE_GGML_DIR=${ENGINE_GGML_DIR} -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
-               -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER} -DCMAKE_POSITION_INDEPENDENT_CODE=ON
-               -DCMAKE_ARCHIVE_OUTPUT_DIRECTORY=${dir}/lib -DBUILD_SHARED_LIBS=OFF -DGGML_NATIVE=OFF
-               -DGGML_OPENMP=OFF -DGGML_BUILD_TESTS=OFF -DGGML_BUILD_EXAMPLES=OFF -DGGML_SYCL=OFF -DGGML_VULKAN=OFF
-               -DGGML_CUDA=OFF -DGGML_METAL=OFF -DGGML_BLAS=OFF -DGGML_LLAMAFILE=OFF -DGGML_CCACHE=OFF ${args}
-    BUILD_COMMAND ${CMAKE_COMMAND} --build ${dir} --target ggml ggml-cpu ggml-base
-    INSTALL_COMMAND ""
-    BUILD_BYPRODUCTS ${libs})
-  add_library(ggml_${level} INTERFACE)
-  add_dependencies(ggml_${level} ggml_build_${level})
+  set(prebuilt "${ENGINE_GGML_PREBUILT_DIR}/${level}/lib")
+  if(ENGINE_GGML_PREBUILT_DIR AND ENGINE_GGML_DIR STREQUAL "/opt/llama.cpp"
+     AND EXISTS ${prebuilt}/libggml.a AND EXISTS ${prebuilt}/libggml-cpu.a AND EXISTS ${prebuilt}/libggml-base.a)
+    set(libs ${prebuilt}/libggml.a ${prebuilt}/libggml-cpu.a ${prebuilt}/libggml-base.a)
+    add_library(ggml_${level} INTERFACE)
+  else()
+    set(dir ${CMAKE_BINARY_DIR}/ggml-${level})
+    set(libs ${dir}/lib/libggml.a ${dir}/lib/libggml-cpu.a ${dir}/lib/libggml-base.a)
+    add_custom_command(
+      OUTPUT ${libs}
+      COMMAND ${CMAKE_COMMAND} -S ${CMAKE_CURRENT_LIST_DIR}/ggml-level -B ${dir} -G Ninja
+              -DENGINE_GGML_DIR=${ENGINE_GGML_DIR} -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
+              -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER} -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+              -DCMAKE_ARCHIVE_OUTPUT_DIRECTORY=${dir}/lib -DBUILD_SHARED_LIBS=OFF -DGGML_NATIVE=OFF
+              -DGGML_OPENMP=OFF -DGGML_BUILD_TESTS=OFF -DGGML_BUILD_EXAMPLES=OFF -DGGML_SYCL=OFF -DGGML_VULKAN=OFF
+              -DGGML_CUDA=OFF -DGGML_METAL=OFF -DGGML_BLAS=OFF -DGGML_LLAMAFILE=OFF -DGGML_CCACHE=OFF ${args}
+      COMMAND ${CMAKE_COMMAND} --build ${dir} --target ggml ggml-cpu ggml-base
+      DEPENDS ${CMAKE_CURRENT_LIST_DIR}/ggml-level/CMakeLists.txt
+      JOB_POOL ggml
+      COMMENT "Building ggml (${level})"
+      VERBATIM)
+    add_custom_target(ggml_build_${level} ALL DEPENDS ${libs})
+    add_library(ggml_${level} INTERFACE)
+    add_dependencies(ggml_${level} ggml_build_${level})
+  endif()
   target_link_libraries(ggml_${level} INTERFACE ${libs} Threads::Threads m)
   list(JOIN builtin "," builtin)
   list(JOIN cpuinfo " " cpuinfo)
