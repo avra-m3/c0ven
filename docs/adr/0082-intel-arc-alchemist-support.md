@@ -34,12 +34,18 @@ major 20) in five ways that break unmodified Battlemage kernels and runtime path
    sharing scalar rows with `prompt_attn_common.h`, and `vision_attn_hpg.cl`).
 3. Gate Alchemist runtime behaviors on `ze::Card::is_hpg()` (`ip_version >> 22 == 12`) with environment overrides for
    testing:
-   - `host_flag_polling = false` (`ENGINE_NO_HOST_POLL`): record regular decode command lists on a shared `ze::Queue`
-     split around each miss layer (`ze::List::split`), compute misses on the host after each router part finishes, and
-     signal a Level Zero host event before `moe_combine`.
+   - `host_flag_polling = false` (`ENGINE_NO_HOST_POLL`): record regular decode command lists on one shared `ze::Queue`
+     per card (`Card::step_queue`) split around each miss layer (`ze::List::split`), compute misses on the host after
+     each router part finishes, and signal a Level Zero host event before `moe_combine`.
    - `writeback_mapping = true` (`ENGINE_STAGE_FLUSH`): flush CPU cache lines (`_mm_clflushopt` or `_mm_clflush` plus
-     `_mm_sfence`) across written staging ranges and before the ordering PCIe readback byte.
-   - `copy_2d_arena = false` (`ENGINE_1D_STAGE_COPY`): emit 1D `L.copy` transfers per matrix in `Model::prompt_copies`.
+     `_mm_sfence`) across written staging ranges, during the initial page-fault touch in `record_prompt_copy`, and
+     before the ordering PCIe readback byte.
+   - `copy_2d_arena = false` (`ENGINE_1D_STAGE_COPY`): return `tmax_` from `Model::fetch_rows()` so every prompt chunk
+     stages uncached experts through the CPU mapping (`fetch_experts`) without recording `Model::prompt_copies`, keeping
+     one-card `rare_experts` capped at `kFetchRows` and 1D `L.copy` transfers as the fallback when no CPU mapping
+     exists.
+   - `ze::check` marks the queue stuck (`ze::queue_stuck()`) on `ZE_RESULT_ERROR_DEVICE_LOST` so teardown exits without
+     hanging on the lost context.
 4. Run the `smoke` kernel peer-write check before the 4 KiB blitter copy check in `ze::Runtime::peer_access` so a board
    that drops peer stores selects host-memory exchanges ([ADR-0080](0080-peer-exchanges-fall-back-to-host-memory.md))
    before issuing peer copy-engine transfers.

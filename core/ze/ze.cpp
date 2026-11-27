@@ -21,14 +21,16 @@
 
 namespace engine::ze {
 
-// Set when a list times out. The driver's destroy and free calls then wait for a queue that never finishes, so the
-// destructors below make none: the process is to end, and the kernel takes back what the cards hold.
+// Set when a list times out or the device is lost. The driver's destroy and free calls then wait for a queue that
+// never finishes, so the destructors below make none: the process is to end, and the kernel takes back what the cards
+// hold.
 static std::atomic<bool> stuck{false};
 
 bool queue_stuck() { return stuck; }
 
 void check(ze_result_t r, const char *what) {
   if (r == ZE_RESULT_SUCCESS) return;
+  if (r == ZE_RESULT_ERROR_DEVICE_LOST) stuck = true;
   char buf[64];
   std::snprintf(buf, sizeof buf, " returned 0x%x", (unsigned)r);
   throw std::runtime_error(std::string(what) + buf);

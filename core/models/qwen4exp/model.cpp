@@ -139,7 +139,10 @@ Model::Model(const std::string &path, const Options &opt) : opt_(opt), gguf_(pat
   lib_ = std::make_unique<ze::Library>(*rt_);
   ncards_ = std::min(opt_.max_cards, rt_->ncards());
   if (ncards_ != 1 && ncards_ != 2) throw std::runtime_error("the engine runs on one or two cards");
-  for (uint32_t c = 0; c < ncards_; c++) host_poll_ = host_poll_ && rt_->cards()[c].host_flag_polling;
+  for (uint32_t c = 0; c < ncards_; c++) {
+    host_poll_ = host_poll_ && rt_->cards()[c].host_flag_polling;
+    copy_2d_arena_ = copy_2d_arena_ && rt_->cards()[c].copy_2d_arena;
+  }
   if (const auto bad = split_mismatches(shape_, gguf_.tensors(), ncards_); !bad.empty())
     throw std::runtime_error(path + ": this file does not split over " + std::to_string(ncards_) + " cards: " + bad[0]);
   layer_module_ = expert_module("qwen4exp", shape_.experts);
@@ -1214,9 +1217,8 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
   // own outputs, so they may run side by side; each other command waits for those before it.
   std::unique_ptr<ze::List> list;
   if (host_events) {
-    auto &q = card.queues[key];
-    if (!q) q = std::make_unique<ze::Queue>(*rt_, card.c, false, false);
-    list = std::make_unique<ze::List>(*rt_, *q);
+    if (!card.step_queue) card.step_queue = std::make_unique<ze::Queue>(*rt_, card.c, false, false);
+    list = std::make_unique<ze::List>(*rt_, *card.step_queue);
   } else {
     list = std::make_unique<ze::List>(*rt_, card.c, ze::List::regular, false, false);
   }

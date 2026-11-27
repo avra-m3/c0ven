@@ -261,9 +261,9 @@ class Model final : public engine::Model {
   Staging staging_now() const;
   Staging staging_after() const;  // after the chosen round's refills and planned eviction
   std::unique_ptr<ze::List> prompt_copies(Card &card, const Staging &st, uint32_t &copies);
-  // A short chunk's staging on card c, on its own thread: each layer's uncached experts in order (hottest first)
+  // A chunk's staging on card c, on its own thread: each layer's uncached experts in order (hottest first)
   // until the router's counts are in, then the rest it routes to.
-  void fetch_experts(uint32_t c, const std::vector<std::vector<uint32_t>> &order);
+  void fetch_experts(uint32_t c, const std::vector<std::vector<uint32_t>> &order, bool rare);
   // A short chunk's uncached experts that kCpuRows rows or fewer picked, on one card: each layer's, on this thread and
   // the workers, as the chunk reads back the layer's inputs.
   void rare_experts();
@@ -365,7 +365,8 @@ class Model final : public engine::Model {
   std::vector<std::unique_ptr<HostLayer>> host_layers_;
   uint32_t ncards_ = 1;
   bool p2p_ = false;       // cards 0 and 1 can copy device memory directly (ze::Runtime::peer_access)
-  bool host_poll_ = true;  // cards support EU polling of host-written decode completion flags
+  bool host_poll_ = true;     // cards support EU polling of host-written decode completion flags
+  bool copy_2d_arena_ = true;  // cards support 2D copy_rows over host arena strides above 256 KiB
   std::vector<uint32_t> miss_layers_;       // layers split on host events when !host_poll_
   std::unique_ptr<ze::EventPool> miss_events_;
   uint32_t npp_ = 0;       // pages per slot's row of the table: the context's, rounded up to a multiple of the cards

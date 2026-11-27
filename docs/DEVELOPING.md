@@ -116,8 +116,8 @@ huge pages (`--hugepages`, [server options](OPTIONS.md#reserved-huge-pages)) are
 pinned host memory ([ADR-0080](adr/0080-peer-exchanges-fall-back-to-host-memory.md)).
 
 `ENGINE_NO_HOST_POLL`, `ENGINE_STAGE_FLUSH` and `ENGINE_1D_STAGE_COPY` (`1` or `0`) override the per-card Alchemist
-runtime flags for host-event decode splits, cache-line staging flushes and 1D arena copies
-([ADR-0082](adr/0082-intel-arc-alchemist-support.md)).
+runtime flags for host-event decode splits, cache-line staging flushes and CPU-mapped prompt staging without 2D arena
+copies ([ADR-0082](adr/0082-intel-arc-alchemist-support.md)).
 
 
 ## How a step runs
