@@ -20,7 +20,9 @@ foreach(experts 512 256)
                                    -I${CMAKE_SOURCE_DIR}/kernels/models/qwen4exp)
 endforeach()
 engine_add_kernel_module(qwen4exp_attn SOURCE kernels/models/qwen4exp/prompt_attn.cl
-                         OPTIONS -cl-intel-256-GRF-per-thread -I${CMAKE_SOURCE_DIR}/core/models/qwen4exp)
+                         SOURCE_HPG kernels/models/qwen4exp/prompt_attn_hpg.cl
+                         OPTIONS -cl-intel-256-GRF-per-thread -I${CMAKE_SOURCE_DIR}/core/models/qwen4exp
+                                 -I${CMAKE_SOURCE_DIR}/kernels/models/qwen4exp)
 engine_add_kernel_module(qwen4exp_gdn SOURCE kernels/models/qwen4exp/prompt_gdn.cl
                          OPTIONS -I${CMAKE_SOURCE_DIR}/core/models/qwen4exp)
 # The DFlash 2 drafter's kernels between its products (core/models/qwen4exp/dflash.cpp).
@@ -29,5 +31,6 @@ engine_add_kernel_module(qwen4exp_dflash SOURCE kernels/models/qwen4exp/dflash.c
 # The image encoder's steps between its products (docs/spec/MODEL_VISION.md).
 engine_add_kernel_module(qwen4exp_vision SOURCE kernels/models/qwen4exp/vision.cl
                          OPTIONS -I${CMAKE_SOURCE_DIR}/core/models/qwen4exp)
-engine_add_kernel_module(qwen4exp_vision_attn SOURCE kernels/models/qwen4exp/vision.cl
+engine_add_kernel_module(qwen4exp_vision_attn SOURCE kernels/models/qwen4exp/vision_attn.cl
+                         SOURCE_HPG kernels/models/qwen4exp/vision_attn_hpg.cl
                          OPTIONS -cl-intel-256-GRF-per-thread -I${CMAKE_SOURCE_DIR}/core/models/qwen4exp)

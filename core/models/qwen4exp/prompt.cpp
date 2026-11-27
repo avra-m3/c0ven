@@ -188,7 +188,7 @@ void Model::record_prompt_copy(Card &card) {
     P.stage = static_cast<uint8_t *>(rt_->alloc_device_mapped(card.c, 2 * P.stage_slot + QUANT_FILE_PAD, P.stage_cpu));
   for (uint32_t l = 0; l < shape_.layers; l++)
     P.stage_map.push_back(upload<int32_t>(card, host_layers_[l]->stage_of.data(), shape_.experts * 4));
-  P.copy = prompt_copies(card, staging_now(), copy_count_);
+  if (copy_2d_arena_ || !P.stage_cpu) P.copy = prompt_copies(card, staging_now(), copy_count_);
   if (P.stage_slot) {
     P.routed = static_cast<uint32_t *>(rt_->alloc_host((size_t)shape_.layers * shape_.experts * 4));
     // Written once here, so the first chunk's reads of the counts take no page faults (fetch_experts counts them).
@@ -204,8 +204,12 @@ void Model::record_prompt_copy(Card &card) {
     // Once more through the mapping, after that copy: the first write to each page takes a fault, and pages written
     // before the runtime's first copy fault again after it (ADR-0065). The zeros clobber the copy's bytes; nothing
     // reads the buffer before a chunk stages its experts over them.
+    const bool wb = rt_->cards()[card.c].writeback_mapping;
     const auto t0 = std::chrono::steady_clock::now();
-    for (uint64_t off = 0; off < 2 * P.stage_slot; off += 4096) *(volatile uint8_t *)(P.stage_cpu + off) = 0;
+    for (uint64_t off = 0; off < 2 * P.stage_slot; off += 4096) {
+      *(volatile uint8_t *)(P.stage_cpu + off) = 0;
+      if (wb) ze::flush_cpu_writes(P.stage_cpu + off, 1);
+    }
     _mm_sfence();
     std::fprintf(stderr, "engine: card %u: the staging buffer's %.2f GiB touched through the mapping in %.0f ms\n",
                  card.c, 2.0 * P.stage_slot / (1ull << 30),
@@ -219,7 +223,10 @@ void Model::record_prompt_copy(Card &card) {
       uint8_t *yg = reinterpret_cast<uint8_t *>(P.yg);
       for (uint64_t off = 0; off < bytes; off += piece) warm.copy(yg + off, hl.pieces[0], std::min(piece, bytes - off));
       warm.synchronize();
-      for (uint64_t off = 0; off < bytes; off += 4096) *(volatile uint8_t *)(P.yg_cpu + off) = 0;
+      for (uint64_t off = 0; off < bytes; off += 4096) {
+        *(volatile uint8_t *)(P.yg_cpu + off) = 0;
+        if (wb) ze::flush_cpu_writes(P.yg_cpu + off, 1);
+      }
       _mm_sfence();
     }
   }
@@ -227,16 +234,18 @@ void Model::record_prompt_copy(Card &card) {
 
 // Every card has a staging buffer or none, as every card stages the same experts.
 uint32_t Model::fetch_rows() const {
-  return cards_.empty() || !cards_[0]->pc || !cards_[0]->pc->stage_cpu ? 0 : kFetchRows;
+  if (cards_.empty() || !cards_[0]->pc || !cards_[0]->pc->stage_cpu) return 0;
+  return copy_2d_arena_ ? kFetchRows : tmax_;
 }
 
 // The chunk's list copies each layer's routing counts to P.routed and signals kRouted after p_moe_count; it waits
 // on kStaged before the staged experts' products. Each layer's experts go into slot l % 2 once kFree of layer l - 2
 // says the chunk is done with it. Every expert the chunk routes to is staged before kStaged, so the products are the
 // recorded list's; which experts go ahead of the router changes only the time.
-void Model::fetch_experts(uint32_t c, const std::vector<std::vector<uint32_t>> &order) {
+void Model::fetch_experts(uint32_t c, const std::vector<std::vector<uint32_t>> &order, bool rare) {
   Card &card = *cards_[c];
   PromptCard &P = *card.pc;
+  const bool wb = rt_->cards()[c].writeback_mapping;
   const uint64_t f0 = (uint64_t)c * card.ff;
   // Expert e of layer l into its staging position: the same three copies as prompt_copies' for a run of one, written
   // through the CPU's mapping of the buffer (docs/measurements/MEASUREMENTS.md#2026-11-05-staging-through-a-mapping).
@@ -248,6 +257,11 @@ void Model::fetch_experts(uint32_t c, const std::vector<std::vector<uint32_t>> &
     std::memcpy(to, w.gate + f0 * hl.gate_row_bytes, half);
     std::memcpy(to + hl.stg_up_off, w.up + f0 * hl.gate_row_bytes, half);
     std::memcpy(to + hl.stg_down_off, w.down + d0, dpart);
+    if (wb) {
+      ze::flush_cpu_writes(to, half);
+      ze::flush_cpu_writes(to + hl.stg_up_off, half);
+      ze::flush_cpu_writes(to + hl.stg_down_off, dpart);
+    }
   };
   // Bounded as ze::List::synchronize is: a list whose engine was reset never signals.
   auto wait = [](ze_event_handle_t e) {
@@ -256,7 +270,7 @@ void Model::fetch_experts(uint32_t c, const std::vector<std::vector<uint32_t>> &
     ZE_CHECK(r);
   };
   std::vector<uint8_t> done(shape_.experts);
-  const uint32_t cpu_rows = P.xg_host ? kCpuRows : 0;
+  const uint32_t cpu_rows = rare ? kCpuRows : 0;
   // The thread's page faults while it writes each layer's experts and waits for the router. The load's touch leaves
   // none for the mapping's writes, so any here say the driver moved the buffer, or the CPU's writes fault for another
   // reason, and the chunk was slower for it (ADR-0065).
@@ -278,11 +292,7 @@ void Model::fetch_experts(uint32_t c, const std::vector<std::vector<uint32_t>> &
     const uint32_t *cnt = P.routed + (size_t)l * shape_.experts;
     for (uint32_t e : hl.uncached)
       if (cnt[e] > cpu_rows && !done[e]) one(hl, slot, e);
-    // The full fence sends the writes out of the CPU's write-combining buffers, and the read returns only after they
-    // have arrived (ze::Runtime::alloc_device_mapped). A store fence would not do: it does not hold back a later read,
-    // so the read could go out ahead of the last writes.
-    _mm_mfence();
-    (void)*(volatile uint8_t *)(P.stage_cpu);
+    (void)ze::readback_mapped_byte(P.stage_cpu, wb);
     rusage r1 = {};
     getrusage(RUSAGE_THREAD, &r1);
     faults += r1.ru_minflt - r0.ru_minflt + r1.ru_majflt - r0.ru_majflt;
@@ -295,6 +305,7 @@ void Model::fetch_experts(uint32_t c, const std::vector<std::vector<uint32_t>> &
 
 void Model::rare_experts() {
   PromptCard &P = *cards_[0]->pc;
+  const bool wb = rt_->cards()[0].writeback_mapping;
   const uint32_t E = shape_.embd;
   struct Rows {
     uint32_t base, n, tok;  // the expert's first row in xg and yg, its row count, and its first row here
@@ -339,10 +350,11 @@ void Model::rare_experts() {
         ggml_fp32_to_fp16_row(y.data() + i * E, reinterpret_cast<ggml_fp16_t *>(y16.data() + i * E), E);
       });
       uint16_t *to = reinterpret_cast<uint16_t *>(P.yg_cpu);
-      for (const Rows &g : rows) std::memcpy(to + (size_t)g.base * E, y16.data() + (size_t)g.tok * E, (size_t)g.n * E * 2);
-      // A full fence, as in fetch_experts: a store fence would not hold back the read behind the last writes.
-      _mm_mfence();
-      (void)*(volatile uint8_t *)(P.yg_cpu);  // returns once the writes before it have reached the card
+      for (const Rows &g : rows) {
+        std::memcpy(to + (size_t)g.base * E, y16.data() + (size_t)g.tok * E, (size_t)g.n * E * 2);
+        if (wb) ze::flush_cpu_writes(to + (size_t)g.base * E, (size_t)g.n * E * 2);
+      }
+      (void)ze::readback_mapped_byte(P.yg_cpu, wb);  // returns once the writes before it have reached the card
     }
     ZE_CHECK(zeEventHostSignal((*pevents_)[pev(kCpu, l, 0)]));
   }
@@ -381,17 +393,28 @@ std::unique_ptr<ze::List> Model::prompt_copies(Card &card, const Staging &st, ui
     // cost, higher from the anonymous arena (docs/measurements/MEASUREMENTS.md#2026-10-17-anon-arena-default). A run ends at a
     // piece's end or where a swap put an expert in a spare piece.
     const uint64_t stride = align256(2 * hl.gate_bytes + hl.down_bytes);
-    for (size_t i = 0, n; i < sw.size(); i += n) {
-      const ExpertWeights &w = sw[i];
-      for (n = 1; i + n < sw.size(); n++) {
-        const ExpertWeights &x = sw[i + n];
-        if (x.gate != w.gate + n * stride || x.up != w.up + n * stride || x.down != w.down + n * stride) break;
+    if (!rt_->cards()[card.c].copy_2d_arena) {
+      for (size_t i = 0; i < sw.size(); i++) {
+        const ExpertWeights &w = sw[i];
+        uint8_t *dst = slot + i * hl.stg_bytes;
+        L.copy(dst, w.gate + f0 * hl.gate_row_bytes, half);
+        L.copy(dst + hl.stg_up_off, w.up + f0 * hl.gate_row_bytes, half);
+        L.copy(dst + hl.stg_down_off, w.down + d0, dpart);
+        copies += 3;
       }
-      uint8_t *dst = slot + i * hl.stg_bytes;
-      L.copy_rows(dst, hl.stg_bytes, w.gate + f0 * hl.gate_row_bytes, stride, half, n);
-      L.copy_rows(dst + hl.stg_up_off, hl.stg_bytes, w.up + f0 * hl.gate_row_bytes, stride, half, n);
-      L.copy_rows(dst + hl.stg_down_off, hl.stg_bytes, w.down + d0, stride, dpart, n);
-      copies += 3;
+    } else {
+      for (size_t i = 0, n; i < sw.size(); i += n) {
+        const ExpertWeights &w = sw[i];
+        for (n = 1; i + n < sw.size(); n++) {
+          const ExpertWeights &x = sw[i + n];
+          if (x.gate != w.gate + n * stride || x.up != w.up + n * stride || x.down != w.down + n * stride) break;
+        }
+        uint8_t *dst = slot + i * hl.stg_bytes;
+        L.copy_rows(dst, hl.stg_bytes, w.gate + f0 * hl.gate_row_bytes, stride, half, n);
+        L.copy_rows(dst + hl.stg_up_off, hl.stg_bytes, w.up + f0 * hl.gate_row_bytes, stride, half, n);
+        L.copy_rows(dst + hl.stg_down_off, hl.stg_bytes, w.down + d0, stride, dpart, n);
+        copies += 3;
+      }
     }
     L.signal((*pevents_)[pev(kStaged, l, card.c)]);
   }
@@ -463,8 +486,8 @@ ze::List &Model::prompt_list(Card &card, uint32_t T, uint32_t runs) {
   // cards when peer access is available: card c keeps R for rows r0 .. r1 - 1 (prows_[c] of them) and sends the other
   // card its rows of the mixed x (event kMix). Without peer access, both cards compute every row (ADR-0080).
   const bool split = C > 1 && p2p_ && T >= kHcSplitRows;
-  const bool fetch = T <= kFetchRows && P.stage_cpu;  // the host fetches the uncached experts (fetch_experts)
-  const uint32_t cpu_rows = fetch && P.xg_host ? kCpuRows : 0;
+  const bool fetch = T <= fetch_rows() && P.stage_cpu;  // the host fetches the uncached experts (fetch_experts)
+  const uint32_t cpu_rows = fetch && T <= kFetchRows && P.xg_host ? kCpuRows : 0;
   const uint32_t half = split ? T / 2 : T;
   uint32_t r0 = 0, r1 = T;  // this card's rows, all of them until the split
   const uint32_t *nown = &pplan_->n;
@@ -714,18 +737,25 @@ std::vector<std::vector<Candidate>> Model::prompt_runs(const PromptRun *runs, ui
   wait_commit();
   if (move_bg_.joinable()) move_bg_.join();  // the staging copies read arena places the last swap round still fills
   if (copies_dirty_) {
-    const auto t0 = std::chrono::steady_clock::now();
-    const Staging st = staging_now();
-    for (auto &card : cards_) {
-      retired_.push_back(std::move(card->pc->copy));
-      card->pc->copy = prompt_copies(*card, st, copy_count_);
+    if (cards_[0]->pc->copy) {
+      const auto t0 = std::chrono::steady_clock::now();
+      const Staging st = staging_now();
+      for (auto &card : cards_) {
+        if (copy_2d_arena_)
+          retired_.push_back(std::move(card->pc->copy));
+        else
+          card->pc->copy.reset();
+        card->pc->copy = prompt_copies(*card, st, copy_count_);
+      }
+      std::fprintf(stderr, "engine: the prompt path's staging copies recorded again in %.1f ms, %u copies a card\n",
+                   std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(),
+                   copy_count_);
     }
     copies_dirty_ = false;
-    std::fprintf(stderr, "engine: the prompt path's staging copies recorded again in %.1f ms, %u copies a card\n",
-                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(), copy_count_);
   }
   const uint32_t T = bucket(n, tmax_), R = nruns > 1 ? PROMPT_MAX_RUNS : 1;
-  const bool fetch = T <= kFetchRows && cards_[0]->pc->stage_cpu;
+  const bool fetch = T <= fetch_rows() && cards_[0]->pc->stage_cpu;
+  const bool rare = fetch && T <= kFetchRows && cards_[0]->pc->xg_host;
   std::vector<ze::List *> lists;
   for (auto &card : cards_) {
     lists.push_back(&prompt_list(*card, T, R));
@@ -785,9 +815,9 @@ std::vector<std::vector<Candidate>> Model::prompt_runs(const PromptRun *runs, ui
                 [&](uint32_t a, uint32_t b) { return u[a] != u[b] ? u[a] > u[b] : a < b; });
     }
     for (uint32_t c = 0; c < ncards_; c++)
-      fetchers.emplace_back([this, c, &order, &fetch_err] {
+      fetchers.emplace_back([this, c, rare, &order, &fetch_err] {
         try {
-          fetch_experts(c, order);
+          fetch_experts(c, order, rare);
         } catch (...) {
           fetch_err[c] = std::current_exception();
           for (uint32_t l = 0; l < shape_.layers; l++) zeEventHostSignal((*pevents_)[pev(kStaged, l, c)]);
@@ -843,7 +873,7 @@ std::vector<std::vector<Candidate>> Model::prompt_runs(const PromptRun *runs, ui
   }
   // A failure here signals the remaining kCpu, so the list ends, and is thrown once it has, as a fetch thread's is.
   std::exception_ptr rare_err;
-  if (fetch && cards_[0]->pc->xg_host) {
+  if (rare) {
     try {
       rare_experts();
     } catch (...) {

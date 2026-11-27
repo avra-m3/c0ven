@@ -83,7 +83,7 @@ flowchart TB
 | Front end | A Python process: the service that clients and llama-swap talk to | The HTTP APIs, the chat template, tokenizing and detokenizing, stop strings, splitting reasoning, content and tool calls, JSON output, turning images and video into patches, sleep and wake | `frontend/` |
 | Engine process, Python side | The front end's child process | The scheduler, admission, the page table, checkpoints, the memory plan, the cost model | `engine/` |
 | Engine process, C++ core | A library the Python side loads with `ctypes` | Level Zero, every allocation on the cards and in pinned host memory, the recorded command lists, sampling, drafting, swaps, the image encoder | `core/`, `kernels/`, `shared/` |
-| The cards | Two Arc Pro B60s | Half of every layer each (section 5) | |
+| The cards | One or two Intel Arc cards (Battlemage or Alchemist) | Half of every layer each on two cards (section 5) | |
 | CPU workers | Threads of the core | The experts the cards do not hold (section 9) | `core/cpu/` |
 
 The front end starts the engine process as its child and talks to it in token ids, one line per message over a pipe

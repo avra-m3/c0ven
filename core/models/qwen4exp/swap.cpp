@@ -203,8 +203,9 @@ void Model::start_round(std::vector<float> use, uint32_t max_swaps) {
   // A round that changes the staging records the prompt path's next copy list too: from the anonymous arena a
   // list costs a bind per copy to record and an unbind to free (docs/measurements/MEASUREMENTS.md#2026-10-17-swaps-keep-the-copies).
   // Swaps leave the staging's pieces where they are.
-  bool restage = !evict_next_.empty() && cards_[0]->pc;
-  for (const SwapPlan &w : swap_next_) restage |= w.out == kNoExpert && cards_[0]->pc;
+  const bool has_copy = cards_[0]->pc && cards_[0]->pc->copy;
+  bool restage = !evict_next_.empty() && has_copy;
+  for (const SwapPlan &w : swap_next_) restage |= w.out == kNoExpert && has_copy;
   swap_busy_++;
   swap_bg_ = std::thread([this, slot_max, restage, use = std::move(use), max_swaps, old = std::move(retired_)]() mutable {
     old.clear();

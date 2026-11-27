@@ -26,7 +26,7 @@ The build makes:
 
 | Output | What it is |
 | --- | --- |
-| `build/kernels/<ip>/*.bin`, `*.spv`, `build/kernels/*.options` | the kernel modules, compiled ahead of time by `ocloc` for each chip in `ENGINE_AOT_DEVICES` (`bmg-g21` and `bmg-g31` by default): one `.spv` per chip family in `ENGINE_KERNEL_SPIRV_DIR` (`20.1.0`), lowered via `-spirv_input` into a `<ip>` binary directory per chip (`20.1.0`, `20.2.0`), with the build options a card without its own binaries compiles it with at load ([ADR-0003](adr/0003-kernel-language.md), [ADR-0057](adr/0057-the-engine-reads-the-host-it-runs-on.md), [ADR-0081](adr/0081-cache-ggml-and-kernels-across-builds.md)); `-DENGINE_PREBUILT_KERNELS=ON` reuses binaries already in `build/kernels`; one per `engine_add_kernel_module` in [`kernels/CMakeLists.txt`](../kernels/CMakeLists.txt) and the model's [`kernels/models/qwen4exp/CMakeLists.txt`](../kernels/models/qwen4exp/CMakeLists.txt): the decode step's `matvec_<type>_l<lanes>` and `moe_<type>_g<group>`, the prompt path's `gemm_*`, `qgemm_<type>[_file]` and `qwen4exp_prompt`/`_attn`/`_gdn`, the image encoder's `qwen4exp_vision*`, the model's own `qwen4exp`, `common` and `smoke`, and the `*_limit10` variants `swiglu_limit_test` uses |
+| `build/kernels/<ip>/*.bin`, `*.spv`, `build/kernels/*.options` | the kernel modules, compiled ahead of time by `ocloc` for each chip in `ENGINE_AOT_DEVICES` (`bmg-g21`, `bmg-g31`, `acm-g10`, `acm-g11` and `acm-g12` by default): one `.spv` per chip family (`ENGINE_KERNEL_SPIRV_DIR` at `20.1.0` and `ENGINE_KERNEL_HPG_SPIRV_DIR` at `12.55.8`), lowered via `-spirv_input` into a `<ip>` binary directory per chip (`20.1.0`, `20.2.0`, `12.55.8`, `12.56.5`, `12.57.0`), with the build options a card without its own binaries compiles it with at load ([ADR-0003](adr/0003-kernel-language.md), [ADR-0057](adr/0057-the-engine-reads-the-host-it-runs-on.md), [ADR-0081](adr/0081-cache-ggml-and-kernels-across-builds.md), [ADR-0082](adr/0082-intel-arc-alchemist-support.md)); `-DENGINE_PREBUILT_KERNELS=ON` reuses binaries already in `build/kernels`; one per `engine_add_kernel_module` in [`kernels/CMakeLists.txt`](../kernels/CMakeLists.txt) and the model's [`kernels/models/qwen4exp/CMakeLists.txt`](../kernels/models/qwen4exp/CMakeLists.txt): the decode step's `matvec_<type>_l<lanes>` and `moe_<type>_g<group>`, the prompt path's `gemm_*`, `qgemm_<type>[_file]` and `qwen4exp_prompt`/`_attn`/`_gdn`, the image encoder's `qwen4exp_vision*`, the model's own `qwen4exp`, `common` and `smoke`, and the `*_limit10` variants `swiglu_limit_test` uses |
 | `build/core/libengine-<level>.so`, `build/core/libengine.so`, `build/core/cpu_levels.tsv` | the C ABI of [`include/engine_api.h`](../include/engine_api.h), one library for each CPU level, each with ggml built for that level. They export only the `engine_` symbols. `libengine.so` links to the first level's; given it, the control plane loads the first level in `cpu_levels.tsv` whose features the CPU has ([ADR-0059](adr/0059-a-library-for-each-cpu-level.md)). `ENGINE_LIBRARY` set to a `libengine-<level>.so` loads that level |
 | `build/core/libengine_core.a` | the core itself, which the tests link |
 | `build/core/tests/*` | the core's tests |
@@ -115,6 +115,10 @@ huge pages (`--hugepages`, [server options](OPTIONS.md#reserved-huge-pages)) are
 `ENGINE_NO_P2P=1` disables card-to-card peer access on a two-card host and routes every cross-card exchange through
 pinned host memory ([ADR-0080](adr/0080-peer-exchanges-fall-back-to-host-memory.md)).
 
+`ENGINE_NO_HOST_POLL`, `ENGINE_STAGE_FLUSH` and `ENGINE_1D_STAGE_COPY` (`1` or `0`) override the per-card Alchemist
+runtime flags for host-event decode splits, cache-line staging flushes and CPU-mapped prompt staging without 2D arena
+copies ([ADR-0082](adr/0082-intel-arc-alchemist-support.md)).
+
 
 ## How a step runs
 
@@ -132,10 +136,11 @@ pinned host memory ([ADR-0080](adr/0080-peer-exchanges-fall-back-to-host-memory.
   more writes into the other card's memory ([ADR-0030](adr/0030-exchanges-into-the-other-card.md)). Each card
   signals an event when its partial sum is written and waits on the other's. Regular lists are used because an
   immediate list blocks the host when it waits on an event whose signal is not yet appended.
-- Card 0 publishes each layer's routed experts and misses in host memory (`MissJob`). The host thread spins on them,
-  computes the layer's misses with ggml ([`core/cpu/experts.cpp`](../core/cpu/experts.cpp)), writes the sum and
-  raises a flag in host memory. Card 0's `cpu_wait` kernel spins on that flag, and returns at once when no row
-  missed. This is the first form of [ADR-0011](adr/0011-cpu-gpu-signalling.md): flags and spinning waits.
+- Card 0 publishes each layer's routed experts and misses in host memory (`MissJob`). On Battlemage the host thread
+  spins on them, computes the layer's misses with ggml ([`core/cpu/experts.cpp`](../core/cpu/experts.cpp)), writes the
+  sum and raises a flag in host memory while card 0's `cpu_wait` kernel spins on it ([ADR-0011](adr/0011-cpu-gpu-signalling.md)).
+  On Alchemist each list splits around miss layers and waits on a Level Zero host event instead
+  ([ADR-0082](adr/0082-intel-arc-alchemist-support.md)).
 - Each card returns its share of the vocabulary's 64 largest logits; the host merges them and samples.
 
 ## How a prompt chunk runs

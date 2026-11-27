@@ -4,16 +4,18 @@ engine_add_kernel_module(smoke SOURCE kernels/smoke.cl)
 engine_add_kernel_module(common SOURCE kernels/common.cl)
 # The same for the decode steps of up to 8 rows (STEP_NARROW_ROWS, shared/step.h).
 engine_add_kernel_module(common_r8 SOURCE kernels/common.cl OPTIONS -DSTEP_ROWS=8)
-engine_add_kernel_module(gemm_f16 SOURCE kernels/gemm.cl OPTIONS -cl-intel-256-GRF-per-thread)
-engine_add_kernel_module(gemm_bf16 SOURCE kernels/gemm.cl OPTIONS -DBF16 -cl-intel-256-GRF-per-thread)
+engine_add_kernel_module(gemm_f16 SOURCE kernels/gemm.cl SOURCE_HPG kernels/gemm_hpg.cl
+                         OPTIONS -cl-intel-256-GRF-per-thread)
+engine_add_kernel_module(gemm_bf16 SOURCE kernels/gemm.cl SOURCE_HPG kernels/gemm_hpg.cl
+                         OPTIONS -DBF16 -cl-intel-256-GRF-per-thread)
 # bf16 with tiles of 4 tokens, for the prompt's products whose K or N is short (kernels/gemm.cl).
-engine_add_kernel_module(gemm_bf16_t4n2 SOURCE kernels/gemm.cl
+engine_add_kernel_module(gemm_bf16_t4n2 SOURCE kernels/gemm.cl SOURCE_HPG kernels/gemm_hpg.cl
                          OPTIONS -DBF16 -DTM=4 -DTN=2 -cl-intel-256-GRF-per-thread)
-engine_add_kernel_module(gemm_bf16_t4n1 SOURCE kernels/gemm.cl
+engine_add_kernel_module(gemm_bf16_t4n1 SOURCE kernels/gemm.cl SOURCE_HPG kernels/gemm_hpg.cl
                          OPTIONS -DBF16 -DTM=4 -DTN=1 -cl-intel-256-GRF-per-thread)
 # bf16, 32 tokens by 32 rows a sub-group, 11 sub-groups a work-group: one work-group covers the hyper-connections' 324
 # columns (kernels/gemm.cl).
-engine_add_kernel_module(gemm_bf16_t4n2s11 SOURCE kernels/gemm.cl
+engine_add_kernel_module(gemm_bf16_t4n2s11 SOURCE kernels/gemm.cl SOURCE_HPG kernels/gemm_hpg.cl
                          OPTIONS -DBF16 -DTM=4 -DTN=2 -DGEMM_SG=11 -cl-intel-256-GRF-per-thread)
 # Each architecture's own modules (ADR-0061).
 add_subdirectory(models/qwen4exp)

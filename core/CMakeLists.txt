@@ -23,7 +23,8 @@ target_include_directories(engine_core PRIVATE ${ENGINE_GGML_SRC_DIR})
 # The core links no ggml: each library below links one level's (cmake/ggml.cmake), and the tests the first level's.
 target_link_libraries(engine_core PUBLIC PkgConfig::LEVEL_ZERO Threads::Threads PRIVATE engine_warnings)
 target_compile_definitions(engine_core PUBLIC ENGINE_KERNEL_DIR="${ENGINE_KERNEL_DIR}"
-                           ENGINE_KERNEL_SPIRV_DIR="${ENGINE_KERNEL_SPIRV_DIR}")
+                           ENGINE_KERNEL_SPIRV_DIR="${ENGINE_KERNEL_SPIRV_DIR}"
+                           ENGINE_KERNEL_HPG_SPIRV_DIR="${ENGINE_KERNEL_HPG_SPIRV_DIR}")
 # A command list called from a second thread while one is inside it throws (ze/ze.h, List). On in builds without NDEBUG.
 option(ENGINE_CHECK_LISTS "Check that one thread at a time calls each command list" OFF)
 if(ENGINE_CHECK_LISTS)

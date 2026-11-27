@@ -22,6 +22,7 @@
 #include "ggml.h"
 #include "load/runs.h"
 #include "models/qwen4exp/layout.h"
+#include "models/qwen4exp/split_decode.h"
 #include "quant.h"
 #include "util/cache_dir.h"
 
@@ -139,6 +140,10 @@ Model::Model(const std::string &path, const Options &opt) : opt_(opt), gguf_(pat
   lib_ = std::make_unique<ze::Library>(*rt_);
   ncards_ = std::min(opt_.max_cards, rt_->ncards());
   if (ncards_ != 1 && ncards_ != 2) throw std::runtime_error("the engine runs on one or two cards");
+  for (uint32_t c = 0; c < ncards_; c++) {
+    host_poll_ = host_poll_ && rt_->cards()[c].host_flag_polling;
+    copy_2d_arena_ = copy_2d_arena_ && rt_->cards()[c].copy_2d_arena;
+  }
   if (const auto bad = split_mismatches(shape_, gguf_.tensors(), ncards_); !bad.empty())
     throw std::runtime_error(path + ": this file does not split over " + std::to_string(ncards_) + " cards: " + bad[0]);
   layer_module_ = expert_module("qwen4exp", shape_.experts);
@@ -290,6 +295,13 @@ void Model::load_cards(bool first) {
     for (auto &card : cards_) load_dflash(*card);
   load_experts(first);
   ring_sync();
+  miss_layers_.clear();
+  for (uint32_t l = 0; l < shape_.layers; l++)
+    if (share_ || !host_layers_[l]->uncached.empty()) miss_layers_.push_back(l);
+  if (!host_poll_ && !miss_layers_.empty())
+    miss_events_ = std::make_unique<ze::EventPool>(*rt_, (uint32_t)miss_layers_.size());
+  else
+    miss_events_.reset();
   std::fprintf(stderr, "engine: read %.2f GB of weights with O_DIRECT in %.2f s%s\n", reader_->bytes_read() / 1e9,
                std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(),
                first ? ", the arena with them" : "");
@@ -1201,9 +1213,16 @@ void Model::matvec(ze::List &list, Card &card, const Mat &m, const uint8_t *act,
 // already (step).
 void Model::record(Card &card, uint32_t W, bool kvs) {
   const uint32_t key = kvs ? W : W + kKvsSkipList;
+  const bool host_events = !host_poll_ && !miss_layers_.empty();
   // Not in order: the launches between L.together(true) and L.together(false) read the same inputs and write their
   // own outputs, so they may run side by side; each other command waits for those before it.
-  auto list = std::make_unique<ze::List>(*rt_, card.c, ze::List::regular, false, false);
+  std::unique_ptr<ze::List> list;
+  if (host_events) {
+    if (!card.step_queue) card.step_queue = std::make_unique<ze::Queue>(*rt_, card.c, false, false);
+    list = std::make_unique<ze::List>(*rt_, *card.step_queue);
+  } else {
+    list = std::make_unique<ze::List>(*rt_, card.c, ze::List::regular, false, false);
+  }
   ze::List &L = *list;
   const uint32_t c = card.c, C = ncards_;
   auto common = [&](const char *name) { return kernel(c, rows_module("common", W), name); };
@@ -1289,6 +1308,7 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
 
   L.launch(q4("hc_init"), {embed_, plan, card.R}, shape_.hc_dim() / 64, W, 1, 64);
   bool normed = false;  // the layer's first norm done by the exchange before it
+  size_t mi = 0;
   for (uint32_t l = 0; l < shape_.layers; l++) {
     Layer &Ly = card.layers[l];
     if (l == 1) {  // the PLE module (MODEL_IO.md, 1.3), after the host has read the rows (ADR-0015)
@@ -1384,6 +1404,8 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
                                     card.groups, card.ngroups}, 1, 1, 1, group_wg(W));
     L.launch(q4("swiglu_a8"), {card.shg, card.shu, card.ff, plan, card.sha8}, (card.ff / 32 + 3) / 4, W, 1, 64);
     L.together(false);
+    const bool layer_split = host_events && mi < miss_layers_.size() && miss_layers_[mi] == l;
+    if (layer_split) L.split();
     if (nslots_cached_ > 0) {
       // moe.cl's kernels where they take the type: the same results, faster
       // (docs/measurements/MEASUREMENTS.md#2026-10-14-decode-expert-kernels).
@@ -1418,7 +1440,12 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
     } else {
       matvec(L, card, Ly.sh_down, card.sha8, card.s, W, nrows);
     }
-    if (c == 0) L.launch(q4("cpu_wait"), {nmiss, ans_seq_ + 16 * l, plan, stuck_}, 1, 1, 1, 1);
+    if (layer_split) {
+      if (c == 0) L.wait({(*miss_events_)[(uint32_t)mi]});
+      mi++;
+    } else if (c == 0) {
+      L.launch(q4("cpu_wait"), {nmiss, ans_seq_ + 16 * l, plan, stuck_}, 1, 1, 1, 1);
+    }
     float *p2 = ex2_ + l * ex_layer + (size_t)c * STEP_MAX_ROWS * shape_.embd;
     const float *cpu = c == 0 ? cpu_y_ + (size_t)l * STEP_MAX_ROWS * shape_.embd : nullptr;
     if (peer) {
@@ -1605,46 +1632,78 @@ std::vector<std::vector<Candidate>> Model::step(const StepIn *rows, uint32_t n, 
     if (first) set_rope(rows[r].slot, rows[r].pos, true);
   }
   for (uint32_t i = 0; i < events_->size(); i++) ZE_CHECK(zeEventHostReset((*events_)[i]));
-  for (uint32_t c = ncards_; c-- > 0;) cards_[c]->lists.at(key)->execute();
-  // The n-gram rows, all read at once while the cards run layer 0 (ADR-0015); they wait for the event before layer 1.
-  {
-    int32_t t[STEP_MAX_ROWS], p1[STEP_MAX_ROWS], p2[STEP_MAX_ROWS];
-    for (uint32_t r = 0; r < n; r++) t[r] = rows[r].token, p1[r] = rows[r].p1, p2[r] = rows[r].p2;
-    ngram_->gather_rows(t, p1, p2, n, ngram_u_);
-  }
-  ZE_CHECK(zeEventHostSignal((*events_)[ngram_ev()]));
-
   stats_ = {};
   std::vector<CpuExperts::Job> jobs;
   std::vector<float> xs((size_t)n * E);
   const uint32_t step = plan_->step;
-  for (uint32_t l = 0; l < shape_.layers; l++) {
-    // The layer's records (ADR-0011): spin until card 0 publishes each row's for this step; then all the rows'
-    // misses at once, each expert's weights read once.
-    jobs.clear();
-    HostLayer &hl = *host_layers_[l];
-    for (uint32_t r = 0; r < n; r++) {
-      MissJob &J = jobs_[(size_t)l * STEP_MAX_ROWS + r];
-      std::atomic_ref<uint32_t> seq(J.seq);
-      auto t0 = std::chrono::steady_clock::now();
-      for (uint32_t k = 0; seq.load(std::memory_order_acquire) != step; k++) {
-        _mm_pause();
-        if ((k & 0xffff) == 0 && std::chrono::steady_clock::now() - t0 > std::chrono::seconds(10))
-          throw std::runtime_error("card 0 did not publish layer " + std::to_string(l) + "'s experts");
+  auto gather_ngram = [&] {
+    // The n-gram rows, all read at once while the cards run layer 0 (ADR-0015); they wait for the event before layer 1.
+    int32_t t[STEP_MAX_ROWS], p1[STEP_MAX_ROWS], p2[STEP_MAX_ROWS];
+    for (uint32_t r = 0; r < n; r++) t[r] = rows[r].token, p1[r] = rows[r].p1, p2[r] = rows[r].p2;
+    ngram_->gather_rows(t, p1, p2, n, ngram_u_);
+    ZE_CHECK(zeEventHostSignal((*events_)[ngram_ev()]));
+  };
+  const bool host_events = !host_poll_ && !miss_layers_.empty();
+  if (host_events) {
+    for (uint32_t i = 0; i < miss_events_->size(); i++) ZE_CHECK(zeEventHostReset((*miss_events_)[i]));
+    run_split_decode(
+        ncards_, miss_layers_.size(),
+        [&](uint32_t c, uint32_t part) { cards_[c]->lists.at(key)->execute_part(part); },
+        [&](uint32_t c, uint32_t part) { cards_[c]->lists.at(key)->synchronize_part(part); }, gather_ngram,
+        [&]() noexcept { return zeEventHostSignal((*events_)[ngram_ev()]) == ZE_RESULT_SUCCESS; },
+        [&](size_t mi) {
+          const uint32_t l = miss_layers_[mi];
+          jobs.clear();
+          HostLayer &hl = *host_layers_[l];
+          for (uint32_t r = 0; r < n; r++) {
+            MissJob &J = jobs_[(size_t)l * STEP_MAX_ROWS + r];
+            const uint32_t nm = J.nmiss;
+            if (opt_.adapt_swaps) note_routing(l, J.all, shape_.used, prompt ? kPromptRouting : 1.0f);
+            if (nm == 0) continue;
+            std::memcpy(xs.data() + (size_t)r * E, J.x, E * 4);
+            for (uint32_t k = 0; k < nm; k++) jobs.push_back({hl.weights[J.ids[k]], r, J.w[k]});
+          }
+          if (!jobs.empty()) {
+            stats_.misses += (uint32_t)jobs.size();
+            stats_.layers_missed++;
+            cpu_->compute_many(hl.shape, jobs, n, xs.data(), E, cpu_y_ + (size_t)l * STEP_MAX_ROWS * E, E);
+            _mm_sfence();
+          }
+        },
+        [&](size_t mi) { ZE_CHECK(zeEventHostSignal((*miss_events_)[(uint32_t)mi])); },
+        [&](size_t mi) noexcept { return zeEventHostSignal((*miss_events_)[(uint32_t)mi]) == ZE_RESULT_SUCCESS; },
+        []() noexcept { return ze::queue_stuck(); }, []() noexcept { ze::mark_stuck(); });
+  } else {
+    for (uint32_t c = ncards_; c-- > 0;) cards_[c]->lists.at(key)->execute();
+    gather_ngram();
+    for (uint32_t l = 0; l < shape_.layers; l++) {
+      // The layer's records (ADR-0011): spin until card 0 publishes each row's for this step; then all the rows'
+      // misses at once, each expert's weights read once.
+      jobs.clear();
+      HostLayer &hl = *host_layers_[l];
+      for (uint32_t r = 0; r < n; r++) {
+        MissJob &J = jobs_[(size_t)l * STEP_MAX_ROWS + r];
+        std::atomic_ref<uint32_t> seq(J.seq);
+        auto t0 = std::chrono::steady_clock::now();
+        for (uint32_t k = 0; seq.load(std::memory_order_acquire) != step; k++) {
+          _mm_pause();
+          if ((k & 0xffff) == 0 && std::chrono::steady_clock::now() - t0 > std::chrono::seconds(10))
+            throw std::runtime_error("card 0 did not publish layer " + std::to_string(l) + "'s experts");
+        }
+        const uint32_t nm = J.nmiss;
+        if (opt_.adapt_swaps) note_routing(l, J.all, shape_.used, prompt ? kPromptRouting : 1.0f);
+        if (nm == 0) continue;  // the skip
+        std::memcpy(xs.data() + (size_t)r * E, J.x, E * 4);
+        for (uint32_t k = 0; k < nm; k++) jobs.push_back({hl.weights[J.ids[k]], r, J.w[k]});
       }
-      const uint32_t nm = J.nmiss;
-      if (opt_.adapt_swaps) note_routing(l, J.all, shape_.used, prompt ? kPromptRouting : 1.0f);
-      if (nm == 0) continue;  // the skip
-      std::memcpy(xs.data() + (size_t)r * E, J.x, E * 4);
-      for (uint32_t k = 0; k < nm; k++) jobs.push_back({hl.weights[J.ids[k]], r, J.w[k]});
+      if (jobs.empty()) continue;
+      stats_.misses += (uint32_t)jobs.size();
+      stats_.layers_missed++;
+      cpu_->compute_many(hl.shape, jobs, n, xs.data(), E, cpu_y_ + (size_t)l * STEP_MAX_ROWS * E, E);
+      std::atomic_ref<uint32_t>(ans_seq_[16 * l]).store(step, std::memory_order_release);
     }
-    if (jobs.empty()) continue;
-    stats_.misses += (uint32_t)jobs.size();
-    stats_.layers_missed++;
-    cpu_->compute_many(hl.shape, jobs, n, xs.data(), E, cpu_y_ + (size_t)l * STEP_MAX_ROWS * E, E);
-    std::atomic_ref<uint32_t>(ans_seq_[16 * l]).store(step, std::memory_order_release);
+    for (auto &card : cards_) card->lists.at(key)->synchronize();
   }
-  for (auto &card : cards_) card->lists.at(key)->synchronize();
   if (*stuck_) throw std::runtime_error("card 0 gave up waiting for the CPU's experts");
   if (kvs) {
     // The claim may have taken any other slot's pages; a step's slot that read every cell is claimed through its

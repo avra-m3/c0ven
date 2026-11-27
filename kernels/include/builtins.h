@@ -39,11 +39,13 @@ static inline uint apply_signs4(uint v, uint bits) {
 
 static inline float bf16_to_f32(ushort x) { return as_float((uint)x << 16); }
 
+#ifndef ENGINE_HPG
 // The XMX units (DPAS), sub-group of 16: C (8 x 16) += A (8 x 16) B (16 x 16). Lane i holds column i of A (a[m] =
 // A[m][i]), column i of B as 8 pairs of 16-bit values (B[2p][i], B[2p + 1][i] in b[p], low half first), and column
 // i of C (c[m] = C[m][i]). Checked by core/tests/gemm_test.cpp.
 static inline float8 dpas_f16(short8 a, int8 b, float8 c) { return intel_sub_group_f16_f16_matrix_mad_k16(a, b, c); }
 static inline float8 dpas_bf16(short8 a, int8 b, float8 c) { return intel_sub_group_bf16_bf16_matrix_mad_k16(a, b, c); }
+#endif
 
 // Sub-group block read: lane i gets p[i]. p must be 4-byte aligned.
 static inline ushort sg_read_us(__global const ushort *p) { return intel_sub_group_block_read_us(p); }
@@ -61,6 +63,7 @@ static inline ushort f32_to_bf16(float f) {
   return (ushort)((u + (0x7fffu + ((u >> 16) & 1))) >> 16);
 }
 
+#ifndef ENGINE_HPG
 // 2D block reads of a 16-bit matrix: rows `pitch` bytes apart (a multiple of 64; base 64-byte aligned), `width` bytes
 // and `height` rows in bounds, 0 outside. sg_load_rows32 (the A operand of four dpas calls): rows y0..y0+31, lane i
 // column x0 + i, dst[r] = M[y0 + r][x0 + i].
@@ -83,5 +86,6 @@ static inline void sg_store_rows8(__global ushort *base, uint width, uint height
                                   ushort src[8]) {
   intel_sub_group_2d_block_write_16b_8r16x1c((__global void *)base, width, height, pitch, (int2)(x0, y0), src);
 }
+#endif
 
 #endif
