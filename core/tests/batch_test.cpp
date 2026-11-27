@@ -74,6 +74,16 @@ int main(int argc, char **argv) {
     }
   }
   int failures = 0;
+  // Committing an unscored prompt window must leave the next window's last score unchanged.
+  model.reset_slot(0);
+  for (uint32_t i : {0u, (uint32_t)STEP_MAX_RUN}) {
+    std::vector<StepIn> rows;
+    for (uint32_t j = 0; j < STEP_MAX_RUN; j++) rows.push_back(row(0, i + j));
+    auto out = model.step(rows.data(), STEP_MAX_RUN, true, i ? StepInput::prompt_last : StepInput::prompt_prefix);
+    for (uint32_t j = 0; j < STEP_MAX_RUN; j++)
+      EXPECT(i && j + 1 == STEP_MAX_RUN ? same(out[j], alone[0][i + j]) : out[j].empty(), "prompt row %u", i + j);
+    model.commit(0, i, STEP_MAX_RUN);
+  }
   // Rows of several sequences.
   for (uint32_t width : {8u, 6u, 4u, 3u}) {
     for (uint32_t s = 0; s < width; s++) model.reset_slot(s);

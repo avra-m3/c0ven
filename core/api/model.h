@@ -97,6 +97,8 @@ struct StepIn {
   int32_t token = 0, p1 = -1, p2 = -1, p3 = -1;
 };
 
+enum class StepInput { decode, prompt_prefix, prompt_last };
+
 // The row of token at position pos of a sequence whose tokens before it are tokens[0 .. pos).
 inline StepIn row_at(uint32_t slot, uint32_t pos, int32_t token, const std::vector<int32_t> &tokens) {
   auto back = [&](uint32_t k) { return pos >= k ? tokens[pos - k] : kNoToken; };
@@ -174,10 +176,10 @@ class Model {
   // One step of n rows (1 to STEP_MAX_ROWS) of several sequences, or consecutive positions of one, in order. Returns
   // each row's largest logits, highest first. window: one run of positions a sequence, whose state waits for commit to
   // keep the run's first rows (the accepted drafts and the row before them); the rest's KV is overwritten later.
-  // prompt: the rows are prompt tokens, counted for adaptive swaps as the prompt path counts them, and only the last
-  // row's logits are wanted: the others come back empty.
+  // Prompt rows count as prompt routing. A full prompt_prefix window needs no scores; prompt_last scores its last
+  // row only. Unscored rows come back empty.
   virtual std::vector<std::vector<Candidate>> step(const StepIn *rows, uint32_t n, bool window = false,
-                                                   bool prompt = false) = 0;
+                                                   StepInput input = StepInput::decode) = 0;
   // Whether step takes these rows now. A step of up to STEP_MAX_RUN rows always fits; a wider one may need more of the
   // cards' memory than the model holds for it.
   virtual bool step_fits(const StepIn *rows, uint32_t n) const {

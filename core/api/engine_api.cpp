@@ -39,6 +39,7 @@ using engine::row_after;
 using engine::row_at;
 using engine::sample_p;
 using engine::StepIn;
+using engine::StepInput;
 
 namespace {
 
@@ -820,7 +821,7 @@ struct engine_ctx {
         if (k > 0) row = row_after(row, toks[k]);
         rows.push_back(row);
       }
-      auto out = model->step(rows.data(), w, true, true);
+      auto out = model->step(rows.data(), w, true, i + w < n ? StepInput::prompt_prefix : StepInput::prompt_last);
       model->commit(s, pos0 + i, w);
       cand = out[w - 1];
       mr.clear();
