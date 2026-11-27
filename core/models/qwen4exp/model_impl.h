@@ -31,12 +31,14 @@ inline constexpr uint32_t kCpuRows = 3;
 // p_idx_score_xmx's work-group (prompt_attn.cl): IDX_XMX_ROWS rows by kIdxXmxSg sub-groups of 16 IDX_XMX_TB blocks.
 inline constexpr uint32_t kIdxXmxRows = 16, kIdxXmxSg = 4, kIdxXmxBlocks = 16 * 2 * kIdxXmxSg;
 // The streamed pool (kvs_claim): the logical pages a claim takes past each row's, so the steps that open them need
-// no claim; the pages a row's claim takes at most; the pages a step's rows can claim at most, its miss list; and what
-// a width's list without the claim adds to its key (Model::record).
+// no claim; the pages a row's claim takes at most; and the size of a step's miss list.
 inline constexpr uint32_t kKvsAhead = 32;
 inline uint32_t kvs_row_claims(const Shape &s) { return s.idx_blocks() + 2 + kKvsAhead; }
 inline uint32_t kvs_max_miss(const Shape &s) { return STEP_MAX_ROWS * kvs_row_claims(s); }
-inline constexpr uint32_t kKvsSkipList = 16;
+// Each combination of KV claim and head has its own range of list widths.
+inline uint32_t step_list_key(uint32_t width, bool kvs, bool head) {
+  return width + (kvs ? 0 : STEP_MAX_ROWS) + (head ? 0 : 2 * STEP_MAX_ROWS);
+}
 inline constexpr uint32_t kMvKsRows = 512;  // dense products of up to this many rows split K (matvec_ks)
 // The decode step's widths, each with its own lists: a step runs the smallest of at least its rows, and its products
 // and expert kernels compute that many.

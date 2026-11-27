@@ -302,6 +302,10 @@ void Model::load_cards(bool first) {
     for (uint32_t W : kStepWidths) {
       record(*card, W);
       if (kv_res_) record(*card, W, false);  // the steps whose pages are claimed already
+      if (W == STEP_MAX_RUN) {
+        record(*card, W, true, false);
+        if (kv_res_) record(*card, W, false, false);
+      }
     }
     record_commit(*card);
     if (mtp_on_) {
@@ -1196,11 +1200,10 @@ void Model::matvec(ze::List &list, Card &card, const Mat &m, const uint8_t *act,
 }
 
 // The decode step for up to W rows, recorded once per card and width (kStepWidths): the kernels read the step plan
-// in host memory, so a list serves any step of up to W rows, and the kernels skip the rows past the plan's. Streamed,
-// a second list a width leaves out the claim (kvs: false, key W + kKvsSkipList), for the steps whose pages are claimed
-// already (step).
-void Model::record(Card &card, uint32_t W, bool kvs) {
-  const uint32_t key = kvs ? W : W + kKvsSkipList;
+// in host memory, so a list serves any step of up to W rows. A list may omit the KV claim if its pages are already
+// claimed, and the head if another prompt window follows.
+void Model::record(Card &card, uint32_t W, bool kvs, bool head) {
+  const uint32_t key = step_list_key(W, kvs, head);
   // Not in order: the launches between L.together(true) and L.together(false) read the same inputs and write their
   // own outputs, so they may run side by side; each other command waits for those before it.
   auto list = std::make_unique<ze::List>(*rt_, card.c, ze::List::regular, false, false);
@@ -1439,7 +1442,7 @@ void Model::record(Card &card, uint32_t W, bool kvs) {
       if (l == dfc_.targets[k])
         L.launch(kernel(c, "qwen4exp_dflash", "df_feat"), {card.R, k, plan, card.df->feat}, shape_.embd / 64, W, 1, 64);
   }
-  record_head(L, card, plan, W);
+  if (head) record_head(L, card, plan, W);
   L.close();
   card.lists[key] = std::move(list);
 }
@@ -1565,8 +1568,10 @@ bool step_fits_ring(const StepIn *rows, uint32_t n, bool streamed, uint32_t row_
   return claims < ring;
 }
 
-std::vector<std::vector<Candidate>> Model::step(const StepIn *rows, uint32_t n, bool window, bool prompt) {
+std::vector<std::vector<Candidate>> Model::step(const StepIn *rows, uint32_t n, bool window, StepInput input) {
   if (n == 0 || n > STEP_MAX_ROWS) throw std::runtime_error("a step takes 1 to STEP_MAX_ROWS rows");
+  const bool head = input != StepInput::prompt_prefix;
+  if (!head && n != STEP_MAX_RUN) throw std::logic_error("a prompt prefix must fill its window");
   if (window)
     for (uint32_t r = 1; r < n; r++) {
       bool same = rows[r].slot == rows[r - 1].slot;
@@ -1588,10 +1593,10 @@ std::vector<std::vector<Candidate>> Model::step(const StepIn *rows, uint32_t n, 
   const uint32_t idx_cells = shape_.idx_cells();
   for (uint32_t r = 0; kv_res_ && r < n && !kvs; r++)
     kvs = rows[r].pos + 1 > idx_cells || kvs_to_[rows[r].slot] <= rows[r].pos;
-  const uint32_t key = kv_res_ && !kvs ? W + kKvsSkipList : W;
+  const uint32_t key = step_list_key(W, !kv_res_ || kvs, head);
   last_width_ = key;
   plan_->nrows = n;
-  plan_->nhead = prompt ? 1 : n;
+  plan_->nhead = input == StepInput::decode ? n : head ? 1 : 0;
   plan_->window = window ? 1 : 0;
   plan_->step++;
   const GgufTensor &te = gguf_.tensor("token_embd.weight");
@@ -1633,7 +1638,7 @@ std::vector<std::vector<Candidate>> Model::step(const StepIn *rows, uint32_t n, 
           throw std::runtime_error("card 0 did not publish layer " + std::to_string(l) + "'s experts");
       }
       const uint32_t nm = J.nmiss;
-      if (opt_.adapt_swaps) note_routing(l, J.all, shape_.used, prompt ? kPromptRouting : 1.0f);
+      if (opt_.adapt_swaps) note_routing(l, J.all, shape_.used, input == StepInput::decode ? 1.0f : kPromptRouting);
       if (nm == 0) continue;  // the skip
       std::memcpy(xs.data() + (size_t)r * E, J.x, E * 4);
       for (uint32_t k = 0; k < nm; k++) jobs.push_back({hl.weights[J.ids[k]], r, J.w[k]});

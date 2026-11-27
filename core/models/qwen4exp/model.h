@@ -102,7 +102,7 @@ class Model final : public engine::Model {
 
   // With window, the recurrent state is what waits for commit; the KV is written in place.
   std::vector<std::vector<Candidate>> step(const StepIn *rows, uint32_t n, bool window = false,
-                                           bool prompt = false) override;
+                                           StepInput input = StepInput::decode) override;
   // step_fits_ring at the ring's size now.
   bool step_fits(const StepIn *rows, uint32_t n) const override;
   // Draft-layer passes run beside a commit's work on the cards.
@@ -234,7 +234,7 @@ class Model final : public engine::Model {
   void load_experts(bool first);
   std::unique_ptr<HostLayer> host_layer(uint32_t l, uint64_t n, const std::vector<uint64_t> &profile,
                                         uint64_t stg_bytes, uint32_t positions);
-  void record(Card &card, uint32_t width, bool kvs = true);  // kvs: with the streamed pool's claim
+  void record(Card &card, uint32_t width, bool kvs = true, bool head = true);
   void record_head(ze::List &L, Card &card, const StepPlan *plan, uint32_t width);
   void record_commit(Card &card);
   uint64_t mtp_bytes() const;

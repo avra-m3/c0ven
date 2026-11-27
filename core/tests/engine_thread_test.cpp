@@ -66,7 +66,7 @@ class FakeModel : public Model {
   uint32_t image_tokens_max() const override { return 0; }
   ImageShape image_shape() const override { return {}; }
 
-  std::vector<std::vector<Candidate>> step(const StepIn *rows, uint32_t n, bool, bool) override {
+  std::vector<std::vector<Candidate>> step(const StepIn *rows, uint32_t n, bool, StepInput) override {
     In in(*this, "step", rows[0].slot, 300);
     return std::vector<std::vector<Candidate>>(n, std::vector<Candidate>{Candidate{7, 1.0f}});
   }
