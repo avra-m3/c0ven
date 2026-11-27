@@ -7,7 +7,7 @@ The server speaks the OpenAI and Anthropic APIs, with streaming, on the address 
 | --- | --- |
 | `POST /v1/chat/completions` | OpenAI Chat Completions |
 | `POST /v1/messages`, `/v1/messages/count_tokens` | Anthropic Messages |
-| `GET /v1/models` | The loaded model |
+| `GET /v1/models` | The loaded model, its context length and modalities |
 | `GET /health` | 200 and the engine's context when it is ready; 503 while it loads or sleeps |
 | `GET /props` | Chat template, context, generation defaults |
 | `GET /slots` | Slots and how many are busy |

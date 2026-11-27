@@ -578,6 +578,7 @@ def test_count_tokens(client: TestClient, tokenizer: Tokenizer):
 
 def test_status_endpoints(client: TestClient):
     assert client.get("/v1/models").json()["data"][0]["id"] == "tiny"
+    assert client.get("/v1/models").json()["data"][0]["context_length"] == 4096
     assert client.get("/health").json()["context"] == 4096
     assert "chat_template" in client.get("/props").json()
     assert client.get("/slots").json()["slots"] == 1
@@ -585,6 +586,12 @@ def test_status_endpoints(client: TestClient):
     metrics = client.get("/metrics").json()
     assert metrics["totals"]["requests"] == 1
     assert metrics["engine"] == {"backend": "fake"}
+
+
+def test_models_report_the_modalities(client: TestClient, engine: FakeEngine):
+    assert client.get("/v1/models").json()["data"][0]["architecture"]["input_modalities"] == ["text"]
+    engine.image_tokens_max = 512
+    assert client.get("/v1/models").json()["data"][0]["architecture"]["input_modalities"] == ["text", "image", "video"]
 
 
 def test_metrics_carry_the_engines_counters_and_each_requests(client: TestClient, engine: FakeEngine):
