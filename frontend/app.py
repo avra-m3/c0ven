@@ -5,7 +5,7 @@
 | --- | --- |
 | `POST /v1/chat/completions` | OpenAI Chat Completions |
 | `POST /v1/messages`, `/v1/messages/count_tokens` | Anthropic Messages |
-| `GET /v1/models`, `/models` | the loaded model |
+| `GET /v1/models`, `/models` | the loaded model, its context and modalities |
 | `GET /health`, `/api/health` | the engine's status and context: 200 once it is READY, 503 while it loads or sleeps |
 | `GET /props` | chat template, context, generation defaults, model path |
 | `GET /slots` | the engine's slots and how many are busy |
@@ -328,9 +328,16 @@ def create_app(
         return JSONResponse({"input_tokens": len((await render(req)).ids)})
 
     async def models(_: Request) -> Response:
-        return JSONResponse(
-            {"object": "list", "data": [{"id": model.name, "object": "model", "owned_by": "local", "created": 0}]}
-        )
+        modalities = ["text", "image", "video"] if engine.image_tokens_max else ["text"]
+        model_info = {
+            "id": model.name,
+            "object": "model",
+            "owned_by": "local",
+            "created": 0,
+            "meta": {"n_ctx": engine.max_context},
+            "architecture": {"input_modalities": modalities, "output_modalities": ["text"]},
+        }
+        return JSONResponse({"object": "list", "data": [model_info]})
 
     async def health(_: Request) -> Response:
         status = engine.status
