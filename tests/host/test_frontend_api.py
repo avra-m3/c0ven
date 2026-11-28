@@ -578,7 +578,7 @@ def test_count_tokens(client: TestClient, tokenizer: Tokenizer):
 
 def test_status_endpoints(client: TestClient):
     assert client.get("/v1/models").json()["data"][0]["id"] == "tiny"
-    assert client.get("/v1/models").json()["data"][0]["context_length"] == 4096
+    assert client.get("/v1/models").json()["data"][0]["meta"]["n_ctx"] == 4096
     assert client.get("/health").json()["context"] == 4096
     assert "chat_template" in client.get("/props").json()
     assert client.get("/slots").json()["slots"] == 1

@@ -334,7 +334,7 @@ def create_app(
             "object": "model",
             "owned_by": "local",
             "created": 0,
-            "context_length": engine.max_context,
+            "meta": {"n_ctx": engine.max_context},
             "architecture": {"input_modalities": modalities, "output_modalities": ["text"]},
         }
         return JSONResponse({"object": "list", "data": [model_info]})
